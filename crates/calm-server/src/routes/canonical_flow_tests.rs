@@ -240,14 +240,24 @@ impl Fixture {
         &self,
         area: &str,
     ) -> crate::db::sqlite::conversation::HumanTrackCreationRecord {
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        let receipt =
-            crate::db::sqlite::conversation::human_track_creation_get_tx(&mut tx, area, "first")
-                .await
-                .unwrap()
-                .expect("original committed creation receipt");
-        tx.rollback().await.unwrap();
-        receipt
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
+                        &mut tx, area, "first",
+                    )
+                    .await
+                    .unwrap()
+                    .expect("original committed creation receipt");
+                    tx.rollback().await.unwrap();
+                    receipt
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     async fn counts(&self, card: &str) -> (i64, i64, i64, i64, i64) {
@@ -471,154 +481,159 @@ async fn original_input_flow_for_area(
         .iter()
         .map(|entry| entry.accepted_input_ref().unwrap())
         .collect::<Vec<_>>();
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let submission = crate::db::sqlite::conversation::submission_plan_tx(
-        &mut tx,
-        &crossing.2.canonical_inputs.attempts[0]
-            .attempt
-            .submission_id,
-    )
-    .await
-    .unwrap();
-    assert_eq!(submission.plan.input_refs().unwrap(), original_refs);
-    let identity = crate::db::sqlite::conversation::submission_identity_tx(
-        &mut tx,
-        &crossing.2.canonical_inputs.attempts[0]
-            .attempt
-            .submission_id,
-    )
-    .await
-    .unwrap();
-    let active = crossing.2.canonical_inputs.active.as_ref().unwrap();
-    assert_eq!(identity.card_id, card);
-    assert_eq!(identity.ordinal, 0, "the original Initial submission");
-    assert_eq!(identity.logical_turn_id, active.logical_turn_id);
-    assert_eq!(
-        active.submission_ids,
-        vec![
-            crossing.2.canonical_inputs.attempts[0]
+    let created = &created;
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let submission = crate::db::sqlite::conversation::submission_plan_tx(
+            &mut tx,
+            &crossing.2.canonical_inputs.attempts[0]
                 .attempt
-                .submission_id
-                .clone()
-        ]
-    );
-    tx.rollback().await.unwrap();
-    send(
-        &mut peer,
-        json!({"id":turn_start["id"],"result":{"turn":{"id":TURN}}}),
-    )
-    .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/started",
-        json!({"id":TURN,"status":"inProgress"}),
-    )
-    .await;
-    let running = fixture
-        .wait_phase(track, HarnessPhaseTag::TurnRunning)
-        .await;
-    assert!(matches!(
-        running.canonical_inputs.attempts[0].delivery,
-        InputDeliveryFact::Accepted { .. }
-    ));
-    send(&mut peer, json!({"method":"item/completed","params":{
-        "threadId":THREAD,"turnId":TURN,
-        "item":{"id":"original-native-reply","type":"agentMessage","text":"Original execution result"}
-    }})).await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/completed",
-        json!({"id":TURN,"status":"completed"}),
-    )
-    .await;
-    let done = fixture
-        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
-        .await;
-    assert!(done.canonical_inputs.active.is_none());
-    assert_eq!(
-        done.canonical_inputs.attempts,
-        running.canonical_inputs.attempts
-    );
-    fixture.wait_for_stored_reply(&card).await;
-    // A replay ACK precedes its asynchronous wake. Settle that invocation
-    // before removing the harness, or it can race shutdown into cold recovery.
-    let replay_wake = crate::test_seams::PausePoint::default();
-    crate::test_seams::install_pause_for_test(
-        "canonical-human-wake-finished",
-        &card,
-        replay_wake.clone(),
-    );
-    let replay = post(&app, &cookie, "/api/tracks", "first", create.clone()).await;
-    tokio::time::timeout(Duration::from_secs(5), replay_wake.entered.notified())
-        .await
-        .expect("the replay wake must finish before the original harness is removed");
-    replay_wake.release.notify_one();
-    assert_eq!(replay["id"], created["id"]);
-    assert_eq!(
-        fixture.carrier(track).await.2.canonical_inputs,
-        done.canonical_inputs
-    );
-    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
-
-    // A receipt replay schedules a real wake. Keep its card fence through
-    // teardown so removing the handle cannot look like a cold-recovery request.
-    let lifecycle_locks = crate::state::RouteState::from_ref(&state).planner_recovery_locks;
-    let _lifecycle = crate::per_card_lock::lock_card(&lifecycle_locks, &card).await;
-    let harness = state
-        .harness
-        .remove(&worker)
-        .expect("actual installed harness");
-    let mut stopping = tokio::spawn(async move { harness.shutdown().await });
-    tokio::select! {
-        result = &mut stopping => result.unwrap().unwrap(),
-        call = request(&mut peer) => {
-            assert_eq!(call["method"],"turn/interrupt");
-            send(&mut peer,json!({"id":call["id"],"result":{}})).await;
-            stopping.await.unwrap().unwrap();
-        }
-    }
-    fixture.shutdown_process(&state).await;
-    drop((client, peer, state, app));
-    fixture.repo.pool().close().await;
-    fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
-    let (restarted, app, cookie) = fixture.application().await;
-    // Invoke the actual boot owner with no restored Human source. Recovery may
-    // reload facts; it cannot invent another native execution from old authors.
-    restarted
-        .recover_harnesses_on_boot(BootRows::All)
+                .submission_id,
+        )
         .await
         .unwrap();
-    if cold_second_turn.is_none() {
-        // The original replay-only cases exercise this post-reopen wake. Cold
-        // scenarios instead issue one new message below: a second authorized
-        // POST may independently re-admit its then-current pending head.
-        let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
-        assert_eq!(replay["id"], created["id"]);
-    }
-    let after = fixture.carrier(track).await;
-    assert_eq!((&after.0, &after.1), (&card, &worker));
-    assert_eq!(after.2.canonical_inputs, done.canonical_inputs);
-    assert_eq!(after.2.header.phase, HarnessPhaseTag::TurnCompleted);
-    assert_eq!(after.2.header.last_thread_id.as_deref(), Some(THREAD));
-    assert_eq!(after.2.header.last_turn_id.as_deref(), Some(TURN));
-    assert_eq!(fixture.receipt(area_id).await, original_receipt);
-    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
-    if let Some(scenario) = cold_second_turn {
-        cold_recovery_tests::second_turn(
-            &fixture,
-            &restarted,
-            &app,
-            &cookie,
-            (track, &card, &worker),
-            scenario,
+        assert_eq!(submission.plan.input_refs().unwrap(), original_refs);
+        let identity = crate::db::sqlite::conversation::submission_identity_tx(
+            &mut tx,
+            &crossing.2.canonical_inputs.attempts[0]
+                .attempt
+                .submission_id,
+        )
+        .await
+        .unwrap();
+        let active = crossing.2.canonical_inputs.active.as_ref().unwrap();
+        assert_eq!(identity.card_id, card);
+        assert_eq!(identity.ordinal, 0, "the original Initial submission");
+        assert_eq!(identity.logical_turn_id, active.logical_turn_id);
+        assert_eq!(
+            active.submission_ids,
+            vec![
+                crossing.2.canonical_inputs.attempts[0]
+                    .attempt
+                    .submission_id
+                    .clone()
+            ]
+        );
+        tx.rollback().await.unwrap();
+        send(
+            &mut peer,
+            json!({"id":turn_start["id"],"result":{"turn":{"id":TURN}}}),
         )
         .await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/started",
+            json!({"id":TURN,"status":"inProgress"}),
+        )
+        .await;
+        let running = fixture
+            .wait_phase(track, HarnessPhaseTag::TurnRunning)
+            .await;
+        assert!(matches!(
+            running.canonical_inputs.attempts[0].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        send(&mut peer, json!({"method":"item/completed","params":{
+            "threadId":THREAD,"turnId":TURN,
+            "item":{"id":"original-native-reply","type":"agentMessage","text":"Original execution result"}
+        }})).await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":TURN,"status":"completed"}),
+        )
+        .await;
+        let done = fixture
+            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+            .await;
+        assert!(done.canonical_inputs.active.is_none());
+        assert_eq!(
+            done.canonical_inputs.attempts,
+            running.canonical_inputs.attempts
+        );
+        fixture.wait_for_stored_reply(&card).await;
+        // A replay ACK precedes its asynchronous wake. Settle that invocation
+        // before removing the harness, or it can race shutdown into cold recovery.
+        let replay_wake = crate::test_seams::PausePoint::default();
+        crate::test_seams::install_pause_for_test(
+            "canonical-human-wake-finished",
+            &card,
+            replay_wake.clone(),
+        );
+        let replay = post(&app, &cookie, "/api/tracks", "first", create.clone()).await;
+        tokio::time::timeout(Duration::from_secs(5), replay_wake.entered.notified())
+            .await
+            .expect("the replay wake must finish before the original harness is removed");
+        replay_wake.release.notify_one();
+        assert_eq!(replay["id"], created["id"]);
+        assert_eq!(
+            fixture.carrier(track).await.2.canonical_inputs,
+            done.canonical_inputs
+        );
+        assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
+
+        // A receipt replay schedules a real wake. Keep its card fence through
+        // teardown so removing the handle cannot look like a cold-recovery request.
+        let lifecycle_locks = crate::state::RouteState::from_ref(&state).planner_recovery_locks;
+        let _lifecycle = crate::per_card_lock::lock_card(&lifecycle_locks, &card).await;
+        let harness = state
+            .harness
+            .remove(&worker)
+            .expect("actual installed harness");
+        let mut stopping = tokio::spawn(async move { harness.shutdown().await });
+        tokio::select! {
+            result = &mut stopping => result.unwrap().unwrap(),
+            call = request(&mut peer) => {
+                assert_eq!(call["method"],"turn/interrupt");
+                send(&mut peer,json!({"id":call["id"],"result":{}})).await;
+                stopping.await.unwrap().unwrap();
+            }
+        }
+        fixture.shutdown_process(&state).await;
+        drop((client, peer, state, app));
+        fixture.repo.pool().close().await;
+        fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
+        let (restarted, app, cookie) = fixture.application().await;
+        // Invoke the actual boot owner with no restored Human source. Recovery may
+        // reload facts; it cannot invent another native execution from old authors.
+        restarted
+            .recover_harnesses_on_boot(BootRows::All)
+            .await
+            .unwrap();
+        if cold_second_turn.is_none() {
+            // The original replay-only cases exercise this post-reopen wake. Cold
+            // scenarios instead issue one new message below: a second authorized
+            // POST may independently re-admit its then-current pending head.
+            let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
+            assert_eq!(replay["id"], created["id"]);
+        }
+        let after = fixture.carrier(track).await;
+        assert_eq!((&after.0, &after.1), (&card, &worker));
+        assert_eq!(after.2.canonical_inputs, done.canonical_inputs);
+        assert_eq!(after.2.header.phase, HarnessPhaseTag::TurnCompleted);
+        assert_eq!(after.2.header.last_thread_id.as_deref(), Some(THREAD));
+        assert_eq!(after.2.header.last_turn_id.as_deref(), Some(TURN));
         assert_eq!(fixture.receipt(area_id).await, original_receipt);
-    }
+        assert_eq!(fixture.counts(&card).await, (1, 1, 1, 1, 1));
+        if let Some(scenario) = cold_second_turn {
+            cold_recovery_tests::second_turn(
+                &fixture,
+                &restarted,
+                &app,
+                &cookie,
+                (track, &card, &worker),
+                scenario,
+            )
+            .await;
+            assert_eq!(fixture.receipt(area_id).await, original_receipt);
+        }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

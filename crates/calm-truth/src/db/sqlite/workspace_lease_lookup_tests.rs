@@ -3,40 +3,52 @@ use crate::db::RepoRead;
 use crate::model::{NewArea, NewTrack, RequestTheme, now_ms};
 
 pub(super) async fn seed_track(repo: &SqlxRepo) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "workspace lease lookup".into(),
-            color: "#202020".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id,
-            title: "workspace lease lookup".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create track");
-    tx.commit().await.expect("commit seed tx");
-    track.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "workspace lease lookup".into(),
+                        color: "#202020".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id,
+                        title: "workspace lease lookup".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create track");
+                tx.commit().await.expect("commit seed tx");
+                track.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn insert_workspace_lease(
@@ -48,24 +60,27 @@ async fn insert_workspace_lease(
     state: &str,
     created_at_ms: i64,
 ) {
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms, released_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL)"#,
-    )
-    .bind(lease_id)
-    .bind(card_id)
-    .bind(track_id)
-    .bind(path)
-    .bind(state)
-    .bind("workspace-lease-lookup-test")
-    .bind(now_ms() + 60_000)
-    .bind(created_at_ms)
-    .execute(repo.pool())
-    .await
-    .expect("insert workspace lease");
+            )
+            .bind(lease_id)
+            .bind(card_id)
+            .bind(track_id)
+            .bind(path)
+            .bind(state)
+            .bind("workspace-lease-lookup-test")
+            .bind(now_ms() + 60_000)
+            .bind(created_at_ms),
+        )
+        .await
+        .expect("insert workspace lease");
 }
 
 #[tokio::test]

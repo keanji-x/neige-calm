@@ -175,23 +175,26 @@ async fn insert_held_workspace_lease(
     std::fs::create_dir_all(&lease_path).unwrap();
     let lease_path = lease_path.to_str().unwrap().to_string();
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
-    )
-    .bind(lease_id)
-    .bind(card_id)
-    .bind(track_id)
-    .bind(&lease_path)
-    .bind("owner-delete-test")
-    .bind(60_000_i64)
-    .bind(1_i64)
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(lease_id)
+            .bind(card_id)
+            .bind(track_id)
+            .bind(&lease_path)
+            .bind("owner-delete-test")
+            .bind(60_000_i64)
+            .bind(1_i64),
+        )
+        .await
+        .unwrap();
     lease_path
 }
 
@@ -227,67 +230,71 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         .unwrap();
     let cache = CardRoleCache::new();
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let deletable_card = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "terminal".into(),
-            sort: None,
-            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
-        },
-        CardRole::Worker,
-        true,
-        &cache,
-    )
-    .await
-    .unwrap();
-
-    // Role is Worker here to isolate the `deletable` axis from the role axis.
-    let undeletable_card = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "terminal".into(),
-            sort: None,
-            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
-        },
-        CardRole::Worker,
-        false,
-        &cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    assert!(deletable_card.deletable);
-    assert!(!undeletable_card.deletable);
-
-    let got_deletable = repo
-        .card_get(deletable_card.id.as_str())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let deletable_card = calm_server::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            calm_server::model::new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
+            },
+            CardRole::Worker,
+            true,
+            &cache,
+        )
         .await
-        .unwrap()
-        .expect("deletable card");
-    assert!(got_deletable.deletable);
-    let got_undeletable = repo
-        .card_get(undeletable_card.id.as_str())
-        .await
-        .unwrap()
-        .expect("undeletable card");
-    assert!(!got_undeletable.deletable);
+        .unwrap();
 
-    let listed = repo.cards_by_track(track.id.as_str()).await.unwrap();
-    assert_eq!(listed.len(), 2);
-    let by_id: std::collections::HashMap<_, _> = listed
-        .iter()
-        .map(|c| (c.id.as_str().to_string(), c))
-        .collect();
-    assert!(by_id.get(deletable_card.id.as_str()).unwrap().deletable);
-    assert!(!by_id.get(undeletable_card.id.as_str()).unwrap().deletable);
+        // Role is Worker here to isolate the `deletable` axis from the role axis.
+        let undeletable_card = calm_server::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            calm_server::model::new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
+            },
+            CardRole::Worker,
+            false,
+            &cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        assert!(deletable_card.deletable);
+        assert!(!undeletable_card.deletable);
+
+        let got_deletable = repo
+            .card_get(deletable_card.id.as_str())
+            .await
+            .unwrap()
+            .expect("deletable card");
+        assert!(got_deletable.deletable);
+        let got_undeletable = repo
+            .card_get(undeletable_card.id.as_str())
+            .await
+            .unwrap()
+            .expect("undeletable card");
+        assert!(!got_undeletable.deletable);
+
+        let listed = repo.cards_by_track(track.id.as_str()).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        let by_id: std::collections::HashMap<_, _> = listed
+            .iter()
+            .map(|c| (c.id.as_str().to_string(), c))
+            .collect();
+        assert!(by_id.get(deletable_card.id.as_str()).unwrap().deletable);
+        assert!(!by_id.get(undeletable_card.id.as_str()).unwrap().deletable);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -522,10 +529,13 @@ async fn acceptance_20_track_delete_route_refuses_descendant_and_names_child() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(parent.id.as_str())
-        .bind(child.id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(parent.id.as_str())
+                .bind(child.id.as_str()),
+        )
         .await
         .unwrap();
 

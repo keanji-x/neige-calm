@@ -6,30 +6,32 @@ use super::{CheckoutOccupancy, SqlxRepo, checkout_occupancy};
 
 async fn task(repo: &SqlxRepo, track_id: &str, key: &str, kind: &str, access: &str) -> String {
     let id = format!("{track_id}:{key}");
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,\
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,\
          created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,'g','{}','running',?5,1,1)",
-    )
-    .bind(&id)
-    .bind(track_id)
-    .bind(key)
-    .bind(kind)
-    .bind(access)
-    .execute(repo.pool())
-    .await
-    .expect("insert task");
+            )
+            .bind(&id)
+            .bind(track_id)
+            .bind(key)
+            .bind(kind)
+            .bind(access),
+        )
+        .await
+        .expect("insert task");
     id
 }
 
 async fn lease(repo: &SqlxRepo, track_id: &str, id: &str, access: &str) {
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,\
          created_at_ms,updated_at_ms,access_mode) VALUES(?1,?1,?2,'/checkout','held','no-op',1,1,?3)",
     )
     .bind(id)
     .bind(track_id)
-    .bind(access)
-    .execute(repo.pool())
+    .bind(access))
     .await
     .expect("insert lease");
 }
@@ -91,10 +93,13 @@ async fn an_in_flight_terminal_task_occupies_the_checkout() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let track_id = seed_track(&repo).await;
     let child = task(&repo, &track_id, "child", "terminal", "read_write").await;
-    sqlx::query("UPDATE tasks SET spawn = ?1 WHERE id = ?2")
-        .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
-        .bind(&child)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET spawn = ?1 WHERE id = ?2")
+                .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
+                .bind(&child),
+        )
         .await
         .expect("route the task to a child track");
     assert_eq!(

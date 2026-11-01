@@ -225,11 +225,14 @@ async fn message_over_cap_is_refused() {
 }
 
 pub(crate) async fn set_status(h: &Harness, task: &str, status: &str) {
-    sqlx::query("UPDATE tasks SET status=?2,finished_at_ms=?3 WHERE id=?1")
-        .bind(task)
-        .bind(status)
-        .bind(now_ms())
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status=?2,finished_at_ms=?3 WHERE id=?1")
+                .bind(task)
+                .bind(status)
+                .bind(now_ms()),
+        )
         .await
         .unwrap();
 }
@@ -302,9 +305,11 @@ async fn parked_worker_refuses_message_failed() {
 async fn message_to_dispatched_attempt_is_refused() {
     let h = Harness::start().await;
     let f = running(&h, "codex", true, false).await;
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&f.worker.task)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&f.worker.task),
+        )
         .await
         .unwrap();
     h.interaction()

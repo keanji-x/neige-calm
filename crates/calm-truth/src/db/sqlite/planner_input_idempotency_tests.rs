@@ -10,57 +10,66 @@ use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
 use serde_json::json;
 
 async fn cards(repo: &SqlxRepo, role_cache: &CardRoleCache, n: usize) -> Vec<String> {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "planner input keys".into(),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "planner input keys".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("track");
-    let mut ids = Vec::with_capacity(n);
-    for i in 0..n {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track.id.clone(),
-                kind: "note".into(),
-                sort: None,
-                payload: json!({ "i": i }),
-                title: Some(format!("card {i}")),
-            },
-            role_cache,
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "planner input keys".into(),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "planner input keys".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("track");
+                let mut ids = Vec::with_capacity(n);
+                for i in 0..n {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track.id.clone(),
+                            kind: "note".into(),
+                            sort: None,
+                            payload: json!({ "i": i }),
+                            title: Some(format!("card {i}")),
+                        },
+                        role_cache,
+                    )
+                    .await
+                    .expect("card");
+                    ids.push(card.id.to_string());
+                }
+                tx.commit().await.expect("commit");
+                ids
+            })
+        })
         .await
-        .expect("card");
-        ids.push(card.id.to_string());
-    }
-    tx.commit().await.expect("commit");
-    ids
+        .expect("independent write operation")
 }
 
 fn binding(n: usize) -> PlannerInputBinding {
@@ -72,11 +81,20 @@ fn binding(n: usize) -> PlannerInputBinding {
 }
 
 async fn bind(repo: &SqlxRepo, card: &str, key: &str, value: &PlannerInputBinding) {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    planner_input_bind_tx(&mut tx, card, key, value)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                planner_input_bind_tx(&mut tx, card, key, value)
+                    .await
+                    .expect("bind");
+                tx.commit().await.expect("commit");
+            })
+        })
         .await
-        .expect("bind");
-    tx.commit().await.expect("commit");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -85,18 +103,27 @@ async fn a_second_binding_for_one_key_fails_its_transaction() {
     let role_cache = CardRoleCache::new();
     let ids = cards(&repo, &role_cache, 1).await;
     bind(&repo, &ids[0], "key", &binding(0)).await;
-    let mut tx = repo.pool().begin().await.expect("begin");
-    assert!(matches!(
-        planner_input_bind_tx(&mut tx, &ids[0], "key", &binding(1)).await,
-        Err(crate::error::TruthError::IdempotencyKeyConcurrent(_))
-    ));
-    drop(tx);
-    assert_eq!(
-        planner_input_binding_get(repo.pool(), &ids[0], "key")
-            .await
-            .expect("read"),
-        Some(binding(0)),
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                assert!(matches!(
+                    planner_input_bind_tx(&mut tx, &ids[0], "key", &binding(1)).await,
+                    Err(crate::error::TruthError::IdempotencyKeyConcurrent(_))
+                ));
+                drop(tx);
+                assert_eq!(
+                    planner_input_binding_get(repo.pool(), &ids[0], "key")
+                        .await
+                        .expect("read"),
+                    Some(binding(0)),
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -105,14 +132,24 @@ async fn deleting_the_card_deletes_its_bindings() {
     let role_cache = CardRoleCache::new();
     let ids = cards(&repo, &role_cache, 1).await;
     bind(&repo, &ids[0], "key", &binding(0)).await;
-    let mut tx = repo.pool().begin().await.expect("begin");
-    card_delete_tx(&mut tx, &ids[0], &role_cache)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                card_delete_tx(&mut tx, &ids[0], &role_cache)
+                    .await
+                    .expect("delete card");
+                tx.commit().await.expect("commit");
+                let left: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM planner_input_idempotency")
+                        .fetch_one(repo.pool())
+                        .await
+                        .expect("count");
+                assert_eq!(left, 0);
+            })
+        })
         .await
-        .expect("delete card");
-    tx.commit().await.expect("commit");
-    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM planner_input_idempotency")
-        .fetch_one(repo.pool())
-        .await
-        .expect("count");
-    assert_eq!(left, 0);
+        .expect("independent write operation")
 }

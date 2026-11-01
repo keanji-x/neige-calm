@@ -37,16 +37,19 @@ async fn legacy_failed_required_task_lookup_keeps_the_real_event_prefix_unaccept
         .await
         .unwrap();
     // Seed an actual pre-v31 stored report without altering the new writer contract.
-    sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload, '$.notification') WHERE id=?1")
-        .bind(id).execute(flow.fixture.repo.pool()).await.unwrap();
+    (flow.fixture.repo.db()).writer().execute(sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload, '$.notification') WHERE id=?1")
+        .bind(id)).await.unwrap();
     let mut old_payload = event.payload_value();
     old_payload.as_object_mut().unwrap().remove("notification");
     let event = Event::from_stored_kind_and_payload(event.kind_tag(), old_payload, 30).unwrap();
     assert!(id > before.header.push_watermark);
     // SQL read faults cannot be expressed with a SQLite SELECT trigger. Move only
     // the required tasks relation; event, carrier and checkpoint reads stay real.
-    sqlx::query("ALTER TABLE tasks RENAME TO qualification_tasks")
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE tasks RENAME TO qualification_tasks",
+        ))
         .await
         .unwrap();
     let lookup_failed = flow
@@ -64,8 +67,11 @@ async fn legacy_failed_required_task_lookup_keeps_the_real_event_prefix_unaccept
     // Stop the real retry owner before restoring the database. A later successful
     // qualification must not hide what this failing attempt acknowledged.
     flow.state.dispatcher.retire();
-    sqlx::query("ALTER TABLE qualification_tasks RENAME TO tasks")
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE qualification_tasks RENAME TO tasks",
+        ))
         .await
         .unwrap();
     flow.end(TURN).await;

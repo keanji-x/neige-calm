@@ -229,14 +229,15 @@ impl CheckpointFault {
             Self::UpdateError => "RAISE(ABORT, 'result checkpoint unavailable')",
             Self::Unwritten => "RAISE(IGNORE)",
         };
-        sqlx::query(&format!(
-            "CREATE TRIGGER refuse_result_checkpoint BEFORE UPDATE OF handle_state_json \
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(&format!(
+                "CREATE TRIGGER refuse_result_checkpoint BEFORE UPDATE OF handle_state_json \
              ON worker_sessions WHEN OLD.id = '{}' BEGIN SELECT {refusal}; END",
-            boot.worker_session_id,
-        ))
-        .execute(boot.repo.db().writer_pool())
-        .await
-        .unwrap();
+                boot.worker_session_id,
+            )))
+            .await
+            .unwrap();
     }
 
     async fn finish_release(
@@ -279,8 +280,9 @@ impl CheckpointFault {
             "retain the original source/id"
         );
         assert_eq!(delivery_count(boot), 1, "do not retry provider delivery");
-        sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-            .execute(boot.repo.db().writer_pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
             .await
             .unwrap();
         if retry_shutdown {
@@ -388,8 +390,9 @@ async fn queued_mutation(delete: bool, fault: CheckpointFault) {
         assert!(format!("{entries:?}").contains(TEXT));
         let pending = boot.harness.pending_entries_for_test().await;
         assert_eq!(pending, entries, "rollback canonical queue");
-        sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-            .execute(boot.repo.db().writer_pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
             .await
             .unwrap();
     }
@@ -465,8 +468,9 @@ async fn release_commit_tick_retries_issuance_without_provider_redelivery() {
     .await;
     assert_ne!(status, StatusCode::OK, "{body}");
     assert_eq!(stored_ids(&boot).await, vec![id]);
-    sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-        .execute(boot.repo.db().writer_pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -573,8 +577,9 @@ async fn cancelled_steer_terminal(fault: CheckpointFault) {
         .await
         .unwrap();
     assert_eq!(stored_ids(&boot).await, vec![id.clone()]);
-    sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-        .execute(boot.repo.db().writer_pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
         .await
         .unwrap();
     terminal_attempt.release.notify_one();

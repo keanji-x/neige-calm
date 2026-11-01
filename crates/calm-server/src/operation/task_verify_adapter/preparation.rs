@@ -53,54 +53,70 @@ pub(super) async fn collect(
     let pool = ctx.operation_repo.sqlite_db();
     // Keep the repository's IMMEDIATE-only transaction discipline: a short SQL-only snapshot
     // avoids shared-cache deferred-reader deadlocks, and ends before any Git subprocess.
-    let mut tx = begin_immediate_tx(&pool).await?;
-    // Reuse the kernel's exact original-input, phase, owner and expiry predicate before I/O.
-    let live = super::super::repo_sqlite::has_live_claim_tx(&mut tx, op).await?;
-    if !live {
-        tx.rollback().await?;
-        // Let the repository report ClaimLost, without observing or modifying external state.
-        return Ok(Some(Box::new(LostClaim)));
-    }
-    let facts = read_facts(&mut tx, input, op).await;
-    tx.rollback().await?;
-    let (facts, gate) = facts?;
-    let deadline = tokio::time::Instant::now() + SAMPLE_TIMEOUT;
-    let sampled = match &facts.identity {
-        target::VerifyIdentity::Bound {
-            lease,
-            candidate: Some(candidate),
-            ..
-        } if gate.cwd.is_none() => {
-            let expected = target::Expected::for_candidate(lease, candidate)?;
-            Some(
-                target::sample_by(Path::new(&facts.cwd), &expected, deadline, SAMPLE_TIMEOUT).await,
-            )
-        }
-        _ => None,
-    };
-    // A missing or failed digest preserves reuse's existing fall-through-to-running behavior.
-    // It is collected before taking a writer, under the same bound as the target sample.
-    let attempt = serde_json::from_value::<TaskVerifyOperationPayload>(input.clone())?.attempt;
-    let refs = if reuse::needs_refs(
-        &facts.reuse,
-        &facts.task.id,
-        attempt,
-        &facts.identity,
-        sampled.as_ref(),
-        &adapter.gate_logs_dir,
-    )? {
-        super::super::task_gate_run::refs_digest(Path::new(&facts.cwd), deadline).await
-    } else {
-        None
-    };
-    Ok(Some(Box::new(PreparedVerify {
-        claim: crate::operation::preparation_claim::PreparationClaim::new(op)?,
-        facts,
-        gate,
-        sampled,
-        refs,
-        logs: adapter.gate_logs_dir.clone(),
-    })))
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                // Reuse the kernel's exact original-input, phase, owner and expiry predicate before I/O.
+                let live = super::super::repo_sqlite::has_live_claim_tx(&mut tx, op).await?;
+                if !live {
+                    tx.rollback().await?;
+                    // Let the repository report ClaimLost, without observing or modifying external state.
+                    return Ok(Some(Box::new(LostClaim) as Box<dyn PreparedTx>));
+                }
+                let facts = read_facts(&mut tx, input, op).await;
+                tx.rollback().await?;
+                let (facts, gate) = facts?;
+                let deadline = tokio::time::Instant::now() + SAMPLE_TIMEOUT;
+                let sampled = match &facts.identity {
+                    target::VerifyIdentity::Bound {
+                        lease,
+                        candidate: Some(candidate),
+                        ..
+                    } if gate.cwd.is_none() => {
+                        let expected = target::Expected::for_candidate(lease, candidate)?;
+                        Some(
+                            target::sample_by(
+                                Path::new(&facts.cwd),
+                                &expected,
+                                deadline,
+                                SAMPLE_TIMEOUT,
+                            )
+                            .await,
+                        )
+                    }
+                    _ => None,
+                };
+                // A missing or failed digest preserves reuse's existing fall-through-to-running behavior.
+                // It is collected before taking a writer, under the same bound as the target sample.
+                let attempt =
+                    serde_json::from_value::<TaskVerifyOperationPayload>(input.clone())?.attempt;
+                let refs = if reuse::needs_refs(
+                    &facts.reuse,
+                    &facts.task.id,
+                    attempt,
+                    &facts.identity,
+                    sampled.as_ref(),
+                    &adapter.gate_logs_dir,
+                )? {
+                    super::super::task_gate_run::refs_digest(Path::new(&facts.cwd), deadline).await
+                } else {
+                    None
+                };
+                Ok(Some(Box::new(PreparedVerify {
+                    claim: crate::operation::preparation_claim::PreparationClaim::new(op)?,
+                    facts,
+                    gate,
+                    sampled,
+                    refs,
+                    logs: adapter.gate_logs_dir.clone(),
+                }) as Box<dyn PreparedTx>))
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 struct LostClaim;

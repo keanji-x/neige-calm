@@ -18,9 +18,9 @@ async fn closed(
     )
     .await;
     let track = created["id"].as_str().unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(track)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(track))
         .await
         .unwrap();
     fixture.repo.track_get(track).await.unwrap().unwrap()
@@ -81,9 +81,12 @@ async fn u8c_fence_clean_queued_cancel_and_rejected_candidate_release_owner() {
             );
             assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_none());
         } else {
-            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?")
-                .bind(track.id.as_str())
-                .execute(fixture.repo.pool())
+            (fixture.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?")
+                        .bind(track.id.as_str()),
+                )
                 .await
                 .unwrap();
             drop(arrival);
@@ -116,68 +119,73 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
     let held = HeldPause::arm("c1-clean-fenced", track.id.as_str());
     let cleaning = clean_task(&fixture, &state);
     held.entered().await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                fence.recheck(&mut tx).await.unwrap();
+                tx.rollback().await.unwrap();
+                assert!(matches!(
+                    admission.try_fence(&mut conn, cwd, None).await,
+                    Err(crate::error::CalmError::WorkspaceBusy(_))
+                ));
+                let unrelated = fixture.root.path().join("unrelated");
+                std::fs::create_dir(&unrelated).unwrap();
+                assert!(
+                    admission
+                        .try_fence(&mut conn, &unrelated, None)
+                        .await
+                        .is_ok()
+                );
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(5), clean_task(&fixture, &state))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    targets.snapshot_with_owners(),
+                    vec![(track.id.to_string(), cwd.into())]
+                );
+                let other = targets.registration();
+                other.register_location(track.id.as_str(), cwd.into());
+                cleaning.abort();
+                assert!(cleaning.await.unwrap_err().is_cancelled());
+                assert_eq!(
+                    targets.snapshot_with_owners(),
+                    vec![(track.id.to_string(), cwd.into())]
+                );
+                let maintenance = crate::workspace_service::retained_worktree(
+                    fixture.repo.clone(),
+                    state.operation_runtime.track_delete_locks(),
+                    &track,
+                    crate::workspace_service::RetainedAdmission::Live(targets.clone()),
+                    crate::workspace_service::RetainedPreparation::Locator,
+                    || async { Ok(()) },
+                )
+                .await;
+                assert!(matches!(
+                    maintenance,
+                    Err(crate::error::CalmError::WorkspaceBusy(_))
+                ));
+                drop(other);
+                assert!(targets.snapshot().is_empty());
+                assert!(admission.try_fence(&mut conn, cwd, None).await.is_ok());
+                drop(held);
+                assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 1);
+                assert!(targets.snapshot().is_empty());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                fence.recheck(&mut tx).await.unwrap();
+                tx.rollback().await.unwrap();
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    fence.recheck(&mut tx).await.unwrap();
-    tx.rollback().await.unwrap();
-    assert!(matches!(
-        admission.try_fence(&mut conn, cwd, None).await,
-        Err(crate::error::CalmError::WorkspaceBusy(_))
-    ));
-    let unrelated = fixture.root.path().join("unrelated");
-    std::fs::create_dir(&unrelated).unwrap();
-    assert!(
-        admission
-            .try_fence(&mut conn, &unrelated, None)
-            .await
-            .is_ok()
-    );
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), clean_task(&fixture, &state))
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        targets.snapshot_with_owners(),
-        vec![(track.id.to_string(), cwd.into())]
-    );
-    let other = targets.registration();
-    other.register_location(track.id.as_str(), cwd.into());
-    cleaning.abort();
-    assert!(cleaning.await.unwrap_err().is_cancelled());
-    assert_eq!(
-        targets.snapshot_with_owners(),
-        vec![(track.id.to_string(), cwd.into())]
-    );
-    let maintenance = crate::workspace_service::retained_worktree(
-        fixture.repo.clone(),
-        state.operation_runtime.track_delete_locks(),
-        &track,
-        crate::workspace_service::RetainedAdmission::Live(targets.clone()),
-        crate::workspace_service::RetainedPreparation::Locator,
-        || async { Ok(()) },
-    )
-    .await;
-    assert!(matches!(
-        maintenance,
-        Err(crate::error::CalmError::WorkspaceBusy(_))
-    ));
-    drop(other);
-    assert!(targets.snapshot().is_empty());
-    assert!(admission.try_fence(&mut conn, cwd, None).await.is_ok());
-    drop(held);
-    assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 1);
-    assert!(targets.snapshot().is_empty());
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    fence.recheck(&mut tx).await.unwrap();
-    tx.rollback().await.unwrap();
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]

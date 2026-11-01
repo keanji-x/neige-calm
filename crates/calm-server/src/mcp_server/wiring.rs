@@ -363,45 +363,54 @@ mod tests {
             .unwrap();
         let card_id = new_id();
         let role_cache = CardRoleCache::new();
-        let mut tx = repo.pool().begin().await.unwrap();
-        card_create_with_id_tx(
-            &mut tx,
-            card_id.clone(),
-            NewCard {
-                track_id: track.id,
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: serde_json::json!({"planner_provider": "codex"}),
-            },
-            CardRole::Planner,
-            true,
-            &role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    card_create_with_id_tx(
+                        &mut tx,
+                        card_id.clone(),
+                        NewCard {
+                            track_id: track.id,
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: serde_json::json!({"planner_provider": "codex"}),
+                        },
+                        CardRole::Planner,
+                        true,
+                        &role_cache,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let (raw_a, hash_a) = set_card_mcp_token(&mut tx, &card_id).await.unwrap();
-        tx.commit().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let (raw_a, hash_a) = set_card_mcp_token(&mut tx, &card_id).await.unwrap();
+                    tx.commit().await.unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let (raw_b, hash_b) = set_card_mcp_token(&mut tx, &card_id).await.unwrap();
-        tx.commit().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let (raw_b, hash_b) = set_card_mcp_token(&mut tx, &card_id).await.unwrap();
+                    tx.commit().await.unwrap();
 
-        assert_ne!(raw_a, raw_b);
-        assert_eq!(hash_token(&raw_a), hash_a);
-        assert_eq!(hash_token(&raw_b), hash_b);
-        assert!(
-            repo.card_mcp_token_lookup_by_hash(&hash_a)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
-            Some((card_id, hash_b))
-        );
+                    assert_ne!(raw_a, raw_b);
+                    assert_eq!(hash_token(&raw_a), hash_a);
+                    assert_eq!(hash_token(&raw_b), hash_b);
+                    assert!(
+                        repo.card_mcp_token_lookup_by_hash(&hash_a)
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                    assert_eq!(
+                        repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
+                        Some((card_id, hash_b))
+                    );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }

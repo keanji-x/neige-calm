@@ -103,22 +103,31 @@ pub(crate) async fn admit(
         decision: Decision::Observing,
     };
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    if let Some(authority) = authority {
-        authority.authorize_tx(&mut tx).await?;
-    }
-    let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-    sql::insert(
-        &mut tx,
-        &op.id,
-        config.record_key,
-        &serde_json::to_string(&record)?,
-    )
-    .await?;
-    tx.commit().await?;
-    engine.drive(ticket.committed());
-    Ok(record)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                if let Some(authority) = authority {
+                    authority.authorize_tx(&mut tx).await?;
+                }
+                let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
+                sql::insert(
+                    &mut tx,
+                    &op.id,
+                    config.record_key,
+                    &serde_json::to_string(&record)?,
+                )
+                .await?;
+                tx.commit().await?;
+                engine.drive(ticket.committed());
+                Ok(record)
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// All record transitions are fenced by the parked claim and compare the entire v1 record.
@@ -131,30 +140,39 @@ pub(crate) async fn transition(
     authority: Option<&dyn ReleaseAuthorization>,
 ) -> Result<()> {
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    if let Some(authority) = authority {
-        authority.authorize_tx(&mut tx).await?;
-    }
-    sql::compare_exchange(
-        &mut tx,
-        &op.id,
-        config.record_key,
-        &serde_json::to_string(old)?,
-        &serde_json::to_string(new)?,
-    )
-    .await?;
-    if matches!(new.decision, Decision::Stopping { .. }) {
-        calm_truth::db::sqlite::workspace_execution::request(
-            &mut tx,
-            new.execution_id.as_str(),
-            "stop",
-        )
-        .await?;
-    }
-    tx.commit().await?;
-    ctx.execution.drive([new.execution_id.clone()]);
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                if let Some(authority) = authority {
+                    authority.authorize_tx(&mut tx).await?;
+                }
+                sql::compare_exchange(
+                    &mut tx,
+                    &op.id,
+                    config.record_key,
+                    &serde_json::to_string(old)?,
+                    &serde_json::to_string(new)?,
+                )
+                .await?;
+                if matches!(new.decision, Decision::Stopping { .. }) {
+                    calm_truth::db::sqlite::workspace_execution::request(
+                        &mut tx,
+                        new.execution_id.as_str(),
+                        "stop",
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+                ctx.execution.drive([new.execution_id.clone()]);
+                Ok(())
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 pub(crate) async fn stop(

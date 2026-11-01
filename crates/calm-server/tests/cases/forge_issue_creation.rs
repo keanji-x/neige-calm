@@ -59,10 +59,19 @@ async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
             .fetch_one(fx.repo.pool())
             .await
             .unwrap();
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    insert_workspace_lease(&mut tx, &card, &track, &path).await;
-    tx.commit().await.unwrap();
-    result
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                insert_workspace_lease(&mut tx, &card, &track, &path).await;
+                tx.commit().await.unwrap();
+                result
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 fn assert_real_result(outcome: &OperationOutcome) {
     match outcome {
@@ -218,9 +227,12 @@ async fn git_forge_issue_create_recovery_does_not_borrow_another_caller() {
             .unwrap();
     api.write("page1.json", &json!([row]));
     // Same track and request, different authenticated card; B never writes.
-    sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id=?1")
-        .bind(&fx.lease_id)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id=?1")
+                .bind(&fx.lease_id),
+        )
         .await
         .unwrap();
     let caller = create_worker_caller(

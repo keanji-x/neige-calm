@@ -128,9 +128,12 @@ async fn revoked_queued(membership: bool) {
     let upload = start(&app, &cookie, &card, Body::from(PNG));
     selected.entered().await;
     if membership {
-        sqlx::query("DELETE FROM area_members WHERE area_id=?")
-            .bind(track.area_id.as_str())
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM area_members WHERE area_id=?")
+                    .bind(track.area_id.as_str()),
+            )
             .await
             .unwrap();
     } else {
@@ -196,9 +199,12 @@ async fn p1_workspace_upload_changed_selection_never_materializes_old_locator() 
         area["id"].as_str().unwrap(),
         track.id.as_str(),
     );
-    sqlx::query("DELETE FROM area_members WHERE area_id=?")
-        .bind(area["id"].as_str().unwrap())
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?")
+                .bind(area["id"].as_str().unwrap()),
+        )
         .await
         .unwrap();
     let held = lock_key(
@@ -209,11 +215,14 @@ async fn p1_workspace_upload_changed_selection_never_materializes_old_locator() 
     let selected = Pause::arm("workspace-upload-selected", &card);
     let upload = start(&app, &cookie, &card, Body::from(PNG));
     selected.entered().await;
-    sqlx::query("UPDATE tracks SET area_id=?,workspace_path=? WHERE id=?")
-        .bind(area["id"].as_str().unwrap())
-        .bind(other.to_str().unwrap())
-        .bind(track.id.as_str())
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?,workspace_path=? WHERE id=?")
+                .bind(area["id"].as_str().unwrap())
+                .bind(other.to_str().unwrap())
+                .bind(track.id.as_str()),
+        )
         .await
         .unwrap();
     drop(selected);
@@ -421,9 +430,12 @@ async fn p1_workspace_upload_rechecks_selection_before_publish() {
         area["id"].as_str().unwrap(),
         track.id.as_str(),
     );
-    sqlx::query("DELETE FROM area_members WHERE area_id=?")
-        .bind(area["id"].as_str().unwrap())
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?")
+                .bind(area["id"].as_str().unwrap()),
+        )
         .await
         .unwrap();
     let (frames, body) = stream();
@@ -432,11 +444,14 @@ async fn p1_workspace_upload_rechecks_selection_before_publish() {
         .send(Ok(hyper::body::Frame::data(PNG.into())))
         .unwrap();
     let temporary = part(&track, &card).await;
-    sqlx::query("UPDATE tracks SET area_id=?,workspace_path=? WHERE id=?")
-        .bind(area["id"].as_str().unwrap())
-        .bind(other.to_str().unwrap())
-        .bind(track.id.as_str())
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?,workspace_path=? WHERE id=?")
+                .bind(area["id"].as_str().unwrap())
+                .bind(other.to_str().unwrap())
+                .bind(track.id.as_str()),
+        )
         .await
         .unwrap();
     drop(frames);

@@ -89,9 +89,9 @@ impl Drop for OccupancyFence<'_> {
 /// their own effects through [`Admitted::tx_mut`]. Dropping it rolls the transaction
 /// back and releases the driver registration and the Track fence without a drive.
 #[must_use = "commit the admitting transaction, or drop it to roll back without a drive"]
-pub(crate) struct Admitted<'a> {
+pub(crate) struct Admitted<'a, 'writer> {
     // Declared first: dropping queues the rollback before the driver and fence release.
-    tx: calm_truth::db::sqlite::ObservedTransaction<'static>,
+    tx: calm_truth::db::sqlite::WriteTx<'writer>,
     #[cfg(feature = "fixtures")]
     session: String,
     claim: Claim,
@@ -109,15 +109,15 @@ impl ProviderExecution {
     /// Policy and intent run under the Track fence; driver registration precedes the
     /// claim and COMMIT, so RAII covers every later failure and cancellation. On error
     /// the transaction is dropped and rolls back.
-    pub(crate) async fn admit_tx<'a, A: Admission>(
+    pub(crate) async fn admit_tx<'a, 'writer, A: Admission>(
         &self,
-        mut tx: calm_truth::db::sqlite::ObservedTransaction<'static>,
+        mut tx: calm_truth::db::sqlite::WriteTx<'writer>,
         engine: &ExecutionEngine,
         session: &str,
         admission: A,
         purpose: Purpose,
         fence: OccupancyFence<'a>,
-    ) -> Result<Admitted<'a>> {
+    ) -> Result<Admitted<'a, 'writer>> {
         let held_fence = fence.claim()?;
         admission.authorize_tx(&mut tx).await?;
         let intent = admission.intent_tx(&mut tx).await?;
@@ -153,7 +153,7 @@ impl ProviderExecution {
     }
 }
 
-impl Admitted<'_> {
+impl Admitted<'_, '_> {
     /// The admitting transaction, for the caller's writes that must commit with it.
     // WA2 turn issuance writes its phase CAS through this; until then only tests do.
     #[cfg(test)]

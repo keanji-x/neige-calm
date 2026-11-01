@@ -77,15 +77,27 @@ async fn planner_caller(fx: &Fixture, track_id: &str) -> (String, String) {
     let worker_session_id = seed_runtime_thread(&fx.repo, &card_id, &thread_id).await;
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    let mut tx = fx.repo.pool().begin().await.expect("begin token tx");
-    card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin token tx");
+                card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                    .await
+                    .expect("mint card MCP token");
+                session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
+                    .await
+                    .expect("mint session MCP token");
+                tx.commit().await.expect("commit token tx");
+                (token.into_inner(), thread_id)
+            })
+        })
         .await
-        .expect("mint card MCP token");
-    session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
-        .await
-        .expect("mint session MCP token");
-    tx.commit().await.expect("commit token tx");
-    (token.into_inner(), thread_id)
+        .expect("independent write operation")
 }
 
 pub(super) async fn issue_planner(fx: &Fixture) -> (String, String) {

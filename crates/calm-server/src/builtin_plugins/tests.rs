@@ -362,9 +362,11 @@ async fn builtin_upgrade_preserves_configuration_and_revokes_the_old_token() {
 async fn builtin_legacy_issue_documentation_preserves_snapshot_and_authority() {
     let fx = Fixture::new().await;
     let plain = fx.track(None).await;
-    sqlx::query("UPDATE tracks SET template_id='dev' WHERE id=?")
-        .bind(plain.id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET template_id='dev' WHERE id=?").bind(plain.id.as_str()),
+        )
         .await
         .unwrap();
     let legacy_body = "Legacy café method {track_id}\n<!-- neige:input-form {\"help\":\"Never publish this custom snapshot without approval\"} -->\n";

@@ -1,5 +1,6 @@
+use super::super::begin_immediate_tx;
 use super::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::{SqliteDb, SqlxRepo};
 use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,7 @@ impl Recorder {
 
 struct Fixture {
     _dir: tempfile::TempDir,
+    url: String,
     repo: SqlxRepo,
 }
 impl Fixture {
@@ -91,11 +93,18 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let url = format!("sqlite://{}", dir.path().join("observations.db").display());
         let repo = SqlxRepo::open(&url).await.unwrap();
-        sqlx::query("CREATE TABLE observation_probe(value TEXT NOT NULL)")
-            .execute(repo.pool())
+        repo.db()
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TABLE observation_probe(value TEXT NOT NULL)",
+            ))
             .await
             .unwrap();
-        Self { _dir: dir, repo }
+        Self {
+            _dir: dir,
+            url,
+            repo,
+        }
     }
     async fn values(&self) -> Vec<String> {
         sqlx::query_scalar("SELECT value FROM observation_probe ORDER BY rowid")
@@ -128,28 +137,34 @@ async fn observation_commit_rollback_and_active_drop_have_one_truthful_terminal_
     let fx = Fixture::new().await;
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
-    async {
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('private-observation-sentinel')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('rolled back')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.rollback().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('dropped')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        drop(tx);
-    }
-    .with_subscriber(dispatch)
-    .await;
+    fx.repo
+        .db()
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('private-observation-sentinel')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('rolled back')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('dropped')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                drop(tx);
+            })
+        })
+        .with_subscriber(dispatch)
+        .await
+        .unwrap();
     assert_eq!(fx.values().await, vec!["private-observation-sentinel"]);
     let records = recorder.records();
     assert_eq!(records.len(), 3);
@@ -213,8 +228,8 @@ async fn observation_pool_wait_is_separate_from_begin_wait() {
     let fx = Fixture::new().await;
     let pool = fx.repo.db().clone();
     let mut held = Vec::new();
-    for _ in 0..pool.writer_pool().options().get_max_connections() {
-        held.push(pool.writer_pool().acquire().await.unwrap());
+    for _ in 0..pool.writer().pool.options().get_max_connections() {
+        held.push(pool.writer().pool.acquire().await.unwrap());
     }
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -247,9 +262,10 @@ async fn observation_pool_wait_is_separate_from_begin_wait() {
 #[tokio::test]
 async fn observation_begin_wait_is_separate_when_a_connection_is_available() {
     let fx = Fixture::new().await;
-    let holder = fx.repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let external = SqliteDb::connect_existing(&fx.url).await.unwrap();
+    let holder = begin_immediate_tx(&external).await.unwrap();
     // Ensure the observed task can acquire an existing connection rather than establish one.
-    drop(fx.repo.db().writer_pool().acquire().await.unwrap());
+    drop(fx.repo.db().writer().pool.acquire().await.unwrap());
     let pool = fx.repo.db().clone();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -283,8 +299,8 @@ async fn observation_cancelling_pool_wait_records_interruption_without_a_begin()
     let fx = Fixture::new().await;
     let pool = fx.repo.db().clone();
     let mut held = Vec::new();
-    for _ in 0..pool.writer_pool().options().get_max_connections() {
-        held.push(pool.writer_pool().acquire().await.unwrap());
+    for _ in 0..pool.writer().pool.options().get_max_connections() {
+        held.push(pool.writer().pool.acquire().await.unwrap());
     }
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -316,8 +332,9 @@ async fn observation_cancelling_pool_wait_records_interruption_without_a_begin()
 #[tokio::test]
 async fn observation_cancelling_begin_preserves_pool_recovery_and_unknown_outcome() {
     let fx = Fixture::new().await;
-    let holder = fx.repo.pool().begin_with("BEGIN IMMEDIATE").await.unwrap();
-    drop(fx.repo.db().writer_pool().acquire().await.unwrap());
+    let external = SqliteDb::connect_existing(&fx.url).await.unwrap();
+    let holder = begin_immediate_tx(&external).await.unwrap();
+    drop(fx.repo.db().writer().pool.acquire().await.unwrap());
     let pool = fx.repo.db().clone();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
@@ -354,12 +371,15 @@ async fn observation_cancelling_begin_preserves_pool_recovery_and_unknown_outcom
 #[tokio::test]
 async fn observation_failed_commit_is_not_recorded_as_a_completed_rollback() {
     let fx = Fixture::new().await;
-    sqlx::query("CREATE TABLE observation_parent(id INTEGER PRIMARY KEY)")
-        .execute(fx.repo.pool())
+    fx.repo
+        .db()
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE observation_parent(id INTEGER PRIMARY KEY)",
+        ))
         .await
         .unwrap();
-    sqlx::query("CREATE TABLE observation_child(parent INTEGER REFERENCES observation_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-        .execute(fx.repo.pool()).await.unwrap();
+    fx.repo.db().writer().execute(sqlx::query("CREATE TABLE observation_child(parent INTEGER REFERENCES observation_parent(id) DEFERRABLE INITIALLY DEFERRED)")).await.unwrap();
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     async {
@@ -418,7 +438,7 @@ async fn observation_interrupted_commit_can_persist_and_must_report_unknown() {
     task.abort();
     let aborted = task.await;
     // The cancelled COMMIT still occupies its worker. Capacity must not be reused early.
-    let writer_pool = fx.repo.db().writer_pool();
+    let writer_pool = &fx.repo.db().writer().pool;
     let capacity_held = writer_pool.size() == 1 && writer_pool.num_idle() == 0;
     let mut next_lease = Box::pin(writer_pool.acquire());
     let next_result = poll_fn(|cx| std::task::Poll::Ready(next_lease.as_mut().poll(cx))).await;

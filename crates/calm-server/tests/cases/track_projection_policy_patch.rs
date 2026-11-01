@@ -328,20 +328,22 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, track_id: &str, key: &st
         .map(calm_types::report_blocks::flat_text)
         .collect::<Vec<_>>()
         .join("\n");
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(&report_id)
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&payload).unwrap())
+                .bind(&report_id),
+        )
         .await
         .unwrap();
 
     let task_id = format!("{track_id}:{key}");
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,'pending','spec',0,0)")
+    (repo.sqlite_db().unwrap()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,'pending','spec',0,0)")
         .bind(&task_id)
         .bind(track_id)
         .bind(key)
-        .bind(format!("{key} goal"))
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+        .bind(format!("{key} goal")))
         .await
         .unwrap();
     task_id
@@ -582,10 +584,13 @@ async fn tree_task_budget_patch_matches_the_planner_task_ceiling_surface() {
         .await
         .unwrap();
     let child_id = child.id.to_string();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(&track_id)
-        .bind(&child_id)
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(&track_id)
+                .bind(&child_id),
+        )
         .await
         .unwrap();
     let response = patch(state, &child_id, None, json!({"tree_task_budget": 4})).await;
@@ -619,14 +624,17 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(report.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&payload).unwrap())
+                .bind(report.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
-        .bind(format!("{track_id}:queued")).bind(&track_id).execute(repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
+    (repo.sqlite_db().unwrap()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
+        .bind(format!("{track_id}:queued")).bind(&track_id)).await.unwrap();
 
     let response = patch(
         state,
@@ -676,14 +684,17 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(report.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&payload).unwrap())
+                .bind(report.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
-        .bind(format!("{track_id}:queued")).bind(&track_id).execute(repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
+    (repo.sqlite_db().unwrap()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
+        .bind(format!("{track_id}:queued")).bind(&track_id)).await.unwrap();
 
     let response = patch(state, &track_id, None, json!({"tree_task_budget": 0})).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -796,10 +807,13 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(&root_id)
-        .bind(child.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(&root_id)
+                .bind(child.id.as_str()),
+        )
         .await
         .unwrap();
     let task_id = seed_pending_report_task(&repo, child.id.as_str(), "child-queued").await;
@@ -813,21 +827,24 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         .unwrap();
     assert_eq!(pending, 0, "the descendant's stale projection survived");
 
-    let mut tx = repo
-        .sqlite_db()
-        .unwrap()
-        .writer_pool()
-        .begin()
+    let write_db = (repo.sqlite_db().unwrap()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+                        .await
+                        .unwrap(),
+                    0,
+                    "a task admitted under the old descendant share remained claimable"
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
-            .await
-            .unwrap(),
-        0,
-        "a task admitted under the old descendant share remained claimable"
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -869,21 +886,30 @@ async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=2 WHERE id=?1")
-        .bind(&root_id)
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=2 WHERE id=?1")
+                .bind(&root_id),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
-        .bind(&root_id)
-        .bind(victim.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
+                .bind(&root_id)
+                .bind(victim.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
-        .bind(&root_id)
-        .bind(survivor.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
+    (repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
+                .bind(&root_id)
+                .bind(survivor.id.as_str()),
+        )
         .await
         .unwrap();
 
@@ -923,191 +949,195 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     let mut parent_block = report_task_block("spawn-child");
     parent_block.payload["spawn"] = json!("sub-track");
     let parent_task = write_report_block(&state, &repo, &root_id, parent_block).await;
-    let mut tx = repo
-        .sqlite_db()
-        .unwrap()
-        .writer_pool()
-        .begin()
-        .await
-        .unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &parent_task, 1, &[], false)
-            .await
-            .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    let root = repo.track_get(&root_id).await.unwrap().unwrap();
-    let child = repo
-        .track_create(NewTrack {
-            template_input: None,
-            area_id: root.area_id,
-            title: "child".into(),
-            sort: None,
-            cwd: String::new(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+    let write_db = (repo.sqlite_db().unwrap()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &parent_task, 1, &[], false)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
+                let root = repo.track_get(&root_id).await.unwrap().unwrap();
+                let child = repo
+                    .track_create(NewTrack {
+                        template_input: None,
+                        area_id: root.area_id,
+                        title: "child".into(),
+                        sort: None,
+                        cwd: String::new(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    })
+                    .await
+                    .unwrap();
+                (repo.sqlite_db().unwrap())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                            .bind(&root_id)
+                            .bind(child.id.as_str()),
+                    )
+                    .await
+                    .unwrap();
+                (repo.sqlite_db().unwrap())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                            .bind(child.id.as_str())
+                            .bind(&parent_task),
+                    )
+                    .await
+                    .unwrap();
+                let task_id = seed_pending_report_task(&repo, child.id.as_str(), "inflight").await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
+
+                let before_events = event_count(&repo).await;
+                let before_tracks =
+                    track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await;
+                let before_task = task_row_snapshot(&repo, &task_id).await;
+                // One slot covers the live parent binding; the child's in-flight work must
+                // still prevent shrinking the tree to that budget.
+                let response = patch(state, &root_id, None, json!({"tree_task_budget": 1})).await;
+                assert_eq!(response.status(), StatusCode::CONFLICT);
+                assert_eq!(
+                    track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await,
+                    before_tracks,
+                    "a rejected tree-budget PATCH must not alter either affected track"
+                );
+                assert_eq!(
+                    task_row_snapshot(&repo, &task_id).await,
+                    before_task,
+                    "a rejected tree-budget PATCH must not alter the in-flight task"
+                );
+                assert_eq!(
+                    event_count(&repo).await,
+                    before_events,
+                    "a rejected tree-budget PATCH must not append events"
+                );
+            })
         })
         .await
-        .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(&root_id)
-        .bind(child.id.as_str())
-        .execute(repo.sqlite_db().unwrap().writer_pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
-        .bind(child.id.as_str())
-        .bind(&parent_task)
-        .execute(repo.sqlite_db().unwrap().writer_pool())
-        .await
-        .unwrap();
-    let task_id = seed_pending_report_task(&repo, child.id.as_str(), "inflight").await;
-    let mut tx = repo
-        .sqlite_db()
-        .unwrap()
-        .writer_pool()
-        .begin()
-        .await
-        .unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
-            .await
-            .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-
-    let before_events = event_count(&repo).await;
-    let before_tracks = track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await;
-    let before_task = task_row_snapshot(&repo, &task_id).await;
-    // One slot covers the live parent binding; the child's in-flight work must
-    // still prevent shrinking the tree to that budget.
-    let response = patch(state, &root_id, None, json!({"tree_task_budget": 1})).await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        track_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await,
-        before_tracks,
-        "a rejected tree-budget PATCH must not alter either affected track"
-    );
-    assert_eq!(
-        task_row_snapshot(&repo, &task_id).await,
-        before_task,
-        "a rejected tree-budget PATCH must not alter the in-flight task"
-    );
-    assert_eq!(
-        event_count(&repo).await,
-        before_events,
-        "a rejected tree-budget PATCH must not append events"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_state() {
     let (state, track_id, repo) = boot().await;
     let task_id = seed_pending_report_task(&repo, &track_id, "inflight").await;
-    let mut tx = repo
-        .sqlite_db()
-        .unwrap()
-        .writer_pool()
-        .begin()
-        .await
-        .unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
-            .await
-            .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
+    let write_db = (repo.sqlite_db().unwrap()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
 
-    let before_task = task_row_snapshot(&repo, &task_id).await;
-    let before_track = track_policy_snapshots(&repo, &[&track_id])
-        .await
-        .pop()
-        .unwrap();
-    let before_events = event_cursor(&repo).await;
-    let response = patch(
-        state.clone(),
-        &track_id,
-        None,
-        json!({"planner_task_ceiling": 0}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(columns(&repo, &track_id).await.0, Some(0));
-    let after_track = track_policy_snapshots(&repo, &[&track_id])
-        .await
-        .pop()
-        .unwrap();
-    assert_track_columns_unchanged_except(
-        &before_track,
-        &after_track,
-        &["updated_at", "planner_task_ceiling"],
-    );
-    assert_eq!(
-        task_row_snapshot(&repo, &task_id).await,
-        before_task,
-        "ceiling degradation must not edit any persistent in-flight task column"
-    );
+                let before_task = task_row_snapshot(&repo, &task_id).await;
+                let before_track = track_policy_snapshots(&repo, &[&track_id])
+                    .await
+                    .pop()
+                    .unwrap();
+                let before_events = event_cursor(&repo).await;
+                let response = patch(
+                    state.clone(),
+                    &track_id,
+                    None,
+                    json!({"planner_task_ceiling": 0}),
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(columns(&repo, &track_id).await.0, Some(0));
+                let after_track = track_policy_snapshots(&repo, &[&track_id])
+                    .await
+                    .pop()
+                    .unwrap();
+                assert_track_columns_unchanged_except(
+                    &before_track,
+                    &after_track,
+                    &["updated_at", "planner_task_ceiling"],
+                );
+                assert_eq!(
+                    task_row_snapshot(&repo, &task_id).await,
+                    before_task,
+                    "ceiling degradation must not edit any persistent in-flight task column"
+                );
 
-    let new_events: Vec<PersistedTrackEvent> = sqlx::query_as(
-        "SELECT kind,actor,scope_kind,scope_area,scope_track,scope_card,payload \
+                let new_events: Vec<PersistedTrackEvent> = sqlx::query_as(
+                    "SELECT kind,actor,scope_kind,scope_area,scope_track,scope_card,payload \
              FROM events WHERE id>?1 ORDER BY id",
-    )
-    .bind(before_events)
-    .fetch_all(repo.sqlite_db().unwrap().read_pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        new_events.len(),
-        1,
-        "ceiling PATCH must append exactly one event envelope"
-    );
-    let (kind, actor, scope_kind, scope_area, scope_track, scope_card, payload) = &new_events[0];
-    assert_eq!(kind, "track.updated");
-    assert_eq!(
-        serde_json::from_str::<Value>(actor).unwrap(),
-        json!({"kind": "User"})
-    );
-    assert_eq!(scope_kind, "track");
-    let track = repo.track_get(&track_id).await.unwrap().unwrap();
-    assert_eq!(scope_area.as_deref(), Some(track.area_id.as_str()));
-    assert_eq!(scope_track.as_deref(), Some(track_id.as_str()));
-    assert_eq!(scope_card, &None);
-    let payload: Value = serde_json::from_str(payload).unwrap();
-    assert_eq!(
-        payload.get("id").and_then(Value::as_str),
-        Some(track_id.as_str())
-    );
+                )
+                .bind(before_events)
+                .fetch_all(repo.sqlite_db().unwrap().read_pool())
+                .await
+                .unwrap();
+                assert_eq!(
+                    new_events.len(),
+                    1,
+                    "ceiling PATCH must append exactly one event envelope"
+                );
+                let (kind, actor, scope_kind, scope_area, scope_track, scope_card, payload) =
+                    &new_events[0];
+                assert_eq!(kind, "track.updated");
+                assert_eq!(
+                    serde_json::from_str::<Value>(actor).unwrap(),
+                    json!({"kind": "User"})
+                );
+                assert_eq!(scope_kind, "track");
+                let track = repo.track_get(&track_id).await.unwrap().unwrap();
+                assert_eq!(scope_area.as_deref(), Some(track.area_id.as_str()));
+                assert_eq!(scope_track.as_deref(), Some(track_id.as_str()));
+                assert_eq!(scope_card, &None);
+                let payload: Value = serde_json::from_str(payload).unwrap();
+                assert_eq!(
+                    payload.get("id").and_then(Value::as_str),
+                    Some(track_id.as_str())
+                );
 
-    let blocked_task = write_report_task(&state, &repo, &track_id, "blocked-after-tighten").await;
-    let blocked_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
-        .bind(&blocked_task)
-        .fetch_one(repo.sqlite_db().unwrap().read_pool())
+                let blocked_task =
+                    write_report_task(&state, &repo, &track_id, "blocked-after-tighten").await;
+                let blocked_rows: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
+                        .bind(&blocked_task)
+                        .fetch_one(repo.sqlite_db().unwrap().read_pool())
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    blocked_rows, 0,
+                    "ceiling degradation must freeze admission of a newly declared task"
+                );
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &blocked_task, 2, &[], false)
+                        .await
+                        .unwrap(),
+                    0,
+                    "a task declared after tightening must not remain claimable"
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        blocked_rows, 0,
-        "ceiling degradation must freeze admission of a newly declared task"
-    );
-    let mut tx = repo
-        .sqlite_db()
-        .unwrap()
-        .writer_pool()
-        .begin()
-        .await
-        .unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &blocked_task, 2, &[], false)
-            .await
-            .unwrap(),
-        0,
-        "a task declared after tightening must not remain claimable"
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[path = "track_projection_policy_patch/admin.rs"]

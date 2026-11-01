@@ -46,14 +46,19 @@ async fn an_exited_worker_is_released_by_its_timeout_flip() {
     let task = fx
         .running_task("a", "codex", &worker.card_id, json!({}))
         .await;
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
-        .bind(&worker.card_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+                .bind(&worker.card_id),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tasks SET running_deadline_ms = 1 WHERE id = ?1")
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET running_deadline_ms = 1 WHERE id = ?1").bind(&task.id),
+        )
         .await
         .unwrap();
     let scheduler = fx.scheduler();
@@ -81,9 +86,12 @@ async fn a_lease_from_an_older_boot_fails_its_attempt_and_is_released() {
     let task =
         w.fx.running_task("a", "codex", &worker.card_id, json!({}))
             .await;
-    sqlx::query("UPDATE workspace_leases SET boot_id = 'stale-boot' WHERE lease_id = ?1")
-        .bind(&lease.lease_id)
-        .execute(&w.fx.pool())
+    (w.fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE workspace_leases SET boot_id = 'stale-boot' WHERE lease_id = ?1")
+                .bind(&lease.lease_id),
+        )
         .await
         .unwrap();
 
@@ -194,20 +202,22 @@ async fn a_stuck_owner_lease_does_not_block_the_next_claim() {
     let fx = &w.fx;
     declare_task(fx, "a", json!({})).await;
     let a = wait_running(fx, "a").await;
-    sqlx::query(
-        "UPDATE operations SET phase = 'stuck', \
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase = 'stuck', \
          phase_detail_json = '{\"reason\":\"test stuck\",\"since\":1}' \
          WHERE kind = 'codex-worker' AND idempotency_key = ?1",
-    )
-    .bind(&a.task.id)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    sqlx::query(
+            )
+            .bind(&a.task.id),
+        )
+        .await
+        .unwrap();
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status = 'failed', status_detail = 'spawn-failed: stuck' WHERE id = ?1",
     )
-    .bind(&a.task.id)
-    .execute(&fx.pool())
+    .bind(&a.task.id))
     .await
     .unwrap();
 

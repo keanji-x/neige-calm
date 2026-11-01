@@ -127,7 +127,7 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
 }
 
 /// Bounded busy/locked retry for boot-reconcile writes, which run outside any caller-held
-/// transaction so re-issuing the call is safe. Composes with `begin_immediate_tx`'s own retry:
+/// transaction so re-issuing the call is safe. Composes with `WriteSession::begin_immediate`'s own retry:
 /// worst-case error surfacing under sustained writer starvation is minutes.
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where

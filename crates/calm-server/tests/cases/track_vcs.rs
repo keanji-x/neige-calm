@@ -268,25 +268,37 @@ async fn insert_raw_card(
     role: CardRole,
     payload: serde_json::Value,
 ) -> Card {
-    let mut tx = repo.pool().begin().await.expect("begin raw card insert");
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track_id.clone(),
-            title: None,
-            kind: kind.into(),
-            sort: None,
-            payload,
-        },
-        role,
-        !matches!(role, CardRole::ReportCard | CardRole::Planner),
-        roles,
-    )
-    .await
-    .expect("insert raw card");
-    tx.commit().await.expect("commit raw card insert");
-    card
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin raw card insert");
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track_id.clone(),
+                        title: None,
+                        kind: kind.into(),
+                        sort: None,
+                        payload,
+                    },
+                    role,
+                    !matches!(role, CardRole::ReportCard | CardRole::Planner),
+                    roles,
+                )
+                .await
+                .expect("insert raw card");
+                tx.commit().await.expect("commit raw card insert");
+                card
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn insert_raw_report_card(
@@ -442,19 +454,24 @@ async fn vcs_object_hashes(pool: &SqlitePool) -> Vec<String> {
         .expect("object hashes")
 }
 
-async fn set_all_vcs_objects_created_at(pool: &SqlitePool, created_at: i64) {
-    sqlx::query("UPDATE track_vcs_objects SET created_at = ?1")
-        .bind(created_at)
-        .execute(pool)
+async fn set_all_vcs_objects_created_at(pool: &calm_truth::db::sqlite::SqliteDb, created_at: i64) {
+    pool.writer()
+        .execute(sqlx::query("UPDATE track_vcs_objects SET created_at = ?1").bind(created_at))
         .await
         .expect("age objects");
 }
 
-async fn set_vcs_object_created_at(pool: &SqlitePool, hash: &str, created_at: i64) {
-    sqlx::query("UPDATE track_vcs_objects SET created_at = ?1 WHERE hash = ?2")
-        .bind(created_at)
-        .bind(hash)
-        .execute(pool)
+async fn set_vcs_object_created_at(
+    pool: &calm_truth::db::sqlite::SqliteDb,
+    hash: &str,
+    created_at: i64,
+) {
+    pool.writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET created_at = ?1 WHERE hash = ?2")
+                .bind(created_at)
+                .bind(hash),
+        )
         .await
         .expect("age object");
 }
@@ -704,50 +721,58 @@ async fn seed_head_payload_blob(
         .expect("tree");
     let payload_bytes = serde_json::to_vec(&payload).expect("legacy payload json");
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin legacy payload seed");
-    let blob_hash = track_vcs::put_blob(&mut tx, "blob", &payload_bytes)
-        .await
-        .expect("put legacy payload blob");
-    let entry = manifest
-        .entries
-        .get_mut(payload_path)
-        .expect("payload entry");
-    entry.blob_hash = blob_hash.clone();
-    entry.byte_len = payload_bytes.len() as u64;
-    entry.content_type = "application/json".into();
-    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
-    let tree_hash = format!("legacy-tree-{}", new_id());
-    sqlx::query(
-        r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin legacy payload seed");
+                let blob_hash = track_vcs::put_blob(&mut tx, "blob", &payload_bytes)
+                    .await
+                    .expect("put legacy payload blob");
+                let entry = manifest
+                    .entries
+                    .get_mut(payload_path)
+                    .expect("payload entry");
+                entry.blob_hash = blob_hash.clone();
+                entry.byte_len = payload_bytes.len() as u64;
+                entry.content_type = "application/json".into();
+                let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
+                let tree_hash = format!("legacy-tree-{}", new_id());
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'tree', ?2, ?3)"#,
-    )
-    .bind(&tree_hash)
-    .bind(manifest_bytes)
-    .bind(now_ms())
-    .execute(&mut *tx)
-    .await
-    .expect("insert legacy tree object");
-    let tree = track_vcs::TreeSnapshot {
-        tree_hash,
-        manifest,
-    };
-    track_vcs::commit_tree(
-        &mut tx,
-        track_id,
-        Some(&parent),
-        &tree,
-        None,
-        "legacy projected payload seed",
-        MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .expect("commit legacy payload seed");
-    tx.commit().await.expect("commit legacy payload seed");
-    blob_hash
+                )
+                .bind(&tree_hash)
+                .bind(manifest_bytes)
+                .bind(now_ms())
+                .execute(&mut **tx)
+                .await
+                .expect("insert legacy tree object");
+                let tree = track_vcs::TreeSnapshot {
+                    tree_hash,
+                    manifest,
+                };
+                track_vcs::commit_tree(
+                    &mut tx,
+                    track_id,
+                    Some(&parent),
+                    &tree,
+                    None,
+                    "legacy projected payload seed",
+                    MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .expect("commit legacy payload seed");
+                tx.commit().await.expect("commit legacy payload seed");
+                blob_hash
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_legacy_card_lens_manifest(
@@ -779,38 +804,46 @@ async fn seed_legacy_card_lens_manifest(
 
     let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest json");
     let tree_hash = format!("legacy-tree-{}", new_id());
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin legacy manifest seed");
-    sqlx::query(
-        r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin legacy manifest seed");
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'tree', ?2, ?3)"#,
-    )
-    .bind(&tree_hash)
-    .bind(manifest_bytes)
-    .bind(now_ms())
-    .execute(&mut *tx)
-    .await
-    .expect("insert legacy tree object");
-    let tree = track_vcs::TreeSnapshot {
-        tree_hash,
-        manifest,
-    };
-    let legacy_head = track_vcs::commit_tree(
-        &mut tx,
-        track_id,
-        Some(&parent),
-        &tree,
-        None,
-        "legacy card lens path seed",
-        MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .expect("commit legacy manifest seed");
-    tx.commit().await.expect("commit legacy manifest seed");
-    legacy_head
+                )
+                .bind(&tree_hash)
+                .bind(manifest_bytes)
+                .bind(now_ms())
+                .execute(&mut **tx)
+                .await
+                .expect("insert legacy tree object");
+                let tree = track_vcs::TreeSnapshot {
+                    tree_hash,
+                    manifest,
+                };
+                let legacy_head = track_vcs::commit_tree(
+                    &mut tx,
+                    track_id,
+                    Some(&parent),
+                    &tree,
+                    None,
+                    "legacy card lens path seed",
+                    MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .expect("commit legacy manifest seed");
+                tx.commit().await.expect("commit legacy manifest seed");
+                legacy_head
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -834,18 +867,28 @@ async fn snapshot_tree_hash_is_deterministic_for_same_state() {
     )
     .await;
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let first = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                let first = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+                    .await
+                    .expect("snapshot");
+                for _ in 0..5 {
+                    let next =
+                        track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+                            .await
+                            .expect("snapshot");
+                    assert_eq!(next.tree_hash, first.tree_hash);
+                    assert_eq!(next.manifest, first.manifest);
+                }
+                tx.rollback().await.expect("rollback");
+            })
+        })
         .await
-        .expect("snapshot");
-    for _ in 0..5 {
-        let next = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
-            .await
-            .expect("snapshot");
-        assert_eq!(next.tree_hash, first.tree_hash);
-        assert_eq!(next.manifest, first.manifest);
-    }
-    tx.rollback().await.expect("rollback");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1285,8 +1328,8 @@ async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
     repo.track_delete(track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
-    set_vcs_object_created_at(repo.pool(), &fresh_hash, now_ms()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
+    set_vcs_object_created_at(repo.db(), &fresh_hash, now_ms()).await;
 
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
@@ -1308,7 +1351,7 @@ async fn object_sweep_keeps_objects_referenced_by_live_commits() {
     let before = count_rows(repo.pool(), "track_vcs_objects").await;
     assert!(before > 0);
 
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
@@ -1338,10 +1381,13 @@ async fn object_sweep_reports_corrupt_tree_object_hash() {
     .await
     .expect("tree hash");
 
-    sqlx::query("UPDATE track_vcs_objects SET bytes = ?1 WHERE hash = ?2")
-        .bind(b"not-json".to_vec())
-        .bind(&tree_hash)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET bytes = ?1 WHERE hash = ?2")
+                .bind(b"not-json".to_vec())
+                .bind(&tree_hash),
+        )
         .await
         .expect("corrupt tree object");
 
@@ -1387,7 +1433,7 @@ async fn object_sweep_keeps_blob_shared_by_deleted_and_live_tracks() {
     repo.track_delete(deleted_track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
@@ -1421,7 +1467,7 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
     repo.track_delete(deleted_track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
 
     let sweep_repo = repo.clone();
     let write_repo = repo.clone();
@@ -2293,13 +2339,26 @@ async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
 
     let refresh = refresh_transcripts(&repo, &track.id).await;
     let refresh_tree_hash = commit_tree_hash(&repo, &refresh).await;
-    let mut tx = repo.pool().begin().await.expect("begin replay snapshot");
-    let replayed = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
-        .await
-        .expect("replayed full snapshot");
-    tx.rollback().await.expect("rollback replay snapshot");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin replay snapshot");
+                let replayed =
+                    track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+                        .await
+                        .expect("replayed full snapshot");
+                tx.rollback().await.expect("rollback replay snapshot");
 
-    assert_eq!(replayed.tree_hash, refresh_tree_hash);
+                assert_eq!(replayed.tree_hash, refresh_tree_hash);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2688,34 +2747,46 @@ async fn card_retarget_from_track_report_is_refused_and_preserves_report_blob() 
     let before = head_manifest(&repo, &track.id).await;
     assert!(before.entries.contains_key("report.md"));
 
-    let mut tx = repo.pool().begin().await.expect("begin report retarget");
-    let error = card_update_tx(
-        &mut tx,
-        report.id.as_str(),
-        CardPatch {
-            title: None,
-            kind: Some("terminal".into()),
-            sort: None,
-            payload: Some(json!({"schemaVersion": 1})),
-            deletable: None,
-        },
-    )
-    .await
-    .expect_err("track-report retarget must be refused");
-    assert!(
-        error
-            .to_string()
-            .contains("track-report kind transitions and payloads")
-    );
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin report retarget");
+                let error = card_update_tx(
+                    &mut tx,
+                    report.id.as_str(),
+                    CardPatch {
+                        title: None,
+                        kind: Some("terminal".into()),
+                        sort: None,
+                        payload: Some(json!({"schemaVersion": 1})),
+                        deletable: None,
+                    },
+                )
+                .await
+                .expect_err("track-report retarget must be refused");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("track-report kind transitions and payloads")
+                );
+                tx.rollback().await.unwrap();
 
-    let after = head_manifest(&repo, &track.id).await;
-    assert_eq!(after, before);
-    assert!(after.entries.contains_key("report.md"));
-    assert_eq!(
-        track_vcs::head(repo.pool(), &track.id).await.unwrap(),
-        Some(before_head)
-    );
+                let after = head_manifest(&repo, &track.id).await;
+                assert_eq!(after, before);
+                assert!(after.entries.contains_key("report.md"));
+                assert_eq!(
+                    track_vcs::head(repo.pool(), &track.id).await.unwrap(),
+                    Some(before_head)
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2862,9 +2933,11 @@ async fn since_last_turn_legacy_null_author_commit_has_no_suffix() {
         .await
         .unwrap()
         .expect("head after update");
-    sqlx::query("UPDATE track_vcs_commits SET author = NULL WHERE hash = ?1")
-        .bind(&after)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_commits SET author = NULL WHERE hash = ?1").bind(&after),
+        )
         .await
         .unwrap();
 
@@ -3004,12 +3077,25 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         Some(expected_ids[0].as_str())
     );
 
-    let mut tx = repo.pool().begin().await.expect("begin snapshot");
-    let snapshot = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin snapshot");
+                let snapshot =
+                    track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+                        .await
+                        .expect("snapshot");
+                tx.rollback().await.expect("rollback snapshot");
+                assert_eq!(snapshot.manifest, manifest);
+            })
+        })
         .await
-        .expect("snapshot");
-    tx.rollback().await.expect("rollback snapshot");
-    assert_eq!(snapshot.manifest, manifest);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -3032,62 +3118,74 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
     )
     .await;
 
-    let mut tx = repo.pool().begin().await.expect("begin runtime");
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: worker.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("stale-thread".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("runtime start");
-    session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime");
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: worker.id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some("stale-thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("runtime start");
+                session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
+                    .await
+                    .expect("mark superseded");
+                tx.commit().await.expect("commit runtime");
+
+                repo.log_pure_event(
+                    ActorId::Kernel,
+                    EventScope::Card {
+                        card: worker.id.clone(),
+                        track: track.id.clone(),
+                        area: area.id.clone(),
+                    },
+                    None,
+                    &bus,
+                    &roles,
+                    &areas,
+                    Event::WorkerSessionSuperseded {
+                        old_worker_session_id: runtime.id,
+                        new_worker_session_id: "missing-replacement".into(),
+                        card_id: worker.id.to_string(),
+                    },
+                )
+                .await
+                .expect("runtime superseded event");
+
+                let manifest = head_manifest(&repo, &track.id).await;
+                let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
+                let entry = manifest.entries.get(&payload_path).expect("payload entry");
+                let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
+                let view = TrackFsView::new(&repo, &write);
+                let live_payload = view.cat(&track, &payload_path).await.expect("live payload");
+                assert_eq!(vcs_payload, live_payload.content);
+
+                let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
+                assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
+                assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+            })
+        })
         .await
-        .expect("mark superseded");
-    tx.commit().await.expect("commit runtime");
-
-    repo.log_pure_event(
-        ActorId::Kernel,
-        EventScope::Card {
-            card: worker.id.clone(),
-            track: track.id.clone(),
-            area: area.id.clone(),
-        },
-        None,
-        &bus,
-        &roles,
-        &areas,
-        Event::WorkerSessionSuperseded {
-            old_worker_session_id: runtime.id,
-            new_worker_session_id: "missing-replacement".into(),
-            card_id: worker.id.to_string(),
-        },
-    )
-    .await
-    .expect("runtime superseded event");
-
-    let manifest = head_manifest(&repo, &track.id).await;
-    let payload_path = format!("cards/{}/.payload.json", worker.id.as_str());
-    let entry = manifest.entries.get(&payload_path).expect("payload entry");
-    let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
-    let view = TrackFsView::new(&repo, &write);
-    let live_payload = view.cat(&track, &payload_path).await.expect("live payload");
-    assert_eq!(vcs_payload, live_payload.content);
-
-    let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
-    assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
-    assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -3112,91 +3210,103 @@ async fn planner_runtime_payload_blob_matches_live_view_without_projected_fields
 
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.last_thread_id = Some("planner-thread".into());
-    let (runtime, terminal_id) = {
-        let mut tx = repo.pool().begin().await.expect("begin runtime");
-        let terminal = terminal_create_tx(
-            &mut tx,
-            NewTerminal {
-                card_id: planner.id.clone(),
-                program: "codex".into(),
-                cwd: "/tmp".into(),
-                env: json!({}),
-                theme: RequestTheme::default_dark(),
-            },
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let (runtime, terminal_id) = {
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin runtime");
+                    let terminal = terminal_create_tx(
+                        &mut tx,
+                        NewTerminal {
+                            card_id: planner.id.clone(),
+                            program: "codex".into(),
+                            cwd: "/tmp".into(),
+                            env: json!({}),
+                            theme: RequestTheme::default_dark(),
+                        },
+                    )
+                    .await
+                    .expect("terminal create");
+                    let terminal_id = terminal.id.clone();
+                    let runtime = session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: new_id(),
+                            card_id: planner.id.to_string(),
+                            kind: WorkerSessionKind::SharedPlanner,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: Some(terminal_id.clone()),
+                            thread_id: Some("planner-thread".into()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .expect("runtime start");
+                    tx.commit().await.expect("commit runtime");
+                    (runtime, terminal_id)
+                };
+
+                repo.log_pure_event(
+                    ActorId::Kernel,
+                    EventScope::Card {
+                        card: planner.id.clone(),
+                        track: track.id.clone(),
+                        area: area.id.clone(),
+                    },
+                    None,
+                    &bus,
+                    &roles,
+                    &areas,
+                    Event::WorkerSessionStarted {
+                        worker_session_id: runtime.id,
+                        card_id: runtime.card_id,
+                        kind: runtime.kind,
+                        agent_provider: runtime.agent_provider,
+                        status: runtime.status,
+                    },
+                )
+                .await
+                .expect("runtime started event");
+
+                let manifest = head_manifest(&repo, &track.id).await;
+                let payload_path = format!("cards/{}/.payload.json", planner.id.as_str());
+                let entry = manifest.entries.get(&payload_path).expect("payload entry");
+                let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
+                let view = TrackFsView::new(&repo, &write);
+                let live_payload = view.cat(&track, &payload_path).await.expect("live payload");
+                assert_eq!(vcs_payload, live_payload.content);
+
+                let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
+                assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
+                assert!(payload.get("codex_source").is_none(), "{payload:?}");
+                assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
+                assert!(payload.get("terminal_id").is_none(), "{payload:?}");
+
+                let runtime_path = format!("cards/{}/runtime.json", planner.id.as_str());
+                let entry = manifest.entries.get(&runtime_path).expect("runtime entry");
+                let vcs_runtime = blob_text(&repo, &entry.blob_hash).await;
+                let live_runtime = view.cat(&track, &runtime_path).await.expect("live runtime");
+                assert_eq!(vcs_runtime, live_runtime.content);
+
+                let runtime: serde_json::Value = serde_json::from_str(&vcs_runtime).unwrap();
+                assert_eq!(runtime["terminal_id"], terminal_id);
+                assert_eq!(runtime["thread_id"], "planner-thread");
+                assert_eq!(runtime["source"], "shared");
+                assert_eq!(runtime["thread_status"], "started");
+            })
+        })
         .await
-        .expect("terminal create");
-        let terminal_id = terminal.id.clone();
-        let runtime = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: new_id(),
-                card_id: planner.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(terminal_id.clone()),
-                thread_id: Some("planner-thread".into()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .expect("runtime start");
-        tx.commit().await.expect("commit runtime");
-        (runtime, terminal_id)
-    };
-
-    repo.log_pure_event(
-        ActorId::Kernel,
-        EventScope::Card {
-            card: planner.id.clone(),
-            track: track.id.clone(),
-            area: area.id.clone(),
-        },
-        None,
-        &bus,
-        &roles,
-        &areas,
-        Event::WorkerSessionStarted {
-            worker_session_id: runtime.id,
-            card_id: runtime.card_id,
-            kind: runtime.kind,
-            agent_provider: runtime.agent_provider,
-            status: runtime.status,
-        },
-    )
-    .await
-    .expect("runtime started event");
-
-    let manifest = head_manifest(&repo, &track.id).await;
-    let payload_path = format!("cards/{}/.payload.json", planner.id.as_str());
-    let entry = manifest.entries.get(&payload_path).expect("payload entry");
-    let vcs_payload = blob_text(&repo, &entry.blob_hash).await;
-    let view = TrackFsView::new(&repo, &write);
-    let live_payload = view.cat(&track, &payload_path).await.expect("live payload");
-    assert_eq!(vcs_payload, live_payload.content);
-
-    let payload: serde_json::Value = serde_json::from_str(&vcs_payload).unwrap();
-    assert!(payload.get("codex_thread_id").is_none(), "{payload:?}");
-    assert!(payload.get("codex_source").is_none(), "{payload:?}");
-    assert!(payload.get("codex_thread_status").is_none(), "{payload:?}");
-    assert!(payload.get("terminal_id").is_none(), "{payload:?}");
-
-    let runtime_path = format!("cards/{}/runtime.json", planner.id.as_str());
-    let entry = manifest.entries.get(&runtime_path).expect("runtime entry");
-    let vcs_runtime = blob_text(&repo, &entry.blob_hash).await;
-    let live_runtime = view.cat(&track, &runtime_path).await.expect("live runtime");
-    assert_eq!(vcs_runtime, live_runtime.content);
-
-    let runtime: serde_json::Value = serde_json::from_str(&vcs_runtime).unwrap();
-    assert_eq!(runtime["terminal_id"], terminal_id);
-    assert_eq!(runtime["thread_id"], "planner-thread");
-    assert_eq!(runtime["source"], "shared");
-    assert_eq!(runtime["thread_status"], "started");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -3540,90 +3650,94 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
     add_report_card(&repo, &bus, &roles, &write, &track.id, &area.id).await;
 
     let hidden_id = new_id();
-    let mut tx = repo.pool().begin().await.expect("begin hidden insert");
-    let hidden = card_create_with_id_tx(
-        &mut tx,
-        hidden_id.clone(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "terminal".into(),
-            sort: None,
-            payload: json!({"terminal_presentation": {"source": "task", "in_workbench": false}, "schemaVersion": 1, "idempotency_key": "hidden-run"}),
-        },
-        CardRole::Worker,
-        true,
-        &roles,
-    )
-    .await
-    .expect("insert hidden card row");
-    tx.commit().await.expect("commit hidden row");
-
-    repo.log_pure_event(
-        ActorId::Kernel,
-        EventScope::Track {
-            track: track.id.clone(),
-            area: area.id.clone(),
-        },
-        None,
-        &bus,
-        &roles,
-        &areas,
-        Event::CodexWorkerRequested {
-            idempotency_key: "hidden-run".into(),
-            goal: "hidden worker".into(),
-            context: json!({}),
-            acceptance_criteria: None,
-            agent_message: None,
-        },
-    )
-    .await
-    .expect("request event");
-    let manifest = head_manifest(&repo, &track.id).await;
-    assert!(
-        !manifest
-            .entries
-            .keys()
-            .any(|path| path.starts_with(&format!("cards/{hidden_id}/")))
-    );
-    let run_entry = manifest
-        .entries
-        .get("runs/hidden-run.json")
-        .expect("run json");
-    let run_json: serde_json::Value =
-        serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
-    assert_eq!(run_json["worker_card_id"], serde_json::Value::Null);
-    assert_eq!(run_json["worker_card_payload"], serde_json::Value::Null);
-
-    let mut tx = repo.pool().begin().await.expect("begin snapshot");
-    let snapshot = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.expect("begin hidden insert");
+        let hidden = card_create_with_id_tx(
+            &mut tx,
+            hidden_id.clone(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({"terminal_presentation": {"source": "task", "in_workbench": false}, "schemaVersion": 1, "idempotency_key": "hidden-run"}),
+            },
+            CardRole::Worker,
+            true,
+            &roles,
+        )
         .await
-        .expect("snapshot");
-    tx.rollback().await.expect("rollback snapshot");
-    assert_eq!(snapshot.manifest, manifest);
+        .expect("insert hidden card row");
+        tx.commit().await.expect("commit hidden row");
 
-    repo.log_pure_event(
-        ActorId::Kernel,
-        EventScope::Card {
-            card: hidden.id.clone(),
-            track: track.id.clone(),
-            area: area.id.clone(),
-        },
-        None,
-        &bus,
-        &roles,
-        &areas,
-        Event::CardAdded(hidden),
-    )
-    .await
-    .expect("CardAdded event");
-    let manifest = head_manifest(&repo, &track.id).await;
-    assert!(
-        manifest
+        repo.log_pure_event(
+            ActorId::Kernel,
+            EventScope::Track {
+                track: track.id.clone(),
+                area: area.id.clone(),
+            },
+            None,
+            &bus,
+            &roles,
+            &areas,
+            Event::CodexWorkerRequested {
+                idempotency_key: "hidden-run".into(),
+                goal: "hidden worker".into(),
+                context: json!({}),
+                acceptance_criteria: None,
+                agent_message: None,
+            },
+        )
+        .await
+        .expect("request event");
+        let manifest = head_manifest(&repo, &track.id).await;
+        assert!(
+            !manifest
+                .entries
+                .keys()
+                .any(|path| path.starts_with(&format!("cards/{hidden_id}/")))
+        );
+        let run_entry = manifest
             .entries
-            .keys()
-            .any(|path| path.starts_with(&format!("cards/{hidden_id}/")))
-    );
+            .get("runs/hidden-run.json")
+            .expect("run json");
+        let run_json: serde_json::Value =
+            serde_json::from_str(&blob_text(&repo, &run_entry.blob_hash).await).unwrap();
+        assert_eq!(run_json["worker_card_id"], serde_json::Value::Null);
+        assert_eq!(run_json["worker_card_payload"], serde_json::Value::Null);
+
+        let mut tx = write_session.begin_immediate().await.expect("begin snapshot");
+        let snapshot = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
+            .await
+            .expect("snapshot");
+        tx.rollback().await.expect("rollback snapshot");
+        assert_eq!(snapshot.manifest, manifest);
+
+        repo.log_pure_event(
+            ActorId::Kernel,
+            EventScope::Card {
+                card: hidden.id.clone(),
+                track: track.id.clone(),
+                area: area.id.clone(),
+            },
+            None,
+            &bus,
+            &roles,
+            &areas,
+            Event::CardAdded(hidden),
+        )
+        .await
+        .expect("CardAdded event");
+        let manifest = head_manifest(&repo, &track.id).await;
+        assert!(
+            manifest
+                .entries
+                .keys()
+                .any(|path| path.starts_with(&format!("cards/{hidden_id}/")))
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

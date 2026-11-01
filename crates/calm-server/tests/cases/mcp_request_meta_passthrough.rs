@@ -22,7 +22,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use serde_json::{Value, json};
@@ -96,110 +96,128 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
 
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &calm_server::model::new_id(),
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint planner card");
-    tx.commit().await.unwrap();
-    let card_token = mcp_token.expect("Planner card must mint a token");
-    let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
-    let daemon_token = "request-meta-daemon-token";
-    let (raw_token, daemon_token_hash) = match auth_mode {
-        AuthMode::CardBound => (card_token, None),
-        AuthMode::DaemonTrust => (
-            daemon_token.to_string(),
-            Some(auth::hash_token(daemon_token)),
-        ),
-    };
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_card, _term, mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &calm_server::model::new_id(),
+                    None,
+                    track.id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    false,
+                    &card_role_cache,
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("mint planner card");
+                tx.commit().await.unwrap();
+                let card_token = mcp_token.expect("Planner card must mint a token");
+                let thread_id = format!("thread-{card_id}");
+                seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+                let daemon_token = "request-meta-daemon-token";
+                let (raw_token, daemon_token_hash) = match auth_mode {
+                    AuthMode::CardBound => (card_token, None),
+                    AuthMode::DaemonTrust => (
+                        daemon_token.to_string(),
+                        Some(auth::hash_token(daemon_token)),
+                    ),
+                };
 
-    let events = EventBus::new();
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    let server = McpServer::spawn(
-        repo,
-        events,
-        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
-        socket_path.clone(),
-        PathBuf::from("/nonexistent-shim-bin"),
-        registry,
-        daemon_token_hash,
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::env::temp_dir().join("neige-test-gate-logs"),
-    )
-    .await
-    .expect("spawn McpServer");
+                let events = EventBus::new();
+                let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+                repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+                let server = McpServer::spawn(
+                    repo,
+                    events,
+                    calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+                    socket_path.clone(),
+                    PathBuf::from("/nonexistent-shim-bin"),
+                    registry,
+                    daemon_token_hash,
+                    std::sync::Arc::new(tokio::sync::OnceCell::new()),
+                    std::sync::Arc::new(tokio::sync::OnceCell::new()),
+                    std::env::temp_dir().join("neige-test-gate-logs"),
+                )
+                .await
+                .expect("spawn McpServer");
 
-    Boot {
-        server,
-        socket_path,
-        raw_token,
-        track_id: track.id.as_str().to_string(),
-        card_id,
-        thread_id,
-        _tmp: tmp,
-    }
+                Boot {
+                    server,
+                    socket_path,
+                    raw_token,
+                    track_id: track.id.as_str().to_string(),
+                    card_id,
+                    thread_id,
+                    _tmp: tmp,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+                    .await
+                    .unwrap()
+                {
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            worker_session_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                } else {
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap()
-    {
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime.id,
-            ThreadAttribution {
-                worker_session_id: runtime.id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .unwrap();
-    } else {
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-    }
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<ToolCallIdentity>) {

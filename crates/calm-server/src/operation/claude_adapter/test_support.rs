@@ -167,15 +167,14 @@ pub(super) async fn try_prepare_claude_worker(
 ) -> Result<(TxOutput, String)> {
     let payload = claude_worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT OR IGNORE INTO tasks \
          (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'claude', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
     .bind(&harness.track_id)
-    .bind(key)
-    .execute(harness.repo.pool())
+    .bind(key))
     .await
     .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());

@@ -1,6 +1,6 @@
 //! Explicit operator conversion; compression and verification never hold a writer.
 use super::object_codec::{self, StoredObject};
-use crate::db::sqlite::{SqliteDb, begin_immediate_tx};
+use crate::db::sqlite::SqliteDb;
 use crate::error::{CalmError, Result};
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -63,6 +63,7 @@ async fn page(pool: &SqlitePool, db: Option<&SqliteDb>, after: &str) -> Result<C
         ..Default::default()
     };
     let mut read_bytes = 0;
+
     for (hash, encoding, size) in rows {
         let size = usize::try_from(size)
             .map_err(|_| CalmError::Internal("negative object size".into()))?;
@@ -93,22 +94,32 @@ async fn page(pool: &SqlitePool, db: Option<&SqliteDb>, after: &str) -> Result<C
                     if let Some(db) = db {
                         #[cfg(test)]
                         super::object_compression_tests::after_prepare().await;
-                        let mut tx = begin_immediate_tx(db).await?;
-                        let updated = sqlx::query(
-                            "UPDATE track_vcs_objects SET bytes=?, encoding=?, decoded_size=?
+                        let snapshot = &object;
+                        let compressed = &encoded;
+                        let updated = db
+                            .writer()
+                            .with_writer(|write_session| {
+                                Box::pin(async move {
+                                    let mut tx = write_session.begin_immediate().await?;
+                                    let updated = sqlx::query(
+                                "UPDATE track_vcs_objects SET bytes=?, encoding=?, decoded_size=?
                              WHERE hash=? AND kind=? AND encoding='raw'
                                AND decoded_size IS NULL AND bytes=?",
-                        )
-                        .bind(&encoded.bytes)
-                        .bind(encoded.encoding)
-                        .bind(encoded.decoded_size)
-                        .bind(&object.hash)
-                        .bind(&object.kind)
-                        .bind(&object.bytes)
-                        .execute(&mut **tx)
-                        .await?
-                        .rows_affected();
-                        tx.commit().await?;
+                            )
+                            .bind(&compressed.bytes)
+                            .bind(compressed.encoding)
+                            .bind(compressed.decoded_size)
+                            .bind(&snapshot.hash)
+                            .bind(&snapshot.kind)
+                            .bind(&snapshot.bytes)
+                            .execute(&mut **tx)
+                            .await?
+                            .rows_affected();
+                                    tx.commit().await?;
+                                    Ok::<_, CalmError>(updated)
+                                })
+                            })
+                            .await??;
                         report.converted += updated;
                         report.changed_since_read += 1 - updated;
                         if updated != 0 {

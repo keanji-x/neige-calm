@@ -55,20 +55,27 @@ async fn fixture(enabled: bool) -> (Arc<SqlxRepo>, EventBus, WriteContext, Strin
     let write = WriteContext::new(CardRoleCache::new(), TrackAreaCache::new());
     let track_id = track.id.to_string();
 
-    if enabled {
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
-            .await
-            .unwrap();
-        calm_truth::db::sqlite::track_capabilities::stamp_tx(
-            &mut tx,
-            &track.id,
-            &[calm_types::track_capability::TrackCapability::Objectives],
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                if enabled {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    calm_truth::db::sqlite::track_capabilities::stamp_tx(
+                        &mut tx,
+                        &track.id,
+                        &[calm_types::track_capability::TrackCapability::Objectives],
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                (repo, events, write, track_id)
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-    (repo, events, write, track_id)
+        .expect("independent write operation")
 }
 fn create_op() -> ReportDocOp {
     ReportDocOp::UpsertBlock {
@@ -218,7 +225,7 @@ async fn objective_report_write_feeds_definition_in_the_same_tx() {
             .0,
         1
     );
-    sqlx::query("CREATE TRIGGER refuse_objective BEFORE INSERT ON objective_events BEGIN SELECT RAISE(ABORT,'objective failure'); END").execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_objective BEFORE INSERT ON objective_events BEGIN SELECT RAISE(ABORT,'objective failure'); END")).await.unwrap();
     let block = before["blocks"]
         .as_array()
         .unwrap()

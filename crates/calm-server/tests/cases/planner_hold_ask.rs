@@ -157,94 +157,98 @@ pub(super) async fn rig_on(
     let role_cache = CardRoleCache::new();
     let area_cache = TrackAreaCache::new();
     area_cache.insert(track.id.clone(), area.id);
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": permission_mode}),
-        },
-        CardRole::Planner,
-        true,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    let session_id = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread.into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(snapshot(thread)).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": permission_mode}),
+            },
+            CardRole::Planner,
+            true,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        let session_id = new_id();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: session_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread.into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(snapshot(thread)).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-    let events = EventBus::new();
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let host = Arc::new(PluginHost::new_full(
-        Arc::new(PluginRegistry::empty()),
-        repo_dyn.clone(),
-        PathBuf::new(),
-        std::env::temp_dir().join("calm-plugins-data-hold-ask"),
-        Vec::new(),
-        EventBus::new(),
-        WriteContext::new(role_cache.clone(), area_cache.clone()),
-    ));
-    let state = AppState::from_parts(
-        repo_dyn,
-        events.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        host,
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache.clone()),
-        Some(area_cache.clone()),
-    );
-    let registry = state.harness.clone();
-    let app = crate::support::authenticated_router::application(state).await;
-    let harness = run_harness(
-        &repo,
-        &events,
-        &role_cache,
-        &area_cache,
-        &daemon,
-        &registry,
-        &session_id,
-        &card.id,
-        &track.id,
-        thread,
-    )
-    .await;
-    Rig {
-        repo,
-        events,
-        role_cache,
-        area_cache,
-        daemon,
-        harness,
-        registry,
-        app,
-        session_id,
-        card: card.id,
-        track: track.id,
-        thread,
-    }
+        let events = EventBus::new();
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let host = Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-hold-ask"),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(role_cache.clone(), area_cache.clone()),
+        ));
+        let state = AppState::from_parts(
+            repo_dyn,
+            events.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            host,
+            Arc::new(CodexClient::new_stub()),
+            Some(role_cache.clone()),
+            Some(area_cache.clone()),
+        );
+        let registry = state.harness.clone();
+        let app = crate::support::authenticated_router::application(state).await;
+        let harness = run_harness(
+            &repo,
+            &events,
+            &role_cache,
+            &area_cache,
+            &daemon,
+            &registry,
+            &session_id,
+            &card.id,
+            &track.id,
+            thread,
+        )
+        .await;
+        Rig {
+            repo,
+            events,
+            role_cache,
+            area_cache,
+            daemon,
+            harness,
+            registry,
+            app,
+            session_id,
+            card: card.id,
+            track: track.id,
+            thread,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 /// A harness on the session, as boot recovery, a respawn or a system-error recovery builds one;
@@ -480,10 +484,13 @@ impl Rig {
     }
 
     async fn set_session_state(&self, state: &str) {
-        sqlx::query("UPDATE worker_sessions SET state = ?1 WHERE id = ?2")
-            .bind(state)
-            .bind(&self.session_id)
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state = ?1 WHERE id = ?2")
+                    .bind(state)
+                    .bind(&self.session_id),
+            )
             .await
             .unwrap();
     }

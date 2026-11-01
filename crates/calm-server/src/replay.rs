@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 
 use crate::db::RepoEventWrite;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::operation::SpawnHandle;
@@ -186,45 +186,49 @@ pub async fn reset_from_fixture(
     // Delete order respects FK chains, children before parents: `PRAGMA foreign_keys = ON` and some FKs are RESTRICT, so this explicit ordering is what enforces correctness.
     let pool = repo.db();
     // Writing transactions always BEGIN IMMEDIATE.
-    let mut tx = begin_immediate_tx(pool).await?;
-    let retained: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider_execution_json IS NOT NULL)",
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-    anyhow::ensure!(
-        !retained,
-        "provider execution retains a carrier; finish shutdown before resetting fixtures"
-    );
-    for stmt in [
-        "DELETE FROM events",
-        // A stale `events_prune_watermark` above the re-seeded ids would strand every WS client in a `_snapshot_required` loop.
-        "DELETE FROM retention_meta",
-        "DELETE FROM overlays",
-        "DELETE FROM terminals",
-        "DELETE FROM cards",
-        "DELETE FROM task_ref_index",
-        // `tasks` deliberately has no FK to `tracks`, so it must be named explicitly.
-        "DELETE FROM tasks",
-        "DELETE FROM task_attempt_allocations",
-        // `tracks.root_session_id` has no ON DELETE SET NULL; clear it before worker sessions leave.
-        "UPDATE tracks SET root_session_id = NULL",
-        // `worker_sessions.track_id` is a NO ACTION FK, so sessions leave before their tracks.
-        "DELETE FROM worker_sessions",
-        "DELETE FROM tracks",
-        "DELETE FROM areas",
-        "DELETE FROM plugin_kv",
-        "DELETE FROM plugin_tokens",
-        "DELETE FROM plugins",
-        "DELETE FROM settings",
-        // Reset AUTOINCREMENT counters so re-seeded events start at id=1; a WS client holding a cursor across resets would otherwise see id-skips.
-        "DELETE FROM sqlite_sequence",
-    ] {
-        sqlx::query(stmt).execute(&mut **tx).await?;
-    }
-    tx.commit().await?;
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let retained: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider_execution_json IS NOT NULL)",
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+        anyhow::ensure!(
+            !retained,
+            "provider execution retains a carrier; finish shutdown before resetting fixtures"
+        );
+        for stmt in [
+            "DELETE FROM events",
+            // A stale `events_prune_watermark` above the re-seeded ids would strand every WS client in a `_snapshot_required` loop.
+            "DELETE FROM retention_meta",
+            "DELETE FROM overlays",
+            "DELETE FROM terminals",
+            "DELETE FROM cards",
+            "DELETE FROM task_ref_index",
+            // `tasks` deliberately has no FK to `tracks`, so it must be named explicitly.
+            "DELETE FROM tasks",
+            "DELETE FROM task_attempt_allocations",
+            // `tracks.root_session_id` has no ON DELETE SET NULL; clear it before worker sessions leave.
+            "UPDATE tracks SET root_session_id = NULL",
+            // `worker_sessions.track_id` is a NO ACTION FK, so sessions leave before their tracks.
+            "DELETE FROM worker_sessions",
+            "DELETE FROM tracks",
+            "DELETE FROM areas",
+            "DELETE FROM plugin_kv",
+            "DELETE FROM plugin_tokens",
+            "DELETE FROM plugins",
+            "DELETE FROM settings",
+            // Reset AUTOINCREMENT counters so re-seeded events start at id=1; a WS client holding a cursor across resets would otherwise see id-skips.
+            "DELETE FROM sqlite_sequence",
+        ] {
+            sqlx::query(stmt).execute(&mut **tx).await?;
+        }
+        tx.commit().await?;
 
-    seed_events(repo, bus, fixture).await
+        seed_events(repo, bus, fixture).await
+
+    })).await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Sentinel thread id stamped on dev-forced planner runtimes; recovery refuses rows with no thread anywhere.

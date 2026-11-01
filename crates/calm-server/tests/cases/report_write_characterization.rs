@@ -159,9 +159,14 @@ async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
-        .bind("planner-session")
-        .execute(&pool)
+    boot.repo
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
+                .bind("planner-session"),
+        )
         .await
         .expect("retire the planner session");
 

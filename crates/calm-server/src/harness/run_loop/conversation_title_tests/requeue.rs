@@ -26,8 +26,9 @@ async fn reject_delete(f: &Fixture) {
 }
 
 async fn allow_delete(f: &Fixture) {
-    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_projection_cleanup"))
         .await
         .unwrap();
 }
@@ -134,39 +135,46 @@ async fn conversation_title_requeue_cancel_retry_keeps_complete_retirement() {
     reject_delete(&f).await;
     assert!(maybe_issue_turn(&f.harness.inner).await.is_err());
     allow_delete(&f).await;
-    let mut blocker = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut blocker = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
+                    .execute(&mut **blocker)
+                    .await
+                    .unwrap();
+                let inner = f.harness.inner.clone();
+                let mut retry = tokio::spawn(async move { persist_issuance_outcome(&inner).await });
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), &mut retry)
+                        .await
+                        .is_err()
+                );
+                retry.abort();
+                assert!(retry.await.unwrap_err().is_cancelled());
+                blocker.rollback().await.unwrap();
+                assert_eq!(
+                    *f.harness.inner.restored_projections.lock().await,
+                    vec![first.clone()],
+                    "one batch key owns both entries, not just its first entry"
+                );
+                assert_eq!(f.stored().await.phase, HarnessPhaseTag::IssuingTurn);
+                assert_eq!(f.stored().await.pending_entries().len(), 2);
+                assert!(
+                    f.repo
+                        .transcript_projection_id(f.harness.inner.card_id.as_str(), first.as_str())
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+                persist_issuance_outcome(&f.harness.inner).await.unwrap();
+                edit_delete(&f, &first, &second).await;
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
-        .execute(&mut **blocker)
-        .await
-        .unwrap();
-    let inner = f.harness.inner.clone();
-    let mut retry = tokio::spawn(async move { persist_issuance_outcome(&inner).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut retry)
-            .await
-            .is_err()
-    );
-    retry.abort();
-    assert!(retry.await.unwrap_err().is_cancelled());
-    blocker.rollback().await.unwrap();
-    assert_eq!(
-        *f.harness.inner.restored_projections.lock().await,
-        vec![first.clone()],
-        "one batch key owns both entries, not just its first entry"
-    );
-    assert_eq!(f.stored().await.phase, HarnessPhaseTag::IssuingTurn);
-    assert_eq!(f.stored().await.pending_entries().len(), 2);
-    assert!(
-        f.repo
-            .transcript_projection_id(f.harness.inner.card_id.as_str(), first.as_str())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    persist_issuance_outcome(&f.harness.inner).await.unwrap();
-    edit_delete(&f, &first, &second).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -175,9 +183,12 @@ async fn conversation_title_requeue_retired_writer_rolls_back_and_retries() {
     reject_delete(&f).await;
     assert!(maybe_issue_turn(&f.harness.inner).await.is_err());
     // The issuance fence may have retired its row while the backend was answering.
-    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?")
-        .bind(&f.harness.inner.worker_session_id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?")
+                .bind(&f.harness.inner.worker_session_id),
+        )
         .await
         .unwrap();
     f.harness.inner.shutting_down.store(true, Ordering::SeqCst);
@@ -270,14 +281,15 @@ async fn conversation_title_requeue_unwritten_guard_retains_source_and_retry() {
 async fn conversation_title_requeue_snapshot_failure_keeps_projection_and_retries() {
     let (f, first, second) = batch().await;
     // Allow pre-drain persistence; reject the returned queue's commit, not the projection.
-    sqlx::query(
-        "CREATE TRIGGER reject_requeue_snapshot BEFORE UPDATE ON worker_sessions
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_requeue_snapshot BEFORE UPDATE ON worker_sessions
         WHEN json_extract(NEW.handle_state_json, '$.phase') = 'turn_completed'
         BEGIN SELECT RAISE(ABORT, 'test requeue snapshot failure'); END",
-    )
-    .execute(f.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(maybe_issue_turn(&f.harness.inner).await.is_err());
     assert_eq!(f.stored().await.phase, HarnessPhaseTag::IssuingTurn);
     assert_eq!(f.stored().await.pending_entries().len(), 2);
@@ -288,8 +300,9 @@ async fn conversation_title_requeue_snapshot_failure_keeps_projection_and_retrie
             .unwrap()
             .is_some()
     );
-    sqlx::query("DROP TRIGGER reject_requeue_snapshot")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_requeue_snapshot"))
         .await
         .unwrap();
     edit_delete(&f, &first, &second).await;

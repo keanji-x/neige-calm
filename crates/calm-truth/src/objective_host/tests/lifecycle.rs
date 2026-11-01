@@ -38,9 +38,18 @@ pub(super) fn finished(job: &StoredIntent) -> ObjectiveInput {
     }
 }
 pub(super) async fn dispatch(repo: &SqlxRepo, id: &IntentId) {
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    intent_mark_dispatched_tx(&mut tx, id).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                intent_mark_dispatched_tx(&mut tx, id).await.unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 pub(super) async fn stored_settlement(repo: &SqlxRepo, id: &IntentId) -> IntentSettlement {
     let json: String = sqlx::query_scalar("SELECT settlement_json FROM objective_intents WHERE track_id=? AND event_seq=? AND ordinal=?")
@@ -64,44 +73,53 @@ async fn lifecycle_transitions_have_typed_refusals() {
     let job = job(&repo).await;
     let mut missing = job.id.clone();
     missing.ordinal = 999;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(matches!(
-        intent_mark_dispatched_tx(&mut tx, &missing).await,
-        Err(TruthError::Core(calm_types::error::CoreError::NotFound(_)))
-    ));
-    assert!(matches!(
-        intent_settle_tx(&mut tx, &missing, ExecutorSettlement::Executed).await,
-        Err(TruthError::Core(calm_types::error::CoreError::NotFound(_)))
-    ));
-    tx.rollback().await.unwrap();
-    dispatch(&repo, &job.id).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    conflict(intent_mark_dispatched_tx(&mut tx, &job.id).await);
-    intent_settle_tx(
-        &mut tx,
-        &job.id,
-        ExecutorSettlement::Failed {
-            reason: "could not run".into(),
-        },
-    )
-    .await
-    .unwrap();
-    conflict(intent_mark_dispatched_tx(&mut tx, &job.id).await);
-    conflict(intent_settle_tx(&mut tx, &job.id, ExecutorSettlement::Executed).await);
-    tx.commit().await.unwrap();
-    assert_eq!(
-        stored_settlement(&repo, &job.id).await,
-        IntentSettlement::Failed {
-            reason: "could not run".into()
-        }
-    );
-    assert!(
-        !unsettled_intents(repo.db())
-            .await
-            .unwrap()
-            .iter()
-            .any(|r| r.id == job.id)
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(matches!(
+                    intent_mark_dispatched_tx(&mut tx, &missing).await,
+                    Err(TruthError::Core(calm_types::error::CoreError::NotFound(_)))
+                ));
+                assert!(matches!(
+                    intent_settle_tx(&mut tx, &missing, ExecutorSettlement::Executed).await,
+                    Err(TruthError::Core(calm_types::error::CoreError::NotFound(_)))
+                ));
+                tx.rollback().await.unwrap();
+                dispatch(&repo, &job.id).await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                conflict(intent_mark_dispatched_tx(&mut tx, &job.id).await);
+                intent_settle_tx(
+                    &mut tx,
+                    &job.id,
+                    ExecutorSettlement::Failed {
+                        reason: "could not run".into(),
+                    },
+                )
+                .await
+                .unwrap();
+                conflict(intent_mark_dispatched_tx(&mut tx, &job.id).await);
+                conflict(intent_settle_tx(&mut tx, &job.id, ExecutorSettlement::Executed).await);
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    stored_settlement(&repo, &job.id).await,
+                    IntentSettlement::Failed {
+                        reason: "could not run".into()
+                    }
+                );
+                assert!(
+                    !unsettled_intents(repo.db())
+                        .await
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.id == job.id)
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -122,15 +140,24 @@ async fn executor_settlements_are_durable_from_pending_or_dispatched() {
             if dispatched {
                 dispatch(&repo, &job.id).await;
             }
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            intent_settle_tx(&mut tx, &job.id, settlement.clone())
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        intent_settle_tx(&mut tx, &job.id, settlement.clone())
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        assert_eq!(
+                            serde_json::to_value(stored_settlement(&repo, &job.id).await).unwrap(),
+                            serde_json::to_value(settlement).unwrap()
+                        );
+                    })
+                })
                 .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            assert_eq!(
-                serde_json::to_value(stored_settlement(&repo, &job.id).await).unwrap(),
-                serde_json::to_value(settlement).unwrap()
-            );
+                .expect("independent write operation")
         }
     }
 }
@@ -257,13 +284,22 @@ async fn job_tuple_and_state_fences() {
         }
         conflict(react(repo.db(), input).await);
     }
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    intent_settle_tx(&mut tx, &job.id, ExecutorSettlement::Executed)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                intent_settle_tx(&mut tx, &job.id, ExecutorSettlement::Executed)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                conflict(react(repo.db(), finished(&job)).await);
+                assert_eq!(counts(&repo).await, before);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    conflict(react(repo.db(), finished(&job)).await);
-    assert_eq!(counts(&repo).await, before);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -275,35 +311,44 @@ async fn intent_job_authorization_matrix_is_closed() {
     events.push(Event::RevisionDelivered {
         revision: Revision::new("r1"),
     });
-    for event in events {
-        // Exhaustive decision: new engine variants must be considered here as well as in authorize.
-        let allowed = match &event {
-            Event::CheckFinished { .. } => true,
-            Event::DefinitionChanged { .. }
-            | Event::ApprovalGranted { .. }
-            | Event::Requested { .. }
-            | Event::RevisionDelivered { .. }
-            | Event::Settled { .. }
-            | Event::Closed { .. }
-            | Event::Usage { .. }
-            | Event::HostIdle { .. } => false,
-        };
-        let input = ObjectiveInput {
-            event,
-            ..finished(&job)
-        };
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let result = react_tx(&mut tx, &input, 0).await;
-        if allowed {
-            assert!(result.is_ok(), "{result:?}");
-        } else {
-            assert!(
-                matches!(result, Err(TruthError::Forbidden(_))),
-                "{result:?}"
-            );
-        }
-        tx.rollback().await.unwrap();
-    }
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for event in events {
+                    // Exhaustive decision: new engine variants must be considered here as well as in authorize.
+                    let allowed = match &event {
+                        Event::CheckFinished { .. } => true,
+                        Event::DefinitionChanged { .. }
+                        | Event::ApprovalGranted { .. }
+                        | Event::Requested { .. }
+                        | Event::RevisionDelivered { .. }
+                        | Event::Settled { .. }
+                        | Event::Closed { .. }
+                        | Event::Usage { .. }
+                        | Event::HostIdle { .. } => false,
+                    };
+                    let input = ObjectiveInput {
+                        event,
+                        ..finished(&job)
+                    };
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let result = react_tx(&mut tx, &input, 0).await;
+                    if allowed {
+                        assert!(result.is_ok(), "{result:?}");
+                    } else {
+                        assert!(
+                            matches!(result, Err(TruthError::Forbidden(_))),
+                            "{result:?}"
+                        );
+                    }
+                    tx.rollback().await.unwrap();
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -313,13 +358,14 @@ async fn reported_settle_failure_rolls_back_append_state_and_intents() {
     dispatch(&repo, &job.id).await;
     let before = counts(&repo).await;
     let state = load_state(repo.db(), &"t".into()).await.unwrap();
-    sqlx::query(
-        "CREATE TRIGGER refuse_report BEFORE UPDATE ON objective_intents
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_report BEFORE UPDATE ON objective_intents
         WHEN NEW.status='settled' BEGIN SELECT RAISE(ABORT,'test failure'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(react(repo.db(), finished(&job)).await.is_err());
     assert_eq!(counts(&repo).await, before);
     assert_eq!(load_state(repo.db(), &"t".into()).await.unwrap(), state);

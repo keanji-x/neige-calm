@@ -95,71 +95,81 @@ fn sample() -> Value {
 async fn worker(boot: &Boot, key: &str) -> (ToolCallIdentity, String) {
     let id = format!("worker-{key}");
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    id.clone(),
+                    NewCard {
+                        track_id: boot.track_id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    &boot.card_role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let session = format!("{id}-session");
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    calm_server::session_projection_repo::WorkerSessionInit {
+                        id: session.clone(),
+                        card_id: id.clone(),
+                        kind: calm_server::session_projection_repo::WorkerSessionKind::CodexCard,
+                        agent_provider: None,
+                        status: WorkerSessionState::Starting,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: 1,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let task: String =
+                    sqlx::query_scalar("SELECT id FROM tasks WHERE track_id=? AND key=?")
+                        .bind(boot.track_id.as_str())
+                        .bind(key)
+                        .fetch_one(db.read_pool())
+                        .await
+                        .unwrap();
+                (db).writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE tasks SET status='running',worker_card_id=? WHERE id=?",
+                        )
+                        .bind(&id)
+                        .bind(&task),
+                    )
+                    .await
+                    .unwrap();
+                (
+                    ToolCallIdentity {
+                        card_id: id,
+                        session_id: session,
+                        role: CardRole::Worker,
+                        ..planner_identity(boot)
+                    },
+                    task,
+                )
+            })
+        })
         .await
-        .unwrap();
-    calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        id.clone(),
-        NewCard {
-            track_id: boot.track_id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({}),
-        },
-        CardRole::Worker,
-        true,
-        &boot.card_role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let session = format!("{id}-session");
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
-        .await
-        .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        calm_server::session_projection_repo::WorkerSessionInit {
-            id: session.clone(),
-            card_id: id.clone(),
-            kind: calm_server::session_projection_repo::WorkerSessionKind::CodexCard,
-            agent_provider: None,
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 1,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let task: String = sqlx::query_scalar("SELECT id FROM tasks WHERE track_id=? AND key=?")
-        .bind(boot.track_id.as_str())
-        .bind(key)
-        .fetch_one(db.read_pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tasks SET status='running',worker_card_id=? WHERE id=?")
-        .bind(&id)
-        .bind(&task)
-        .execute(db.writer_pool())
-        .await
-        .unwrap();
-    (
-        ToolCallIdentity {
-            card_id: id,
-            session_id: session,
-            role: CardRole::Worker,
-            ..planner_identity(boot)
-        },
-        task,
-    )
+        .expect("independent write operation")
 }
 async fn done(
     boot: &Boot,
@@ -308,15 +318,15 @@ async fn objective_evaluator_guard_rejects_changes_allows_tombstone_and_wakes_on
 async fn objective_evaluator_retry_repairs_crash_without_duplicate_blocks_or_bindings() {
     let boot = fixture().await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query("CREATE TRIGGER crash_blocks BEFORE UPDATE ON cards WHEN NEW.kind='track-report' BEGIN SELECT RAISE(ABORT,'crash block write'); END").execute(db.writer_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER crash_blocks BEFORE UPDATE ON cards WHEN NEW.kind='track-report' BEGIN SELECT RAISE(ABORT,'crash block write'); END")).await.unwrap();
     assert!(evaluate(&boot, REV).await.is_err());
     assert_eq!(
         count(&boot, "SELECT count(*) FROM objective_check_jobs").await,
         3
     );
     assert!(tasks(&boot).await.is_empty());
-    sqlx::query("DROP TRIGGER crash_blocks")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_blocks"))
         .await
         .unwrap();
     project(&boot).await;
@@ -354,7 +364,7 @@ async fn objective_evaluator_done_atomic_failure_and_late_completion() {
     let b = tasks(&boot).await.remove(0);
     let (w, t) = worker(&boot, b.payload["key"].as_str().unwrap()).await;
     assert!(done(&boot, w.clone(), &t, json!({})).await.is_err());
-    sqlx::query("CREATE TRIGGER crash_sample BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' BEGIN SELECT RAISE(ABORT,'crash sample'); END").execute(db.writer_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER crash_sample BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' BEGIN SELECT RAISE(ABORT,'crash sample'); END")).await.unwrap();
     assert!(done(&boot, w.clone(), &t, sample()).await.is_err());
     assert_eq!(
         count(
@@ -370,12 +380,11 @@ async fn objective_evaluator_done_atomic_failure_and_late_completion() {
         .await
         .unwrap();
     assert_eq!(status, "running");
-    sqlx::query("DROP TRIGGER crash_sample")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_sample"))
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER crash_done BEFORE INSERT ON events WHEN NEW.kind='task.completed' BEGIN SELECT RAISE(ABORT,'crash worker event'); END")
-        .execute(db.writer_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER crash_done BEFORE INSERT ON events WHEN NEW.kind='task.completed' BEGIN SELECT RAISE(ABORT,'crash worker event'); END")).await.unwrap();
     assert!(done(&boot, w.clone(), &t, sample()).await.is_err());
     assert_eq!(
         count(
@@ -385,8 +394,8 @@ async fn objective_evaluator_done_atomic_failure_and_late_completion() {
         .await,
         0
     );
-    sqlx::query("DROP TRIGGER crash_done")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_done"))
         .await
         .unwrap();
     evaluate(&boot, NEXT).await.unwrap();
@@ -467,63 +476,70 @@ async fn objective_evaluator_concurrent_retry_uses_task_key_and_report_transacti
 async fn objective_evaluator_restarted_planner_repairs_original_binding_identity() {
     let boot = fixture().await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query("CREATE TRIGGER crash_blocks BEFORE UPDATE ON cards WHEN NEW.kind='track-report' BEGIN SELECT RAISE(ABORT,'crash block write'); END").execute(db.writer_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER crash_blocks BEFORE UPDATE ON cards WHEN NEW.kind='track-report' BEGIN SELECT RAISE(ABORT,'crash block write'); END")).await.unwrap();
     assert!(evaluate(&boot, REV).await.is_err());
-    sqlx::query("DROP TRIGGER crash_blocks")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_blocks"))
         .await
         .unwrap();
     let session = "restarted-planner";
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::session_supersede_and_start_tx(
-        &mut tx,
-        &PLANNER_SESSION_ID.to_owned(),
-        calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
-            session.into(),
-            boot.planner_card_id.to_string(),
-            AgentProvider::Codex,
-            WorkerSessionState::Starting,
-            None,
-            json!({}),
-            2,
-        ),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let edits = rows(&boot, "track.report_edited").await.len();
-    let error = evaluate(&boot, REV).await.unwrap_err();
-    assert_eq!(error.code, -32403);
-    assert!(tasks(&boot).await.is_empty());
-    assert_eq!(rows(&boot, "track.report_edited").await.len(), edits);
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::session_supersede_and_start_tx(
+                    &mut tx,
+                    &PLANNER_SESSION_ID.to_owned(),
+                    calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
+                        session.into(),
+                        boot.planner_card_id.to_string(),
+                        AgentProvider::Codex,
+                        WorkerSessionState::Starting,
+                        None,
+                        json!({}),
+                        2,
+                    ),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let edits = rows(&boot, "track.report_edited").await.len();
+                let error = evaluate(&boot, REV).await.unwrap_err();
+                assert_eq!(error.code, -32403);
+                assert!(tasks(&boot).await.is_empty());
+                assert_eq!(rows(&boot, "track.report_edited").await.len(), edits);
 
-    let identity = ToolCallIdentity {
-        session_id: session.into(),
-        ..planner_identity(&boot)
-    };
-    boot.registry.lookup("neige_objective_evaluate").unwrap()(
-        boot.ctx.clone(),
-        identity,
-        json!({"key":"kr","revision":REV}),
-    )
-    .await
-    .unwrap();
-    assert_evaluator_attribution(&boot, session).await;
-    assert_eq!(tasks(&boot).await.len(), 3);
-    assert_eq!(
-        count(&boot, "SELECT count(*) FROM objective_check_jobs").await,
-        3
-    );
-    assert_eq!(
-        count(
-            &boot,
-            "SELECT count(*) FROM objective_events WHERE kind='requested'"
-        )
-        .await,
-        1
-    );
+                let identity = ToolCallIdentity {
+                    session_id: session.into(),
+                    ..planner_identity(&boot)
+                };
+                boot.registry.lookup("neige_objective_evaluate").unwrap()(
+                    boot.ctx.clone(),
+                    identity,
+                    json!({"key":"kr","revision":REV}),
+                )
+                .await
+                .unwrap();
+                assert_evaluator_attribution(&boot, session).await;
+                assert_eq!(tasks(&boot).await.len(), 3);
+                assert_eq!(
+                    count(&boot, "SELECT count(*) FROM objective_check_jobs").await,
+                    3
+                );
+                assert_eq!(
+                    count(
+                        &boot,
+                        "SELECT count(*) FROM objective_events WHERE kind='requested'"
+                    )
+                    .await,
+                    1
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

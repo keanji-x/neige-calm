@@ -72,8 +72,11 @@ async fn version_bump_rebuild_keeps_intents() {
     }
     let before = load_state(repo.db(), &"t".into()).await.unwrap();
     let n = counts(&repo).await;
-    sqlx::query("UPDATE objective_states SET state_version=0,state_json='{}'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE objective_states SET state_version=0,state_json='{}'",
+        ))
         .await
         .unwrap();
     assert_eq!(load_state(repo.db(), &"t".into()).await.unwrap(), before);
@@ -103,36 +106,45 @@ async fn snapshot_seq_tracks_log_tip() {
     )
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(
-        snapshot::store_tx(
-            &mut tx,
-            &"t".into(),
-            LogSeq(0),
-            LogSeq(2),
-            &State::default()
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    snapshot::store_tx(
+                        &mut tx,
+                        &"t".into(),
+                        LogSeq(0),
+                        LogSeq(2),
+                        &State::default()
+                    )
+                    .await
+                    .is_err()
+                );
+                tx.rollback().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    snapshot::store_tx(
+                        &mut tx,
+                        &"t".into(),
+                        LogSeq(99),
+                        LogSeq(1),
+                        &State::default()
+                    )
+                    .await
+                    .is_err()
+                );
+                tx.rollback().await.unwrap();
+                assert_eq!(
+                    load_state(repo.db(), &"t".into()).await.unwrap().0,
+                    LogSeq(1)
+                );
+            })
+        })
         .await
-        .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(
-        snapshot::store_tx(
-            &mut tx,
-            &"t".into(),
-            LogSeq(99),
-            LogSeq(1),
-            &State::default()
-        )
-        .await
-        .is_err()
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(
-        load_state(repo.db(), &"t".into()).await.unwrap().0,
-        LogSeq(1)
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -149,19 +161,20 @@ async fn corrupt_log_row_fails_closed() {
     )
     .await
     .unwrap();
-    sqlx::query("DROP TRIGGER objective_events_no_update")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER objective_events_no_update"))
         .await
         .unwrap();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "UPDATE objective_events SET payload_json=json_set(payload_json,'$.objective',json('{\"key\":\"build\"}'))",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .unwrap();
     assert!(replay_log(repo.db(), &"t".into()).await.is_err());
-    sqlx::query("UPDATE objective_states SET state_version=0")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE objective_states SET state_version=0"))
         .await
         .unwrap();
     assert!(load_state(repo.db(), &"t".into()).await.is_err());
@@ -187,30 +200,41 @@ async fn snapshot_corruption_and_unknown_event_version_fail_closed() {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE objective_states SET state_json='{}'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE objective_states SET state_json='{}'"))
         .await
         .unwrap();
     assert!(load_state(repo.db(), &"t".into()).await.is_err());
-    sqlx::query("DROP TRIGGER objective_events_no_update")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER objective_events_no_update"))
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    sqlx::query("PRAGMA ignore_check_constraints=ON")
-        .execute(&mut **tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("PRAGMA ignore_check_constraints=ON")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE objective_events SET schema_version=999")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("PRAGMA ignore_check_constraints=OFF")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert!(replay_log(repo.db(), &"t".into()).await.is_err());
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE objective_events SET schema_version=999")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query("PRAGMA ignore_check_constraints=OFF")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(replay_log(repo.db(), &"t".into()).await.is_err());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -229,16 +253,25 @@ async fn track_delete_cascades_both_paths() {
         .await
         .unwrap();
         assert_eq!(counts(&repo).await, (1, 1, 1));
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        if area {
-            area_delete_tx(&mut tx, "a").await.unwrap();
-        } else {
-            track_delete_tx(&mut tx, "t", repo.track_area_cache())
-                .await
-                .unwrap();
-        }
-        tx.commit().await.unwrap();
-        assert_eq!(counts(&repo).await, (0, 0, 0));
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    if area {
+                        area_delete_tx(&mut tx, "a").await.unwrap();
+                    } else {
+                        track_delete_tx(&mut tx, "t", repo.track_area_cache())
+                            .await
+                            .unwrap();
+                    }
+                    tx.commit().await.unwrap();
+                    assert_eq!(counts(&repo).await, (0, 0, 0));
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -275,9 +308,12 @@ async fn objective_v1_snapshot_rebuild_preserves_frozen_usage() {
     // Real v1 shape: terminal statuses were strings, not variants containing usage.
     let mut v1 = serde_json::to_value(&expected.1).unwrap();
     v1["objectives"]["build"]["status"] = serde_json::json!("closed");
-    sqlx::query("UPDATE objective_states SET state_version=1,state_json=?")
-        .bind(v1.to_string())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE objective_states SET state_version=1,state_json=?")
+                .bind(v1.to_string()),
+        )
         .await
         .unwrap();
     assert_eq!(objective::engine::STATE_VERSION, 2);

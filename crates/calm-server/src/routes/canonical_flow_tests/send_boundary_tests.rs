@@ -43,9 +43,12 @@ async fn revoked_activation(membership: bool) {
     .await
     .expect("activation must register its RPC behind the held outbound sink");
     if membership {
-        sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-            .bind(area["id"].as_str().unwrap())
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+                    .bind(area["id"].as_str().unwrap()),
+            )
             .await
             .unwrap();
     } else {
@@ -85,8 +88,8 @@ async fn revoked_activation(membership: bool) {
         "a BeforeSend proof must release only the unstarted claim"
     );
     if membership {
-        sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) SELECT ?1,id,'owner',0 FROM application_users")
-            .bind(area["id"].as_str().unwrap()).execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) SELECT ?1,id,'owner',0 FROM application_users")
+            .bind(area["id"].as_str().unwrap())).await.unwrap();
     }
     let fresh_cookie = source_readmission_tests::login_again(&app).await;
     let replay = post(&app, &fresh_cookie, "/api/tracks", "first", create).await;

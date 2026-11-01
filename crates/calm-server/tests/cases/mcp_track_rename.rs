@@ -6,7 +6,7 @@ use std::sync::Arc;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, begin_immediate_tx, track_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, track_create_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
@@ -84,98 +84,111 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     };
-    let track = {
-        let cache = track_area_cache.clone();
-        let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-        let track = track_create_tx(
-            &mut tx,
-            new_track,
-            purpose,
-            &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-            None,
-            &cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        track
-    };
-    let planner_card = repo
-        .card_create(NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: crate::support::planner::payload(),
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let track = {
+                    let cache = track_area_cache.clone();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let track = track_create_tx(
+                        &mut tx,
+                        new_track,
+                        purpose,
+                        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        None,
+                        &cache,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    track
+                };
+                let planner_card = repo
+                    .card_create(NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: crate::support::planner::payload(),
+                    })
+                    .await
+                    .unwrap();
+                let other_card = repo
+                    .card_create(NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: serde_json::Value::Null,
+                    })
+                    .await
+                    .unwrap();
+                seed_track_root_session(
+                    repo.as_ref(),
+                    &track.id,
+                    &planner_card.id,
+                    PLANNER_SESSION_ID,
+                )
+                .await;
+
+                let events = EventBus::new();
+                let card_role_cache = CardRoleCache::new();
+                card_role_cache.insert(
+                    planner_card.id.clone(),
+                    CardRole::Planner,
+                    track.id.clone(),
+                );
+                crate::support::mcp::set_persisted_card_role(
+                    repo.as_ref(),
+                    planner_card.id.as_str(),
+                    CardRole::Planner,
+                )
+                .await;
+                let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+                repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+                let ctx = Arc::new(AppContext {
+                    tool_calls: Default::default(),
+                    terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
+                    repo: route_repo,
+                    track_vcs: repo
+                        .sqlite_db()
+                        .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
+                    events,
+                    write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+                    daemon_token_hash: None,
+                    gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+                    plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+                    operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+                    track_creator: Arc::new(tokio::sync::OnceCell::new()),
+                    scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
+                    series_resolver: Arc::new(
+                        calm_server::report_series::SeriesResolver::new_unstarted(None),
+                    ),
+                    plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
+                    preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
+                    sqlite_db: repo.sqlite_db(),
+                    gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
+                });
+
+                let mut registry = ToolRegistry::new();
+                calm_server::mcp_server::tools::register_default_tools(&mut registry);
+
+                Boot {
+                    ctx,
+                    registry: Arc::new(registry),
+                    repo,
+                    sqlx_repo,
+                    area_id: area.id,
+                    track_id: track.id,
+                    planner_card_id: planner_card.id,
+                    other_card_id: other_card.id,
+                }
+            })
         })
         .await
-        .unwrap();
-    let other_card = repo
-        .card_create(NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: serde_json::Value::Null,
-        })
-        .await
-        .unwrap();
-    seed_track_root_session(
-        repo.as_ref(),
-        &track.id,
-        &planner_card.id,
-        PLANNER_SESSION_ID,
-    )
-    .await;
-
-    let events = EventBus::new();
-    let card_role_cache = CardRoleCache::new();
-    card_role_cache.insert(planner_card.id.clone(), CardRole::Planner, track.id.clone());
-    crate::support::mcp::set_persisted_card_role(
-        repo.as_ref(),
-        planner_card.id.as_str(),
-        CardRole::Planner,
-    )
-    .await;
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    let ctx = Arc::new(AppContext {
-        tool_calls: Default::default(),
-        terminal_interaction: Arc::new(tokio::sync::OnceCell::new()),
-        repo: route_repo,
-        track_vcs: repo
-            .sqlite_db()
-            .map(calm_truth::track_vcs_repo::SqlxTrackVcsRepo::shared),
-        events,
-        write: calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
-        daemon_token_hash: None,
-        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
-        plugin_host: Arc::new(tokio::sync::OnceCell::new()),
-        operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
-        track_creator: Arc::new(tokio::sync::OnceCell::new()),
-        scheduler_poke: Arc::new(tokio::sync::OnceCell::new()),
-        series_resolver: Arc::new(calm_server::report_series::SeriesResolver::new_unstarted(
-            None,
-        )),
-        plugin_results: Arc::new(calm_server::plugin_results::PluginResults::new()),
-        preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
-        sqlite_db: repo.sqlite_db(),
-        gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
-    });
-
-    let mut registry = ToolRegistry::new();
-    calm_server::mcp_server::tools::register_default_tools(&mut registry);
-
-    Boot {
-        ctx,
-        registry: Arc::new(registry),
-        repo,
-        sqlx_repo,
-        area_id: area.id,
-        track_id: track.id,
-        planner_card_id: planner_card.id,
-        other_card_id: other_card.id,
-    }
+        .expect("independent write operation")
 }
 
 async fn boot_unnamed() -> Boot {

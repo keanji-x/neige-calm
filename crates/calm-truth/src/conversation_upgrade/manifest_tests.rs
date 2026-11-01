@@ -9,7 +9,7 @@ async fn manifest_binds_all_evidence_and_rejects_duplicate_paths() {
     let mut c = SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", path.display()))
         .await
         .unwrap();
-    sqlx::raw_sql("CREATE TABLE unknown(id INTEGER PRIMARY KEY, raw); INSERT INTO unknown VALUES(1,NULL),(2,''),(3,x''),(4,x'ff');").execute(&mut c).await.unwrap();
+    { let query = sqlx::raw_sql("CREATE TABLE unknown(id INTEGER PRIMARY KEY, raw); INSERT INTO unknown VALUES(1,NULL),(2,''),(3,x''),(4,x'ff');"); sqlx::Executor::execute(&mut c, query).await }.unwrap();
     c.close().await.unwrap();
     let audit = OfflineSnapshot::open(FrozenBackup {
         path,

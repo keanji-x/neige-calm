@@ -21,186 +21,235 @@ async fn stored_identity(repo: &SqlxRepo, id: &str) -> (String, String, String) 
 #[tokio::test]
 async fn a_planner_mint_persists_the_provider_it_names() {
     let repo = fresh_repo().await;
-    for (label, provider, stored) in [
-        ("planner-claude", AgentProvider::Claude, "claude"),
-        ("planner-codex", AgentProvider::Codex, "codex"),
-    ] {
-        let mut tx = repo.pool().begin().await.expect("begin");
-        let card_id =
-            create_card_in_tx(&repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
-        let id = format!("rt-{label}");
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                id.clone(),
-                card_id,
-                provider.clone(),
-                WorkerSessionState::Idle,
-                Some(format!("thread-{label}")),
-                json!({"mode": "harness"}),
-                1_000,
-            ),
-        )
-        .await
-        .expect("start planner runtime");
-        tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for (label, provider, stored) in [
+                    ("planner-claude", AgentProvider::Claude, "claude"),
+                    ("planner-codex", AgentProvider::Codex, "codex"),
+                ] {
+                    let mut tx = write_session.begin_immediate().await.expect("begin");
+                    let card_id = create_card_in_tx(
+                        &repo,
+                        &mut tx,
+                        label,
+                        "codex",
+                        json!({"schemaVersion":1}),
+                    )
+                    .await;
+                    let id = format!("rt-{label}");
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::shared_planner(
+                            id.clone(),
+                            card_id,
+                            provider.clone(),
+                            WorkerSessionState::Idle,
+                            Some(format!("thread-{label}")),
+                            json!({"mode": "harness"}),
+                            1_000,
+                        ),
+                    )
+                    .await
+                    .expect("start planner runtime");
+                    tx.commit().await.expect("commit");
 
-        assert_eq!(
-            stored_identity(&repo, &id).await,
-            (stored.into(), "resumable".into(), "planner".into()),
-            "{label}"
-        );
-        let projected = runtime_get_by_id_from_pool(repo.pool(), &id)
-            .await
-            .expect("by-id read")
-            .expect("row");
-        assert_eq!(projected.kind, WorkerSessionKind::SharedPlanner, "{label}");
-        assert_eq!(projected.agent_provider, Some(provider), "{label}");
-    }
-    let mut planners: Vec<String> =
-        runtimes_active_for_kind_from_pool(repo.pool(), WorkerSessionKind::SharedPlanner)
-            .await
-            .expect("active planners")
-            .into_iter()
-            .map(|runtime| runtime.id)
-            .collect();
-    planners.sort();
-    assert_eq!(planners, ["rt-planner-claude", "rt-planner-codex"]);
+                    assert_eq!(
+                        stored_identity(&repo, &id).await,
+                        (stored.into(), "resumable".into(), "planner".into()),
+                        "{label}"
+                    );
+                    let projected = runtime_get_by_id_from_pool(repo.pool(), &id)
+                        .await
+                        .expect("by-id read")
+                        .expect("row");
+                    assert_eq!(projected.kind, WorkerSessionKind::SharedPlanner, "{label}");
+                    assert_eq!(projected.agent_provider, Some(provider), "{label}");
+                }
+                let mut planners: Vec<String> = runtimes_active_for_kind_from_pool(
+                    repo.pool(),
+                    WorkerSessionKind::SharedPlanner,
+                )
+                .await
+                .expect("active planners")
+                .into_iter()
+                .map(|runtime| runtime.id)
+                .collect();
+                planners.sort();
+                assert_eq!(planners, ["rt-planner-claude", "rt-planner-codex"]);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn a_deferred_claude_placeholder_is_a_claude_row() {
     let repo = fresh_repo().await;
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "deferred-claude",
-        "codex",
-        json!({"schemaVersion":1}),
-    )
-    .await;
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &WorkerSessionInit::shared_planner(
-            "rt-deferred-claude".into(),
-            card_id,
-            AgentProvider::Claude,
-            WorkerSessionState::Starting,
-            None,
-            json!({"mode": "harness"}),
-            1_000,
-        ),
-    )
-    .await
-    .expect("prepare deferred placeholder");
-    tx.commit().await.expect("commit");
-    assert_eq!(
-        stored_identity(&repo, "rt-deferred-claude").await,
-        ("claude".into(), "resumable".into(), "planner".into())
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    "deferred-claude",
+                    "codex",
+                    json!({"schemaVersion":1}),
+                )
+                .await;
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &WorkerSessionInit::shared_planner(
+                        "rt-deferred-claude".into(),
+                        card_id,
+                        AgentProvider::Claude,
+                        WorkerSessionState::Starting,
+                        None,
+                        json!({"mode": "harness"}),
+                        1_000,
+                    ),
+                )
+                .await
+                .expect("prepare deferred placeholder");
+                tx.commit().await.expect("commit");
+                assert_eq!(
+                    stored_identity(&repo, "rt-deferred-claude").await,
+                    ("claude".into(), "resumable".into(), "planner".into())
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn a_planner_init_without_a_provider_writes_nothing() {
     let repo = fresh_repo().await;
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "planner-unnamed",
-        "codex",
-        json!({"schemaVersion":1}),
-    )
-    .await;
-    let mut init = WorkerSessionInit::shared_planner(
-        "rt-planner-unnamed".into(),
-        card_id.clone(),
-        AgentProvider::Codex,
-        WorkerSessionState::Idle,
-        Some("thread-unnamed".into()),
-        json!({"mode": "harness"}),
-        1_000,
-    );
-    init.agent_provider = None;
-    let err = session_start_runtime_tx(&mut tx, init)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    "planner-unnamed",
+                    "codex",
+                    json!({"schemaVersion":1}),
+                )
+                .await;
+                let mut init = WorkerSessionInit::shared_planner(
+                    "rt-planner-unnamed".into(),
+                    card_id.clone(),
+                    AgentProvider::Codex,
+                    WorkerSessionState::Idle,
+                    Some("thread-unnamed".into()),
+                    json!({"mode": "harness"}),
+                    1_000,
+                );
+                init.agent_provider = None;
+                let err = session_start_runtime_tx(&mut tx, init)
+                    .await
+                    .expect_err("a planner row needs its provider");
+                assert_eq!(
+                    err,
+                    WorkerSessionProjectionRepoError::Message {
+                        message: "planner runtime init rt-planner-unnamed names no provider".into()
+                    }
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT count(*) FROM worker_sessions WHERE id='rt-planner-unnamed'"
+                    )
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT session_id FROM cards WHERE id=?"
+                    )
+                    .bind(&card_id)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    None
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .expect_err("a planner row needs its provider");
-    assert_eq!(
-        err,
-        WorkerSessionProjectionRepoError::Message {
-            message: "planner runtime init rt-planner-unnamed names no provider".into()
-        }
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM worker_sessions WHERE id='rt-planner-unnamed'"
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, Option<String>>("SELECT session_id FROM cards WHERE id=?")
-            .bind(&card_id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        None
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn assistant_provider_init_without_a_provider_writes_nothing() {
     let repo = fresh_repo().await;
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "assistant-unnamed",
-        "codex",
-        json!({"schemaVersion":1}),
-    )
-    .await;
-    let mut init = WorkerSessionInit::managed_assistant(
-        "rt-assistant-unnamed".into(),
-        card_id.clone(),
-        AgentProvider::Codex,
-        WorkerSessionState::Idle,
-        Some("assistant-thread".into()),
-        json!({"mode":"harness"}),
-        1_000,
-    );
-    init.agent_provider = None;
-    let err = session_start_runtime_tx(&mut tx, init)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    "assistant-unnamed",
+                    "codex",
+                    json!({"schemaVersion":1}),
+                )
+                .await;
+                let mut init = WorkerSessionInit::managed_assistant(
+                    "rt-assistant-unnamed".into(),
+                    card_id.clone(),
+                    AgentProvider::Codex,
+                    WorkerSessionState::Idle,
+                    Some("assistant-thread".into()),
+                    json!({"mode":"harness"}),
+                    1_000,
+                );
+                init.agent_provider = None;
+                let err = session_start_runtime_tx(&mut tx, init)
+                    .await
+                    .expect_err("a managed Assistant requires its provider");
+                assert_eq!(
+                    err,
+                    WorkerSessionProjectionRepoError::Message {
+                        message: "assistant runtime init rt-assistant-unnamed names no provider"
+                            .into()
+                    }
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT count(*) FROM worker_sessions WHERE id='rt-assistant-unnamed'"
+                    )
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, Option<String>>(
+                        "SELECT session_id FROM cards WHERE id=?"
+                    )
+                    .bind(&card_id)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    None
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .expect_err("a managed Assistant requires its provider");
-    assert_eq!(
-        err,
-        WorkerSessionProjectionRepoError::Message {
-            message: "assistant runtime init rt-assistant-unnamed names no provider".into()
-        }
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM worker_sessions WHERE id='rt-assistant-unnamed'"
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, Option<String>>("SELECT session_id FROM cards WHERE id=?")
-            .bind(&card_id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        None
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 /// An ACP provider runs only as a managed Planner or Assistant that resumes, for every ACP
@@ -214,46 +263,61 @@ async fn an_acp_provider_session_is_only_a_resumable_planner_or_assistant() {
     let acp = AgentProvider::ALL
         .into_iter()
         .filter(|provider| provider.protocol() == AgentProtocol::Acp);
-    for provider in acp {
-        let label = format!("acp-{}", provider.wire_name());
-        let mut tx = repo.pool().begin().await.expect("begin");
-        let card_id =
-            create_card_in_tx(&repo, &mut tx, &label, "codex", json!({"schemaVersion":1})).await;
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                label.clone(),
-                card_id,
-                provider.clone(),
-                WorkerSessionState::Idle,
-                None,
-                json!({}),
-                1_000,
-            ),
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for provider in acp {
+                    let label = format!("acp-{}", provider.wire_name());
+                    let mut tx = write_session.begin_immediate().await.expect("begin");
+                    let card_id = create_card_in_tx(
+                        &repo,
+                        &mut tx,
+                        &label,
+                        "codex",
+                        json!({"schemaVersion":1}),
+                    )
+                    .await;
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::shared_planner(
+                            label.clone(),
+                            card_id,
+                            provider.clone(),
+                            WorkerSessionState::Idle,
+                            None,
+                            json!({}),
+                            1_000,
+                        ),
+                    )
+                    .await
+                    .expect("a managed Planner of an ACP provider starts");
+                    let planner = session_get_tx(&mut tx, &WorkerSessionId(label.clone()))
+                        .await
+                        .expect("read")
+                        .expect("row");
+                    for (contract, mode, allowed) in [
+                        (WorkerContract::Planner, SessionMode::Resumable, true),
+                        (WorkerContract::Executor, SessionMode::Resumable, false),
+                        (WorkerContract::Planner, SessionMode::Ephemeral, false),
+                        (WorkerContract::Executor, SessionMode::Ephemeral, false),
+                    ] {
+                        let mut row = planner.clone();
+                        row.id = WorkerSessionId(format!("{label}-{contract:?}-{mode:?}"));
+                        row.state = WorkerSessionState::Superseded;
+                        row.contract = contract;
+                        row.mode = mode;
+                        assert_eq!(
+                            session_insert_tx(&mut tx, row).await.is_ok(),
+                            allowed,
+                            "{provider:?} {contract:?} {mode:?}"
+                        );
+                    }
+                    tx.rollback().await.expect("rollback");
+                }
+            })
+        })
         .await
-        .expect("a managed Planner of an ACP provider starts");
-        let planner = session_get_tx(&mut tx, &WorkerSessionId(label.clone()))
-            .await
-            .expect("read")
-            .expect("row");
-        for (contract, mode, allowed) in [
-            (WorkerContract::Planner, SessionMode::Resumable, true),
-            (WorkerContract::Executor, SessionMode::Resumable, false),
-            (WorkerContract::Planner, SessionMode::Ephemeral, false),
-            (WorkerContract::Executor, SessionMode::Ephemeral, false),
-        ] {
-            let mut row = planner.clone();
-            row.id = WorkerSessionId(format!("{label}-{contract:?}-{mode:?}"));
-            row.state = WorkerSessionState::Superseded;
-            row.contract = contract;
-            row.mode = mode;
-            assert_eq!(
-                session_insert_tx(&mut tx, row).await.is_ok(),
-                allowed,
-                "{provider:?} {contract:?} {mode:?}"
-            );
-        }
-        tx.rollback().await.expect("rollback");
-    }
+        .expect("independent write operation")
 }

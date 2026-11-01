@@ -1,10 +1,7 @@
 //! Kernel observation of worktree resources. Filesystem evidence is collected outside SQL.
 
 use crate::{
-    db::sqlite::{
-        DirectoryObservation, begin_immediate_tx, workspace_observation_snapshot,
-        workspace_observe_tx,
-    },
+    db::sqlite::{DirectoryObservation, workspace_observation_snapshot, workspace_observe_tx},
     error::{CalmError, Result},
 };
 
@@ -69,10 +66,19 @@ async fn observe(pool: &crate::db::sqlite::SqliteDb, track_id: &str) -> Result<(
         };
     };
     identity.validate()?;
-    let mut tx = begin_immediate_tx(pool).await?;
-    workspace_observe_tx(&mut tx, &snapshot, &identity).await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                workspace_observe_tx(&mut tx, &snapshot, &identity).await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 #[cfg(test)]

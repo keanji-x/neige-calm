@@ -45,12 +45,16 @@ impl From<ExecutorSettlement> for IntentSettlement {
 
 /// A stable boot-resume view, in deterministic intent identity order.
 pub async fn unsettled_intents(db: &SqliteDb) -> Result<Vec<StoredIntent>> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let rows = sqlx::query("SELECT * FROM objective_intents WHERE status<>'settled' ORDER BY track_id,event_seq,ordinal")
-        .fetch_all(&mut **tx).await?;
-    let result = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
-    tx.commit().await?;
-    Ok(result)
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let rows = sqlx::query("SELECT * FROM objective_intents WHERE status<>'settled' ORDER BY track_id,event_seq,ordinal")
+            .fetch_all(&mut **tx).await?;
+        let result = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
+        tx.commit().await?;
+        Ok(result)
+
+    })).await.map_err(crate::TruthError::from)?
 }
 
 /// The per-track executor view; avoids reading other tracks' durable work.
@@ -58,12 +62,16 @@ pub async fn unsettled_intents_for_track(
     db: &SqliteDb,
     track: &TrackId,
 ) -> Result<Vec<StoredIntent>> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let rows = sqlx::query("SELECT * FROM objective_intents WHERE track_id=? AND status<>'settled' ORDER BY event_seq,ordinal")
-        .bind(track.as_str()).fetch_all(&mut **tx).await?;
-    let result = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
-    tx.commit().await?;
-    Ok(result)
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let rows = sqlx::query("SELECT * FROM objective_intents WHERE track_id=? AND status<>'settled' ORDER BY event_seq,ordinal")
+            .bind(track.as_str()).fetch_all(&mut **tx).await?;
+        let result = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
+        tx.commit().await?;
+        Ok(result)
+
+    })).await.map_err(crate::TruthError::from)?
 }
 
 fn decode(row: &sqlx::sqlite::SqliteRow) -> Result<StoredIntent> {

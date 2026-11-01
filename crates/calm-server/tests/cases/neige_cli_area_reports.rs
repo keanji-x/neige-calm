@@ -110,11 +110,20 @@ async fn add_report(boot: &CardBoot, track: &TrackId, body: &str) -> String {
 /// Tag another track's report through the production tag writer (the CLI only tags its own).
 async fn tag_other(boot: &CardBoot, track: &TrackId, add: &[&str]) {
     let add: Vec<String> = add.iter().map(|tag| tag.to_string()).collect();
-    let mut tx = boot.sqlx.pool().begin().await.unwrap();
-    calm_server::report_tags::store::apply_tx(&mut tx, track.as_str(), &add, &[])
+    let write_db = (boot.sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::report_tags::store::apply_tx(&mut tx, track.as_str(), &add, &[])
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 fn local_ms(hour: u32, minute: u32) -> i64 {
@@ -126,10 +135,13 @@ fn local_ms(hour: u32, minute: u32) -> i64 {
 }
 
 async fn set_report_time(boot: &CardBoot, card: &str, at: i64) {
-    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
-        .bind(at)
-        .bind(card)
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
+                .bind(at)
+                .bind(card),
+        )
         .await
         .unwrap();
 }

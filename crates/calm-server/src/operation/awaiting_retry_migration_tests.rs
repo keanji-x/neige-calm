@@ -44,7 +44,18 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
         ),
         ..sqlx::migrate::Migrator::DEFAULT
     };
-    previous.run(&pool).await.unwrap();
+    {
+        let migrator = &previous;
+        db.writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                })
+            })
+            .await
+            .unwrap()
+    }
+    .unwrap();
     let repo = SqlxOperationRepo::new(db.clone());
     for name in ["active", "complete", "parked"] {
         let id = repo
@@ -60,16 +71,20 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
             .await
             .unwrap();
         if name == "complete" {
-            sqlx::query("UPDATE operations SET phase='succeeded', completed_at_ms=42 WHERE id=?1")
-                .bind(&id)
-                .execute(&pool)
+            db.writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET phase='succeeded', completed_at_ms=42 WHERE id=?1",
+                    )
+                    .bind(&id),
+                )
                 .await
                 .unwrap();
         }
         if name == "parked" {
-            sqlx::query("UPDATE operations SET phase='parked', parked_at_ms=1, parked_deadline_ms=999, spawn_artifacts_json=?1 WHERE id=?2")
+            db.writer().execute(sqlx::query("UPDATE operations SET phase='parked', parked_at_ms=1, parked_deadline_ms=999, spawn_artifacts_json=?1 WHERE id=?2")
                 .bind(json!({"pid":1,"pgid":1,"start_time":1,"boot_id":"old","log_path":null,"extra":null}).to_string())
-                .bind(&id).execute(&pool).await.unwrap();
+                .bind(&id)).await.unwrap();
         }
     }
     let operation_id: String =
@@ -77,24 +92,37 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
             .fetch_one(&pool)
             .await
             .unwrap();
-    sqlx::query("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','area','#000',0,1,1)").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','track',0,1,1)").execute(&pool).await.unwrap();
-    sqlx::query(
-        "INSERT INTO cards(id,track_id,kind,sort,payload,created_at,updated_at,role)
+    db.writer().execute(sqlx::query("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','area','#000',0,1,1)")).await.unwrap();
+    db.writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','track',0,1,1)")).await.unwrap();
+    db.writer()
+        .execute(sqlx::query(
+            "INSERT INTO cards(id,track_id,kind,sort,payload,created_at,updated_at,role)
          VALUES('card','track','codex',0,'{}',1,1,'worker')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,spawn_op_id,created_at_ms,updated_at_ms)
+        ))
+        .await
+        .unwrap();
+    db.writer().execute(sqlx::query("INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,spawn_op_id,created_at_ms,updated_at_ms)
          VALUES('session','track','codex','resumable','planner','failed',?1,1,1)")
-        .bind(&operation_id).execute(&pool).await.unwrap();
-    sqlx::query("UPDATE cards SET session_id='session' WHERE id='card'")
-        .execute(&pool)
+        .bind(&operation_id)).await.unwrap();
+    db.writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET session_id='session' WHERE id='card'",
+        ))
         .await
         .unwrap();
     let before = snapshot(&pool).await;
-    calm_truth::MIGRATOR.run(&pool).await.unwrap();
+    {
+        let migrator = &calm_truth::MIGRATOR;
+        db.writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                })
+            })
+            .await
+            .unwrap()
+    }
+    .unwrap();
     assert_eq!(
         snapshot(&pool).await,
         before,
@@ -126,9 +154,8 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
         );
     }
     assert!(
-        sqlx::query("DELETE FROM operations WHERE id=?1")
-            .bind(&operation_id)
-            .execute(&pool)
+        db.writer()
+            .execute(sqlx::query("DELETE FROM operations WHERE id=?1").bind(&operation_id))
             .await
             .is_err()
     );
@@ -146,17 +173,20 @@ async fn awaiting_retry_migration_preserves_rows_session_refs_indices_and_parked
         .is_err()
     );
     assert!(
-        sqlx::query("UPDATE operations SET phase='parked' WHERE id=?1")
-            .bind(&operation_id)
-            .execute(&pool)
+        db.writer()
+            .execute(
+                sqlx::query("UPDATE operations SET phase='parked' WHERE id=?1").bind(&operation_id)
+            )
             .await
             .is_err(),
         "legacy parked evidence is still mandatory"
     );
     assert!(
-        sqlx::query("UPDATE operations SET phase='awaiting_retry' WHERE id=?1")
-            .bind(&operation_id)
-            .execute(&pool)
+        db.writer()
+            .execute(
+                sqlx::query("UPDATE operations SET phase='awaiting_retry' WHERE id=?1")
+                    .bind(&operation_id)
+            )
             .await
             .is_err(),
         "a deferred phase needs a saved continuation and receipt"

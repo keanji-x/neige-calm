@@ -13,7 +13,7 @@ use calm_server::scheduler::{PostClaimDriveTestHook, Scheduler, build_worker_pay
 use calm_server::state::DaemonClient;
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_fs_view::TrackFsView;
-use calm_truth::db::sqlite::{begin_immediate_tx, card_create_with_id_tx, task_mark_running_tx};
+use calm_truth::db::sqlite::{card_create_with_id_tx, task_mark_running_tx};
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -32,15 +32,24 @@ async fn start(boot: &Boot, scheduler: &Arc<Scheduler>, task: &Task, worker_card
     let frozen = current(boot, &task.key).await;
     assert_eq!(frozen.status, TaskStatus::Dispatched);
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    assert_eq!(
-        task_mark_running_tx(&mut tx, &task.id, Some(worker_card), 11, 100000)
-            .await
-            .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    build_worker_payload(&frozen).unwrap().1
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    task_mark_running_tx(&mut tx, &task.id, Some(worker_card), 11, 100000)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
+                build_worker_payload(&frozen).unwrap().1
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -100,15 +109,14 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     assert_ne!(a.id, a.key, "execution IDs are opaque, not author keys");
     // A codex declaration does not take `gate.cwd` (#1727 S4): the gate runs in the bound
     // worker's lease worktree, so the worker card gets a released lease at `dir`.
-    sqlx::query(
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query(
         "INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, \
          lease_until_ms, created_at_ms, updated_at_ms) \
          VALUES ('audit-checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1)",
     )
     .bind(dir.path().to_str().unwrap())
     .bind(boot.worker_card_id.as_str())
-    .bind(boot.track_id.as_str())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    .bind(boot.track_id.as_str()))
     .await
     .unwrap();
     start(&boot, &scheduler, &a, boot.worker_card_id.as_str()).await;
@@ -236,67 +244,71 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     .unwrap();
     let b = current(&boot, "recommendation").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        "recommendation-worker".into(),
-        NewCard {
-            track_id: boot.track_id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: Value::Null,
-        },
-        CardRole::Worker,
-        true,
-        &boot.card_role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    crate::mcp_track_report::seed_non_root_session_with_provider(
-        boot.repo.as_ref(),
-        &boot.track_id,
-        &card.id,
-        "recommendation-session",
-        calm_types::worker::WorkerProviderKind::Codex,
-    )
-    .await;
-    let mut b_identity = worker_identity(&boot);
-    b_identity.card_id = card.id.to_string();
-    b_identity.session_id = "recommendation-session".into();
-    let worker_payload = start(&boot, &scheduler, &b, card.id.as_str()).await;
-    assert_eq!(worker_payload["context"], context);
-    let recommendation = json!({"timeout_secs":worker_payload["context"]["selected"]["recommendation"],
-        "source_attempt_id":worker_payload["context"]["source_attempt_id"]});
-    call_tool(
-        &boot,
-        "neige_task_done",
-        b_identity,
-        json!({"attempt_id":b.id,"result":recommendation}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        current(&boot, "recommendation").await.status,
-        TaskStatus::Done
-    );
-    let b_run: Value = serde_json::from_str(
-        &view
-            .cat(&track, &format!("runs/{}.json", b.id))
-            .await
-            .unwrap()
-            .content,
-    )
-    .unwrap();
-    assert_eq!(
-        b_run["events"]["completed"]["payload"]["result"]["timeout_secs"],
-        30
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-        source
-    );
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            "recommendation-worker".into(),
+            NewCard {
+                track_id: boot.track_id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: Value::Null,
+            },
+            CardRole::Worker,
+            true,
+            &boot.card_role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        crate::mcp_track_report::seed_non_root_session_with_provider(
+            boot.repo.as_ref(),
+            &boot.track_id,
+            &card.id,
+            "recommendation-session",
+            calm_types::worker::WorkerProviderKind::Codex,
+        )
+        .await;
+        let mut b_identity = worker_identity(&boot);
+        b_identity.card_id = card.id.to_string();
+        b_identity.session_id = "recommendation-session".into();
+        let worker_payload = start(&boot, &scheduler, &b, card.id.as_str()).await;
+        assert_eq!(worker_payload["context"], context);
+        let recommendation = json!({"timeout_secs":worker_payload["context"]["selected"]["recommendation"],
+            "source_attempt_id":worker_payload["context"]["source_attempt_id"]});
+        call_tool(
+            &boot,
+            "neige_task_done",
+            b_identity,
+            json!({"attempt_id":b.id,"result":recommendation}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            current(&boot, "recommendation").await.status,
+            TaskStatus::Done
+        );
+        let b_run: Value = serde_json::from_str(
+            &view
+                .cat(&track, &format!("runs/{}.json", b.id))
+                .await
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        assert_eq!(
+            b_run["events"]["completed"]["payload"]["result"]["timeout_secs"],
+            30
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+            source
+        );
+
+    })).await.expect("independent write operation")
 }
 
 /// Follow advertised paths without depending on surrounding prose or code-span order.

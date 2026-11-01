@@ -142,62 +142,73 @@ async fn cancelled_receipt(projection_failure: bool) {
     else {
         panic!("canonical receipt");
     };
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                record_input_attempt_fact_tx(
+                    &mut tx,
+                    &mut carrier,
+                    InputAttemptFact {
+                        attempt: input.proof.attempt().clone(),
+                        correlation: InputCorrelationFact {
+                            provider: fx.provider.clone(),
+                            thread_id: receipt.thread_id,
+                            native_session_id: Some(receipt.native_session_id),
+                            native_turn_id: None,
+                            local_turn_id: Some(receipt.turn_id),
+                            rpc_request_id: None,
+                        },
+                        delivery: InputDeliveryFact::Unknown,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                fx.keep_unknown(&fx.submission, "keep-cancelled").await;
+                assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
+                assert_eq!(fx.prompts(), 0, "Keep never resends the cancelled prompt");
+                assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
+                if projection_failure {
+                    (fx.owner.repo.db())
+                        .writer()
+                        .execute(sqlx::query("DROP TRIGGER fail_outcome"))
+                        .await
+                        .unwrap();
+                    // A receipt-only retry retires the retained claim without provider I/O.
+                    fx.session
+                        .host()
+                        .provider_execution
+                        .finish(
+                            &fx.owner.repo.sqlite_db().unwrap(),
+                            fx.session.host().execution.engine(),
+                            &fx.owner.worker,
+                            &claim,
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                }
+                let successor = fx.claim_successor().await;
+                fx.dispatch_submission(&successor).await;
+                fx.wait_idle().await;
+                fx.wait_end().await;
+                assert_eq!(
+                    fx.prompts(),
+                    1,
+                    "only fresh Human input reaches the provider"
+                );
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    record_input_attempt_fact_tx(
-        &mut tx,
-        &mut carrier,
-        InputAttemptFact {
-            attempt: input.proof.attempt().clone(),
-            correlation: InputCorrelationFact {
-                provider: fx.provider.clone(),
-                thread_id: receipt.thread_id,
-                native_session_id: Some(receipt.native_session_id),
-                native_turn_id: None,
-                local_turn_id: Some(receipt.turn_id),
-                rpc_request_id: None,
-            },
-            delivery: InputDeliveryFact::Unknown,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    fx.keep_unknown(&fx.submission, "keep-cancelled").await;
-    assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
-    assert_eq!(fx.prompts(), 0, "Keep never resends the cancelled prompt");
-    assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
-    if projection_failure {
-        sqlx::query("DROP TRIGGER fail_outcome")
-            .execute(fx.owner.repo.pool())
-            .await
-            .unwrap();
-        // A receipt-only retry retires the retained claim without provider I/O.
-        fx.session
-            .host()
-            .provider_execution
-            .finish(
-                &fx.owner.repo.sqlite_db().unwrap(),
-                fx.session.host().execution.engine(),
-                &fx.owner.worker,
-                &claim,
-                None,
-            )
-            .await
-            .unwrap();
-    }
-    let successor = fx.claim_successor().await;
-    fx.dispatch_submission(&successor).await;
-    fx.wait_idle().await;
-    fx.wait_end().await;
-    assert_eq!(
-        fx.prompts(),
-        1,
-        "only fresh Human input reaches the provider"
-    );
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -233,10 +244,9 @@ async fn canonical_acp_acknowledgement_failure_rolls_back_end_and_retries_once()
     let fx = Fixture::new("reply").await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
-    sqlx::query("CREATE TRIGGER fail_input_ack BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fx.owner.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_input_ack BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].delivery.kind')='accepted'
-        BEGIN SELECT RAISE(ABORT,'ack failed'); END")
-        .execute(fx.owner.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'ack failed'); END")).await.unwrap();
     let error = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match crate::harness::input_dispatch::complete_once(
@@ -256,22 +266,33 @@ async fn canonical_acp_acknowledgement_failure_rolls_back_end_and_retries_once()
     .await
     .unwrap();
     assert!(error.to_string().contains("ack failed"));
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                assert!(carrier.checkpoint().active.is_some());
+                assert!(matches!(
+                    carrier.checkpoint().attempts[0].delivery,
+                    InputDeliveryFact::Unknown
+                ));
+                tx.commit().await.unwrap();
+                (fx.owner.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DROP TRIGGER fail_input_ack"))
+                    .await
+                    .unwrap();
+                fx.wait_end().await;
+                assert!(fx.complete().await.is_none());
+                assert_eq!(fx.prompts(), 1);
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert!(carrier.checkpoint().active.is_some());
-    assert!(matches!(
-        carrier.checkpoint().attempts[0].delivery,
-        InputDeliveryFact::Unknown
-    ));
-    tx.commit().await.unwrap();
-    sqlx::query("DROP TRIGGER fail_input_ack")
-        .execute(fx.owner.repo.pool())
-        .await
-        .unwrap();
-    fx.wait_end().await;
-    assert!(fx.complete().await.is_none());
-    assert_eq!(fx.prompts(), 1);
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

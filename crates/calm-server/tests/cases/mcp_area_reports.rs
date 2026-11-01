@@ -98,34 +98,43 @@ async fn side(sqlx: &SqlxRepo, cache: &CardRoleCache, area: &AreaId, title: &str
     cache.insert(worker.clone(), CardRole::Worker, track.clone());
     cache.insert(report.clone(), CardRole::ReportCard, track.clone());
     crate::support::mcp::set_persisted_card_role(sqlx, planner.as_str(), CardRole::Planner).await;
-    let mut tx = sqlx.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id(&planner),
-            card_id: planner.as_str().to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(format!("thread-{planner}")),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    Side {
-        area_id: area.clone(),
-        track_id: track,
-        planner,
-        worker,
-        report,
-    }
+    let write_db = (sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session_id(&planner),
+                        card_id: planner.as_str().to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(format!("thread-{planner}")),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                Side {
+                    area_id: area.clone(),
+                    track_id: track,
+                    planner,
+                    worker,
+                    report,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// One side per `(area index, title)`, all minted before the context so its caches see them.
@@ -270,10 +279,13 @@ async fn tag(boot: &Boot, side: &Side, add: &[&str]) {
 }
 
 async fn set_report_updated_at(boot: &Boot, side: &Side, at: i64) {
-    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
-        .bind(at)
-        .bind(side.report.as_str())
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
+                .bind(at)
+                .bind(side.report.as_str()),
+        )
         .await
         .unwrap();
 }
@@ -642,9 +654,12 @@ async fn report_time_ignores_other_track_activity_and_follows_tag_changes() {
     let boot = boot(&[(0, "认证 方案"), (0, "登录 排查")]).await;
     let (own, other) = (&boot.sides[0], &boot.sides[1]);
     set_report_updated_at(&boot, other, 1_000).await;
-    sqlx::query("UPDATE tracks SET updated_at = 1000 WHERE id = ?1")
-        .bind(other.track_id.as_str())
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET updated_at = 1000 WHERE id = ?1")
+                .bind(other.track_id.as_str()),
+        )
         .await
         .unwrap();
     let moved = boot

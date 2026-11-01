@@ -1,10 +1,13 @@
 use super::*;
 
 async fn close_track(boot: &Boot) {
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
 }
@@ -135,13 +138,16 @@ async fn planner_hibernat_live_closed_owner_survives_daemon_replace() {
     let boot = boot_shared().await;
     let (card, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
-    sqlx::query("UPDATE cards SET payload=json_patch(payload,?) WHERE id=?")
-        .bind(
-            json!({"model":"gpt-5","reasoning_effort":"high","permission_mode":"never"})
-                .to_string(),
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=json_patch(payload,?) WHERE id=?")
+                .bind(
+                    json!({"model":"gpt-5","reasoning_effort":"high","permission_mode":"never"})
+                        .to_string(),
+                )
+                .bind(card.id.as_str()),
         )
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
         .await
         .unwrap();
     close_track(&boot).await;

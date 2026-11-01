@@ -45,14 +45,12 @@ async fn planner_recovery_tables_are_dropped() {
         db.apply(migration).await.unwrap();
     }
     // One row per table, linked the way production linked them.
-    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
+    { let query = sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','T',0,1,2);
         INSERT INTO planner_recovery_threads VALUES('thread','track','card',3);
         INSERT INTO planner_recovery_issuances VALUES('issuance','track','session','thread','[]','[{\"key\":\"a\"}]',3);
         INSERT INTO planner_recovery_turns VALUES('thread','turn','session','track','issuance',4);
-        INSERT INTO planner_recovery_calls VALUES('thread','turn','call','session','track','Recover','0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',5);")
-        .execute(&mut db)
-        .await
+        INSERT INTO planner_recovery_calls VALUES('thread','turn','call','session','track','Recover','0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',5);"); sqlx::Executor::execute(&mut db, query).await }
         .unwrap();
     assert!(
         schema_objects(&mut db).await.len() >= DROPPED.len(),

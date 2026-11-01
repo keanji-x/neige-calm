@@ -383,20 +383,24 @@ async fn update_of_a_running_task_worker_card_is_refused_and_leaves_its_child() 
     let (pid, _) = starts(log)[0];
     // A task worker's card never carries the creation-time marker; drop the one the route
     // stamped, below the API (which keeps it sticky), and make a task own the card.
-    sqlx::query("UPDATE cards SET payload = json_remove(payload, '$.owner_created') WHERE id = ?1")
-        .bind(&live.card_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_remove(payload, '$.owner_created') WHERE id = ?1",
+            )
+            .bind(&live.card_id),
+        )
         .await
         .unwrap();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
            worker_card_id, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, 'worker', 'claude', 'work', 'null', '[]', 'running', ?3, 1, 1)",
     )
     .bind(format!("{}:worker", boot.track_id))
     .bind(&boot.track_id)
-    .bind(&live.card_id)
-    .execute(boot.repo.pool())
+    .bind(&live.card_id))
     .await
     .unwrap();
 
@@ -492,11 +496,10 @@ async fn update_that_cannot_restart_the_card_leaves_its_child_running() {
     let live = live_card().await;
     let (boot, log) = (&live.boot, &live.log);
     let (pid, _) = starts(log)[0];
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.settings_path', '/') WHERE id = ?1",
     )
-    .bind(&live.card_id)
-    .execute(boot.repo.pool())
+    .bind(&live.card_id))
     .await
     .unwrap();
 
@@ -526,15 +529,14 @@ async fn update_of_an_owner_card_whose_terminal_a_task_owns_leaves_its_child_run
     let live = live_card().await;
     let (boot, log) = (&live.boot, &live.log);
     let (pid, _) = starts(log)[0];
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
            worker_card_id, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, 'owned', 'claude', 'work', 'null', '[]', 'running', ?3, 1, 1)",
     )
     .bind(format!("{}:owned", boot.track_id))
     .bind(&boot.track_id)
-    .bind(&live.card_id)
-    .execute(boot.repo.pool())
+    .bind(&live.card_id))
     .await
     .unwrap();
 

@@ -354,9 +354,9 @@ async fn accepted_send_replay_keeps_its_receipt_without_a_current_carrier() {
         ),
         "a refused transaction must release its pre-commit handoff guard"
     );
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-        .bind(card)
-        .execute(fixture.repo.db().writer_pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(card))
         .await
         .unwrap();
     let replay = post(&app, &cookie, &uri, "original-send", body).await;

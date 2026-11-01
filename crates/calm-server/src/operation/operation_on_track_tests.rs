@@ -27,16 +27,24 @@ async fn operation_on_track_matches_only_its_kind_and_track() {
     let other_kind = insert(&repo, "terminal-create", json!({"track_id": "track-a"})).await;
     let other_target = insert(&repo, FORGE_ACTION_KIND, json!({"track_id": "track-a"})).await;
     let other_track = insert(&repo, FORGE_ACTION_KIND, json!({"track_id": "track-b"})).await;
-    sqlx::query("UPDATE operations SET target_type = 'card' WHERE id = ?1")
-        .bind(&other_target)
-        .execute(truth.pool())
+    (truth.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET target_type = 'card' WHERE id = ?1")
+                .bind(&other_target),
+        )
         .await
         .unwrap();
     // Out-of-scope rows that no longer decode: the scoped lookup never reads them.
     for op_id in [&other_kind, &other_target, &other_track] {
-        sqlx::query("UPDATE operations SET tx_output_json = '\"undecodable\"' WHERE id = ?1")
-            .bind(op_id)
-            .execute(truth.pool())
+        (truth.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET tx_output_json = '\"undecodable\"' WHERE id = ?1",
+                )
+                .bind(op_id),
+            )
             .await
             .unwrap();
         assert!(

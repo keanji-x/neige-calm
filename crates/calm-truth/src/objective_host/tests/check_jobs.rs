@@ -57,121 +57,143 @@ async fn check_jobs_bind_pending_and_stale_current_standard_admission() {
         "next",
     )
     .await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(
-        check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let current = unsettled_intents(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        assert!(
+                            check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
+                                .await
+                                .is_err()
+                        );
+                        tx.rollback().await.unwrap();
+                        let current = unsettled_intents(repo.db())
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| matches!(&r.intent,Intent::RunCheck{revision,..} if revision.as_str()=="r1"))
+                .unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        check_jobs::bind_tx(&mut tx, &current.id, "objcheck-test", &block().payload)
+                            .await
+                            .unwrap();
+                        assert!(
+                            check_jobs::bind_tx(&mut tx, &current.id, "objcheck-test", &block().payload)
+                                .await
+                                .is_err()
+                        );
+                        tx.rollback().await.unwrap();
+                        assert_eq!(
+                            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM objective_check_jobs")
+                                .fetch_one(repo.pool())
+                                .await
+                                .unwrap(),
+                            0
+                        );
+            })
+        })
         .await
-        .unwrap()
-        .into_iter()
-        .find(|r| matches!(&r.intent,Intent::RunCheck{revision,..} if revision.as_str()=="r1"))
-        .unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    check_jobs::bind_tx(&mut tx, &current.id, "objcheck-test", &block().payload)
-        .await
-        .unwrap();
-    assert!(
-        check_jobs::bind_tx(&mut tx, &current.id, "objcheck-test", &block().payload)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM objective_check_jobs")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap(),
-        0
-    );
+        .expect("independent write operation")
 }
 #[tokio::test]
 async fn check_jobs_guard_payload_hash_and_unrelated_writes() {
     let repo = fixture().await;
     let job = evaluator_job(&repo).await;
     let b = block();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &b.payload)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &b.payload)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut changed = b.clone();
+                changed.payload["goal"] = json!("injected");
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    check_jobs::guard_report_tx(
+                        &mut tx,
+                        &"t".into(),
+                        std::slice::from_ref(&b),
+                        std::slice::from_ref(&changed)
+                    )
+                    .await
+                    .is_err()
+                );
+                check_jobs::guard_report_tx(
+                    &mut tx,
+                    &"t".into(),
+                    std::slice::from_ref(&b),
+                    std::slice::from_ref(&b),
+                )
+                .await
+                .unwrap();
+                let mut unrelated = b.clone();
+                unrelated.payload["key"] = json!("ordinary");
+                check_jobs::guard_report_tx(&mut tx, &"t".into(), &[], &[unrelated])
+                    .await
+                    .unwrap();
+                let mut tombstone = b.clone();
+                tombstone.payload =
+                    json!({"key":"objcheck-test","tombstone":{"reason":"withdrawn"}});
+                check_jobs::guard_report_tx(&mut tx, &"t".into(), &[b], &[tombstone])
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut changed = b.clone();
-    changed.payload["goal"] = json!("injected");
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(
-        check_jobs::guard_report_tx(
-            &mut tx,
-            &"t".into(),
-            std::slice::from_ref(&b),
-            std::slice::from_ref(&changed)
-        )
-        .await
-        .is_err()
-    );
-    check_jobs::guard_report_tx(
-        &mut tx,
-        &"t".into(),
-        std::slice::from_ref(&b),
-        std::slice::from_ref(&b),
-    )
-    .await
-    .unwrap();
-    let mut unrelated = b.clone();
-    unrelated.payload["key"] = json!("ordinary");
-    check_jobs::guard_report_tx(&mut tx, &"t".into(), &[], &[unrelated])
-        .await
-        .unwrap();
-    let mut tombstone = b.clone();
-    tombstone.payload = json!({"key":"objcheck-test","tombstone":{"reason":"withdrawn"}});
-    check_jobs::guard_report_tx(&mut tx, &"t".into(), &[b], &[tombstone])
-        .await
-        .unwrap();
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 #[tokio::test]
 async fn check_jobs_migrations_append_only_foreign_key_and_cascade() {
     let repo = fixture().await;
     let job = evaluator_job(&repo).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        for sql in [
+            "UPDATE objective_check_jobs SET task_key='changed'",
+            "DELETE FROM objective_check_jobs",
+            "INSERT OR REPLACE INTO objective_check_jobs SELECT * FROM objective_check_jobs",
+        ] {
+            assert!(
+                (repo.db()).writer().execute(sqlx::query(sql)).await.is_err(),
+                "{sql}"
+            );
+        }
+        assert!(
+            (repo.db()).writer().execute(sqlx::query("INSERT INTO objective_check_jobs VALUES('t',999,0,'missing','hash')"))
+                .await
+                .is_err()
+        );
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        track_delete_tx(
+            &mut tx,
+            "t",
+            &crate::track_area_cache::TrackAreaCache::new(),
+        )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
-    for sql in [
-        "UPDATE objective_check_jobs SET task_key='changed'",
-        "DELETE FROM objective_check_jobs",
-        "INSERT OR REPLACE INTO objective_check_jobs SELECT * FROM objective_check_jobs",
-    ] {
-        assert!(
-            sqlx::query(sql).execute(repo.pool()).await.is_err(),
-            "{sql}"
+        tx.commit().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM objective_check_jobs")
+                .fetch_one(repo.pool())
+                .await
+                .unwrap(),
+            0
         );
-    }
-    assert!(
-        sqlx::query("INSERT INTO objective_check_jobs VALUES('t',999,0,'missing','hash')")
-            .execute(repo.pool())
-            .await
-            .is_err()
-    );
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    track_delete_tx(
-        &mut tx,
-        "t",
-        &crate::track_area_cache::TrackAreaCache::new(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM objective_check_jobs")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap(),
-        0
-    );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -242,10 +264,14 @@ async fn check_jobs_bind_changed_standard_rejects_unbound_pending_intent() {
             .iter()
             .any(|row| row.id == job.id && row.status == IntentStatus::Pending)
     );
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(matches!(
-        check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload).await,
-        Err(error) if error.to_string().contains("objective check binding is no longer current")
-    ));
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        assert!(matches!(
+            check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload).await,
+            Err(error) if error.to_string().contains("objective check binding is no longer current")
+        ));
+        tx.rollback().await.unwrap();
+
+    })).await.expect("independent write operation")
 }

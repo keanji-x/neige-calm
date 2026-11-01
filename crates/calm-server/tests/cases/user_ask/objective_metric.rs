@@ -290,9 +290,9 @@ fn objective_metric_running_restart_cleans_capture_and_wakes_once() {
                 .with_timeout(1),
             lifecycle,
         );
-        sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=?")
-            .bind(KIND)
-            .execute(w.boot.repo.sqlite_db().unwrap().writer_pool())
+        (w.boot.repo.sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=?").bind(KIND))
             .await
             .unwrap();
         let plan = w.runtime.recover_on_boot().await.unwrap();
@@ -383,8 +383,7 @@ fn objective_metric_boot_cleans_previously_acknowledged_capture() {
             .repo
             .sqlite_db()
             .unwrap()
-            .writer_pool()
-            .acquire()
+            .hold_writer_for_test()
             .await
             .unwrap();
         (w, writer)
@@ -405,9 +404,9 @@ fn objective_metric_boot_cleans_previously_acknowledged_capture() {
         let pipe = stdout.with_extension("stdout.pipe");
         std::fs::write(stdout, "3.5").unwrap();
         assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
-        sqlx::query("UPDATE operations SET \
+        (db).writer().execute(sqlx::query("UPDATE operations SET \
              tx_output_json=json_remove(json_set(tx_output_json,'$.data.checkout_removed',json('true')),'$.data.capture_removed') WHERE kind=?")
-            .bind(KIND).execute(db.writer_pool()).await.unwrap();
+            .bind(KIND)).await.unwrap();
         project(&w).await; // Startup reconciliation of a terminal pre-fix row.
         assert!(!pipe.exists());
         assert!(!stdout.exists());

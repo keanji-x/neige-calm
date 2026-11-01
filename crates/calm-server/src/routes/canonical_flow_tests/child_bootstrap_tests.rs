@@ -98,28 +98,34 @@ async fn child_flow(window: Window) {
     }
     let parent = post(&app, &cookie, "/api/tracks", "child-parent", parent_body).await;
     let parent_id = parent["id"].as_str().unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full', \
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full', \
          '$.model','child-model','$.reasoning_effort','high') WHERE track_id=?1 AND role='planner'",
-    )
-    .bind(parent_id)
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(parent_id),
+        )
+        .await
+        .unwrap();
     let task = format!("{parent_id}:u11-child");
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json, \
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json, \
          depends_on_json,priority,status,spawn,created_at_ms,updated_at_ms,access)
         VALUES(?1,?2,'u11-child','codex',?3,'null','[]',0,'dispatched',?4,?5,?5,'read_write')",
-    )
-    .bind(&task)
-    .bind(parent_id)
-    .bind(SEED)
-    .bind(TASK_CHILD_TRACK_ROUTE)
-    .bind(crate::model::now_ms())
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&task)
+            .bind(parent_id)
+            .bind(SEED)
+            .bind(TASK_CHILD_TRACK_ROUTE)
+            .bind(crate::model::now_ms()),
+        )
+        .await
+        .unwrap();
     let workspace_pause = crate::test_seams::PausePoint::default();
     if window == Window::Workspace {
         crate::test_seams::install_pause_for_test(
@@ -391,14 +397,15 @@ async fn child_flow(window: Window) {
             );
         }
         if window == Window::Failed {
-            sqlx::query(concat!(
-                "CREATE TRIGGER u11_reject_activation BEFORE UPDATE OF phase ON operations ",
-                "WHEN NEW.kind='planner-harness-start' AND NEW.phase='spawn_succeeded' ",
-                "BEGIN SELECT RAISE(ABORT,'u11 reject success persistence'); END",
-            ))
-            .execute(fixture.repo.pool())
-            .await
-            .unwrap();
+            (fixture.repo.db())
+                .writer()
+                .execute(sqlx::query(concat!(
+                    "CREATE TRIGGER u11_reject_activation BEFORE UPDATE OF phase ON operations ",
+                    "WHEN NEW.kind='planner-harness-start' AND NEW.phase='spawn_succeeded' ",
+                    "BEGIN SELECT RAISE(ABORT,'u11 reject success persistence'); END",
+                )))
+                .await
+                .unwrap();
         }
         // Expire the original claim after Track has passed to the installed
         // harness. Another real owner keeps Track throughout the re-drive:
@@ -409,11 +416,10 @@ async fn child_flow(window: Window) {
                 &original.0,
             )
             .await;
-            let changed = sqlx::query(
+            let changed = (fixture.repo.db()).writer().execute(sqlx::query(
                 "UPDATE operations SET lease_until_ms=0 WHERE id=?1 AND phase='spawn_started'",
             )
-            .bind(&activation)
-            .execute(fixture.repo.pool())
+            .bind(&activation))
             .await
             .unwrap();
             assert_eq!(changed.rows_affected(), 1);
@@ -572,9 +578,9 @@ async fn child_flow(window: Window) {
     assert_eq!(starts, 1);
     assert_eq!(fixture.counts(&original.1).await.3, turns);
     // Crash window: activation and delivery committed, but dispatched->running did not.
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&task)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task))
         .await
         .unwrap();
     // Serve shutdown interruption while rejecting every extra start.

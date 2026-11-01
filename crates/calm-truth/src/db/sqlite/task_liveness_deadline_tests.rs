@@ -112,14 +112,26 @@ async fn migration_adds_task_running_liveness_column_and_task_round_trips_it() {
     let mut row = task("track-1", "roundtrip", TaskStatus::Running);
     row.running_deadline_ms = Some(5678);
     let id = row.id.clone();
-    let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    insert_task(&mut tx, &row).await;
-    let read = task_get_tx(&mut tx, &id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
+                insert_task(&mut tx, &row).await;
+                let read = task_get_tx(&mut tx, &id)
+                    .await
+                    .expect("read task")
+                    .expect("task row");
+                tx.commit().await.expect("commit");
+                assert_eq!(read.running_deadline_ms, Some(5678));
+            })
+        })
         .await
-        .expect("read task")
-        .expect("task row");
-    tx.commit().await.expect("commit");
-    assert_eq!(read.running_deadline_ms, Some(5678));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -130,42 +142,54 @@ async fn mark_running_stamps_running_liveness_deadline() {
     let track_id = super::workspace_lease_lookup_tests::seed_track(&repo).await;
     let row = task(&track_id, "stamp", TaskStatus::Pending);
     let id = row.id.clone();
-    let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    insert_task(&mut tx, &row).await;
-    let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
-        .await
-        .expect("claim pending");
-    assert_eq!(rows, 1);
-    let claimed = task_get_tx(&mut tx, &id)
-        .await
-        .expect("read claimed")
-        .expect("claimed row");
-    assert_eq!(claimed.status, TaskStatus::Dispatched);
-    assert_eq!(claimed.running_deadline_ms, None);
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
+                insert_task(&mut tx, &row).await;
+                let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
+                    .await
+                    .expect("claim pending");
+                assert_eq!(rows, 1);
+                let claimed = task_get_tx(&mut tx, &id)
+                    .await
+                    .expect("read claimed")
+                    .expect("claimed row");
+                assert_eq!(claimed.status, TaskStatus::Dispatched);
+                assert_eq!(claimed.running_deadline_ms, None);
 
-    let rows = task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
-        .await
-        .expect("mark running");
-    assert_eq!(rows, 1);
-    let running = task_get_tx(&mut tx, &id)
-        .await
-        .expect("read running")
-        .expect("running row");
-    let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
-        .await
-        .expect("read liveness facts");
-    tx.commit().await.expect("commit");
-    assert_eq!(running.status, TaskStatus::Running);
-    assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
-    assert_eq!(running.running_deadline_ms, Some(9200));
-    assert_eq!(
-        facts,
-        Some(RunningLivenessFacts {
-            started_at_ms: 2000,
-            deadline_ms: 9200,
-            last_progress_ms: None,
+                let rows = task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
+                    .await
+                    .expect("mark running");
+                assert_eq!(rows, 1);
+                let running = task_get_tx(&mut tx, &id)
+                    .await
+                    .expect("read running")
+                    .expect("running row");
+                let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
+                    .await
+                    .expect("read liveness facts");
+                tx.commit().await.expect("commit");
+                assert_eq!(running.status, TaskStatus::Running);
+                assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
+                assert_eq!(running.running_deadline_ms, Some(9200));
+                assert_eq!(
+                    facts,
+                    Some(RunningLivenessFacts {
+                        started_at_ms: 2000,
+                        deadline_ms: 9200,
+                        last_progress_ms: None,
+                    })
+                );
+            })
         })
-    );
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -176,44 +200,63 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
     let track_id = super::workspace_lease_lookup_tests::seed_track(&repo).await;
     let row = task(&track_id, "progress", TaskStatus::Pending);
     let id = row.id.clone();
-    let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    insert_task(&mut tx, &row).await;
-    task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
+                insert_task(&mut tx, &row).await;
+                task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
+                    .await
+                    .expect("claim pending");
+                task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
+                    .await
+                    .expect("mark running");
+                tx.commit().await.expect("commit");
+                super::worker_flow_cursor_tests::seed_worker_cards(
+                    &repo,
+                    &["worker-card", "other-card"],
+                )
+                .await;
+                for (card, kind, at) in [
+                    ("worker-card", "codex_rollout", 4000),
+                    ("worker-card", "claude_transcript", 5000),
+                    ("other-card", "codex_rollout", 8000),
+                ] {
+                    let position = calm_exec::flow::CapturePosition {
+                        source_path: "/rollout.jsonl".into(),
+                        record_index: 1,
+                        byte_offset: 10,
+                        last_source_uuid: None,
+                        last_line_hash: None,
+                    };
+                    super::worker_flow_cursor_set_for_test(repo.db(), card, kind, &position, at)
+                        .await
+                        .expect("set cursor");
+                }
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin read tx");
+                let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
+                    .await
+                    .expect("read facts")
+                    .expect("running facts");
+                let unknown_card = task_running_liveness_tx(&mut tx, &id, None)
+                    .await
+                    .expect("read facts without a card")
+                    .expect("running facts");
+                tx.commit().await.expect("commit");
+                assert_eq!(facts.last_progress_ms, Some(5000));
+                assert_eq!(unknown_card.last_progress_ms, None);
+            })
+        })
         .await
-        .expect("claim pending");
-    task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
-        .await
-        .expect("mark running");
-    tx.commit().await.expect("commit");
-    super::worker_flow_cursor_tests::seed_worker_cards(&repo, &["worker-card", "other-card"]).await;
-    for (card, kind, at) in [
-        ("worker-card", "codex_rollout", 4000),
-        ("worker-card", "claude_transcript", 5000),
-        ("other-card", "codex_rollout", 8000),
-    ] {
-        let position = calm_exec::flow::CapturePosition {
-            source_path: "/rollout.jsonl".into(),
-            record_index: 1,
-            byte_offset: 10,
-            last_source_uuid: None,
-            last_line_hash: None,
-        };
-        super::worker_flow_cursor_set_for_test(repo.db(), card, kind, &position, at)
-            .await
-            .expect("set cursor");
-    }
-    let mut tx = repo.pool().begin().await.expect("begin read tx");
-    let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
-        .await
-        .expect("read facts")
-        .expect("running facts");
-    let unknown_card = task_running_liveness_tx(&mut tx, &id, None)
-        .await
-        .expect("read facts without a card")
-        .expect("running facts");
-    tx.commit().await.expect("commit");
-    assert_eq!(facts.last_progress_ms, Some(5000));
-    assert_eq!(unknown_card.last_progress_ms, None);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -227,40 +270,53 @@ async fn stamp_missing_running_liveness_includes_claude_and_excludes_terminal() 
     terminal.kind = TaskKind::Terminal;
     let claude_id = claude.id.clone();
     let terminal_id = terminal.id.clone();
-    let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    insert_task(&mut tx, &claude).await;
-    insert_task(&mut tx, &terminal).await;
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
+                insert_task(&mut tx, &claude).await;
+                insert_task(&mut tx, &terminal).await;
 
-    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &claude_id, 3000, 9700)
-        .await
-        .expect("stamp claude");
-    assert_eq!(rows, 1);
-    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &terminal_id, 3000, 9700)
-        .await
-        .expect("stamp terminal");
-    assert_eq!(rows, 0);
-    let stamped = task_get_tx(&mut tx, &claude_id)
-        .await
-        .expect("read claude")
-        .expect("claude row");
-    let terminal = task_get_tx(&mut tx, &terminal_id)
-        .await
-        .expect("read terminal")
-        .expect("terminal row");
-    let stamped_facts = task_running_liveness_tx(&mut tx, &claude_id, None)
-        .await
-        .expect("read claude facts");
-    tx.commit().await.expect("commit");
-    assert_eq!(stamped.running_deadline_ms, Some(9700));
-    assert_eq!(terminal.running_deadline_ms, None);
-    assert_eq!(
-        stamped_facts,
-        Some(RunningLivenessFacts {
-            started_at_ms: 3000,
-            deadline_ms: 9700,
-            last_progress_ms: None,
+                let rows = task_stamp_missing_running_liveness_tx(&mut tx, &claude_id, 3000, 9700)
+                    .await
+                    .expect("stamp claude");
+                assert_eq!(rows, 1);
+                let rows =
+                    task_stamp_missing_running_liveness_tx(&mut tx, &terminal_id, 3000, 9700)
+                        .await
+                        .expect("stamp terminal");
+                assert_eq!(rows, 0);
+                let stamped = task_get_tx(&mut tx, &claude_id)
+                    .await
+                    .expect("read claude")
+                    .expect("claude row");
+                let terminal = task_get_tx(&mut tx, &terminal_id)
+                    .await
+                    .expect("read terminal")
+                    .expect("terminal row");
+                let stamped_facts = task_running_liveness_tx(&mut tx, &claude_id, None)
+                    .await
+                    .expect("read claude facts");
+                tx.commit().await.expect("commit");
+                assert_eq!(stamped.running_deadline_ms, Some(9700));
+                assert_eq!(terminal.running_deadline_ms, None);
+                assert_eq!(
+                    stamped_facts,
+                    Some(RunningLivenessFacts {
+                        started_at_ms: 3000,
+                        deadline_ms: 9700,
+                        last_progress_ms: None,
+                    })
+                );
+            })
         })
-    );
+        .await
+        .expect("independent write operation")
 }
 
 /// A row running before the start column existed keeps the deadline it carries; only its start
@@ -273,32 +329,44 @@ async fn stamp_missing_running_liveness_keeps_an_existing_deadline_once() {
     let mut legacy = task("track-1", "legacy", TaskStatus::Running);
     legacy.running_deadline_ms = Some(1234);
     let id = legacy.id.clone();
-    let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    insert_task(&mut tx, &legacy).await;
-    assert_eq!(
-        task_running_liveness_tx(&mut tx, &id, None)
-            .await
-            .expect("read unstamped facts"),
-        None
-    );
-    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 3000, 9700)
-        .await
-        .expect("stamp legacy");
-    assert_eq!(rows, 1);
-    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 4000, 9999)
-        .await
-        .expect("restamp legacy");
-    assert_eq!(rows, 0);
-    let facts = task_running_liveness_tx(&mut tx, &id, None)
-        .await
-        .expect("read stamped facts");
-    tx.commit().await.expect("commit");
-    assert_eq!(
-        facts,
-        Some(RunningLivenessFacts {
-            started_at_ms: 3000,
-            deadline_ms: 1234,
-            last_progress_ms: None,
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
+                insert_task(&mut tx, &legacy).await;
+                assert_eq!(
+                    task_running_liveness_tx(&mut tx, &id, None)
+                        .await
+                        .expect("read unstamped facts"),
+                    None
+                );
+                let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 3000, 9700)
+                    .await
+                    .expect("stamp legacy");
+                assert_eq!(rows, 1);
+                let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 4000, 9999)
+                    .await
+                    .expect("restamp legacy");
+                assert_eq!(rows, 0);
+                let facts = task_running_liveness_tx(&mut tx, &id, None)
+                    .await
+                    .expect("read stamped facts");
+                tx.commit().await.expect("commit");
+                assert_eq!(
+                    facts,
+                    Some(RunningLivenessFacts {
+                        started_at_ms: 3000,
+                        deadline_ms: 1234,
+                        last_progress_ms: None,
+                    })
+                );
+            })
         })
-    );
+        .await
+        .expect("independent write operation")
 }

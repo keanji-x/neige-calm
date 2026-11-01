@@ -206,8 +206,8 @@ async fn c3_landed_verdict_persists_before_output_probe() {
 #[tokio::test]
 async fn c3_park_write_failure_retains_owned_execution() {
     let boot = TestBoot::new().await;
-    sqlx::query("CREATE TRIGGER fail_forge_park BEFORE UPDATE OF phase ON operations WHEN NEW.phase='parked' \
-        BEGIN SELECT RAISE(ABORT,'injected park failure'); END").execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_forge_park BEFORE UPDATE OF phase ON operations WHEN NEW.phase='parked' \
+        BEGIN SELECT RAISE(ABORT,'injected park failure'); END")).await.unwrap();
     let input = c3_input(&boot, "park-failure", "touch ran");
     let _ = boot
         .runtime
@@ -223,8 +223,9 @@ async fn c3_park_write_failure_retains_owned_execution() {
     assert_eq!(c3_count(&boot, &op.id).await, 1);
     assert_eq!(c3_record(&op)["release"], "Held");
     assert!(!boot.temp_path("ran").exists());
-    sqlx::query("DROP TRIGGER fail_forge_park")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_forge_park"))
         .await
         .unwrap();
     let plan = boot.runtime.recover_on_boot().await.unwrap();
@@ -297,25 +298,35 @@ pub(super) async fn output_admission_ready(
         )
     })
     .await;
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let ticket = engine
+                    .request(&mut tx, &execution, Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                record["probes"]["verdict"]["release"] =
+                    json!({"Released":{"authorized_at_ms":now_ms()}});
+                stage_result_files(
+                    &boot.temp_path(&format!("exclusive-output.probe.{}", execution.as_str())),
+                    "0",
+                    "",
+                );
+                c3_rewrite(boot, &id, &record).await;
+                (id, pause)
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
-        .await
-        .unwrap()
-        .unwrap();
-    record["probes"]["verdict"]["release"] = json!({"Released":{"authorized_at_ms":now_ms()}});
-    stage_result_files(
-        &boot.temp_path(&format!("exclusive-output.probe.{}", execution.as_str())),
-        "0",
-        "",
-    );
-    c3_rewrite(boot, &id, &record).await;
-    (id, pause)
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -445,9 +456,9 @@ async fn c3_releasing_deadline_refuses_without_resend() {
 async fn c3_held_action_past_deadline_never_releases() {
     let boot = TestBoot::new().await;
     let (id, _, observer) = c3_held(&boot, "expired-held").await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     boot.runtime.sweep_parked().await.unwrap();
@@ -482,40 +493,44 @@ async fn c3_settled_held_probe_never_waits_for_release() {
     let execution: ExecutionId =
         serde_json::from_value(record["probes"]["verdict"]["execution_id"].clone()).unwrap();
     let engine = boot.spawn_ctx.execution.engine().unwrap();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
-        .await
-        .unwrap()
-        .unwrap();
-    // Resume the original observer directly: a boot sweep could finish this settled
-    // probe first and bypass the release guard this regression must exercise.
-    c3_rewrite(&boot, &id, &c3_record(&c3_op(&boot, &id).await)).await;
-    tokio::time::timeout(Duration::from_secs(10), observer)
-        .await
-        .expect("a settled Held probe must not wait for release");
-    assert!(
-        matches!(c3_result(&boot,&id).await.outcome,OperationOutcome::Failed {last_error_class:Some(ref class),..} if class=="gate-infra")
-    );
-    assert_eq!(
-        c3_record(&c3_op(&boot, &id).await)["probes"]["verdict"]["release"],
-        "Held"
-    );
-    assert!(!boot.temp_path("ran").exists());
+    let write_db = (boot.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let ticket = engine
+            .request(&mut tx, &execution, Desired::Stop)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        engine.drive(ticket.committed());
+        tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
+            .await
+            .unwrap()
+            .unwrap();
+        // Resume the original observer directly: a boot sweep could finish this settled
+        // probe first and bypass the release guard this regression must exercise.
+        c3_rewrite(&boot, &id, &c3_record(&c3_op(&boot, &id).await)).await;
+        tokio::time::timeout(Duration::from_secs(10), observer)
+            .await
+            .expect("a settled Held probe must not wait for release");
+        assert!(
+            matches!(c3_result(&boot,&id).await.outcome,OperationOutcome::Failed {last_error_class:Some(ref class),..} if class=="gate-infra")
+        );
+        assert_eq!(
+            c3_record(&c3_op(&boot, &id).await)["probes"]["verdict"]["release"],
+            "Held"
+        );
+        assert!(!boot.temp_path("ran").exists());
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
 async fn c3_observer_alone_never_times_out_expired_action() {
     let boot = TestBoot::new().await;
     let (id, _, observer) = c3_held(&boot, "observer-expired").await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), observer)

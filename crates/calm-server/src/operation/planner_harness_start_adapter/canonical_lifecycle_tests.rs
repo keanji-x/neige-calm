@@ -3,7 +3,7 @@
 //! into another legacy carrier, even when its current pointer is unavailable.
 use super::*;
 use crate::db::prelude::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::harness::snapshot::CanonicalHarnessSnapshot;
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use crate::operation::OperationKey;
@@ -75,113 +75,117 @@ impl Fixture {
             })
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let card=card_create_with_id_tx(&mut tx,new_id(),NewCard {
-            track_id:track.id.clone(),kind:"codex".into(),title:None,sort:None,
-            payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
-        },CardRole::Planner,true,repo.card_role_cache()).await.unwrap().id;
-        let worker = new_id();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                worker.clone(),
-                card.to_string(),
-                provider.clone(),
-                WorkerSessionState::Idle,
-                None,
-                serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-        let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
-            &mut tx,
-            card.as_str(),
-            &worker,
-        )
-        .await
-        .unwrap();
-        crate::db::sqlite::conversation::accept_pending_human_tx(
-            &mut tx,
-            &mut carrier,
-            LEGACY_OWNER_USER_ID,
-            HumanPayload {
-                text: "permanent accepted canonical history".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let events = crate::event::EventBus::new();
-        let plugin = Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            dir.path().join("plugins"),
-            dir.path().join("plugin-data"),
-            vec![],
-            events.clone(),
-            WriteContext::new(
-                repo.card_role_cache().clone(),
-                repo.track_area_cache().clone(),
-            ),
-        ));
-        let shared = if fake {
-            SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None)
-        } else {
-            SharedCodexAppServer::new_stub(repo.clone())
-        };
-        let mut state = AppState::from_parts(
-            repo.clone(),
-            events,
-            Arc::new(DaemonClient::new_stub()),
-            plugin,
-            Arc::new(CodexClient::new_stub()),
-            Some(repo.card_role_cache().clone()),
-            Some(repo.track_area_cache().clone()),
-        )
-        .with_shared_codex_appserver(shared);
-        let execution = if matches!(
-            provider.protocol(),
-            calm_types::runtime::AgentProtocol::Claude | calm_types::runtime::AgentProtocol::Acp
-        ) {
-            let execution = crate::test_support::execution::Fixture::new(repo.db().clone()).await;
-            state.execution = Some(execution.engine.clone());
-            state
-                .operation_runtime
-                .execution()
-                .bind(execution.engine.clone());
-            state.plugin.execution.bind(execution.engine.clone());
-            Some(execution)
-        } else {
-            None
-        };
-        let payload = PlannerHarnessStartOperationPayload {
-            actor: ActorId::Kernel,
-            track_id: track.id.to_string(),
-            planner_card_id: card.clone(),
-            report_card_id: None,
-            sort: None,
-            cwd: dir.path().to_string_lossy().into_owned(),
-            goal: None,
-            reset_harness_items: true,
-            force_new_thread: true,
-            profile: HarnessProfile::Planner,
-            create_card: None,
-            opening_briefing: None,
-            first_message: None,
-            create_request_sha256: None,
-        };
-        Self {
-            repo,
-            state,
-            card,
-            worker,
-            payload,
-            _execution: execution,
-            _dir: dir,
-        }
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let card=card_create_with_id_tx(&mut tx,new_id(),NewCard {
+                track_id:track.id.clone(),kind:"codex".into(),title:None,sort:None,
+                payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
+            },CardRole::Planner,true,repo.card_role_cache()).await.unwrap().id;
+            let worker = new_id();
+            session_start_runtime_tx(
+                &mut tx,
+                WorkerSessionInit::shared_planner(
+                    worker.clone(),
+                    card.to_string(),
+                    provider.clone(),
+                    WorkerSessionState::Idle,
+                    None,
+                    serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+            let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
+                &mut tx,
+                card.as_str(),
+                &worker,
+            )
+            .await
+            .unwrap();
+            crate::db::sqlite::conversation::accept_pending_human_tx(
+                &mut tx,
+                &mut carrier,
+                LEGACY_OWNER_USER_ID,
+                HumanPayload {
+                    text: "permanent accepted canonical history".into(),
+                    bound_attachments: vec![],
+                },
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let events = crate::event::EventBus::new();
+            let plugin = Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+                dir.path().join("plugins"),
+                dir.path().join("plugin-data"),
+                vec![],
+                events.clone(),
+                WriteContext::new(
+                    repo.card_role_cache().clone(),
+                    repo.track_area_cache().clone(),
+                ),
+            ));
+            let shared = if fake {
+                SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None)
+            } else {
+                SharedCodexAppServer::new_stub(repo.clone())
+            };
+            let mut state = AppState::from_parts(
+                repo.clone(),
+                events,
+                Arc::new(DaemonClient::new_stub()),
+                plugin,
+                Arc::new(CodexClient::new_stub()),
+                Some(repo.card_role_cache().clone()),
+                Some(repo.track_area_cache().clone()),
+            )
+            .with_shared_codex_appserver(shared);
+            let execution = if matches!(
+                provider.protocol(),
+                calm_types::runtime::AgentProtocol::Claude | calm_types::runtime::AgentProtocol::Acp
+            ) {
+                let execution = crate::test_support::execution::Fixture::new(repo.db().clone()).await;
+                state.execution = Some(execution.engine.clone());
+                state
+                    .operation_runtime
+                    .execution()
+                    .bind(execution.engine.clone());
+                state.plugin.execution.bind(execution.engine.clone());
+                Some(execution)
+            } else {
+                None
+            };
+            let payload = PlannerHarnessStartOperationPayload {
+                actor: ActorId::Kernel,
+                track_id: track.id.to_string(),
+                planner_card_id: card.clone(),
+                report_card_id: None,
+                sort: None,
+                cwd: dir.path().to_string_lossy().into_owned(),
+                goal: None,
+                reset_harness_items: true,
+                force_new_thread: true,
+                profile: HarnessProfile::Planner,
+                create_card: None,
+                opening_briefing: None,
+                first_message: None,
+                create_request_sha256: None,
+            };
+            Self {
+                repo,
+                state,
+                card,
+                worker,
+                payload,
+                _execution: execution,
+                _dir: dir,
+            }
+
+    })).await.expect("independent write operation")
     }
 
     async fn legacy_start(&self) {
@@ -241,20 +245,29 @@ impl Fixture {
 #[tokio::test]
 async fn accepted_canonical_card_cannot_restart_as_legacy_after_failure() {
     let fx = Fixture::with_native(true).await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                fx.legacy_start().await;
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    fx.legacy_start().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn accepted_canonical_card_cannot_restart_as_legacy_after_pointer_clear() {
     let fx = Fixture::with_native(true).await;
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-        .bind(fx.card.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(fx.card.as_str()))
         .await
         .unwrap();
     fx.legacy_start().await;
@@ -325,27 +338,36 @@ async fn retained_down_preserves_saveable_original_carrier_and_has_no_native_mar
         .await
         .unwrap();
     assert_eq!(count, 0);
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
-        &mut tx,
-        fx.card.as_str(),
-        &fx.worker,
-    )
-    .await
-    .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &principal,
-        &mut carrier,
-        HumanPayload {
-            text: "ordinary send after unavailable start".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(carrier.checkpoint().pending.len(), 2);
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
+                    &mut tx,
+                    fx.card.as_str(),
+                    &fx.worker,
+                )
+                .await
+                .unwrap();
+                crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &principal,
+                    &mut carrier,
+                    HumanPayload {
+                        text: "ordinary send after unavailable start".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(carrier.checkpoint().pending.len(), 2);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -383,187 +405,191 @@ async fn retained_live_retry_uses_original_carrier_and_actual_native_start_once(
     let fx = Fixture::new().await;
     let (_auth, _token, source) = source().await;
     assert!(wake(&fx, source.clone()).await.is_err());
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let mut carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
-        &mut tx,
-        fx.card.as_str(),
-    )
-    .await
-    .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "second accepted before native ready".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let daemon = fx.state.shared_codex_appserver.clone();
-    let (_client, mut peer) = connect(&daemon).await;
-    let unrelated_repo = crate::operation::SqlxOperationRepo::new(fx.repo.db().clone());
-    use crate::operation::OperationRepo;
-    let unrelated = unrelated_repo
-        .insert_operation(
-            "planner-harness-start",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: None,
-                payload_hash: "unrelated pending legacy operation".into(),
-            },
-            serde_json::to_value(&fx.payload).unwrap(),
+    let write_db = (fx.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let mut carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
+            &mut tx,
+            fx.card.as_str(),
         )
         .await
         .unwrap();
-    let request_source = source.clone();
-    let owning = async { wake(&fx, request_source).await };
-    let native = async {
-        let call = request(&mut peer).await;
-        assert_eq!(call["method"], "thread/start");
-        assert!(
-            !call
-                .to_string()
-                .contains("permanent accepted canonical history")
-        );
-        send(
-            &mut peer,
-            json!({"id":call["id"],"result":{"thread":{"id":"retained-native-thread"}}}),
+        crate::conversation_inputs::accept_human_tx(
+            &mut tx,
+            &source.current_principal().unwrap(),
+            &mut carrier,
+            HumanPayload {
+                text: "second accepted before native ready".into(),
+                bound_attachments: vec![],
+            },
         )
-        .await;
-        for (turn, text) in [
-            ("retained-turn-1", "permanent accepted canonical history"),
-            ("retained-turn-2", "second accepted before native ready"),
-        ] {
-            let call = loop {
-                let call = request(&mut peer).await;
-                if call["method"] == "turn/start" {
-                    break call;
-                }
-                assert_eq!(call["method"], "config/read");
-                send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
-            };
-            assert_eq!(call["params"]["threadId"], "retained-native-thread");
-            assert!(call["params"]["input"].to_string().contains(text));
-            notify_thread(
-                &daemon,
-                &mut peer,
-                "retained-native-thread",
-                "turn/started",
-                json!({"id":turn,"status":"inProgress"}),
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let daemon = fx.state.shared_codex_appserver.clone();
+        let (_client, mut peer) = connect(&daemon).await;
+        let unrelated_repo = crate::operation::SqlxOperationRepo::new(fx.repo.db().clone());
+        use crate::operation::OperationRepo;
+        let unrelated = unrelated_repo
+            .insert_operation(
+                "planner-harness-start",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: None,
+                    payload_hash: "unrelated pending legacy operation".into(),
+                },
+                serde_json::to_value(&fx.payload).unwrap(),
             )
-            .await;
+            .await
+            .unwrap();
+        let request_source = source.clone();
+        let owning = async { wake(&fx, request_source).await };
+        let native = async {
+            let call = request(&mut peer).await;
+            assert_eq!(call["method"], "thread/start");
+            assert!(
+                !call
+                    .to_string()
+                    .contains("permanent accepted canonical history")
+            );
             send(
                 &mut peer,
-                json!({"id":call["id"],"result":{"turn":{"id":turn}}}),
+                json!({"id":call["id"],"result":{"thread":{"id":"retained-native-thread"}}}),
             )
             .await;
-            notify_thread(
-                &daemon,
-                &mut peer,
-                "retained-native-thread",
-                "turn/completed",
-                json!({"id":turn,"status":"completed"}),
-            )
-            .await;
-        }
-    };
-    let (result, ()) = tokio::join!(owning, native);
-    result.unwrap();
-    let row = fx
-        .repo
-        .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(row.thread_id.as_deref(), Some("retained-native-thread"));
-    assert!(row.spawn_op_id.is_some());
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM worker_sessions")
-            .fetch_one(fx.repo.pool())
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversation_messages")
-            .fetch_one(fx.repo.pool())
-            .await
-            .unwrap(),
-        2
-    );
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let row = fx
-                .repo
-                .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
-                .await
-                .unwrap()
-                .unwrap();
-            let frame: CanonicalHarnessSnapshot =
-                serde_json::from_value(row.handle_state_json.unwrap()).unwrap();
-            if frame.header.phase == HarnessPhaseTag::TurnCompleted
-                && frame.header.last_turn_id.as_deref() == Some("retained-turn-2")
-            {
-                assert!(frame.canonical_inputs.active.is_none());
-                break;
+            for (turn, text) in [
+                ("retained-turn-1", "permanent accepted canonical history"),
+                ("retained-turn-2", "second accepted before native ready"),
+            ] {
+                let call = loop {
+                    let call = request(&mut peer).await;
+                    if call["method"] == "turn/start" {
+                        break call;
+                    }
+                    assert_eq!(call["method"], "config/read");
+                    send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+                };
+                assert_eq!(call["params"]["threadId"], "retained-native-thread");
+                assert!(call["params"]["input"].to_string().contains(text));
+                notify_thread(
+                    &daemon,
+                    &mut peer,
+                    "retained-native-thread",
+                    "turn/started",
+                    json!({"id":turn,"status":"inProgress"}),
+                )
+                .await;
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":turn}}}),
+                )
+                .await;
+                notify_thread(
+                    &daemon,
+                    &mut peer,
+                    "retained-native-thread",
+                    "turn/completed",
+                    json!({"id":turn,"status":"completed"}),
+                )
+                .await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        unrelated_repo
-            .get_operation(&unrelated)
+        };
+        let (result, ()) = tokio::join!(owning, native);
+        result.unwrap();
+        let row = fx
+            .repo
+            .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
             .await
             .unwrap()
-            .unwrap()
-            .phase
-            .tag(),
-        PhaseTag::Pending,
-        "the source-bearing exact invocation must not claim another pending operation"
-    );
-    let token_before = fx
-        .repo
-        .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+            .unwrap();
+        assert_eq!(row.thread_id.as_deref(), Some("retained-native-thread"));
+        assert!(row.spawn_op_id.is_some());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM worker_sessions")
+                .fetch_one(fx.repo.pool())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversation_messages")
+                .fetch_one(fx.repo.pool())
+                .await
+                .unwrap(),
+            2
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let row = fx
+                    .repo
+                    .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let frame: CanonicalHarnessSnapshot =
+                    serde_json::from_value(row.handle_state_json.unwrap()).unwrap();
+                if frame.header.phase == HarnessPhaseTag::TurnCompleted
+                    && frame.header.last_turn_id.as_deref() == Some("retained-turn-2")
+                {
+                    assert!(frame.canonical_inputs.active.is_none());
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
         .await
-        .unwrap()
-        .unwrap()
-        .mcp_token_hash;
-    assert!(
-        daemon
-            .resume_candidates_for_test()
-            .iter()
-            .any(|(thread, card)| thread == "retained-native-thread" && card == fx.card.as_str())
-    );
-    let automatic =
-        crate::shared_codex_appserver::native_owner_tests::resume_cached_without_source(&daemon);
-    use futures_util::StreamExt;
-    tokio::select! {
-        ()=automatic=>{},
-        _request=peer.next()=>panic!("automatic recovery crossed canonical source boundary"),
-    }
-    assert!(
-        token_before
-            == fx
-                .repo
-                .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+        .unwrap();
+        assert_eq!(
+            unrelated_repo
+                .get_operation(&unrelated)
                 .await
                 .unwrap()
                 .unwrap()
-                .mcp_token_hash
-    );
-    let handle = fx.state.harness.get(&fx.worker).unwrap();
-    let mut stopping = tokio::spawn(async move { handle.shutdown().await });
-    tokio::time::timeout(std::time::Duration::from_secs(5),async {
+                .phase
+                .tag(),
+            PhaseTag::Pending,
+            "the source-bearing exact invocation must not claim another pending operation"
+        );
+        let token_before = fx
+            .repo
+            .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+            .await
+            .unwrap()
+            .unwrap()
+            .mcp_token_hash;
+        assert!(
+            daemon
+                .resume_candidates_for_test()
+                .iter()
+                .any(|(thread, card)| thread == "retained-native-thread" && card == fx.card.as_str())
+        );
+        let automatic =
+            crate::shared_codex_appserver::native_owner_tests::resume_cached_without_source(&daemon);
+        use futures_util::StreamExt;
         tokio::select! {
-            stopped=&mut stopping=>stopped.unwrap().unwrap(),
-            call=request(&mut peer)=> { assert_eq!(call["method"],"turn/interrupt");send(&mut peer,json!({"id":call["id"],"result":{}})).await;stopping.await.unwrap().unwrap(); }
+            ()=automatic=>{},
+            _request=peer.next()=>panic!("automatic recovery crossed canonical source boundary"),
         }
-    }).await.unwrap();
+        assert!(
+            token_before
+                == fx
+                    .repo
+                    .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .mcp_token_hash
+        );
+        let handle = fx.state.harness.get(&fx.worker).unwrap();
+        let mut stopping = tokio::spawn(async move { handle.shutdown().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            tokio::select! {
+                stopped=&mut stopping=>stopped.unwrap().unwrap(),
+                call=request(&mut peer)=> { assert_eq!(call["method"],"turn/interrupt");send(&mut peer,json!({"id":call["id"],"result":{}})).await;stopping.await.unwrap().unwrap(); }
+            }
+        }).await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -571,63 +597,73 @@ async fn failed_canonical_current_carrier_can_accept_content_but_cannot_claim() 
     use crate::db::sqlite::conversation as truth;
     let fx = Fixture::new().await;
     let (_auth, _token, source) = source().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
+                            .await
+                            .unwrap();
+                        assert!(
+                            truth::current_input_carrier_tx(&mut tx, fx.card.as_str(), &fx.worker)
+                                .await
+                                .is_err()
+                        );
+                        let mut carrier =
+                            truth::current_input_content_carrier_tx(&mut tx, fx.card.as_str())
+                                .await
+                                .unwrap();
+                        crate::conversation_inputs::accept_human_tx(
+                            &mut tx,
+                            &source.current_principal().unwrap(),
+                            &mut carrier,
+                            HumanPayload {
+                                text: "accepted while execution stays held".into(),
+                                bound_attachments: vec![],
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        let plan = truth::human_plan_for_pending_prefix_tx(
+                            &mut tx,
+                            &carrier,
+                            std::num::NonZeroU32::new(2).unwrap(),
+                            vec![],
+                        )
+                        .await
+                        .unwrap();
+                        let provenance =
+                calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+                    deployment_owner_user_id: LEGACY_OWNER_USER_ID.into(),
+                    provider: AgentProvider::Codex,
+                    profile: HarnessProfile::Planner,
+                };
+                        assert!(
+                            truth::claim_initial_submission_tx(&mut tx, &mut carrier, plan, &provenance)
+                                .await
+                                .unwrap_err()
+                                .to_string()
+                                .contains("content only")
+                        );
+                        tx.commit().await.unwrap();
+                        let row = fx
+                            .repo
+                            .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(row.state, WorkerSessionState::Failed);
+                        let frame: CanonicalHarnessSnapshot =
+                            serde_json::from_value(row.handle_state_json.unwrap()).unwrap();
+                        assert_eq!(frame.canonical_inputs.pending.len(), 2);
+                        assert!(frame.canonical_inputs.active.is_none());
+                        assert!(wake(&fx, source).await.is_err());
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        truth::current_input_carrier_tx(&mut tx, fx.card.as_str(), &fx.worker)
-            .await
-            .is_err()
-    );
-    let mut carrier = truth::current_input_content_carrier_tx(&mut tx, fx.card.as_str())
-        .await
-        .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "accepted while execution stays held".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    let plan = truth::human_plan_for_pending_prefix_tx(
-        &mut tx,
-        &carrier,
-        std::num::NonZeroU32::new(2).unwrap(),
-        vec![],
-    )
-    .await
-    .unwrap();
-    let provenance =
-        calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id: LEGACY_OWNER_USER_ID.into(),
-            provider: AgentProvider::Codex,
-            profile: HarnessProfile::Planner,
-        };
-    assert!(
-        truth::claim_initial_submission_tx(&mut tx, &mut carrier, plan, &provenance)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("content only")
-    );
-    tx.commit().await.unwrap();
-    let row = fx
-        .repo
-        .session_get(&calm_types::worker::WorkerSessionId(fx.worker.clone()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(row.state, WorkerSessionState::Failed);
-    let frame: CanonicalHarnessSnapshot =
-        serde_json::from_value(row.handle_state_json.unwrap()).unwrap();
-    assert_eq!(frame.canonical_inputs.pending.len(), 2);
-    assert!(frame.canonical_inputs.active.is_none());
-    assert!(wake(&fx, source).await.is_err());
+        .expect("independent write operation")
 }
 
 async fn retained_revocation_case(point: Option<&str>) {

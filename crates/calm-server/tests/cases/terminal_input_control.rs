@@ -970,10 +970,13 @@ async fn exited_terminal_card_terminal_survives_the_orphan_sweep() {
         active_sessions, 0,
         "terminal session never completed; the sweep would keep the row on any query"
     );
-    sqlx::query("UPDATE terminals SET created_at = ?1 WHERE id = ?2")
-        .bind(calm_server::model::now_ms() - 120_000)
-        .bind(&terminal)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE terminals SET created_at = ?1 WHERE id = ?2")
+                .bind(calm_server::model::now_ms() - 120_000)
+                .bind(&terminal),
+        )
         .await
         .unwrap();
 

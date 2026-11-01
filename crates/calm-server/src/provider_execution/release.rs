@@ -22,69 +22,80 @@ pub async fn send(
     authority: &dyn ReleaseAuthority,
 ) -> Result<()> {
     let id = execution_id(claimed.record())?;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        wait_spawned(engine, &id).await?;
-        let at = crate::model::now_ms();
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let current = sql::load(&mut **tx, session)
-            .await?
-            .filter(|c| {
-                c.record().execution_id == id.as_str()
-                    && c.record().decision == Decision::Observing
-                    && c.record().release == sql::Release::Held
-            })
-            .ok_or_else(|| conflict("release ownership lost"))?;
-        if let Err(error) = authority.authorize_tx(&mut tx).await {
-            let stopped =
-                request_stop_tx(&mut tx, session, &current, StopReason::ReleaseRefused).await?;
-            tx.commit().await?;
-            crate::execution_quiesce::drive(Some(engine), stopped);
-            return Err(error);
-        }
-        let sql::Cas::Applied(releasing) =
-            sql::advance_release(&mut tx, session, &current, at).await?
-        else {
-            return Err(conflict("release ownership lost"));
-        };
-        tx.commit().await?; // authorization must precede the first byte
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c4-release-authorized", session).await;
-        let mut offset = 0;
-        while offset < payload.len() {
-            let reply = engine
-                .interact(
-                    &id,
-                    ProcessAction::WriteStdin {
-                        bytes: payload[offset..].to_vec(),
-                    },
-                )
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    wait_spawned(engine, &id).await?;
+                    let at = crate::model::now_ms();
+                    let mut tx = write_session.begin_immediate().await?;
+                    let current = sql::load(&mut **tx, session)
+                        .await?
+                        .filter(|c| {
+                            c.record().execution_id == id.as_str()
+                                && c.record().decision == Decision::Observing
+                                && c.record().release == sql::Release::Held
+                        })
+                        .ok_or_else(|| conflict("release ownership lost"))?;
+                    if let Err(error) = authority.authorize_tx(&mut tx).await {
+                        let stopped =
+                            request_stop_tx(&mut tx, session, &current, StopReason::ReleaseRefused)
+                                .await?;
+                        tx.commit().await?;
+                        crate::execution_quiesce::drive(Some(engine), stopped);
+                        return Err(error);
+                    }
+                    let sql::Cas::Applied(releasing) =
+                        sql::advance_release(&mut tx, session, &current, at).await?
+                    else {
+                        return Err(conflict("release ownership lost"));
+                    };
+                    tx.commit().await?; // authorization must precede the first byte
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("c4-release-authorized", session).await;
+                    let mut offset = 0;
+                    while offset < payload.len() {
+                        let reply = engine
+                            .interact(
+                                &id,
+                                ProcessAction::WriteStdin {
+                                    bytes: payload[offset..].to_vec(),
+                                },
+                            )
+                            .await
+                            .map_err(conflict)?;
+                        let ExecutionReply::StdinProgress { accepted_bytes } = reply else {
+                            return Err(conflict("unexpected release response"));
+                        };
+                        let accepted = accepted_bytes;
+                        if accepted > payload.len() - offset {
+                            return Err(conflict("invalid release write length"));
+                        }
+                        offset += accepted;
+                        if offset < payload.len() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    let mut tx = write_session.begin_immediate().await?;
+                    let sql::Cas::Applied(_) =
+                        sql::advance_release(&mut tx, session, &releasing, at).await?
+                    else {
+                        return Err(conflict("release ownership lost"));
+                    };
+                    tx.commit().await?;
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("c4-release-completed", session).await;
+                    Ok(())
+                })
                 .await
-                .map_err(conflict)?;
-            let ExecutionReply::StdinProgress { accepted_bytes } = reply else {
-                return Err(conflict("unexpected release response"));
-            };
-            let accepted = accepted_bytes;
-            if accepted > payload.len() - offset {
-                return Err(conflict("invalid release write length"));
-            }
-            offset += accepted;
-            if offset < payload.len() {
-                tokio::task::yield_now().await;
-            }
-        }
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let sql::Cas::Applied(_) = sql::advance_release(&mut tx, session, &releasing, at).await?
-        else {
-            return Err(conflict("release ownership lost"));
-        };
-        tx.commit().await?;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c4-release-completed", session).await;
-        Ok(())
-    })
-    .await
-    .map_err(conflict)?
-    // No retry after transport failure or cancellation. RAII/sweep sends Stop.
+                .map_err(conflict)?
+                // No retry after transport failure or cancellation. RAII/sweep sends Stop.
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Wait for the Engine's Spawned receipt without releasing a single payload byte.

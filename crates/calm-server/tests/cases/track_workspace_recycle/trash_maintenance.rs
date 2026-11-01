@@ -80,7 +80,7 @@ async fn workspace_trash_maintenance_waits_for_lifecycle_fence_without_leasing_t
     let pending = futures::poll!(&mut pass).is_pending();
     tokio::time::sleep(Duration::from_millis(50)).await;
     let untouched_while_fenced = stale.exists();
-    let writer = tokio::time::timeout(LIMIT, b.repo.db().writer_pool().acquire()).await;
+    let writer = tokio::time::timeout(LIMIT, b.repo.db().hold_writer_for_test()).await;
     let writer_available = writer.as_ref().is_ok_and(|lease| lease.is_ok());
     drop(fence);
     // Keep the sole writer lease while the actual filesystem collector completes.
@@ -121,7 +121,7 @@ async fn workspace_trash_maintenance_does_not_hold_lifecycle_fence_or_delay_unre
         tokio::time::timeout(LIMIT, b.operation_runtime.lock_for_track_delete_for_test()).await;
     let fence_available = fence.is_ok();
     drop(fence);
-    let writer = tokio::time::timeout(LIMIT, b.repo.db().writer_pool().acquire()).await;
+    let writer = tokio::time::timeout(LIMIT, b.repo.db().hold_writer_for_test()).await;
     let writer_available = writer.as_ref().is_ok_and(|lease| lease.is_ok());
     drop(writer);
     let deletion = tokio::time::timeout(LIMIT, delete_track(&b, &track)).await;

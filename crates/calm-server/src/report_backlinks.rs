@@ -710,15 +710,18 @@ mod tests {
             v1(format!("# Legacy\n\n[old](neige://wave/{})\n", target.id)),
         )
         .await;
-        sqlx::query(
-            "UPDATE cards SET body_crdt = NULL, \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET body_crdt = NULL, \
              payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
              WHERE track_id = ?1 AND kind = 'track-report'",
-        )
-        .bind(source.id.as_str())
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(source.id.as_str()),
+            )
+            .await
+            .unwrap();
 
         let found = backlinks_for_track(&repo as &dyn RouteRepo, target.id.as_str())
             .await
@@ -765,12 +768,11 @@ mod tests {
             v1(link_to("healthy", &target.id)),
         )
         .await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
              WHERE track_id = ?1",
         )
-        .bind(corrupt.id.as_str())
-        .execute(repo.pool())
+        .bind(corrupt.id.as_str()))
         .await
         .unwrap();
 
@@ -790,12 +792,11 @@ mod tests {
         let corrupt = track(&repo, area.id.as_str(), "Corrupt").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
              WHERE track_id = ?1",
         )
-        .bind(corrupt.id.as_str())
-        .execute(repo.pool())
+        .bind(corrupt.id.as_str()))
         .await
         .unwrap();
 

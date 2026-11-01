@@ -1,7 +1,5 @@
 use calm_truth::db::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, session_insert_tx, session_state_transition_tx,
-};
+use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx, session_state_transition_tx};
 use calm_truth::model::{NewArea, NewTrack, RequestTheme};
 use calm_truth::session_repo::SessionRepo;
 use calm_types::ids::{CardId, TrackId};
@@ -85,26 +83,35 @@ async fn sessions_nonterminal_matches_worker_session_state_terminal_set() {
         WorkerSessionState::Failed,
         WorkerSessionState::Superseded,
     ];
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    for (idx, state) in states.into_iter().enumerate() {
-        session_insert_tx(&mut tx, session(state, track_id.clone(), idx as i64 + 1))
-            .await
-            .expect("insert session");
-    }
-    tx.commit().await.expect("commit tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                for (idx, state) in states.into_iter().enumerate() {
+                    session_insert_tx(&mut tx, session(state, track_id.clone(), idx as i64 + 1))
+                        .await
+                        .expect("insert session");
+                }
+                tx.commit().await.expect("commit tx");
 
-    let got = repo
-        .sessions_nonterminal()
+                let got = repo
+                    .sessions_nonterminal()
+                    .await
+                    .expect("list non-terminal sessions")
+                    .into_iter()
+                    .map(|session| session.state)
+                    .collect::<Vec<_>>();
+                let expected = states
+                    .into_iter()
+                    .filter(|state| !state.is_terminal())
+                    .collect::<Vec<_>>();
+                assert_eq!(got, expected);
+            })
+        })
         .await
-        .expect("list non-terminal sessions")
-        .into_iter()
-        .map(|session| session.state)
-        .collect::<Vec<_>>();
-    let expected = states
-        .into_iter()
-        .filter(|state| !state.is_terminal())
-        .collect::<Vec<_>>();
-    assert_eq!(got, expected);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -118,29 +125,38 @@ async fn session_set_liveness_preserves_updated_at_ms() {
     seeded.id = id.clone();
     seeded.updated_at_ms = updated_at_ms;
 
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    session_insert_tx(&mut tx, seeded)
-        .await
-        .expect("insert session");
-    tx.commit().await.expect("commit tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                session_insert_tx(&mut tx, seeded)
+                    .await
+                    .expect("insert session");
+                tx.commit().await.expect("commit tx");
 
-    let written = repo
-        .session_set_liveness(&id, &Liveness::Idle, probed_at_ms)
-        .await
-        .expect("set liveness")
-        .expect("active session was updated");
-    assert_eq!(written.liveness, LivenessTag::Idle);
-    assert_eq!(written.liveness_probed_at_ms, Some(probed_at_ms));
-    assert_eq!(written.updated_at_ms, updated_at_ms);
+                let written = repo
+                    .session_set_liveness(&id, &Liveness::Idle, probed_at_ms)
+                    .await
+                    .expect("set liveness")
+                    .expect("active session was updated");
+                assert_eq!(written.liveness, LivenessTag::Idle);
+                assert_eq!(written.liveness_probed_at_ms, Some(probed_at_ms));
+                assert_eq!(written.updated_at_ms, updated_at_ms);
 
-    let row = repo
-        .session_get(&id)
+                let row = repo
+                    .session_get(&id)
+                    .await
+                    .expect("get session")
+                    .expect("session exists");
+                assert_eq!(row.liveness, LivenessTag::Idle);
+                assert_eq!(row.liveness_probed_at_ms, Some(probed_at_ms));
+                assert_eq!(row.updated_at_ms, updated_at_ms);
+            })
+        })
         .await
-        .expect("get session")
-        .expect("session exists");
-    assert_eq!(row.liveness, LivenessTag::Idle);
-    assert_eq!(row.liveness_probed_at_ms, Some(probed_at_ms));
-    assert_eq!(row.updated_at_ms, updated_at_ms);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -153,47 +169,57 @@ async fn session_set_liveness_noops_after_terminal_transition() {
     let mut seeded = session(WorkerSessionState::Running, track_id, created_at_ms);
     seeded.id = id.clone();
 
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    session_insert_tx(&mut tx, seeded)
-        .await
-        .expect("insert session");
-    tx.commit().await.expect("commit insert tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                session_insert_tx(&mut tx, seeded)
+                    .await
+                    .expect("insert session");
+                tx.commit().await.expect("commit insert tx");
 
-    let active_write = repo
-        .session_set_liveness(&id, &Liveness::Idle, active_probe_ms)
-        .await
-        .expect("set active liveness")
-        .expect("active session was updated");
-    assert_eq!(active_write.liveness, LivenessTag::Idle);
-    assert_eq!(active_write.liveness_probed_at_ms, Some(active_probe_ms));
+                let active_write = repo
+                    .session_set_liveness(&id, &Liveness::Idle, active_probe_ms)
+                    .await
+                    .expect("set active liveness")
+                    .expect("active session was updated");
+                assert_eq!(active_write.liveness, LivenessTag::Idle);
+                assert_eq!(active_write.liveness_probed_at_ms, Some(active_probe_ms));
 
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    let terminal = session_state_transition_tx(&mut tx, &id, WorkerSessionState::Exited)
-        .await
-        .expect("transition session to exited");
-    tx.commit().await.expect("commit transition tx");
-    assert_eq!(terminal.state, WorkerSessionState::Exited);
-    assert_eq!(terminal.liveness, LivenessTag::Idle);
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                let terminal =
+                    session_state_transition_tx(&mut tx, &id, WorkerSessionState::Exited)
+                        .await
+                        .expect("transition session to exited");
+                tx.commit().await.expect("commit transition tx");
+                assert_eq!(terminal.state, WorkerSessionState::Exited);
+                assert_eq!(terminal.liveness, LivenessTag::Idle);
 
-    let stale_write = repo
-        .session_set_liveness(
-            &id,
-            &Liveness::Alive {
-                active_turn_id: None,
-            },
-            stale_probe_ms,
-        )
-        .await
-        .expect("stale liveness write is benign");
-    assert!(stale_write.is_none());
+                let stale_write = repo
+                    .session_set_liveness(
+                        &id,
+                        &Liveness::Alive {
+                            active_turn_id: None,
+                        },
+                        stale_probe_ms,
+                    )
+                    .await
+                    .expect("stale liveness write is benign");
+                assert!(stale_write.is_none());
 
-    let row = repo
-        .session_get(&id)
+                let row = repo
+                    .session_get(&id)
+                    .await
+                    .expect("get session")
+                    .expect("session exists");
+                assert_eq!(row.state, WorkerSessionState::Exited);
+                assert_eq!(row.liveness, LivenessTag::Idle);
+                assert_ne!(row.liveness, LivenessTag::Alive);
+                assert_eq!(row.liveness_probed_at_ms, Some(active_probe_ms));
+            })
+        })
         .await
-        .expect("get session")
-        .expect("session exists");
-    assert_eq!(row.state, WorkerSessionState::Exited);
-    assert_eq!(row.liveness, LivenessTag::Idle);
-    assert_ne!(row.liveness, LivenessTag::Alive);
-    assert_eq!(row.liveness_probed_at_ms, Some(active_probe_ms));
+        .expect("independent write operation")
 }

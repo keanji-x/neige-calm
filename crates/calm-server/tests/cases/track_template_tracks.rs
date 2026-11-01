@@ -1635,19 +1635,21 @@ async fn objective_long_term_goal_run_stats_creates_without_template_input_bound
             .body
             .contains("neige://plugin/kernel/objective.budget")
     );
-    let mut tx = boot
-        .repo
-        .sqlite_db()
-        .unwrap()
-        .read_pool()
-        .begin()
+    let write_db = (boot.repo.sqlite_db().unwrap()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    calm_truth::objective_host::capability::enabled_tx(&mut tx, &track_id.into())
+                        .await
+                        .unwrap()
+                );
+                tx.commit().await.unwrap();
+                assert!(!payload.body.contains("neige:input-form"));
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        calm_truth::objective_host::capability::enabled_tx(&mut tx, &track_id.into())
-            .await
-            .unwrap()
-    );
-    tx.commit().await.unwrap();
-    assert!(!payload.body.contains("neige:input-form"));
+        .expect("independent write operation")
 }

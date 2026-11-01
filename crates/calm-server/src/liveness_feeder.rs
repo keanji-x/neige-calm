@@ -557,76 +557,85 @@ mod tests {
             AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
         };
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "a".into(),
-                color: "#fff".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let track = track_create_tx(
-            &mut tx,
-            NewTrack {
-                template_input: None,
-                area_id: area.id.clone(),
-                title: "t".into(),
-                sort: None,
-                cwd: "/tmp".into(),
-                template_id: None,
-                plugin_scope: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        let card = card_create_with_id_tx(
-            &mut tx,
-            "card-feeder".to_string(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({}),
-            },
-            CardRole::Worker,
-            true,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        let session_id = "ws-feeder".to_string();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: session_id.clone(),
-                card_id: card.id.as_str().to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        (repo, session_id)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let area = area_create_tx(
+                        &mut tx,
+                        calm_types::organization::LEGACY_OWNER_USER_ID,
+                        NewArea {
+                            name: "a".into(),
+                            color: "#fff".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let track = track_create_tx(
+                        &mut tx,
+                        NewTrack {
+                            template_input: None,
+                            area_id: area.id.clone(),
+                            title: "t".into(),
+                            sort: None,
+                            cwd: "/tmp".into(),
+                            template_id: None,
+                            plugin_scope: None,
+                            attach_folder: false,
+                            theme: RequestTheme::default_dark(),
+                        },
+                        None,
+                        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        None,
+                        repo.track_area_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    let card = card_create_with_id_tx(
+                        &mut tx,
+                        "card-feeder".to_string(),
+                        NewCard {
+                            track_id: track.id.clone(),
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: json!({}),
+                        },
+                        CardRole::Worker,
+                        true,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    let session_id = "ws-feeder".to_string();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: session_id.clone(),
+                            card_id: card.id.as_str().to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (repo, session_id)
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     async fn last_turn_completed_ms(

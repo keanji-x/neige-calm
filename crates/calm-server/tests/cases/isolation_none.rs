@@ -31,9 +31,9 @@ async fn isolation_none_track_area_delete_and_clean_preserve_source() {
     for area_delete in [false, true] {
         let area = create_area(&b, "direct").await;
         let track = direct_track(&b, &area, &source).await;
-        sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?1")
-            .bind(&track)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?1").bind(&track))
             .await
             .unwrap();
         assert_eq!(
@@ -93,19 +93,22 @@ async fn isolation_none_historical_lease_cleans_only_owned_refs() {
     let source = user_repo(&b.tmp.path().join("source"));
     let track = direct_track(&b, &area, &source).await;
     let sha = head(&source).unwrap();
-    sqlx::query(
-        "INSERT INTO workspace_leases \
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO workspace_leases \
          (lease_id,card_id,track_id,path,state,lease_owner,created_at_ms,updated_at_ms, \
           released_at_ms,base_sha,base_source,canonical_path,git_common_dir) \
          VALUES ('old','old-card',?1,?2,'released','old-owner',1,2,2,?3,'head',?2,?4)",
-    )
-    .bind(&track)
-    .bind(source.to_str().unwrap())
-    .bind(&sha)
-    .bind(source.join(".git").to_str().unwrap())
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&track)
+            .bind(source.to_str().unwrap())
+            .bind(&sha)
+            .bind(source.join(".git").to_str().unwrap()),
+        )
+        .await
+        .unwrap();
     let owned = [
         format!("refs/neige/candidates/{track}/card/delivery"),
         format!("refs/neige/gate-runs/{track}/attempt/run"),
@@ -222,82 +225,86 @@ async fn isolation_none_http_create_has_no_effect_and_projects_all_track_reads()
     .await
     .unwrap();
     assert_eq!(worker_track, id);
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let carrier =
-        calm_truth::db::sqlite::conversation::current_input_carrier_tx(&mut tx, &card, &worker)
-            .await
-            .unwrap();
-    assert_eq!(
-        carrier.checkpoint(),
-        &calm_types::conversation::ConversationInputCheckpoint::empty()
-    );
-    tx.rollback().await.unwrap();
-    let worker_workspace = b
-        .repo
-        .track_get(&worker_track)
-        .await
-        .unwrap()
-        .unwrap()
-        .workspace;
-    assert_eq!(worker_workspace, row.workspace);
-    assert_eq!(worker_workspace.agent_cwd(), selected.to_str().unwrap());
-    let historical_starts: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='planner-harness-start'")
-            .fetch_one(b.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(historical_starts, 0);
-    for uri in [
-        format!("/api/tracks/{id}"),
-        format!("/api/areas/{area}/tracks"),
-    ] {
-        let (status, text) = request(b.app.clone(), "GET", &uri, None).await;
-        assert_eq!(status, StatusCode::OK, "{text}");
-        let value: Value = serde_json::from_str(&text).unwrap();
-        let track = if value.is_array() {
-            &value[0]
-        } else {
-            &value["track"]
-        };
-        assert_eq!(track["workspace"]["isolation"], "none", "{value}");
-    }
-    for patch in [json!({}), json!({"title":"borrowed"})] {
-        let (status, text) = request(
-            b.app.clone(),
-            "PATCH",
-            &format!("/api/tracks/{id}"),
-            Some(patch),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{text}");
-        let value: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["workspace"]["isolation"], "none", "{value}");
-    }
-    assert_eq!(fingerprint(&source), before);
-    assert_eq!(delete_track(&b, id).await.0, StatusCode::NO_CONTENT);
-    assert_eq!(fingerprint(&source), before);
-    for isolation in ["worktree", "none"] {
-        let body = json!({"planner_provider":"codex", "area_id":area, "theme":theme(), "isolation":isolation});
-        assert_eq!(
-            request(b.app.clone(), "POST", "/api/tracks", Some(body))
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let carrier =
+            calm_truth::db::sqlite::conversation::current_input_carrier_tx(&mut tx, &card, &worker)
                 .await
-                .0,
+                .unwrap();
+        assert_eq!(
+            carrier.checkpoint(),
+            &calm_types::conversation::ConversationInputCheckpoint::empty()
+        );
+        tx.rollback().await.unwrap();
+        let worker_workspace = b
+            .repo
+            .track_get(&worker_track)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace;
+        assert_eq!(worker_workspace, row.workspace);
+        assert_eq!(worker_workspace.agent_cwd(), selected.to_str().unwrap());
+        let historical_starts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind='planner-harness-start'")
+                .fetch_one(b.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(historical_starts, 0);
+        for uri in [
+            format!("/api/tracks/{id}"),
+            format!("/api/areas/{area}/tracks"),
+        ] {
+            let (status, text) = request(b.app.clone(), "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let value: Value = serde_json::from_str(&text).unwrap();
+            let track = if value.is_array() {
+                &value[0]
+            } else {
+                &value["track"]
+            };
+            assert_eq!(track["workspace"]["isolation"], "none", "{value}");
+        }
+        for patch in [json!({}), json!({"title":"borrowed"})] {
+            let (status, text) = request(
+                b.app.clone(),
+                "PATCH",
+                &format!("/api/tracks/{id}"),
+                Some(patch),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["workspace"]["isolation"], "none", "{value}");
+        }
+        assert_eq!(fingerprint(&source), before);
+        assert_eq!(delete_track(&b, id).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(fingerprint(&source), before);
+        for isolation in ["worktree", "none"] {
+            let body = json!({"planner_provider":"codex", "area_id":area, "theme":theme(), "isolation":isolation});
+            assert_eq!(
+                request(b.app.clone(), "POST", "/api/tracks", Some(body))
+                    .await
+                    .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let plain = b.tmp.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        assert_eq!(
+            request(
+                b.app.clone(),
+                "POST",
+                "/api/tracks",
+                Some(none_body(&area, &plain))
+            )
+            .await
+            .0,
             StatusCode::BAD_REQUEST
         );
-    }
-    let plain = b.tmp.path().join("plain");
-    std::fs::create_dir(&plain).unwrap();
-    assert_eq!(
-        request(
-            b.app.clone(),
-            "POST",
-            "/api/tracks",
-            Some(none_body(&area, &plain))
-        )
-        .await
-        .0,
-        StatusCode::BAD_REQUEST
-    );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -426,8 +433,7 @@ async fn isolation_none_delete_rollback_removes_registration_and_keeps_live_fenc
                 .worktree
                 .unwrap(),
         );
-        sqlx::query("CREATE TRIGGER refuse_delete BEFORE DELETE ON tracks BEGIN SELECT RAISE(ABORT, 'fixture rollback'); END")
-        .execute(b.repo.pool()).await.unwrap();
+        (b.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_delete BEFORE DELETE ON tracks BEGIN SELECT RAISE(ABORT, 'fixture rollback'); END")).await.unwrap();
         assert_eq!(
             if area_delete {
                 delete_area(&b, &area).await.0
@@ -474,86 +480,101 @@ async fn historical_seed(
 ) -> Value {
     use calm_server::db::sqlite::*;
     use calm_server::model::{CardRole, NewCard, NewTrack};
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.into(),
-            title: "borrowed".into(),
-            sort: None,
-            cwd: source.to_str().unwrap().into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: true,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        },
-        None,
-        &if worktree {
-            TrackWorkspacePlan::AttachedWithTrackWorktree(source.into())
-        } else {
-            TrackWorkspacePlan::AttachedFromCwd
-        },
-        None,
-        &b.tracks,
-    )
-    .await
-    .unwrap();
-    let host = calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap();
-    let planner = calm_server::model::new_id();
-    let report = calm_server::model::new_id();
-    for (id, kind, role, payload) in [
-        (
-            &planner,
-            "codex",
-            CardRole::Planner,
-            calm_server::track_creation::planner_harness_card_payload(
-                &host,
-                None,
-                calm_server::session_projection_repo::AgentProvider::Codex,
-            ),
-        ),
-        (
-            &report,
-            "track-report",
-            CardRole::ReportCard,
-            serde_json::to_value(calm_types::track_report::TrackReportPayload::initial()).unwrap(),
-        ),
-    ] {
-        card_create_with_id_tx(
-            &mut tx,
-            id.clone(),
-            NewCard {
-                title: None,
-                track_id: track.id.clone(),
-                kind: kind.into(),
-                sort: None,
-                payload,
-            },
-            role,
-            false,
-            &b.roles,
-        )
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.into(),
+                        title: "borrowed".into(),
+                        sort: None,
+                        cwd: source.to_str().unwrap().into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: true,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    },
+                    None,
+                    &if worktree {
+                        TrackWorkspacePlan::AttachedWithTrackWorktree(source.into())
+                    } else {
+                        TrackWorkspacePlan::AttachedFromCwd
+                    },
+                    None,
+                    &b.tracks,
+                )
+                .await
+                .unwrap();
+                let host = calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .unwrap();
+                let planner = calm_server::model::new_id();
+                let report = calm_server::model::new_id();
+                for (id, kind, role, payload) in [
+                    (
+                        &planner,
+                        "codex",
+                        CardRole::Planner,
+                        calm_server::track_creation::planner_harness_card_payload(
+                            &host,
+                            None,
+                            calm_server::session_projection_repo::AgentProvider::Codex,
+                        ),
+                    ),
+                    (
+                        &report,
+                        "track-report",
+                        CardRole::ReportCard,
+                        serde_json::to_value(
+                            calm_types::track_report::TrackReportPayload::initial(),
+                        )
+                        .unwrap(),
+                    ),
+                ] {
+                    card_create_with_id_tx(
+                        &mut tx,
+                        id.clone(),
+                        NewCard {
+                            title: None,
+                            track_id: track.id.clone(),
+                            kind: kind.into(),
+                            sort: None,
+                            payload,
+                        },
+                        role,
+                        false,
+                        &b.roles,
+                    )
+                    .await
+                    .unwrap();
+                }
+                track_create_idempotency_claim_tx(
+                    &mut tx,
+                    area,
+                    "old-key",
+                    &TrackCreateBindingClaim {
+                        track_id: track.id.to_string(),
+                        planner_card_id: planner,
+                        report_card_id: report,
+                        create_request_sha256: digest.into(),
+                        first_message_sha256: first.then(|| {
+                            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                                .into()
+                        }),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                serde_json::to_value(calm_types::track_wire::TrackWire(track)).unwrap()
+            })
+        })
         .await
-        .unwrap();
-    }
-    track_create_idempotency_claim_tx(
-        &mut tx,
-        area,
-        "old-key",
-        &TrackCreateBindingClaim {
-            track_id: track.id.to_string(),
-            planner_card_id: planner,
-            report_card_id: report,
-            create_request_sha256: digest.into(),
-            first_message_sha256: first
-                .then(|| "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into()),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    serde_json::to_value(calm_types::track_wire::TrackWire(track)).unwrap()
+        .expect("independent write operation")
 }
 
 #[tokio::test]

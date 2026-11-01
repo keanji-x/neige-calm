@@ -19,10 +19,15 @@ async fn operator_preview_apply_resume_and_old_schema_refusal() {
     let hash = blake3::hash(&[b"calm-track-vcs-v1\0blob\0".as_slice(), &raw].concat())
         .to_hex()
         .to_string();
-    sqlx::query("INSERT INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES(?,'blob',?,0)")
-        .bind(&hash)
-        .bind(&raw)
-        .execute(repo.db().writer_pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES(?,'blob',?,0)",
+            )
+            .bind(&hash)
+            .bind(&raw),
+        )
         .await
         .unwrap();
     repo.db().close().await;
@@ -59,10 +64,9 @@ async fn operator_preview_apply_resume_and_old_schema_refusal() {
             .unwrap();
     assert_eq!(row, ("zlib-v1".into(), raw.len() as i64));
     // Missing the latest migration receipt must not be repaired by this tool.
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "DELETE FROM _sqlx_migrations WHERE version=(SELECT max(version) FROM _sqlx_migrations)",
-    )
-    .execute(repo.db().writer_pool())
+    ))
     .await
     .unwrap();
     repo.db().close().await;

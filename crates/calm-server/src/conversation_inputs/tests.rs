@@ -4,8 +4,8 @@ mod execution;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
+use crate::db::sqlite::SqlxRepo;
 use crate::db::sqlite::area_membership;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::extract::Json;
 use crate::model::{CardRole, NewArea, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
@@ -62,124 +62,136 @@ struct Fixture {
 impl Fixture {
     async fn new(system: bool) -> Self {
         let (temp, repo, state) = crate::daily_planner::tests::fixture().await;
-        let card = if system {
-            let track = crate::daily_planner::reconcile(
-                &RouteState::from_ref(&state),
-                crate::daily_planner::tests::at("2026-10-17T01:00:00Z"),
-            )
-            .await
-            .unwrap();
-            let mut planner = None;
-            for card in repo.cards_by_track(track.id.as_str()).await.unwrap() {
-                if repo.card_role_get(card.id.as_str()).await.unwrap() == Some(CardRole::Planner) {
-                    planner = Some(card.id.to_string());
-                }
-            }
-            planner.expect("Today lifecycle creates its own Planner")
-        } else {
-            let area = repo
-                .area_create(
-                    LEGACY_OWNER_USER_ID,
-                    NewArea {
-                        name: "human source".into(),
-                        color: "#123456".into(),
-                        sort: None,
-                    },
-                )
-                .await
-                .unwrap();
-            let track = repo
-                .track_create(NewTrack {
-                    area_id: area.id,
-                    title: "human source".into(),
-                    sort: None,
-                    cwd: temp.path().to_string_lossy().into(),
-                    template_id: None,
-                    plugin_scope: None,
-                    template_input: None,
-                    attach_folder: false,
-                    theme: RequestTheme::default_dark(),
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                            let card = if system {
+                                let track = crate::daily_planner::reconcile(
+                                    &RouteState::from_ref(&state),
+                                    crate::daily_planner::tests::at("2026-10-17T01:00:00Z"),
+                                )
+                                .await
+                                .unwrap();
+                                let mut planner = None;
+                                for card in repo.cards_by_track(track.id.as_str()).await.unwrap() {
+                                    if repo.card_role_get(card.id.as_str()).await.unwrap()
+                                        == Some(CardRole::Planner)
+                                    {
+                                        planner = Some(card.id.to_string());
+                                    }
+                                }
+                                planner.expect("Today lifecycle creates its own Planner")
+                            } else {
+                                let area = repo
+                                    .area_create(
+                                        LEGACY_OWNER_USER_ID,
+                                        NewArea {
+                                            name: "human source".into(),
+                                            color: "#123456".into(),
+                                            sort: None,
+                                        },
+                                    )
+                                    .await
+                                    .unwrap();
+                                let track = repo
+                                    .track_create(NewTrack {
+                                        area_id: area.id,
+                                        title: "human source".into(),
+                                        sort: None,
+                                        cwd: temp.path().to_string_lossy().into(),
+                                        template_id: None,
+                                        plugin_scope: None,
+                                        template_input: None,
+                                        attach_folder: false,
+                                        theme: RequestTheme::default_dark(),
+                                    })
+                                    .await
+                                    .unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                let planner = new_id();
+                                crate::track_creation::initialize_track_tx(
+                        &mut tx,
+                        &track,
+                        (&planner, &new_id()),
+                        crate::track_creation::TrackInitialization::Independent {
+                            planner_payload: crate::track_creation::planner_harness_card_payload(
+                                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                    .unwrap(),
+                                None,
+                                AgentProvider::Codex,
+                            ),
+                        },
+                        repo.card_role_cache(),
+                        &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                                tx.commit().await.unwrap();
+                                planner
+                            };
+                            let runtime = if system {
+                                repo.session_projection_active_for_card(&card)
+                                    .await
+                                    .unwrap()
+                                    .expect("daily allocation owns its carrier")
+                                    .id
+                            } else {
+                                let runtime = new_id();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                crate::db::sqlite::session_start_runtime_tx(
+                                    &mut tx,
+                                    WorkerSessionInit::shared_planner(
+                                        runtime.clone(),
+                                        card.clone(),
+                                        AgentProvider::Codex,
+                                        WorkerSessionState::Idle,
+                                        Some("fixture-owned-thread".into()),
+                                        serde_json::to_value({
+                                            let mut frame =
+                                    calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                                            frame.header.last_thread_id =
+                                                Some("fixture-owned-thread".into());
+                                            frame
+                                        })
+                                        .unwrap(),
+                                        0,
+                                    ),
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                runtime
+                            };
+                            let input = InputState {
+                                repo,
+                                card,
+                                runtime,
+                            };
+                            let auth = AuthState::new(AuthConfig {
+                                username: Some("Owner".into()),
+                                password: Some("fixture-credential".into()),
+                                dev_autologin: false,
+                                display_name: "Owner".into(),
+                            });
+                            let app = Router::new()
+                                .route("/input", post(authenticated_accept))
+                                .route_layer(middleware::from_fn_with_state(
+                                    auth.clone(),
+                                    crate::auth::require_session,
+                                ))
+                                .with_state(input.clone());
+                            Self {
+                                _temp: temp,
+                                input,
+                                auth,
+                                app,
+                            }
                 })
-                .await
-                .unwrap();
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            let planner = new_id();
-            crate::track_creation::initialize_track_tx(
-                &mut tx,
-                &track,
-                (&planner, &new_id()),
-                crate::track_creation::TrackInitialization::Independent {
-                    planner_payload: crate::track_creation::planner_harness_card_payload(
-                        &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
-                            .unwrap(),
-                        None,
-                        AgentProvider::Codex,
-                    ),
-                },
-                repo.card_role_cache(),
-                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            )
+            })
             .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            planner
-        };
-        let runtime = if system {
-            repo.session_projection_active_for_card(&card)
-                .await
-                .unwrap()
-                .expect("daily allocation owns its carrier")
-                .id
-        } else {
-            let runtime = new_id();
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            crate::db::sqlite::session_start_runtime_tx(
-                &mut tx,
-                WorkerSessionInit::shared_planner(
-                    runtime.clone(),
-                    card.clone(),
-                    AgentProvider::Codex,
-                    WorkerSessionState::Idle,
-                    Some("fixture-owned-thread".into()),
-                    serde_json::to_value({
-                        let mut frame =
-                            calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-                        frame.header.last_thread_id = Some("fixture-owned-thread".into());
-                        frame
-                    })
-                    .unwrap(),
-                    0,
-                ),
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            runtime
-        };
-        let input = InputState {
-            repo,
-            card,
-            runtime,
-        };
-        let auth = AuthState::new(AuthConfig {
-            username: Some("Owner".into()),
-            password: Some("fixture-credential".into()),
-            dev_autologin: false,
-            display_name: "Owner".into(),
-        });
-        let app = Router::new()
-            .route("/input", post(authenticated_accept))
-            .route_layer(middleware::from_fn_with_state(
-                auth.clone(),
-                crate::auth::require_session,
-            ))
-            .with_state(input.clone());
-        Self {
-            _temp: temp,
-            input,
-            auth,
-            app,
-        }
+            .expect("independent write operation")
     }
 
     fn session(&self, user: &str, role: &str) -> String {
@@ -214,11 +226,20 @@ impl Fixture {
     }
 
     async fn register(&self, user: &str) {
-        let mut tx = begin_immediate_tx(self.input.repo.db()).await.unwrap();
-        area_membership::application_user_register(&mut tx, user, user)
+        let write_db = (self.input.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    area_membership::application_user_register(&mut tx, user, user)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
+            .expect("independent write operation")
     }
 
     async fn message_count(&self) -> i64 {
@@ -290,30 +311,39 @@ async fn unregistered_identity_and_missing_session_never_fall_back_to_deployment
 async fn existing_session_rechecks_current_area_membership_in_the_acceptance_transaction() {
     let fx = Fixture::new(false).await;
     fx.register("alice").await;
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+                                .await
+                                .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+                )
+                .bind(area.id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let session = fx.session("alice", "owner");
+                            assert_eq!(fx.send(Some(&session)).await.status(), StatusCode::OK);
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
+                                .bind(area.id.as_str())
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            assert_eq!(
+                                fx.send(Some(&session)).await.status(),
+                                StatusCode::FORBIDDEN
+                            );
+                            assert_eq!(fx.message_count().await, 1);
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area.id.as_str())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let session = fx.session("alice", "owner");
-    assert_eq!(fx.send(Some(&session)).await.status(), StatusCode::OK);
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
-        .bind(area.id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        fx.send(Some(&session)).await.status(),
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(fx.message_count().await, 1);
+        .expect("independent write operation")
 }

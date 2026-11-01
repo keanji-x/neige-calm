@@ -12,8 +12,8 @@ use std::time::Duration;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, session_bind_attribution_tx,
-    session_projection_active_for_card_tx, session_start_runtime_tx,
+    SqlxRepo, session_bind_attribution_tx, session_projection_active_for_card_tx,
+    session_start_runtime_tx,
 };
 use calm_server::event::EventBus;
 use calm_server::mcp_server::{McpServer, build_default_registry};
@@ -104,97 +104,109 @@ async fn boot() -> Boot {
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
 
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let raw_token = crate::support::planner::mint_tx(
-        &mut tx,
-        card_id.clone(),
-        &calm_server::model::new_id(),
-        track.id.clone(),
-        &card_role_cache,
-    )
-    .await;
-    tx.commit().await.unwrap();
-    let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
-    // The verdict probe names a task attempt of this track.
-    sqlx::query(concat!(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
-        "created_at_ms,updated_at_ms) VALUES('shim-round-trip',?1,'shim','codex','goal','{}','done',1,1)"
-    ))
-    .bind(track.id.as_str())
-    .execute(sqlx_repo.pool())
-    .await
-    .expect("seed the verdict's task attempt");
+    let write_db = (sqlx_repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let raw_token = crate::support::planner::mint_tx(
+            &mut tx,
+            card_id.clone(),
+            &calm_server::model::new_id(),
+            track.id.clone(),
+            &card_role_cache,
+        )
+        .await;
+        tx.commit().await.unwrap();
+        let thread_id = format!("thread-{card_id}");
+        seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+        // The verdict probe names a task attempt of this track.
+        (sqlx_repo.db()).writer().execute(sqlx::query(concat!(
+            "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+            "created_at_ms,updated_at_ms) VALUES('shim-round-trip',?1,'shim','codex','goal','{}','done',1,1)"
+        ))
+        .bind(track.id.as_str()))
+        .await
+        .expect("seed the verdict's task attempt");
 
-    let events = EventBus::new();
-    let registry = build_default_registry();
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    let server = McpServer::spawn(
-        repo,
-        events,
-        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
-        socket_path.clone(),
-        PathBuf::from("/nonexistent-shim-bin"),
-        registry,
-        None,
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::env::temp_dir().join("neige-test-gate-logs"),
-    )
-    .await
-    .expect("spawn McpServer");
+        let events = EventBus::new();
+        let registry = build_default_registry();
+        let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+        repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+        let server = McpServer::spawn(
+            repo,
+            events,
+            calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+            socket_path.clone(),
+            PathBuf::from("/nonexistent-shim-bin"),
+            registry,
+            None,
+            std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            std::env::temp_dir().join("neige-test-gate-logs"),
+        )
+        .await
+        .expect("spawn McpServer");
 
-    Boot {
-        server,
-        thread_id,
-        raw_token,
-        socket_path,
-        _tmp: tmp,
-    }
+        Boot {
+            server,
+            thread_id,
+            raw_token,
+            socket_path,
+            _tmp: tmp,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+                    .await
+                    .unwrap()
+                {
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            worker_session_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                } else {
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap()
-    {
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime.id,
-            ThreadAttribution {
-                worker_session_id: runtime.id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .unwrap();
-    } else {
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-    }
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]

@@ -36,10 +36,19 @@ async fn runtime_by_id_tx_snapshot(
     runtime_id: &str,
 ) -> Option<calm_server::session_projection_repo::WorkerSessionProjection> {
     let id = runtime_id.to_string();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
-    tx.commit().await.unwrap();
-    runtime
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
+                tx.commit().await.unwrap();
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn boot() -> (Arc<SqlxRepo>, EventBus, String) {
@@ -90,22 +99,25 @@ async fn seed_card(repo: &SqlxRepo, track_id: &str, terminal_id: &str) -> String
 
 async fn insert_terminal(repo: &SqlxRepo, card_id: &str, terminal_id: &str) {
     let theme = calm_server::routes::theme::RequestTheme::default_dark();
-    sqlx::query(
-        r#"INSERT INTO terminals
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO terminals
                (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
            VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
-    )
-    .bind(terminal_id)
-    .bind(card_id)
-    .bind("bash")
-    .bind("/workspace")
-    .bind("{}")
-    .bind(theme.fg_arg())
-    .bind(theme.bg_arg())
-    .bind(0_i64)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(terminal_id)
+            .bind(card_id)
+            .bind("bash")
+            .bind("/workspace")
+            .bind("{}")
+            .bind(theme.fg_arg())
+            .bind(theme.bg_arg())
+            .bind(0_i64),
+        )
+        .await
+        .unwrap();
 }
 
 async fn seed_card_with_runtime_kind(
@@ -155,28 +167,37 @@ async fn start_runtime_for_card_with_thread(
     thread_id: Option<&str>,
 ) -> String {
     let runtime_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.to_string(),
-            kind: runtime_kind,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some(terminal_id.to_string()),
-            thread_id: thread_id.map(str::to_owned),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime_id
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.to_string(),
+                        kind: runtime_kind,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some(terminal_id.to_string()),
+                        thread_id: thread_id.map(str::to_owned),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime_id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn supersede_runtime_for_card(
@@ -188,29 +209,38 @@ async fn supersede_runtime_for_card(
 ) -> String {
     let runtime_id = new_id();
     let old_runtime_id = old_runtime_id.to_string();
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &old_runtime_id,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.to_string(),
-            kind: runtime_kind,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some(terminal_id.to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime_id
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &old_runtime_id,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.to_string(),
+                        kind: runtime_kind,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some(terminal_id.to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime_id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn projected_card(repo: &SqlxRepo, card_id: &str) -> calm_server::model::Card {
@@ -730,67 +760,76 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
     let live_card = seed_pending(&repo, &registry, &track_id, "term-live-behind").await;
 
     let r2 = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &r1,
-        WorkerSessionInit {
-            id: r2.clone(),
-            card_id: card_id.clone(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some("term-r1".to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &r1,
+                    WorkerSessionInit {
+                        id: r2.clone(),
+                        card_id: card_id.clone(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some("term-r1".to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let bound = registry.on_thread_started("T-r1-late").await.unwrap();
+                let bound = registry.on_thread_started("T-r1-late").await.unwrap();
 
-    assert_eq!(bound, None);
-    assert_eq!(registry.pending_count().await, 1);
-    let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
-        .await
-        .expect("old runtime");
-    assert_eq!(old_runtime.thread_id, None);
-    let new_runtime = repo
-        .session_projection_by_id(&r2)
-        .await
-        .unwrap()
-        .expect("new runtime");
-    assert_eq!(new_runtime.status, WorkerSessionState::TurnPending);
-    assert_eq!(new_runtime.thread_id, None);
-    let active_runtime = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("active respawned runtime");
-    assert_eq!(active_runtime.id, r2);
-    assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
-    let new_session = repo
-        .session_get(&WorkerSessionId::from(r2.clone()))
-        .await
-        .unwrap()
-        .expect("new worker session");
-    assert_eq!(new_session.thread_id, None);
-    assert_eq!(new_session.agent_session_id, None);
+                assert_eq!(bound, None);
+                assert_eq!(registry.pending_count().await, 1);
+                let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
+                    .await
+                    .expect("old runtime");
+                assert_eq!(old_runtime.thread_id, None);
+                let new_runtime = repo
+                    .session_projection_by_id(&r2)
+                    .await
+                    .unwrap()
+                    .expect("new runtime");
+                assert_eq!(new_runtime.status, WorkerSessionState::TurnPending);
+                assert_eq!(new_runtime.thread_id, None);
+                let active_runtime = repo
+                    .session_projection_active_for_card(&card_id)
+                    .await
+                    .unwrap()
+                    .expect("active respawned runtime");
+                assert_eq!(active_runtime.id, r2);
+                assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
+                let new_session = repo
+                    .session_get(&WorkerSessionId::from(r2.clone()))
+                    .await
+                    .unwrap()
+                    .expect("new worker session");
+                assert_eq!(new_session.thread_id, None);
+                assert_eq!(new_session.agent_session_id, None);
 
-    let next = registry.on_thread_started("T-live-own").await.unwrap();
-    assert_eq!(next.as_deref(), Some(live_card.as_str()));
-    let live_runtime = repo
-        .session_projection_active_for_card(&live_card)
+                let next = registry.on_thread_started("T-live-own").await.unwrap();
+                assert_eq!(next.as_deref(), Some(live_card.as_str()));
+                let live_runtime = repo
+                    .session_projection_active_for_card(&live_card)
+                    .await
+                    .unwrap()
+                    .expect("live runtime");
+                assert_eq!(live_runtime.thread_id.as_deref(), Some("T-live-own"));
+            })
+        })
         .await
-        .unwrap()
-        .expect("live runtime");
-    assert_eq!(live_runtime.thread_id.as_deref(), Some("T-live-own"));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -813,72 +852,81 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
         .unwrap();
     assert_eq!(registry.pending_count().await, 2);
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &r1,
-        WorkerSessionInit {
-            id: r2.clone(),
-            card_id: card_id.clone(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some("term-r1".to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &r1,
+                    WorkerSessionInit {
+                        id: r2.clone(),
+                        card_id: card_id.clone(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some("term-r1".to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let r1_bound = registry.on_thread_started("T-r1-late").await.unwrap();
+                let r1_bound = registry.on_thread_started("T-r1-late").await.unwrap();
 
-    assert_eq!(r1_bound, None);
-    assert_eq!(registry.pending_count().await, 1);
-    let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
-        .await
-        .expect("old runtime");
-    assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
-    assert_eq!(old_runtime.thread_id, None);
-    let active_runtime = repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("active respawned runtime");
-    assert_eq!(active_runtime.id, r2);
-    assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
-    assert_eq!(active_runtime.thread_id, None);
-    let r2_session = repo
-        .session_get(&WorkerSessionId::from(r2.clone()))
-        .await
-        .unwrap()
-        .expect("replacement worker session");
-    assert_eq!(r2_session.thread_id, None);
-    assert_eq!(r2_session.agent_session_id, None);
+                assert_eq!(r1_bound, None);
+                assert_eq!(registry.pending_count().await, 1);
+                let old_runtime = runtime_by_id_tx_snapshot(&repo, &r1)
+                    .await
+                    .expect("old runtime");
+                assert_eq!(old_runtime.status, WorkerSessionState::Superseded);
+                assert_eq!(old_runtime.thread_id, None);
+                let active_runtime = repo
+                    .session_projection_active_for_card(&card_id)
+                    .await
+                    .unwrap()
+                    .expect("active respawned runtime");
+                assert_eq!(active_runtime.id, r2);
+                assert_eq!(active_runtime.status, WorkerSessionState::TurnPending);
+                assert_eq!(active_runtime.thread_id, None);
+                let r2_session = repo
+                    .session_get(&WorkerSessionId::from(r2.clone()))
+                    .await
+                    .unwrap()
+                    .expect("replacement worker session");
+                assert_eq!(r2_session.thread_id, None);
+                assert_eq!(r2_session.agent_session_id, None);
 
-    let r2_bound = registry.on_thread_started("T-r2-own").await.unwrap();
+                let r2_bound = registry.on_thread_started("T-r2-own").await.unwrap();
 
-    assert_eq!(r2_bound.as_deref(), Some(card_id.as_str()));
-    assert_eq!(registry.pending_count().await, 0);
-    let replacement_runtime = repo
-        .session_projection_by_id(&r2)
+                assert_eq!(r2_bound.as_deref(), Some(card_id.as_str()));
+                assert_eq!(registry.pending_count().await, 0);
+                let replacement_runtime = repo
+                    .session_projection_by_id(&r2)
+                    .await
+                    .unwrap()
+                    .expect("replacement runtime");
+                assert_eq!(replacement_runtime.status, WorkerSessionState::Running);
+                assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
+                let replacement_session = repo
+                    .session_get(&WorkerSessionId::from(r2.clone()))
+                    .await
+                    .unwrap()
+                    .expect("replacement worker session");
+                assert_eq!(replacement_session.thread_id.as_deref(), Some("T-r2-own"));
+                assert_eq!(replacement_session.agent_session_id, None);
+            })
+        })
         .await
-        .unwrap()
-        .expect("replacement runtime");
-    assert_eq!(replacement_runtime.status, WorkerSessionState::Running);
-    assert_eq!(replacement_runtime.thread_id.as_deref(), Some("T-r2-own"));
-    let replacement_session = repo
-        .session_get(&WorkerSessionId::from(r2.clone()))
-        .await
-        .unwrap()
-        .expect("replacement worker session");
-    assert_eq!(replacement_session.thread_id.as_deref(), Some("T-r2-own"));
-    assert_eq!(replacement_session.agent_session_id, None);
+        .expect("independent write operation")
 }
 
 #[tokio::test]

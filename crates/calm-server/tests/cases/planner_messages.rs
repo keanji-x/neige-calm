@@ -11,10 +11,13 @@ use serde_json::{Value, json};
 
 async fn token(h: &Harness, worker: &Worker) -> String {
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=? WHERE id=?")
-        .bind(calm_server::mcp_server::auth::hash_token(token.as_str()))
-        .bind(&worker.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=? WHERE id=?")
+                .bind(calm_server::mcp_server::auth::hash_token(token.as_str()))
+                .bind(&worker.session),
+        )
         .await
         .unwrap();
     token.as_str().to_owned()
@@ -105,10 +108,13 @@ async fn planner_message_is_readable_by_its_attempt_worker() {
             .unwrap();
     for value in [None, Some(before + 1)] {
         assert!(
-            sqlx::query("UPDATE task_planner_messages SET read_at_ms=? WHERE message_id=?")
-                .bind(value)
-                .bind(receipt["message_id"].as_str().unwrap())
-                .execute(h.sql.pool())
+            (h.sql.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE task_planner_messages SET read_at_ms=? WHERE message_id=?")
+                        .bind(value)
+                        .bind(receipt["message_id"].as_str().unwrap())
+                )
                 .await
                 .is_err()
         );
@@ -262,14 +268,18 @@ async fn planner_message_records_are_append_only_until_the_owning_track_is_delet
     let f = running(&h, "claude", true, false).await;
     written(&message(&h, json!({"attempt_id":f.worker.task}), "one", "audit").await);
     assert!(
-        sqlx::query("UPDATE task_planner_messages SET text='forged'")
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE task_planner_messages SET text='forged'"
+            ))
             .await
             .is_err()
     );
     assert!(
-        sqlx::query("DELETE FROM task_planner_messages")
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM task_planner_messages"))
             .await
             .is_err()
     );
@@ -350,54 +360,63 @@ async fn planner_message_audit_refuses_a_foreign_attempt_from_editable_card_meta
         .await
         .unwrap();
     let owner = worker_running(&h, "claude", foreign.id.as_str(), None).await;
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    calm_server::db::sqlite::planner_message_insert_tx(
-        &mut tx,
-        &owner.task,
-        "secret",
-        "foreign Planner text",
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let carrier = worker_running(&h, "claude", &h.track, None).await;
-    let response = h
-        .app
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/cards/{}", carrier.card))
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(
-                    json!({"payload":{"idempotency_key":owner.task}}).to_string(),
-                ))
-                .unwrap(),
-        )
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::planner_message_insert_tx(
+                    &mut tx,
+                    &owner.task,
+                    "secret",
+                    "foreign Planner text",
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let carrier = worker_running(&h, "claude", &h.track, None).await;
+                let response = h
+                    .app
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("PATCH")
+                            .uri(format!("/api/cards/{}", carrier.card))
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(
+                                json!({"payload":{"idempotency_key":owner.task}}).to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    status,
+                    axum::http::StatusCode::OK,
+                    "{}",
+                    String::from_utf8_lossy(&body)
+                );
+                let audit = h
+                    .ok(
+                        "neige_track_cat",
+                        json!({"path":format!("runs/{}/planner-messages.json", owner.task)}),
+                    )
+                    .await;
+                let run: Value = serde_json::from_str(audit["content"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    run,
+                    json!([]),
+                    "foreign records must not follow editable payload keys"
+                );
+            })
+        })
         .await
-        .unwrap();
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(
-        status,
-        axum::http::StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
-    let audit = h
-        .ok(
-            "neige_track_cat",
-            json!({"path":format!("runs/{}/planner-messages.json", owner.task)}),
-        )
-        .await;
-    let run: Value = serde_json::from_str(audit["content"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        run,
-        json!([]),
-        "foreign records must not follow editable payload keys"
-    );
+        .expect("independent write operation")
 }
 
 #[test]
@@ -416,15 +435,15 @@ async fn stale_planner_record(no_renderer: bool, demoted: bool) {
             .terminal_renderer
             .forget_entry_for_test(&f.worker.terminal);
     }
-    let pool = h.sql.pool().clone();
+    let pool = h.sql.db().clone();
     let session = h.session_id.clone();
     h.interaction().set_message_record_seam(Box::new(move |_| Box::pin(async move {
         if demoted {
-            sqlx::query("UPDATE cards SET role='assistant' WHERE id=(SELECT card_id FROM worker_sessions WHERE id=?)")
-                .bind(session).execute(&pool).await.unwrap();
+            (pool).writer().execute(sqlx::query("UPDATE cards SET role='assistant' WHERE id=(SELECT card_id FROM worker_sessions WHERE id=?)")
+                .bind(session)).await.unwrap();
         } else {
-            sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
-                .bind(session).execute(&pool).await.unwrap();
+            (pool).writer().execute(sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+                .bind(session)).await.unwrap();
         }
     })));
     let reply = message(
@@ -484,9 +503,12 @@ async fn stale_worker_tool(name: &str) {
     };
     // Like the track_close regression, call the production handler with the identity already
     // admitted by transport, then retire its session before its write transaction begins.
-    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
-        .bind(&f.worker.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+                .bind(&f.worker.session),
+        )
         .await
         .unwrap();
     let registry = build_default_registry();

@@ -189,10 +189,13 @@ async fn a_task_waiting_for_the_checkout_refuses_terminal_tools_and_takes_an_edi
         .unwrap_or_else(|_| panic!("terminal interaction already set"));
     // The terminal tools authorize the caller by its card's live session, as a running Planner's.
     let planner = planner_identity(&fx.boot);
-    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
-        .bind(&planner.session_id)
-        .bind(&planner.card_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                .bind(&planner.session_id)
+                .bind(&planner.card_id),
+        )
         .await
         .unwrap();
     declare_task(fx, "w1", json!({})).await;

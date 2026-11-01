@@ -67,18 +67,22 @@ async fn agent_backend_registry_rejects_alias_protocol_removal_and_reuse() {
     ));
     // SQL cannot erase an identity to make its id reusable.
     assert!(
-        sqlx::query("DELETE FROM agent_backend_registry WHERE backend_id='other'")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "DELETE FROM agent_backend_registry WHERE backend_id='other'"
+            ))
             .await
             .is_err()
     );
     assert!(
-        sqlx::query(
-            "UPDATE agent_backend_registry SET canonical_home='/new' WHERE backend_id='other'"
-        )
-        .execute(repo.pool())
-        .await
-        .is_err()
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE agent_backend_registry SET canonical_home='/new' WHERE backend_id='other'"
+            ))
+            .await
+            .is_err()
     );
 }
 
@@ -163,7 +167,7 @@ async fn agent_backend_upgrade_preserves_daemon_and_rejects_unknown_migration() 
             .await
             .is_err()
     );
-    sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9999,'future',1,X'00',0)").execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9999,'future',1,X'00',0)")).await.unwrap();
     repo.pool().close().await;
     assert!(SqlxRepo::open(&url).await.is_err());
 }

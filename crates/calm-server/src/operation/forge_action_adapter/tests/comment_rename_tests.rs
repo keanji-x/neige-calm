@@ -85,8 +85,9 @@ async fn a_comment_from_before_the_rename_replays_after_migration_0148() {
         .iter()
         .find(|m| m.description == "plugin names")
         .expect("the #2087 B5 migration is embedded");
-    sqlx::raw_sql(&migration.sql)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::raw_sql(&migration.sql))
         .await
         .unwrap();
     let moved = format!(

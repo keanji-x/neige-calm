@@ -746,15 +746,14 @@ async fn capture_over_the_per_track_quota_is_forbidden() {
     let boot = boot().await;
     let pool = boot.repo.sqlite_db().expect("pool");
     for i in 0..MAX_SOURCES_PER_TRACK {
-        sqlx::query(concat!(
+        (pool).writer().execute(sqlx::query(concat!(
             "INSERT INTO report_sources ",
             "(track_id, source_id, provenance, origin, title, published_at, ",
             " body, body_sha256, captured_at, quotes) ",
             "VALUES (?1, ?2, 'manual', '{\"kind\":\"manual\"}', 't', NULL, 'b', 'h', 1, '[]')"
         ))
         .bind(boot.track_id.as_str())
-        .bind(format!("src_{i:08x}"))
-        .execute(pool.writer_pool())
+        .bind(format!("src_{i:08x}")))
         .await
         .expect("seed row");
     }

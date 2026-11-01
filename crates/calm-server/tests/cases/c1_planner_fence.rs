@@ -26,9 +26,8 @@ async fn planner(b: &Boot, track: &str, rewind: bool) -> (String, PlannerHarness
             .unwrap(),
         );
     }
-    sqlx::query("UPDATE worker_sessions SET state='idle', completed_at_ms=NULL, handle_state_json=? WHERE id=?")
-        .bind(serde_json::to_string(&snapshot).unwrap()).bind(&runtime)
-        .execute(b.repo.pool()).await.unwrap();
+    (b.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='idle', completed_at_ms=NULL, handle_state_json=? WHERE id=?")
+        .bind(serde_json::to_string(&snapshot).unwrap()).bind(&runtime)).await.unwrap();
     let backend = calm_server::harness::backend::PlannerBackend::codex(
         b.state.shared_codex_appserver.clone(),
         &card,

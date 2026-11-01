@@ -96,55 +96,64 @@ async fn harness_with(
     ) {
         snapshot.last_turn_id = Some("turn-prior".into());
     }
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon,
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: card.track_id,
-        card_id: card.id,
-        thread_id: Some(thread_id.clone()),
-        repo: repo.clone(),
-        events: EventBus::new(),
-        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon,
+                        card.id.as_ref(),
+                        card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: card.track_id,
+                    card_id: card.id,
+                    thread_id: Some(thread_id.clone()),
+                    repo: repo.clone(),
+                    events: EventBus::new(),
+                    card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+                    track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config,
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    (repo, harness, worker_session_id, thread_id)
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config,
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                (repo, harness, worker_session_id, thread_id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn harness_from_snapshot(
@@ -158,55 +167,64 @@ async fn harness_from_snapshot(
         .last_thread_id
         .clone()
         .unwrap_or_else(|| "thread-offline".to_string());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon,
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: card.track_id,
-        card_id: card.id,
-        thread_id: Some(thread_id),
-        repo,
-        events: EventBus::new(),
-        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon,
+                        card.id.as_ref(),
+                        card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: card.track_id,
+                    card_id: card.id,
+                    thread_id: Some(thread_id),
+                    repo,
+                    events: EventBus::new(),
+                    card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+                    track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig::default(),
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    (harness, worker_session_id)
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config: HarnessConfig::default(),
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                (harness, worker_session_id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn wait_for_state(
@@ -800,75 +818,84 @@ async fn restored_track_goal_issues_first_turn_without_new_observation() {
     );
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let config = HarnessConfig {
-        debounce_min_idle: Duration::from_millis(25),
-        debounce_max_wait: Duration::from_secs(1),
-        ..HarnessConfig::default()
-    };
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id,
-        track_id: card.track_id,
-        card_id: card.id,
-        thread_id: Some(thread_id),
-        repo,
-        events: EventBus::new(),
-        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
+                let config = HarnessConfig {
+                    debounce_min_idle: Duration::from_millis(25),
+                    debounce_max_wait: Duration::from_secs(1),
+                    ..HarnessConfig::default()
+                };
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        card.id.as_ref(),
+                        card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id,
+                    track_id: card.track_id,
+                    card_id: card.id,
+                    thread_id: Some(thread_id),
+                    repo,
+                    events: EventBus::new(),
+                    card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+                    track_area_cache: calm_server::track_area_cache::TrackAreaCache::new(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config,
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config,
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
 
-    tokio::time::timeout(
-        config.debounce_min_idle + Duration::from_millis(300),
-        async {
-            loop {
-                if daemon.turn_start_count_for_test() > 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        },
-    )
-    .await
-    .expect("restored pending TrackGoal should issue a first turn");
-    wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
-    harness.shutdown().await.unwrap();
+                tokio::time::timeout(
+                    config.debounce_min_idle + Duration::from_millis(300),
+                    async {
+                        loop {
+                            if daemon.turn_start_count_for_test() > 0 {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    },
+                )
+                .await
+                .expect("restored pending TrackGoal should issue a first turn");
+                wait_for_state(&harness, |s| matches!(s, HarnessState::TurnRunning { .. })).await;
+                harness.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

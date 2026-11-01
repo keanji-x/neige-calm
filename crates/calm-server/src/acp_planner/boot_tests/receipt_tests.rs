@@ -296,16 +296,25 @@ async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
         .unwrap();
     assert!(session.active_turn_id_for_thread(&row.thread).is_none());
     assert!(session.carrier_idle_for_detach().is_none());
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(
-        crate::db::sqlite::acp_submission_unresolved_tx(&mut tx, &row.worker)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    pause.release.notify_one();
-    assert!(issuing.await.unwrap().is_ok());
-    session.shutdown().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    crate::db::sqlite::acp_submission_unresolved_tx(&mut tx, &row.worker)
+                        .await
+                        .unwrap()
+                );
+                tx.rollback().await.unwrap();
+                pause.release.notify_one();
+                assert!(issuing.await.unwrap().is_ok());
+                session.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -441,9 +450,12 @@ async fn tool_call_vs_fence(straddle: Option<&'static str>) {
             .await
             .unwrap();
         let fence = ctx.tool_calls.fence(&row.worker).unwrap();
-        sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
-            .bind(&row.worker)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
+                    .bind(&row.worker),
+            )
             .await
             .unwrap();
         drop(fence);
@@ -467,33 +479,49 @@ async fn carrier_quiescence_retained_completed_start_is_not_pending() {
     let id = operations.insert_operation("planner-harness-start", OperationKey {
         operation_key: "quiescence".into(), idempotency_key: None, payload_hash: "hash".into(),
     }, json!({"canonical_activation_version":2,"card_id":row.card,"worker_session_id":row.worker})).await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
-        .bind(&id)
-        .bind(&row.worker)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(
-        crate::operation::planner_start_fence::CardStartFence::require_settled_tx(
-            &mut tx, &row.card
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
+                .bind(&id)
+                .bind(&row.worker),
         )
         .await
-        .is_err()
-    );
-    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=42 WHERE id=?1")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
         .unwrap();
-    crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &row.card)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    crate::operation::planner_start_fence::CardStartFence::require_settled_tx(
+                        &mut tx, &row.card
+                    )
+                    .await
+                    .is_err()
+                );
+                sqlx::query(
+                    "UPDATE operations SET phase='succeeded',completed_at_ms=42 WHERE id=?1",
+                )
+                .bind(&id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                crate::operation::planner_start_fence::CardStartFence::require_settled_tx(
+                    &mut tx, &row.card,
+                )
+                .await
+                .unwrap();
+                let retained: String =
+                    sqlx::query_scalar("SELECT spawn_op_id FROM worker_sessions WHERE id=?1")
+                        .bind(&row.worker)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap();
+                assert_eq!(retained, id);
+            })
+        })
         .await
-        .unwrap();
-    let retained: String =
-        sqlx::query_scalar("SELECT spawn_op_id FROM worker_sessions WHERE id=?1")
-            .bind(&row.worker)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-    assert_eq!(retained, id);
+        .expect("independent write operation")
 }

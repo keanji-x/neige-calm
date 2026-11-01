@@ -499,9 +499,12 @@ async fn takeover_socket_refusal(untrusted_ancestor: bool) {
         let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
         drop(_listener);
     }
-    sqlx::query("UPDATE codex_backend_daemons SET sock_path=? WHERE backend_id='default'")
-        .bind(socket.as_os_str().as_bytes())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE codex_backend_daemons SET sock_path=? WHERE backend_id='default'")
+                .bind(socket.as_os_str().as_bytes()),
+        )
         .await
         .unwrap();
     let before = repo.shared_daemon_runtime_get("default").await.unwrap();
@@ -666,18 +669,25 @@ async fn agent_backend_single_reconnect_does_not_need_database_writer() {
             .await
             .is_err()
     );
-    let writer = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let writer = write_session.begin_immediate().await.unwrap();
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    daemon.model_list(tokio::time::Instant::now() + Duration::from_secs(2)),
+                )
+                .await
+                .expect("reconnect must not wait for the database writer")
+                .unwrap();
+                assert_eq!(daemon.status_snapshot().runtime.unwrap().pid, pid);
+                writer.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        daemon.model_list(tokio::time::Instant::now() + Duration::from_secs(2)),
-    )
-    .await
-    .expect("reconnect must not wait for the database writer")
-    .unwrap();
-    assert_eq!(daemon.status_snapshot().runtime.unwrap().pid, pid);
-    writer.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -693,21 +703,28 @@ async fn agent_backend_running_ensure_running_has_no_side_effects() {
     let methods = connection_methods_seen(daemon.sock_path());
     // A Running no-op must not even wait for the transition serial.
     let serial = daemon.lock_transition_serial_for_test().await;
-    let writer = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let writer = write_session.begin_immediate().await.unwrap();
+                tokio::time::timeout(Duration::from_secs(1), daemon.ensure_running())
+                    .await
+                    .expect("Running must return without transition or registry work")
+                    .unwrap();
+                writer.rollback().await.unwrap();
+                drop(serial);
+                assert!(!readiness.has_changed().unwrap());
+                assert_eq!(connection_methods_seen(daemon.sock_path()), methods);
+                let after = repo.shared_daemon_runtime_get("default").await.unwrap();
+                assert_eq!(after.pid, before.pid);
+                assert_eq!(after.updated_at, before.updated_at);
+                assert_eq!(after.restart_count, before.restart_count);
+            })
+        })
         .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(1), daemon.ensure_running())
-        .await
-        .expect("Running must return without transition or registry work")
-        .unwrap();
-    writer.rollback().await.unwrap();
-    drop(serial);
-    assert!(!readiness.has_changed().unwrap());
-    assert_eq!(connection_methods_seen(daemon.sock_path()), methods);
-    let after = repo.shared_daemon_runtime_get("default").await.unwrap();
-    assert_eq!(after.pid, before.pid);
-    assert_eq!(after.updated_at, before.updated_at);
-    assert_eq!(after.restart_count, before.restart_count);
+        .expect("independent write operation")
 }
 
 #[path = "agent_backend_non_utf8.rs"]

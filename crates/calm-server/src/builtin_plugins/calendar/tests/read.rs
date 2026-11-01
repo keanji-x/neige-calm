@@ -98,10 +98,13 @@ async fn calendar_list_hides_closed_and_missing_tracks_and_restores_reopened_ent
         .unwrap();
 
     for closed in [false, true, false] {
-        sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
-            .bind(closed.then_some(1_i64))
-            .bind(owner.track_id.as_deref().unwrap())
-            .execute(fx.repo.pool())
+        (fx.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
+                    .bind(closed.then_some(1_i64))
+                    .bind(owner.track_id.as_deref().unwrap()),
+            )
             .await
             .unwrap();
         let response = app.clone().oneshot(

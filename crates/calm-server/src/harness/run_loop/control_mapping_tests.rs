@@ -163,8 +163,8 @@ async fn m1_mapping_compact_host_admission_keeps_phase_and_never_calls_native() 
                 "Send a message before compacting this conversation."
             }
             "archived" => {
-                sqlx::query("INSERT INTO assistant_conversation_archives(card_id, archived_at_ms) VALUES (?1, 1)")
-                    .bind(inner.card_id.as_str()).execute(f.repo.pool()).await.unwrap();
+                (f.repo.db()).writer().execute(sqlx::query("INSERT INTO assistant_conversation_archives(card_id, archived_at_ms) VALUES (?1, 1)")
+                    .bind(inner.card_id.as_str())).await.unwrap();
                 "This conversation is archived. Restore it before continuing."
             }
             "edit" => {
@@ -356,20 +356,24 @@ async fn m1_mapping_compact_failed_snapshot_restores_phase_and_previous_feedback
         };
         *inner.compact_outcome.lock().await = Some(previous.clone());
         if database_error {
-            sqlx::query(
-                r#"CREATE TRIGGER fail_compact_snapshot
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    r#"CREATE TRIGGER fail_compact_snapshot
                    BEFORE UPDATE OF handle_state_json ON worker_sessions
                    BEGIN
                        SELECT RAISE(ABORT, 'snapshot diagnostic');
                    END"#,
-            )
-            .execute(f.repo.pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
         } else {
-            sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
-                .bind(inner.worker_session_id.as_str())
-                .execute(f.repo.pool())
+            (f.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+                        .bind(inner.worker_session_id.as_str()),
+                )
                 .await
                 .unwrap();
         }

@@ -4,8 +4,8 @@ mod source_gate;
 
 use super::*;
 use crate::db::prelude::*;
+use crate::db::sqlite::SqlxRepo;
 use crate::db::sqlite::conversation::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnStartReturnHook};
@@ -82,108 +82,118 @@ impl Fixture {
             })
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let card = crate::db::sqlite::card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id,
-                kind: "codex".into(),
-                title: None,
-                sort: None,
-                payload: serde_json::json!({"planner_provider":"codex"}),
-            },
-            CardRole::Planner,
-            true,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        let card = card.id.to_string();
-        let runtime = new_id();
-        crate::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                runtime.clone(),
-                card.clone(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                Some("thread".into()),
-                serde_json::to_value({
-                    let mut frame =
-                        calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-                    frame.header.last_thread_id = Some("thread".into());
-                    frame
-                })
-                .unwrap(),
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-        let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
-            .await
-            .unwrap();
-        let accepted = accept_pending_human_tx(
-            &mut tx,
-            &mut carrier,
-            LEGACY_OWNER_USER_ID,
-            HumanPayload {
-                text: BODY.into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("human fixture")
-        };
-        let submission = if claim {
-            crate::conversation_inputs::claim_initial_tx(
-                &mut tx,
-                &source,
-                &mut carrier,
-                SubmissionRenderPlan::V1 {
-                    segments: vec![SubmissionRenderSegment::Input {
-                        input_position: 0,
-                        input: SubmissionRenderInput::Human {
-                            message: message.clone(),
-                            author: FrozenHumanAttribution {
-                                registered_user_id: LEGACY_OWNER_USER_ID.into(),
-                                display_name: "Owner".into(),
-                            },
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let card = crate::db::sqlite::card_create_with_id_tx(
+                        &mut tx,
+                        new_id(),
+                        NewCard {
+                            track_id: track.id,
+                            kind: "codex".into(),
+                            title: None,
+                            sort: None,
+                            payload: serde_json::json!({"planner_provider":"codex"}),
                         },
-                    }],
-                },
-            )
+                        CardRole::Planner,
+                        true,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    let card = card.id.to_string();
+                    let runtime = new_id();
+                    crate::db::sqlite::session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::shared_planner(
+                            runtime.clone(),
+                            card.clone(),
+                            AgentProvider::Codex,
+                            WorkerSessionState::Idle,
+                            Some("thread".into()),
+                            serde_json::to_value({
+                                let mut frame =
+                        calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                                frame.header.last_thread_id = Some("thread".into());
+                                frame
+                            })
+                            .unwrap(),
+                            0,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
+                        .await
+                        .unwrap();
+                    let accepted = accept_pending_human_tx(
+                        &mut tx,
+                        &mut carrier,
+                        LEGACY_OWNER_USER_ID,
+                        HumanPayload {
+                            text: BODY.into(),
+                            bound_attachments: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("human fixture")
+                    };
+                    let submission = if claim {
+                        crate::conversation_inputs::claim_initial_tx(
+                            &mut tx,
+                            &source,
+                            &mut carrier,
+                            SubmissionRenderPlan::V1 {
+                                segments: vec![SubmissionRenderSegment::Input {
+                                    input_position: 0,
+                                    input: SubmissionRenderInput::Human {
+                                        message: message.clone(),
+                                        author: FrozenHumanAttribution {
+                                            registered_user_id: LEGACY_OWNER_USER_ID.into(),
+                                            display_name: "Owner".into(),
+                                        },
+                                    },
+                                }],
+                            },
+                        )
+                        .await
+                        .unwrap()
+                        .submission_id
+                    } else {
+                        InputSubmissionId::parse("11111111111111111111111111111111").unwrap()
+                    };
+                    tx.commit().await.unwrap();
+                    let daemon =
+                        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                    let actual_card = repo.card_get(&card).await.unwrap().unwrap();
+                    let backend = PlannerBackend::codex(
+                        daemon.clone(),
+                        &card,
+                        actual_card.track_id.as_str(),
+                        &runtime,
+                    )
+                    .unwrap();
+                    Self {
+                        repo,
+                        backend,
+                        daemon,
+                        card,
+                        runtime,
+                        submission,
+                        message,
+                        auth,
+                        session,
+                        source,
+                    }
+                })
+            })
             .await
-            .unwrap()
-            .submission_id
-        } else {
-            InputSubmissionId::parse("11111111111111111111111111111111").unwrap()
-        };
-        tx.commit().await.unwrap();
-        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-        let actual_card = repo.card_get(&card).await.unwrap().unwrap();
-        let backend = PlannerBackend::codex(
-            daemon.clone(),
-            &card,
-            actual_card.track_id.as_str(),
-            &runtime,
-        )
-        .unwrap();
-        Self {
-            repo,
-            backend,
-            daemon,
-            card,
-            runtime,
-            submission,
-            message,
-            auth,
-            session,
-            source,
-        }
+            .expect("independent write operation")
     }
 
     async fn dispatch(&self) -> Result<CommittedInputReport> {
@@ -202,13 +212,22 @@ impl Fixture {
     }
 
     async fn checkpoint(&self) -> ConversationInputCheckpoint {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let carrier = current_input_carrier_tx(&mut tx, &self.card, &self.runtime)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier = current_input_carrier_tx(&mut tx, &self.card, &self.runtime)
+                        .await
+                        .unwrap();
+                    let value = carrier.checkpoint().clone();
+                    tx.commit().await.unwrap();
+                    value
+                })
+            })
             .await
-            .unwrap();
-        let value = carrier.checkpoint().clone();
-        tx.commit().await.unwrap();
-        value
+            .expect("independent write operation")
     }
 }
 
@@ -216,36 +235,46 @@ impl Fixture {
 async fn initial_keeps_pending_history_replacement_held_without_an_attempt() {
     for reverted in [false, true] {
         let fx = Fixture::new().await;
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
-            .await
-            .unwrap();
-        let fence = RuntimeExecutionFence::from_carrier(&carrier);
-        let mut header = fence.header().clone();
-        header["pending_rewind"] =
-            serde_json::to_value(calm_types::harness::snapshot::PersistedRewind::CodexV2 {
-                thread_id: "thread".into(),
-                before_turn_id: "prior".into(),
-                reverted,
-            })
-            .unwrap();
-        persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &fence, header)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let before = fx.checkpoint().await;
+        let write_db = (fx.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+                        .await
+                        .unwrap();
+                    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+                    let mut header = fence.header().clone();
+                    header["pending_rewind"] = serde_json::to_value(
+                        calm_types::harness::snapshot::PersistedRewind::CodexV2 {
+                            thread_id: "thread".into(),
+                            before_turn_id: "prior".into(),
+                            reverted,
+                        },
+                    )
+                    .unwrap();
+                    persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &fence, header)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    let before = fx.checkpoint().await;
 
-        let Err(CalmError::Conflict(reason)) = fx.dispatch().await else {
-            panic!("history replacement must remain held")
-        };
-        assert_eq!(
-            reason,
-            "canonical input cannot dispatch with pending history replacement"
-        );
-        assert_eq!(fx.checkpoint().await, before);
-        assert!(before.attempt(&fx.submission).is_none());
-        assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
-        assert!(fx.daemon.reverted_threads_for_test().is_empty());
+                    let Err(CalmError::Conflict(reason)) = fx.dispatch().await else {
+                        panic!("history replacement must remain held")
+                    };
+                    assert_eq!(
+                        reason,
+                        "canonical input cannot dispatch with pending history replacement"
+                    );
+                    assert_eq!(fx.checkpoint().await, before);
+                    assert!(before.attempt(&fx.submission).is_none());
+                    assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+                    assert!(fx.daemon.reverted_threads_for_test().is_empty());
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -282,18 +311,27 @@ async fn accepted_input_survives_execution_cleanup_error_and_cannot_dispatch_aga
         checkpoint.attempt(&fx.submission).unwrap().delivery,
         InputDeliveryFact::Accepted { .. }
     ));
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+                    .await
+                    .unwrap();
+                assert!(
+                    !serde_json::to_string(carrier.snapshot())
+                        .unwrap()
+                        .contains(BODY)
+                );
+                tx.commit().await.unwrap();
+                assert!(fx.dispatch().await.is_err());
+                assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        !serde_json::to_string(carrier.snapshot())
-            .unwrap()
-            .contains(BODY)
-    );
-    tx.commit().await.unwrap();
-    assert!(fx.dispatch().await.is_err());
-    assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -376,37 +414,48 @@ async fn cancellation_after_crossing_leaves_committed_unknown_and_never_resends(
 #[tokio::test]
 async fn human_only_erasure_is_rechecked_in_the_marker_transaction_before_native_effects() {
     let fx = Fixture::new().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let plan = submission_plan_tx(&mut tx, &fx.submission).await.unwrap();
-    let proof_before = plan.original_digest.clone();
-    // Model an already-persisted erasure fact; there is no canonical erase command.
-    sqlx::query("UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2")
-        .bind(
-            serde_json::to_string(
-                &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
-                    operation_id: PrivateHistoryOperationId::parse(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let plan = submission_plan_tx(&mut tx, &fx.submission).await.unwrap();
+                let proof_before = plan.original_digest.clone();
+                // Model an already-persisted erasure fact; there is no canonical erase command.
+                sqlx::query(
+                    "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
+                )
+                .bind(
+                    serde_json::to_string(
+                        &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
+                            operation_id: PrivateHistoryOperationId::parse(
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            )
+                            .unwrap(),
+                        },
                     )
                     .unwrap(),
-                },
-            )
-            .unwrap(),
-        )
-        .bind((fx.message.message_id).as_str())
-        .execute(&mut **tx)
+                )
+                .bind((fx.message.message_id).as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                assert_eq!(
+                    submission_plan_tx(&mut tx, &fx.submission)
+                        .await
+                        .unwrap()
+                        .original_digest,
+                    proof_before
+                );
+                tx.commit().await.unwrap();
+                assert!(fx.dispatch().await.is_err());
+                assert!(fx.checkpoint().await.attempt(&fx.submission).is_none());
+                assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        submission_plan_tx(&mut tx, &fx.submission)
-            .await
-            .unwrap()
-            .original_digest,
-        proof_before
-    );
-    tx.commit().await.unwrap();
-    assert!(fx.dispatch().await.is_err());
-    assert!(fx.checkpoint().await.attempt(&fx.submission).is_none());
-    assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -457,34 +506,47 @@ async fn plan_hydrates_exact_revision_and_frozen_author_without_saving_another_b
 #[tokio::test]
 async fn fresh_crossing_rechecks_actual_area_owner_instead_of_stored_provenance() {
     let fx = Fixture::new().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let area: String = sqlx::query_scalar(
-        "SELECT t.area_id FROM tracks t JOIN cards c ON c.track_id=t.id WHERE c.id=?1",
-    )
-    .bind(&fx.card)
-    .fetch_one(&mut **tx)
-    .await
-    .unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
-        .await
-        .unwrap();
-    sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1 AND role='owner'")
-        .bind(&area)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','owner',0)",
-    )
-    .bind(&area)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let area: String = sqlx::query_scalar(
+                                "SELECT t.area_id FROM tracks t JOIN cards c ON c.track_id=t.id WHERE c.id=?1",
+                            )
+                            .bind(&fx.card)
+                            .fetch_one(&mut **tx)
+                            .await
+                            .unwrap();
+                            crate::db::sqlite::area_membership::application_user_register(
+                                &mut tx, "alice", "Alice",
+                            )
+                            .await
+                            .unwrap();
+                            sqlx::query(
+                                "UPDATE area_members SET role='member' WHERE area_id=?1 AND role='owner'",
+                            )
+                            .bind(&area)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','owner',0)",
+                )
+                .bind(&area)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
 
-    assert!(fx.dispatch().await.is_err());
-    assert!(fx.checkpoint().await.attempt(&fx.submission).is_none());
-    assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+                            assert!(fx.dispatch().await.is_err());
+                            assert!(fx.checkpoint().await.attempt(&fx.submission).is_none());
+                            assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -502,19 +564,30 @@ async fn claimed_work_without_current_session_cannot_begin_a_fresh_crossing() {
 #[tokio::test]
 async fn sharing_before_a_fresh_crossing_holds_the_original_claim() {
     let fx = Fixture::new().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let area = conversation_area_tx(&mut tx, &fx.card).await.unwrap();
-    sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=?1")
-        .bind(area.id.as_str())
-        .execute(&mut **tx)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = conversation_area_tx(&mut tx, &fx.card).await.unwrap();
+                sqlx::query(
+                    "UPDATE areas SET conversation_history_contract='shared_history' WHERE id=?1",
+                )
+                .bind(area.id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(fx.dispatch().await.is_err());
+                let checkpoint = fx.checkpoint().await;
+                assert!(checkpoint.active.is_some());
+                assert!(checkpoint.attempt(&fx.submission).is_none());
+                assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(fx.dispatch().await.is_err());
-    let checkpoint = fx.checkpoint().await;
-    assert!(checkpoint.active.is_some());
-    assert!(checkpoint.attempt(&fx.submission).is_none());
-    assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+        .expect("independent write operation")
 }
 
 #[tokio::test]

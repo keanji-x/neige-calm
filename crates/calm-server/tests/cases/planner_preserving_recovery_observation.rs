@@ -175,14 +175,13 @@ async fn mismatched_recovery_refetch_preserves_original_refusal_precedence() {
             .expect("human send reaches the production recovery refetch");
         // Change the durable carrier after the route selected its original thread.
         // The refetch must supply this settled snapshot without selecting a new target.
-        sqlx::query(
+        (boot.repo.db()).writer().execute(sqlx::query(
             "UPDATE worker_sessions SET thread_id='retargeted-thread', \
              handle_state_json=CASE WHEN ? THEN NULL \
              ELSE json_set(handle_state_json,'$.last_thread_id','retargeted-thread') END WHERE id=?",
         )
             .bind(missing_snapshot)
-            .bind(&runtime)
-            .execute(boot.repo.pool())
+            .bind(&runtime))
             .await
             .unwrap();
         if sealed {

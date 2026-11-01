@@ -553,38 +553,45 @@ async fn c4_track_stop_settles_within_quiesce_deadline_and_record_dies_with_row(
         .unwrap()
         .unwrap();
     let id = calm_server::provider_execution::execution_id(claim.record()).unwrap();
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(rig.repo.db())
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_truth::db::sqlite::track_delete_tx(
+                    &mut tx,
+                    row.track_id.as_str(),
+                    rig.repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(sql::list(rig.repo.pool()).await.unwrap().is_empty());
+                rig.host
+                    .provider_execution
+                    .sweep(rig.repo.db(), rig.host.execution.engine())
+                    .await
+                    .unwrap();
+                pause.release.notify_one();
+                let _ = rig.session().wait_driver_for_test().await;
+                tokio::time::timeout(Duration::from_secs(15), async {
+                    loop {
+                        if matches!(
+                            rig.host.execution.engine().unwrap().output(&id, None).await,
+                            Ok(workspace_runtime::execution::ExecutionReply::Retired(_))
+                        ) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            })
+        })
         .await
-        .unwrap();
-    calm_truth::db::sqlite::track_delete_tx(
-        &mut tx,
-        row.track_id.as_str(),
-        rig.repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert!(sql::list(rig.repo.pool()).await.unwrap().is_empty());
-    rig.host
-        .provider_execution
-        .sweep(rig.repo.db(), rig.host.execution.engine())
-        .await
-        .unwrap();
-    pause.release.notify_one();
-    let _ = rig.session().wait_driver_for_test().await;
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if matches!(
-                rig.host.execution.engine().unwrap().output(&id, None).await,
-                Ok(workspace_runtime::execution::ExecutionReply::Retired(_))
-            ) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -649,13 +656,14 @@ async fn c4_unconfirmed_completion_records_after_driver_budget_and_retains_claim
         panic!("turn refused: {start:?}")
     };
     super::claude_planner_session_fixture::wait_for_file(&rig.bin("term-ready")).await;
-    sqlx::query(
-        "CREATE TRIGGER c4_block_owner_stop BEFORE UPDATE OF desired ON workspace_executions
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER c4_block_owner_stop BEFORE UPDATE OF desired ON workspace_executions
          WHEN NEW.desired='stop' BEGIN SELECT RAISE(FAIL, 'Stop blocked'); END",
-    )
-    .execute(rig.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     session
         .turn_interrupt(&rig.thread, &turn.into_string())
         .await;
@@ -668,8 +676,9 @@ async fn c4_unconfirmed_completion_records_after_driver_budget_and_retains_claim
         .await
         .unwrap()
         .expect("unconfirmed completion retains admission ownership");
-    sqlx::query("DROP TRIGGER c4_block_owner_stop")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER c4_block_owner_stop"))
         .await
         .unwrap();
     let owner = &rig.host.provider_execution;

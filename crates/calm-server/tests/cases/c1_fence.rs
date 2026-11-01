@@ -58,9 +58,9 @@ async fn fixture() -> (Arc<Boot>, String, PathBuf) {
     std::fs::write(up.clone.join(".git/info/exclude"), "target/\n").unwrap();
     std::fs::create_dir_all(path.join("target")).unwrap();
     std::fs::write(path.join("target/ignored"), "build output").unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(&track)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(&track))
         .await
         .unwrap();
     (b, track, path)
@@ -182,24 +182,24 @@ async fn preparation(kind: &str, boot: bool) {
         .unwrap(),
         _ => {
             let task = format!("{track}:c1");
-            sqlx::query("INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json,\
+            (b.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json,\
                  status,created_at_ms,updated_at_ms) VALUES (?,?,'c1','terminal','test','null','[]','dispatched',1,1)")
-                .bind(&task).bind(&track).execute(b.repo.pool()).await.unwrap();
+                .bind(&task).bind(&track)).await.unwrap();
             json!({"actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":track,"idempotency_key":task,"cmd":"true","goal":"test","cwd":path})
         }
     };
     // A dispatched task already prevents cleaning; reserve the task only after clean's recheck.
-    sqlx::query("UPDATE tasks SET status='pending' WHERE track_id=?")
-        .bind(&track)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='pending' WHERE track_id=?").bind(&track))
         .await
         .unwrap();
     let pause = Pause::arm("c1-clean-fenced", &track);
     let cleaning = clean(b.clone());
     pause.entered().await;
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?")
-        .bind(&track)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?").bind(&track))
         .await
         .unwrap();
     let op = pending(&b, kind, payload).await;
@@ -380,10 +380,10 @@ async fn c5_location_clean_foreign_and_malformed_roots_defer() {
             _ => json!({"root":42}),
         };
         let id = calm_server::model::new_id();
-        sqlx::query("INSERT INTO workspace_executions \
+        (b.repo.db()).writer().execute(sqlx::query("INSERT INTO workspace_executions \
             (execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES (?,?,?,?,?,'run')")
             .bind(&id).bind("foreign-owner").bind(format!("foreign:{id}"))
-            .bind(json!({"source":source}).to_string()).bind("{}").execute(b.repo.pool()).await.unwrap();
+            .bind(json!({"source":source}).to_string()).bind("{}")).await.unwrap();
         let (count, history) = clean(b.clone()).await.unwrap();
         assert_eq!(count, 0);
         assert!(history.is_empty());
@@ -402,10 +402,10 @@ async fn c5_location_clean_foreign_and_malformed_roots_defer() {
 async fn c5_location_foreign_worktree_delete_preserves_branch_and_rows() {
     let (b, track, path) = fixture().await;
     let id = calm_server::model::new_id();
-    sqlx::query("INSERT INTO workspace_executions \
+    (b.repo.db()).writer().execute(sqlx::query("INSERT INTO workspace_executions \
             (execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES (?,?,?,?,?,'run')")
         .bind(&id).bind("foreign-owner").bind(format!("foreign:{id}"))
-        .bind(json!({"source":{"root":path}}).to_string()).bind("{}").execute(b.repo.pool()).await.unwrap();
+        .bind(json!({"source":{"root":path}}).to_string()).bind("{}")).await.unwrap();
     let (status, body) = b.delete_track(&track).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(path.join("target/ignored").is_file());

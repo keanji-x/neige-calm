@@ -3,7 +3,7 @@ use super::auth::{app, dev_auth_state, fresh_state, live_auth_state};
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use calm_server::auth::{OWNER_USER_ID, SESSION_COOKIE, SessionAuthority, SessionIdentity};
-use calm_server::db::sqlite::{area_membership, begin_immediate_tx};
+use calm_server::db::sqlite::area_membership;
 use calm_server::model::{NewArea, NewCard, NewOverlay, NewTrack};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -16,7 +16,6 @@ struct Fixture {
     app: axum::Router,
     state: calm_server::state::AppState,
     auth: calm_server::auth::AuthState,
-    pool: sqlx::SqlitePool,
     area_id: String,
     alice_area_id: String,
     track_id: String,
@@ -29,90 +28,103 @@ impl Fixture {
         let state = fresh_state().await;
         let repo = state.raw_repo();
         let pool = repo.sqlite_db().unwrap();
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        area_membership::application_user_register(&mut tx, "alice", "Owner")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let area = repo
-            .area_create(
-                OWNER_USER_ID,
-                NewArea {
-                    name: "Private Track Area".into(),
-                    color: "#123456".into(),
+        let write_db = (pool).clone();
+        {
+            {
+                let write_db = (write_db).clone();
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            area_membership::application_user_register(&mut tx, "alice", "Owner")
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
+            let area = repo
+                .area_create(
+                    OWNER_USER_ID,
+                    NewArea {
+                        name: "Private Track Area".into(),
+                        color: "#123456".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+            // Alice owns another Area. Area ownership is not installation authority
+            // or membership of this Track's actual parent.
+            let alice_area = repo
+                .area_create(
+                    "alice",
+                    NewArea {
+                        name: "Alice's Area".into(),
+                        color: "#654321".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let track = repo
+                .track_create(NewTrack {
+                    area_id: area.id.clone(),
+                    title: "Private Track".into(),
                     sort: None,
-                },
-            )
-            .await
-            .unwrap();
-        // Alice owns another Area. Area ownership is not installation authority
-        // or membership of this Track's actual parent.
-        let alice_area = repo
-            .area_create(
-                "alice",
-                NewArea {
-                    name: "Alice's Area".into(),
-                    color: "#654321".into(),
-                    sort: None,
-                },
-            )
-            .await
-            .unwrap();
-        let track = repo
-            .track_create(NewTrack {
-                area_id: area.id.clone(),
-                title: "Private Track".into(),
+                    cwd: "/fixture/private-track".into(),
+                    template_id: None,
+                    plugin_scope: None,
+                    template_input: Some(json!({"private": "template input"})),
+                    attach_folder: false,
+                    theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                })
+                .await
+                .unwrap();
+            repo.card_create(NewCard {
+                track_id: track.id.clone(),
+                kind: "note".into(),
                 sort: None,
-                cwd: "/fixture/private-track".into(),
-                template_id: None,
-                plugin_scope: None,
-                template_input: Some(json!({"private": "template input"})),
-                attach_folder: false,
-                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                payload: json!({"text": PRIVATE_CARD}),
+                title: Some("Private note".into()),
             })
             .await
             .unwrap();
-        repo.card_create(NewCard {
-            track_id: track.id.clone(),
-            kind: "note".into(),
-            sort: None,
-            payload: json!({"text": PRIVATE_CARD}),
-            title: Some("Private note".into()),
-        })
-        .await
-        .unwrap();
-        repo.overlay_upsert(NewOverlay {
-            plugin_id: "fixture".into(),
-            entity_kind: "track".into(),
-            entity_id: track.id.to_string(),
-            kind: "badge".into(),
-            payload: json!({"text": PRIVATE_OVERLAY}),
-        })
-        .await
-        .unwrap();
-        let auth = live_auth_state("owner", "fixture-password");
-        let owner = auth.sessions.create(
-            SessionIdentity::owner(&auth.config),
-            SessionAuthority::PasswordLogin,
-        );
-        let alice = auth.sessions.create(
-            SessionIdentity {
-                user_id: "alice".into(),
-                display_name: "Owner".into(),
-                role: "owner".into(),
-            },
-            SessionAuthority::PasswordLogin,
-        );
-        Self {
-            app: app(state.clone(), auth.clone()),
-            state,
-            auth,
-            pool: pool.read_pool().clone(),
-            area_id: area.id.to_string(),
-            alice_area_id: alice_area.id.to_string(),
-            track_id: track.id.to_string(),
-            owner_cookie: format!("{SESSION_COOKIE}={owner}"),
-            alice_cookie: format!("{SESSION_COOKIE}={alice}"),
+            repo.overlay_upsert(NewOverlay {
+                plugin_id: "fixture".into(),
+                entity_kind: "track".into(),
+                entity_id: track.id.to_string(),
+                kind: "badge".into(),
+                payload: json!({"text": PRIVATE_OVERLAY}),
+            })
+            .await
+            .unwrap();
+            let auth = live_auth_state("owner", "fixture-password");
+            let owner = auth.sessions.create(
+                SessionIdentity::owner(&auth.config),
+                SessionAuthority::PasswordLogin,
+            );
+            let alice = auth.sessions.create(
+                SessionIdentity {
+                    user_id: "alice".into(),
+                    display_name: "Owner".into(),
+                    role: "owner".into(),
+                },
+                SessionAuthority::PasswordLogin,
+            );
+            Self {
+                app: app(state.clone(), auth.clone()),
+                state,
+                auth,
+                area_id: area.id.to_string(),
+                alice_area_id: alice_area.id.to_string(),
+                track_id: track.id.to_string(),
+                owner_cookie: format!("{SESSION_COOKIE}={owner}"),
+                alice_cookie: format!("{SESSION_COOKIE}={alice}"),
+            }
         }
     }
 
@@ -121,19 +133,21 @@ impl Fixture {
     }
 
     async fn add_alice(&self) {
-        sqlx::query(
+        (self.state.raw_repo().sqlite_db().unwrap()).writer().execute(sqlx::query(
             "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES (?1,'alice','member',0)",
         )
-        .bind(&self.area_id)
-        .execute(&self.pool)
+        .bind(&self.area_id))
         .await
         .unwrap();
     }
 
     async fn revoke_alice(&self) {
-        sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
-            .bind(&self.area_id)
-            .execute(&self.pool)
+        (self.state.raw_repo().sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
+                    .bind(&self.area_id),
+            )
             .await
             .unwrap();
     }
@@ -211,10 +225,13 @@ async fn track_detail_nonmember_cannot_read_private_cards_or_overlays() {
 #[tokio::test]
 async fn track_detail_nonmember_is_denied_before_private_template_input_decode() {
     let fixture = Fixture::new().await;
-    sqlx::query("UPDATE tracks SET template_input=?2 WHERE id=?1")
-        .bind(&fixture.track_id)
-        .bind("private-malformed-template-input{")
-        .execute(&fixture.pool)
+    (fixture.state.raw_repo().sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET template_input=?2 WHERE id=?1")
+                .bind(&fixture.track_id)
+                .bind("private-malformed-template-input{"),
+        )
         .await
         .unwrap();
 
@@ -262,10 +279,13 @@ async fn track_detail_uses_actual_membership_and_deployment_owner_has_no_user_ar
             .0,
         StatusCode::FORBIDDEN
     );
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
-        .bind(&f.area_id)
-        .bind(OWNER_USER_ID)
-        .execute(&f.pool)
+    (f.state.raw_repo().sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
+                .bind(&f.area_id)
+                .bind(OWNER_USER_ID),
+        )
         .await
         .unwrap();
     assert_eq!(f.get(&f.owner_cookie).await.0, StatusCode::FORBIDDEN);
@@ -410,10 +430,13 @@ async fn track_detail_rechecks_expected_area_even_when_both_areas_are_accessible
     let f = Fixture::new().await;
     f.add_alice().await;
     let (release, task) = park_detail(&f).await;
-    sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
-        .bind(&f.track_id)
-        .bind(&f.alice_area_id)
-        .execute(&f.pool)
+    (f.state.raw_repo().sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                .bind(&f.track_id)
+                .bind(&f.alice_area_id),
+        )
         .await
         .unwrap();
     let (status, body) = finish_detail(release, task).await;

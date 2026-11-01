@@ -247,12 +247,13 @@ mod tests {
     #[tokio::test]
     async fn terminal_disposal_index_upgrade_preserves_existing_operations() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        sqlx::query("DROP INDEX operations_terminal_lookup_idx")
-            .execute(repo.db().writer_pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("DROP INDEX operations_terminal_lookup_idx"))
             .await
             .unwrap();
         // Existing databases mix legacy launches, pipe tasks and pre-prepare rows.
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<5315)
              INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,
                 target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms)
@@ -260,17 +261,18 @@ mod tests {
                 CASE i%3 WHEN 0 THEN json_object('data',json_object('terminal_id',printf('terminal-%d',i)))
                 WHEN 1 THEN json_object('data',json_object('terminal_worker_pipe',json_object('log_path','task.log')))
                 ELSE NULL END,'pending',0,0 FROM n",
-        ).execute(repo.db().writer_pool()).await.unwrap();
+        )).await.unwrap();
         let sql = "SELECT id,kind,tx_output_json,phase FROM operations ORDER BY id";
         let before: Vec<(String, String, Option<String>, String)> =
             sqlx::query_as(sql).fetch_all(repo.pool()).await.unwrap();
-        sqlx::raw_sql(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../calm-truth/migrations/0207_operations_terminal_lookup.sql"
-        )))
-        .execute(repo.db().writer_pool())
-        .await
-        .unwrap();
+        (repo.db())
+            .writer()
+            .execute(sqlx::raw_sql(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../calm-truth/migrations/0207_operations_terminal_lookup.sql"
+            ))))
+            .await
+            .unwrap();
         let after: Vec<(String, String, Option<String>, String)> =
             sqlx::query_as(sql).fetch_all(repo.pool()).await.unwrap();
         assert_eq!(
@@ -289,14 +291,23 @@ mod tests {
             );
         let intent = test_support::intent("/".into());
         let scope = Scope::Track(intent.metadata.track.0.clone());
-        let mut tx = repo.pool().begin().await.unwrap();
-        store.insert(&mut tx, &intent).await.unwrap();
-        assert!(matches!(
-            require_safe_tx(&mut tx, &scope).await,
-            Err(CalmError::Conflict(_))
-        ));
-        tx.rollback().await.unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        require_safe_tx(&mut tx, &scope).await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    store.insert(&mut tx, &intent).await.unwrap();
+                    assert!(matches!(
+                        require_safe_tx(&mut tx, &scope).await,
+                        Err(CalmError::Conflict(_))
+                    ));
+                    tx.rollback().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    require_safe_tx(&mut tx, &scope).await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }

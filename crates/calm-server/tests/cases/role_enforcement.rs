@@ -61,9 +61,11 @@ async fn planner_card_can_update_track() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-        .bind(card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1").bind(card.id.as_str()),
+        )
         .await
         .unwrap();
 
@@ -362,14 +364,18 @@ async fn unique_planner_card_per_track_index_enforced() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-        .bind(c1.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1").bind(c1.id.as_str()),
+        )
         .await
         .unwrap();
-    let err = sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-        .bind(c2.id.as_str())
-        .execute(repo.pool())
+    let err = (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1").bind(c2.id.as_str()),
+        )
         .await
         .expect_err("second planner card must violate unique index");
     let msg = err.to_string();

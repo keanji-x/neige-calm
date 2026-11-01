@@ -262,29 +262,39 @@ async fn accepted_stop_drains_its_original_target_after_native_gate_failure_and_
 }
 
 async fn pending(fx: &Fixture) -> MessageRevisionRef {
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-    )
-    .await
-    .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "pending after control".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human")
-    };
-    message
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    crate::db::sqlite::conversation::current_input_content_carrier_tx(
+                        &mut tx,
+                        fx.harness.inner.card_id.as_str(),
+                    )
+                    .await
+                    .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "pending after control".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human")
+                };
+                message
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn failed_stays_failed_after_end(
@@ -373,42 +383,57 @@ async fn failed_stays_failed_after_end(
         calm_types::worker::WorkerSessionState::Failed,
         "END is a fact, not restored execution authority"
     );
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    let plan = human_plan_for_pending_prefix_tx(
-        &mut tx,
-        &carrier,
-        std::num::NonZeroU32::new(1).unwrap(),
-        vec![],
-    )
-    .await
-    .unwrap();
-    assert!(
-        crate::conversation_inputs::claim_initial_tx(&mut tx, &fx.source, &mut carrier, plan)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), request(peer))
-            .await
-            .is_err(),
-        "failed carrier must not redispatch its preserved pending input"
-    );
-    peer.close(None).await.unwrap();
-    fx.harness.shutdown().await.unwrap();
-    let stored = late_reply
-        .expect("a Failed carrier must preserve the original native reply and its presentation");
-    assert_eq!(
-        serde_json::from_str::<Value>(&stored).unwrap()["item"]["text"],
-        "Original result after failure"
-    );
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                let plan = human_plan_for_pending_prefix_tx(
+                    &mut tx,
+                    &carrier,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    vec![],
+                )
+                .await
+                .unwrap();
+                assert!(
+                    crate::conversation_inputs::claim_initial_tx(
+                        &mut tx,
+                        &fx.source,
+                        &mut carrier,
+                        plan
+                    )
+                    .await
+                    .is_err()
+                );
+                tx.rollback().await.unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), request(peer))
+                        .await
+                        .is_err(),
+                    "failed carrier must not redispatch its preserved pending input"
+                );
+                peer.close(None).await.unwrap();
+                fx.harness.shutdown().await.unwrap();
+                let stored = late_reply.expect(
+                    "a Failed carrier must preserve the original native reply and its presentation",
+                );
+                assert_eq!(
+                    serde_json::from_str::<Value>(&stored).unwrap()["item"]["text"],
+                    "Original result after failure"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The original's own END resolves what interrupt_timeout stood for: the
@@ -590,16 +615,29 @@ async fn canonical_metadata_refuses_a_corrupt_control_checkpoint_without_a_nativ
     // The real metadata boundary must refuse it rather than panic or make V1.
     let mut value = serde_json::to_value(&before).unwrap();
     value["phase"] = json!("issuing_interrupt");
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    session_set_handle_state_tx(&mut tx, &fx.harness.inner.worker_session_id, Some(value))
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_set_handle_state_tx(
+                    &mut tx,
+                    &fx.harness.inner.worker_session_id,
+                    Some(value),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(fx.harness.runtime_header().await.is_err());
+                let current = fx.frame().await;
+                assert_eq!(current.canonical_inputs, before.canonical_inputs);
+                assert!(current.header.last_turn_id.is_none());
+                fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(fx.harness.runtime_header().await.is_err());
-    let current = fx.frame().await;
-    assert_eq!(current.canonical_inputs, before.canonical_inputs);
-    assert!(current.header.last_turn_id.is_none());
-    fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]

@@ -393,41 +393,50 @@ impl RecoveryThread<'_> {
         let receipt = canonical_terminal_receipt(thread_id, native_turn_id, &terminal)?;
         let target = target.clone();
         let db = repo.sqlite_db().ok_or(CalmError::ExecutionUnavailable)?;
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await?;
-        admission.validate_tx(&mut tx).await?;
-        accepted.validate_tx(&mut tx).await?;
-        admission.check_current()?;
-        if !self
-            .daemon
-            .native_turns
-            .recovery_fence_matches(&fence, &target)
-        {
-            return Err(CalmError::Conflict("native recovery source changed".into()));
-        }
-        let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
-            &mut tx,
-            &target.card_id,
-            &target.worker_session_id,
-        )
-        .await?;
-        receipt.settle_tx(&mut tx, &carrier).await?;
-        admission.check_current()?;
-        if !self
-            .daemon
-            .native_turns
-            .recovery_fence_matches(&fence, &target)
-        {
-            return Err(CalmError::Conflict("native recovery source changed".into()));
-        }
-        tx.commit().await?;
-        if !self
-            .daemon
-            .native_turns
-            .retain_canonical_recovery(&fence, accepted.target(), &terminal)
-        {
-            return Err(CalmError::Conflict("native recovery source changed".into()));
-        }
-        Ok(())
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    admission.validate_tx(&mut tx).await?;
+                    accepted.validate_tx(&mut tx).await?;
+                    admission.check_current()?;
+                    if !self
+                        .daemon
+                        .native_turns
+                        .recovery_fence_matches(&fence, &target)
+                    {
+                        return Err(CalmError::Conflict("native recovery source changed".into()));
+                    }
+                    let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+                        &mut tx,
+                        &target.card_id,
+                        &target.worker_session_id,
+                    )
+                    .await?;
+                    receipt.settle_tx(&mut tx, &carrier).await?;
+                    admission.check_current()?;
+                    if !self
+                        .daemon
+                        .native_turns
+                        .recovery_fence_matches(&fence, &target)
+                    {
+                        return Err(CalmError::Conflict("native recovery source changed".into()));
+                    }
+                    tx.commit().await?;
+                    if !self.daemon.native_turns.retain_canonical_recovery(
+                        &fence,
+                        accepted.target(),
+                        &terminal,
+                    ) {
+                        return Err(CalmError::Conflict("native recovery source changed".into()));
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }
 

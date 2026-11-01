@@ -2257,13 +2257,14 @@ async fn a_failing_token_delete_is_fatal_only_where_nothing_re_mints() {
         .pid
         .expect("a live pid");
 
-    sqlx::query(
-        "CREATE TRIGGER block_token_delete BEFORE DELETE ON plugin_tokens \
+    (sqlx_repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER block_token_delete BEFORE DELETE ON plugin_tokens \
          BEGIN SELECT RAISE(ABORT, 'blocked'); END",
-    )
-    .execute(sqlx_repo.pool())
-    .await
-    .expect("arm the failing delete");
+        ))
+        .await
+        .expect("arm the failing delete");
 
     fx.host.rotate_plugin_token(ID).await.expect(
         "the rotation must still happen: the restart's UPSERT does not \

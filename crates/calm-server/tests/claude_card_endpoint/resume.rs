@@ -109,50 +109,59 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
 async fn seed_task_worker_card(boot: &Boot) -> String {
     let card_id = new_id();
     let op_id = new_id();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query(
+                    "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
            target_type, target_id, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
          VALUES (?1, ?1, 'claude-worker', ?2, 'hash', 'card', ?3, ?4, ?5, 'succeeded', ?6, ?6)",
-    )
-    .bind(&op_id)
-    .bind(format!("{}:worker-task", boot.track_id))
-    .bind(&card_id)
-    .bind(json!({ "type": "card", "id": card_id }).to_string())
-    .bind(json!({ "actor": ActorId::KernelDispatcher, "track_id": boot.track_id }).to_string())
-    .bind(now_ms())
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    calm_truth::db::sqlite::card_with_claude_worker_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &new_id(),
-        Some(&op_id),
-        TrackId::from(boot.track_id.clone()),
-        None,
-        None,
-        "'/bin/true' --session-id 'worker-session'".into(),
-        "/workspace".into(),
-        json!({}),
-        Some("task prompt".into()),
-        None,
-        None,
-        "/tmp/worker-settings/settings.json".into(),
-        "worker-session".into(),
-        &boot.state.card_role_cache,
-        RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        calm_server::db::sqlite::card_is_worker_spawn_target_tx(&mut tx, &card_id)
-            .await
-            .unwrap(),
-        "the seeded card must be a task worker's card by the kernel's own proof"
-    );
-    tx.commit().await.unwrap();
-    card_id
+                )
+                .bind(&op_id)
+                .bind(format!("{}:worker-task", boot.track_id))
+                .bind(&card_id)
+                .bind(json!({ "type": "card", "id": card_id }).to_string())
+                .bind(json!({ "actor": ActorId::KernelDispatcher, "track_id": boot.track_id }).to_string())
+                .bind(now_ms())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+                                &mut tx,
+                                card_id.clone(),
+                                &new_id(),
+                                Some(&op_id),
+                                TrackId::from(boot.track_id.clone()),
+                                None,
+                                None,
+                                "'/bin/true' --session-id 'worker-session'".into(),
+                                "/workspace".into(),
+                                json!({}),
+                                Some("task prompt".into()),
+                                None,
+                                None,
+                                "/tmp/worker-settings/settings.json".into(),
+                                "worker-session".into(),
+                                &boot.state.card_role_cache,
+                                RequestTheme::default_dark(),
+                            )
+                            .await
+                            .unwrap();
+                            assert!(
+                                calm_server::db::sqlite::card_is_worker_spawn_target_tx(&mut tx, &card_id)
+                                    .await
+                                    .unwrap(),
+                                "the seeded card must be a task worker's card by the kernel's own proof"
+                            );
+                            tx.commit().await.unwrap();
+                            card_id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// After a host crash, boot reconcile marks every lost PTY exited; the owner's Claude card comes

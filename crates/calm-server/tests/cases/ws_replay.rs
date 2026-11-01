@@ -326,10 +326,13 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
     let seeded = seed_three(&repo, &bus, ["c-1", "c-2", "c-3"]).await;
 
     // Simulate retention pruning by removing the earliest event(s).
-    sqlx::query("DELETE FROM events WHERE id IN (?1, ?2)")
-        .bind(seeded[0].0)
-        .bind(seeded[1].0)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM events WHERE id IN (?1, ?2)")
+                .bind(seeded[0].0)
+                .bind(seeded[1].0),
+        )
         .await
         .unwrap();
 
@@ -513,27 +516,37 @@ async fn replay_complete_id_reflects_server_tip_after_reset() {
 
     // Simulate the reset's structural wipe: every domain row, the event log, and `sqlite_sequence` so AUTOINCREMENT restarts at 1.
     {
-        let pool = repo.pool();
-        let mut tx = pool.begin().await.unwrap();
-        for stmt in [
-            "DELETE FROM events",
-            "DELETE FROM overlays",
-            "DELETE FROM terminals",
-            "DELETE FROM cards",
-            // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
-            // leave before their parent tracks.
-            "DELETE FROM worker_sessions",
-            "DELETE FROM tracks",
-            "DELETE FROM areas",
-            "DELETE FROM plugin_kv",
-            "DELETE FROM plugin_tokens",
-            "DELETE FROM plugins",
-            "DELETE FROM settings",
-            "DELETE FROM sqlite_sequence",
-        ] {
-            sqlx::query(stmt).execute(&mut *tx).await.unwrap();
-        }
-        tx.commit().await.unwrap();
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        for stmt in [
+                            "DELETE FROM events",
+                            "DELETE FROM overlays",
+                            "DELETE FROM terminals",
+                            "DELETE FROM cards",
+                            // `worker_sessions.track_id` is a NO ACTION FK, so sessions must
+                            // leave before their parent tracks.
+                            "DELETE FROM worker_sessions",
+                            "DELETE FROM tracks",
+                            "DELETE FROM areas",
+                            "DELETE FROM plugin_kv",
+                            "DELETE FROM plugin_tokens",
+                            "DELETE FROM plugins",
+                            "DELETE FROM settings",
+                            "DELETE FROM sqlite_sequence",
+                        ] {
+                            sqlx::query(stmt).execute(&mut **tx).await.unwrap();
+                        }
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
     }
 
     // Only two events, so the post-reset tip is well below the pre-reset tip.
@@ -884,13 +897,19 @@ async fn stale_cursor_over_cap_gets_snapshot_required() {
 
 /// Insert a raw `events` row whose `kind` matches no `Event` variant; `events_since` drops it at deserialization, the raw-count probe must still see it.
 async fn seed_unknown_kind_row(repo: &SqlxRepo) -> i64 {
-    let row: (i64,) = sqlx::query_as(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    let row: (i64,) = {
+        let query = sqlx::query_as(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
            RETURNING id"#,
-    )
-    .fetch_one(repo.pool())
-    .await
+        );
+        (repo.db())
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_one(&mut **connection).await })
+            })
+            .await
+    }
     .expect("insert unknown-kind events row");
     row.0
 }
@@ -996,9 +1015,9 @@ async fn seed_retired_ratify_rows(repo: &SqlxRepo) -> Vec<i64> {
             r#"{"track_id":"track","decision":"deny","message":"Hold"}"#,
         ),
     ] {
-        let id: i64 = sqlx::query_scalar(
+        let id: i64 = { let query = sqlx::query_scalar(
             "INSERT INTO events(kind,payload,actor,at,event_version) VALUES(?,?,'user',0,1) RETURNING id",
-        ).bind(kind).bind(payload).fetch_one(repo.pool()).await.unwrap();
+        ).bind(kind).bind(payload); (repo.db()).writer().autocommit(move |connection| Box::pin(async move { query.fetch_one(&mut **connection).await })).await }.unwrap();
         ids.push(id);
     }
     ids

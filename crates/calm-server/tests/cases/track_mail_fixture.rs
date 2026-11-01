@@ -190,25 +190,34 @@ impl World {
             .unwrap();
         self.area_cache.insert(track.id.clone(), area.clone());
         // Every Track has its report card, which is what `neige_area_ls` lists.
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "track-report".into(),
-                sort: Some(-1.0),
-                payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
-            },
-            CardRole::ReportCard,
-            false,
-            &self.role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        track.id
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    card_create_with_id_tx(
+                        &mut tx,
+                        new_id(),
+                        NewCard {
+                            track_id: track.id.clone(),
+                            title: None,
+                            kind: "track-report".into(),
+                            sort: Some(-1.0),
+                            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+                        },
+                        CardRole::ReportCard,
+                        false,
+                        &self.role_cache,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    track.id
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// A Track with a Planner card, its idle shared-planner session (MCP token minted) and a live harness.
@@ -279,40 +288,51 @@ impl World {
         // A UUID, as a Claude Planner's session id must be.
         let thread_id = uuid::Uuid::new_v4().to_string();
         let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: session_id.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(provider.clone()),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.clone()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(idle_snapshot(&thread_id)).unwrap()),
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-        session_mcp_token_set_tx(&mut tx, &session_id, &hash)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: session_id.clone(),
+                            card_id: card.id.to_string(),
+                            kind: WorkerSessionKind::SharedPlanner,
+                            agent_provider: Some(provider.clone()),
+                            status: WorkerSessionState::Idle,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: Some(
+                                serde_json::to_value(idle_snapshot(&thread_id)).unwrap(),
+                            ),
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+                    session_mcp_token_set_tx(&mut tx, &session_id, &hash)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    Planner {
+                        provider,
+                        track_id,
+                        card_id: card.id,
+                        session_id,
+                        thread_id,
+                        token: token.into_inner(),
+                        harness: None,
+                    }
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        Planner {
-            provider,
-            track_id,
-            card_id: card.id,
-            session_id,
-            thread_id,
-            token: token.into_inner(),
-            harness: None,
-        }
+            .expect("independent write operation")
     }
 
     /// A context for driving the mail module below the transport.
@@ -469,7 +489,7 @@ impl World {
     /// A mail row the test needs as a premise (e.g. a high hop), written straight to the table.
     pub async fn seed_mail(&self, from: &TrackId, to: &TrackId, hop: i64) -> String {
         let id = new_id();
-        sqlx::query(
+        (self.repo.db()).writer().execute(sqlx::query(
             "INSERT INTO mails (id, from_track_id, to_track_id, summary, text, hop, sent_at) \
              VALUES (?1, ?2, ?3, 'seeded', 'seeded body', ?4, ?5)",
         )
@@ -477,8 +497,7 @@ impl World {
         .bind(from.as_str())
         .bind(to.as_str())
         .bind(hop)
-        .bind(now_ms())
-        .execute(self.repo.pool())
+        .bind(now_ms()))
         .await
         .unwrap();
         id

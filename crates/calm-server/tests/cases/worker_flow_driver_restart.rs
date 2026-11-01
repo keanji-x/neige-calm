@@ -72,78 +72,87 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
     assert_eq!(old_stops.len(), 1);
     let old_stop = old_stops.pop().unwrap();
 
-    let replacement = {
-        let mut tx = repo.pool().begin().await.unwrap();
-        session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
-            .await
-            .unwrap();
-        let replacement = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: "rt-card-driver-claude-restart-b".to_string(),
-                card_id: seed.runtime.card_id.clone(),
-                kind: WorkerSessionKind::ClaudeCard,
-                agent_provider: Some(AgentProvider::Claude),
-                status: WorkerSessionState::Starting,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: Some("session-driver-claude-restart-b".to_string()),
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let replacement = {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
+                        .await
+                        .unwrap();
+                    let replacement = session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: "rt-card-driver-claude-restart-b".to_string(),
+                            card_id: seed.runtime.card_id.clone(),
+                            kind: WorkerSessionKind::ClaudeCard,
+                            agent_provider: Some(AgentProvider::Claude),
+                            status: WorkerSessionState::Starting,
+                            terminal_run_id: None,
+                            thread_id: None,
+                            session_id: Some("session-driver-claude-restart-b".to_string()),
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    replacement
+                };
+
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStarted {
+                        worker_session_id: replacement.id.clone(),
+                        card_id: replacement.card_id.clone(),
+                        kind: replacement.kind.clone(),
+                        agent_provider: replacement.agent_provider.clone(),
+                        status: replacement.status,
+                    },
+                );
+
+                wf::wait_until(wf::LIVENESS_BUDGET, || {
+                    let driver = driver.clone();
+                    let old_stop = old_stop.clone();
+                    let replacement_id = replacement.id.clone();
+                    async move {
+                        old_stop.is_cancelled()
+                            && driver.tasks_alive_for_test().await == 1
+                            && driver.task_runtime_ids_for_test().await == vec![replacement_id]
+                    }
+                })
+                .await;
+
+                let mut replacement_stops = driver.task_stop_tokens_for_test().await;
+                assert_eq!(replacement_stops.len(), 1);
+                let replacement_stop = replacement_stops.pop().unwrap();
+
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStarted {
+                        worker_session_id: replacement.id.clone(),
+                        card_id: replacement.card_id.clone(),
+                        kind: replacement.kind.clone(),
+                        agent_provider: replacement.agent_provider.clone(),
+                        status: replacement.status,
+                    },
+                );
+                tokio::time::sleep(Duration::from_millis(60)).await;
+
+                assert_eq!(driver.tasks_alive_for_test().await, 1);
+                assert_eq!(
+                    driver.task_runtime_ids_for_test().await,
+                    vec![replacement.id.clone()]
+                );
+                assert!(!replacement_stop.is_cancelled());
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        replacement
-    };
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStarted {
-            worker_session_id: replacement.id.clone(),
-            card_id: replacement.card_id.clone(),
-            kind: replacement.kind.clone(),
-            agent_provider: replacement.agent_provider.clone(),
-            status: replacement.status,
-        },
-    );
-
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let driver = driver.clone();
-        let old_stop = old_stop.clone();
-        let replacement_id = replacement.id.clone();
-        async move {
-            old_stop.is_cancelled()
-                && driver.tasks_alive_for_test().await == 1
-                && driver.task_runtime_ids_for_test().await == vec![replacement_id]
-        }
-    })
-    .await;
-
-    let mut replacement_stops = driver.task_stop_tokens_for_test().await;
-    assert_eq!(replacement_stops.len(), 1);
-    let replacement_stop = replacement_stops.pop().unwrap();
-
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStarted {
-            worker_session_id: replacement.id.clone(),
-            card_id: replacement.card_id.clone(),
-            kind: replacement.kind.clone(),
-            agent_provider: replacement.agent_provider.clone(),
-            status: replacement.status,
-        },
-    );
-    tokio::time::sleep(Duration::from_millis(60)).await;
-
-    assert_eq!(driver.tasks_alive_for_test().await, 1);
-    assert_eq!(
-        driver.task_runtime_ids_for_test().await,
-        vec![replacement.id.clone()]
-    );
-    assert!(!replacement_stop.is_cancelled());
+        .expect("independent write operation")
 }

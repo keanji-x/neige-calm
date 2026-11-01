@@ -69,9 +69,14 @@ pub(super) async fn detail(p: &Pair) -> Value {
 #[tokio::test]
 async fn planner_switch_http_authenticated_user_success() {
     let mut p = Pair::new().await;
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.permission_mode','ask') WHERE id=?1")
-        .bind(&p.cards[0])
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload,'$.permission_mode','ask') WHERE id=?1",
+            )
+            .bind(&p.cards[0]),
+        )
         .await
         .unwrap();
     let history: Vec<(String, i64, String)> = sqlx::query_as("SELECT message_id,revision,payload_json FROM conversation_message_revisions ORDER BY message_id,revision")
@@ -200,9 +205,14 @@ async fn planner_switch_http_cross_origin_refused() {
 #[tokio::test]
 async fn planner_switch_http_access_denied() {
     let mut p = Pair::new().await;
-    sqlx::query("DELETE FROM area_members WHERE area_id=(SELECT area_id FROM tracks WHERE id=?1)")
-        .bind(&p.track)
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "DELETE FROM area_members WHERE area_id=(SELECT area_id FROM tracks WHERE id=?1)",
+            )
+            .bind(&p.track),
+        )
         .await
         .unwrap();
     let value = body(&p);
@@ -259,8 +269,11 @@ async fn planner_switch_http_invalid_body() {
 #[tokio::test]
 async fn planner_switch_http_failed_passthrough() {
     let mut p = Pair::new().await;
-    sqlx::query("ALTER TABLE operations RENAME TO unavailable_operations")
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE operations RENAME TO unavailable_operations",
+        ))
         .await
         .unwrap();
     let value = body(&p);
@@ -268,8 +281,11 @@ async fn planner_switch_http_failed_passthrough() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{error}");
     assert_eq!(error["code"], "db_error");
     assert!(error.get("card_id").is_none());
-    sqlx::query("ALTER TABLE unavailable_operations RENAME TO operations")
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE unavailable_operations RENAME TO operations",
+        ))
         .await
         .unwrap();
     p.unchanged().await;
@@ -329,37 +345,44 @@ async fn planner_switch_http_typed_refusal_mapping() {
 async fn planner_switch_http_open_wake_refused_before_revoke() {
     let mut p = Pair::new().await;
     // Persist through the actual Planner ask and plural event owner.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+    let write_db = (p.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (scope, event) = crate::ask::ask_requested_tx(
+                    &mut tx,
+                    &p.cards[0].clone().into(),
+                    vec![crate::event::AskQuestion {
+                        detail: None,
+                        title: "Open wake".into(),
+                        options: vec!["Yes".into()],
+                    }],
+                )
+                .await
+                .unwrap();
+                crate::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
+                    &scope,
+                    None,
+                    &event,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let value = body(&p);
+                let (status, error) = submit(&mut p, value).await;
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert_eq!(error["code"], "planner_open_ask");
+                assert_eq!(error["card_id"], p.cards[0]);
+                p.unchanged().await;
+                p.close().await;
+            })
+        })
         .await
-        .unwrap();
-    let (scope, event) = crate::ask::ask_requested_tx(
-        &mut tx,
-        &p.cards[0].clone().into(),
-        vec![crate::event::AskQuestion {
-            detail: None,
-            title: "Open wake".into(),
-            options: vec!["Yes".into()],
-        }],
-    )
-    .await
-    .unwrap();
-    crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
-        &scope,
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let value = body(&p);
-    let (status, error) = submit(&mut p, value).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(error["code"], "planner_open_ask");
-    assert_eq!(error["card_id"], p.cards[0]);
-    p.unchanged().await;
-    p.close().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -418,50 +441,54 @@ async fn planner_switch_http_pending_refused() {
         ("turn", "planner_turn_in_flight"),
     ] {
         let mut p = Pair::new().await;
-        let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
-            .await
-            .unwrap();
-        match kind {
-            "message" => {
-                let mut carrier = current_input_carrier_tx(&mut tx, &p.cards[1], &p.workers[1])
-                    .await
-                    .unwrap();
-                let principal = p.human.current_principal().unwrap();
-                accept_pending_human_tx(
-                    &mut tx,
-                    &mut carrier,
-                    &principal.user_id,
-                    calm_types::conversation::HumanPayload {
-                        text: "pending".into(),
-                        bound_attachments: vec![],
-                    },
-                )
+        let write_db = (p.fixture.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
-            }
-            "submission" => {
-                sqlx::query(concat!(
-                    "INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,",
-                    "input_json,state,created_at_ms) VALUES(?1,'client','turn','thread','native','{}','unknown',0)"
-                ))
-                    .bind(&p.workers[1]).execute(&mut **tx).await.unwrap();
-            }
-            "turn" => {
-                sqlx::query("UPDATE worker_sessions SET active_turn_id='pending-turn' WHERE id=?1")
-                    .bind(&p.workers[1])
-                    .execute(&mut **tx)
+            match kind {
+                "message" => {
+                    let mut carrier = current_input_carrier_tx(&mut tx, &p.cards[1], &p.workers[1])
+                        .await
+                        .unwrap();
+                    let principal = p.human.current_principal().unwrap();
+                    accept_pending_human_tx(
+                        &mut tx,
+                        &mut carrier,
+                        &principal.user_id,
+                        calm_types::conversation::HumanPayload {
+                            text: "pending".into(),
+                            bound_attachments: vec![],
+                        },
+                    )
                     .await
                     .unwrap();
+                }
+                "submission" => {
+                    sqlx::query(concat!(
+                        "INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,",
+                        "input_json,state,created_at_ms) VALUES(?1,'client','turn','thread','native','{}','unknown',0)"
+                    ))
+                        .bind(&p.workers[1]).execute(&mut **tx).await.unwrap();
+                }
+                "turn" => {
+                    sqlx::query("UPDATE worker_sessions SET active_turn_id='pending-turn' WHERE id=?1")
+                        .bind(&p.workers[1])
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
             }
-            _ => unreachable!(),
-        }
-        tx.commit().await.unwrap();
-        let value = body(&p);
-        let (status, error) = submit(&mut p, value).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{kind}: {error}");
-        assert_eq!(error["code"], code, "{kind}");
-        assert_eq!(error["card_id"], p.cards[1]);
-        p.unchanged().await;
-        p.close().await;
+            tx.commit().await.unwrap();
+            let value = body(&p);
+            let (status, error) = submit(&mut p, value).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{kind}: {error}");
+            assert_eq!(error["code"], code, "{kind}");
+            assert_eq!(error["card_id"], p.cards[1]);
+            p.unchanged().await;
+            p.close().await;
+
+    })).await.expect("independent write operation")
     }
 }

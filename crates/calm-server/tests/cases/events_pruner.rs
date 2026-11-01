@@ -25,18 +25,29 @@ fn old(days: i64) -> i64 {
     now_ms() - days * DAY_MS
 }
 
-async fn insert_event(pool: &sqlx::SqlitePool, kind: &str, payload: &str, at: i64) -> i64 {
-    sqlx::query_scalar(
-        r#"INSERT INTO events (kind, payload, actor, at, correlation)
+async fn insert_event(
+    pool: &calm_truth::db::sqlite::SqliteDb,
+    kind: &str,
+    payload: &str,
+    at: i64,
+) -> i64 {
+    pool.writer()
+        .autocommit(|connection| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    r#"INSERT INTO events (kind, payload, actor, at, correlation)
            VALUES (?1, ?2, 'user', ?3, NULL)
            RETURNING id"#,
-    )
-    .bind(kind)
-    .bind(payload)
-    .bind(at)
-    .fetch_one(pool)
-    .await
-    .expect("insert event")
+                )
+                .bind(kind)
+                .bind(payload)
+                .bind(at)
+                .fetch_one(&mut **connection)
+                .await
+            })
+        })
+        .await
+        .expect("insert event")
 }
 
 fn layout_overlay_payload(track_id: &str, positions: serde_json::Value) -> String {
@@ -205,7 +216,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         "card-b": {"x": 6, "y": 0, "w": 6, "h": 12}
     });
     let layout_old = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &layout_overlay_payload(&track_id, p1),
         old(90),
@@ -213,14 +224,14 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     .await;
     // Structural event older than the horizon — must survive (not allowlisted).
     let structural_old = insert_event(
-        pool,
+        repo.db(),
         "area.updated",
         r##"{"id":"c-old","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}"##,
         old(60),
     )
     .await;
     let layout_latest = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &layout_overlay_payload(&track_id, p2.clone()),
         old(45),
@@ -229,14 +240,14 @@ async fn prune_preserves_layout_fold_and_structural_events() {
 
     // Card-status quad: the old superseded duplicate goes; the newer-than-horizon latest stays.
     let status_old = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &status_overlay_payload("card-a", "running"),
         old(50),
     )
     .await;
     let status_new = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &status_overlay_payload("card-a", "done"),
         old(2),
@@ -245,24 +256,24 @@ async fn prune_preserves_layout_fold_and_structural_events() {
 
     // Transient kinds past the horizon: pruned.
     let hook_old = insert_event(
-        pool,
+        repo.db(),
         "claude.hook",
         r#"{"card_id":"card-a","kind":"stop","payload":{}}"#,
         old(40),
     )
     .await;
     let codex_hook_old = insert_event(
-        pool,
+        repo.db(),
         "codex.hook",
         r#"{"card_id":"card-a","kind":"stop","payload":{}}"#,
         old(40),
     )
     .await;
-    let phase_old = insert_event(pool, "harness.phase.changed", "{}", old(40)).await;
-    let item_old = insert_event(pool, "harness.item.added", "{}", old(40)).await;
+    let phase_old = insert_event(repo.db(), "harness.phase.changed", "{}", old(40)).await;
+    let item_old = insert_event(repo.db(), "harness.item.added", "{}", old(40)).await;
     // Transient kind inside the horizon: kept.
     let hook_new = insert_event(
-        pool,
+        repo.db(),
         "claude.hook",
         r#"{"card_id":"card-a","kind":"stop","payload":{}}"#,
         old(1),
@@ -270,7 +281,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
     .await;
     // Tombstone for an unrelated quad, older than the horizon: never pruned.
     let tombstone_old = insert_event(
-        pool,
+        repo.db(),
         "overlay.deleted",
         r#"{"plugin_id":"p1","entity_kind":"card","entity_id":"card-z","kind":"status"}"#,
         old(70),

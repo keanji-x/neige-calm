@@ -2171,24 +2171,34 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         kind: "codex".into(),
         agent_message: None,
     };
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(side_repo.db())
+    let write_db = (side_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin probe-liveness tx");
+                calm_server::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &ActorId::Kernel,
+                    &calm_server::event::EventScope::System,
+                    None,
+                    &liveness_event,
+                )
+                .await
+                .expect("kernel/system append must be admitted");
+                tx.commit().await.expect("commit probe-liveness tx");
+                assert_eq!(
+                    append_probe::kinds(),
+                    vec!["task.dispatched"],
+                    "the append probe is not wired, so the fork assertion above proved nothing"
+                );
+            })
+        })
         .await
-        .expect("begin probe-liveness tx");
-    calm_server::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::Kernel,
-        &calm_server::event::EventScope::System,
-        None,
-        &liveness_event,
-    )
-    .await
-    .expect("kernel/system append must be admitted");
-    tx.commit().await.expect("commit probe-liveness tx");
-    assert_eq!(
-        append_probe::kinds(),
-        vec!["task.dispatched"],
-        "the append probe is not wired, so the fork assertion above proved nothing"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]

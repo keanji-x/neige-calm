@@ -67,9 +67,8 @@ async fn additional_owner(h: &Harness, track: &str) -> (String, ExecutionMetadat
         .unwrap();
     let mut output = TxOutput::new("card", Some(card.id.to_string()), json!({}));
     output.data = json!({});
-    sqlx::query("UPDATE operations SET phase='spawn_started',target_type='card',target_id=?2,tx_output_json=?3 WHERE id=?1")
-        .bind(&id).bind(card.id.as_str()).bind(serde_json::to_string(&output).unwrap())
-        .execute(h.db.pool()).await.unwrap();
+    (h.db.db()).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',target_type='card',target_id=?2,tx_output_json=?3 WHERE id=?1")
+        .bind(&id).bind(card.id.as_str()).bind(serde_json::to_string(&output).unwrap())).await.unwrap();
     let op = h.repo.claim_drive_operation(&id).await.unwrap().unwrap();
     admit(
         CONFIG,
@@ -84,28 +83,32 @@ async fn additional_owner(h: &Harness, track: &str) -> (String, ExecutionMetadat
     .unwrap();
     let op = h.repo.get_operation(&id).await.unwrap().unwrap();
     let execution = record(CONFIG, &op).unwrap().execution_id;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    let metadata: ExecutionMetadata = serde_json::from_str(
-        &calm_truth::db::sqlite::workspace_execution::intent_tx(&mut tx, execution.as_str())
+    let write_db = (h.db.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
             .await
-            .unwrap(),
-    )
-    .unwrap();
-    tx.commit().await.unwrap();
-    let engine = h.ctx.execution.engine().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let generation = engine.output_generation().await.unwrap();
-            if matches!(engine.output(&metadata.id, None).await,
-                Ok(ExecutionReply::Observation {state: ExecutionState::Spawned, ref output, ..}) if output == b"ready") {
-                break;
+            .unwrap();
+        let metadata: ExecutionMetadata = serde_json::from_str(
+            &calm_truth::db::sqlite::workspace_execution::intent_tx(&mut tx, execution.as_str())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        tx.commit().await.unwrap();
+        let engine = h.ctx.execution.engine().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let generation = engine.output_generation().await.unwrap();
+                if matches!(engine.output(&metadata.id, None).await,
+                    Ok(ExecutionReply::Observation {state: ExecutionState::Spawned, ref output, ..}) if output == b"ready") {
+                    break;
+                }
+                generation.changed().await.unwrap();
             }
-            generation.changed().await.unwrap();
-        }
-    }).await.unwrap();
-    (id, metadata)
+        }).await.unwrap();
+        (id, metadata)
+
+    })).await.expect("independent write operation")
 }
 
 async fn finish_owner(h: &Harness, id: &str, metadata: &ExecutionMetadata) {
@@ -117,20 +120,29 @@ async fn finish_owner(h: &Harness, id: &str, metadata: &ExecutionMetadata) {
         .await
         .unwrap();
     let op = h.repo.get_operation(id).await.unwrap().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
+    let write_db = (h.db.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
+                    .await
+                    .unwrap();
+                retire(CONFIG, &mut tx, &op).await.unwrap();
+                sqlx::query(
+                    "UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1",
+                )
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                h.ctx.execution.drive([metadata.id.clone()]);
+            })
+        })
         .await
-        .unwrap();
-    crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
-        .await
-        .unwrap();
-    retire(CONFIG, &mut tx, &op).await.unwrap();
-    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1")
-        .bind(id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    h.ctx.execution.drive([metadata.id.clone()]);
+        .expect("independent write operation")
 }
 
 async fn scope_delete(area: bool) {

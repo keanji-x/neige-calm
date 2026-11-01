@@ -53,16 +53,30 @@ async fn agent_backend_selection_respects_weight_inflight_and_readiness() {
                 vec!["default"]
             } {
                 let (_, session) = seed(&h.repo).await;
-                sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
-                    .bind(&session)
-                    .execute(h.repo.pool())
+                (h.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
+                            .bind(&session),
+                    )
                     .await
                     .unwrap();
-                let mut tx = h.repo.pool().begin().await.unwrap();
-                calm_truth::db::sqlite::session_backend::insert_tx(&mut tx, &session, "codex", id)
+                let write_db = (h.repo.db()).clone();
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            calm_truth::db::sqlite::session_backend::insert_tx(
+                                &mut tx, &session, "codex", id,
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
                     .await
-                    .unwrap();
-                tx.commit().await.unwrap();
+                    .expect("independent write operation")
             }
         }
         h.adapter.codex_backends = pool;
@@ -261,9 +275,14 @@ async fn agent_backend_restart_resumes_bound_worker_only_on_its_backend() {
     h.adapter.codex_backends = pool;
     let (output, _) = prepare_worker(&h, "restart").await;
     let session = worker_session_id(&h, &output).await;
-    sqlx::query("UPDATE worker_sessions SET thread_id='restart-thread',state='running' WHERE id=?")
-        .bind(&session)
-        .execute(h.repo.pool())
+    (h.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET thread_id='restart-thread',state='running' WHERE id=?",
+            )
+            .bind(&session),
+        )
         .await
         .unwrap();
     let restarted = rebuild_pool(root.path(), h.repo.clone()).await;

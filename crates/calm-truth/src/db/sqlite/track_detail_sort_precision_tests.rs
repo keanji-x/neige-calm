@@ -20,57 +20,66 @@ const PRECISION_HOSTILE_SORTS: &[f64] = &[
 
 async fn seed_track_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<String>) {
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.expect("begin tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "sort precision".into(),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "sort precision".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create track");
-    let mut ids = Vec::with_capacity(sorts.len());
-    for (i, sort) in sorts.iter().enumerate() {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track.id.clone(),
-                kind: "note".into(),
-                sort: Some(*sort),
-                payload: json!({"i": i}),
-                title: Some(format!("card {i}")),
-            },
-            &role_cache,
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "sort precision".into(),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "sort precision".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create track");
+                let mut ids = Vec::with_capacity(sorts.len());
+                for (i, sort) in sorts.iter().enumerate() {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track.id.clone(),
+                            kind: "note".into(),
+                            sort: Some(*sort),
+                            payload: json!({"i": i}),
+                            title: Some(format!("card {i}")),
+                        },
+                        &role_cache,
+                    )
+                    .await
+                    .expect("create card");
+                    ids.push(card.id.to_string());
+                }
+                tx.commit().await.expect("commit seed");
+                (track.id.to_string(), ids)
+            })
+        })
         .await
-        .expect("create card");
-        ids.push(card.id.to_string());
-    }
-    tx.commit().await.expect("commit seed");
-    (track.id.to_string(), ids)
+        .expect("independent write operation")
 }
 
 #[tokio::test]

@@ -307,10 +307,15 @@ async fn exit_path_of(fx: &Fx, op: &Operation) -> PathBuf {
 
 /// Freeze live claim acquisition, then let the real executor settle before boot recovers.
 async fn settle_without_observer(fx: &Fx, op: &Operation, flag: &Path) {
-    sqlx::query("UPDATE operations SET lease_owner='test-restart',lease_until_ms=?1 WHERE id=?2")
-        .bind(now_ms() + 60_000)
-        .bind(&op.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET lease_owner='test-restart',lease_until_ms=?1 WHERE id=?2",
+            )
+            .bind(now_ms() + 60_000)
+            .bind(&op.id),
+        )
         .await
         .unwrap();
     std::fs::write(flag, b"").unwrap();
@@ -641,9 +646,12 @@ async fn gate_prepare_refuses_unsettled_delivery() {
     fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
         .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
-    sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = ?1")
-        .bind(&row.delivery_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = ?1")
+                .bind(&row.delivery_id),
+        )
         .await
         .unwrap();
     let gate_rowless = assert_refused_without_candidate(&fx, &task, "rowless").await;
@@ -711,10 +719,13 @@ async fn frozen_gate_cwd_on_agent_task_is_refused_in_prepare() {
         canonical
     );
     let gate_json = json!({"steps": [{"name": "t", "cmd": "test -f marker"}], "cwd": canonical});
-    sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
-        .bind(gate_json.to_string())
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
+                .bind(gate_json.to_string())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     let task = current(&fx.boot, "frozen-cwd").await;
@@ -777,10 +788,13 @@ async fn frozen_gate_cwd_on_agent_task_is_refused_in_prepare() {
     // is there, the after-sample still matches.
     let (_, task, _, candidate) =
         settled_gated_task_with(&fx, "plain-cwd", gated("true"), &[("marker", "marker\n")]).await;
-    sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
-        .bind(json!({"steps": [{"name": "t", "cmd": "test -f marker"}]}).to_string())
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
+                .bind(json!({"steps": [{"name": "t", "cmd": "test -f marker"}]}).to_string())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     let task = current(&fx.boot, "plain-cwd").await;
@@ -1377,7 +1391,6 @@ fn live_processes_naming(needle: &str) -> Vec<i32> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gate_prepare_times_out_as_stuck_not_hang() {
-    use calm_server::db::sqlite::begin_immediate_tx;
     use calm_server::operation::task_verify_adapter::SAMPLE_TIMEOUT;
 
     let fx = fixture().await;
@@ -1425,67 +1438,79 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
     let pool = fx.db();
     let task_id = task.id.clone();
     let writer_started = std::time::Instant::now();
-    let writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
-            .bind(&task_id)
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())
-    });
-    let writer_elapsed = tokio::time::timeout(Duration::from_secs(30), writer)
-        .await
-        .expect("the write slot was released by the sample bound (30 s)")
-        .unwrap()
-        .expect("the concurrent write committed");
-    eprintln!(
-        "concurrent write committed after {writer_elapsed:?} (sample bound {SAMPLE_TIMEOUT:?})"
-    );
-    assert!(
-        writer_elapsed <= SAMPLE_TIMEOUT + Duration::from_secs(2),
-        "write slot held for {writer_elapsed:?}"
-    );
-    tokio::time::timeout(Duration::from_secs(30), drive)
-        .await
-        .expect("the gate drive returned (30 s)")
-        .unwrap();
 
-    let op = gate_op(&fx, &task.id).await.unwrap();
-    assert_eq!(op.phase.tag(), PhaseTag::Stuck, "{op:?}");
-    assert!(op.tx_output.is_none(), "prepare rolled back");
-    let events = gate_result_events(&fx, &task.id).await;
-    assert_eq!(events.len(), 1, "{events:?}");
-    let gate = &events[0];
-    assert_eq!(gate.status_detail.as_deref(), Some("gate-infra"));
-    let (id, _, _, evidence) = gate.candidate();
-    assert_eq!(id, candidate.candidate_id);
-    let SamplePhase::Prepare { reason } = unsampled_phase(evidence) else {
-        panic!("{evidence:?}");
-    };
-    assert!(reason.contains("timed out"), "{reason}");
-    assert!(reason.contains("git status"), "{reason}");
-    assert_eq!(current(&fx.boot, "hooked").await.status, TaskStatus::Failed);
-    assert_eq!(
-        current(&fx.boot, "hooked").await.gate_attempt,
-        0,
-        "pre-bump fallback"
-    );
-    // The hook (a grandchild of the sampler's `git`) was killed with the command's group.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let live = live_processes_naming(&needle);
-        if live.is_empty() {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "hook processes survived the sample bound: {live:?}"
+    {
+        let writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
+                            .bind(&task_id)
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let writer_elapsed = tokio::time::timeout(Duration::from_secs(30), writer)
+            .await
+            .expect("the write slot was released by the sample bound (30 s)")
+            .unwrap()
+            .expect("the concurrent write committed");
+        eprintln!(
+            "concurrent write committed after {writer_elapsed:?} (sample bound {SAMPLE_TIMEOUT:?})"
         );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            writer_elapsed <= SAMPLE_TIMEOUT + Duration::from_secs(2),
+            "write slot held for {writer_elapsed:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(30), drive)
+            .await
+            .expect("the gate drive returned (30 s)")
+            .unwrap();
+
+        let op = gate_op(&fx, &task.id).await.unwrap();
+        assert_eq!(op.phase.tag(), PhaseTag::Stuck, "{op:?}");
+        assert!(op.tx_output.is_none(), "prepare rolled back");
+        let events = gate_result_events(&fx, &task.id).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let gate = &events[0];
+        assert_eq!(gate.status_detail.as_deref(), Some("gate-infra"));
+        let (id, _, _, evidence) = gate.candidate();
+        assert_eq!(id, candidate.candidate_id);
+        let SamplePhase::Prepare { reason } = unsampled_phase(evidence) else {
+            panic!("{evidence:?}");
+        };
+        assert!(reason.contains("timed out"), "{reason}");
+        assert!(reason.contains("git status"), "{reason}");
+        assert_eq!(current(&fx.boot, "hooked").await.status, TaskStatus::Failed);
+        assert_eq!(
+            current(&fx.boot, "hooked").await.gate_attempt,
+            0,
+            "pre-bump fallback"
+        );
+        // The hook (a grandchild of the sampler's `git`) was killed with the command's group.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let live = live_processes_naming(&needle);
+            if live.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "hook processes survived the sample bound: {live:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        git(&lease.path, &["config", "--unset", "filter.slow.clean"]);
+        let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
     }
-    git(&lease.path, &["config", "--unset", "filter.slow.clean"]);
-    let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,32 +1552,35 @@ async fn existing_terminal_gate_op_is_reconciled_before_admission() {
         },
     });
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json, tx_output_json,
                phase, phase_detail_json, last_error, created_at_ms, updated_at_ms, completed_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'pre-slice-4', 'task', ?5, ?6, ?7, ?8,
                    'failed', ?9, ?10, ?11, ?11, ?11)"#,
-    )
-    .bind(&op_id)
-    .bind(format!("gate-{}", task.id))
-    .bind(TASK_VERIFY_KIND)
-    .bind(format!("{}#g1", task.id))
-    .bind(&task.id)
-    .bind(json!({"type": "task", "id": task.id}).to_string())
-    .bind(json!({"task_id": task.id, "attempt": 1}).to_string())
-    .bind(frozen.to_string())
-    .bind(json!({"from_phase": "parked", "last_error_class": "parked_dead"}).to_string())
-    .bind("gate process dead with no recorded verdict; gate-infra")
-    .bind(now)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tasks SET gate_attempt = 1 WHERE id = ?1")
-        .bind(&task.id)
-        .execute(&fx.pool())
+            )
+            .bind(&op_id)
+            .bind(format!("gate-{}", task.id))
+            .bind(TASK_VERIFY_KIND)
+            .bind(format!("{}#g1", task.id))
+            .bind(&task.id)
+            .bind(json!({"type": "task", "id": task.id}).to_string())
+            .bind(json!({"task_id": task.id, "attempt": 1}).to_string())
+            .bind(frozen.to_string())
+            .bind(json!({"from_phase": "parked", "last_error_class": "parked_dead"}).to_string())
+            .bind("gate process dead with no recorded verdict; gate-infra")
+            .bind(now),
+        )
+        .await
+        .unwrap();
+    (fx.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET gate_attempt = 1 WHERE id = ?1").bind(&task.id))
         .await
         .unwrap();
     let task = current(&fx.boot, "upgraded").await;
@@ -1648,15 +1676,14 @@ async fn reconciled_gate_carries_unsampled_target() {
     let drive = spawn_drive(fx.scheduler(), task.clone());
     let op = wait_gate_parked(&fx, &task.id).await;
     // The op fails behind the waiter's back (the shape enforcement leaves).
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE operations SET phase = 'failed', phase_detail_json = ?1, last_error = ?2, \
          lease_owner = NULL, lease_until_ms = NULL, completed_at_ms = ?3, updated_at_ms = ?3 WHERE id = ?4",
     )
     .bind(json!({"from_phase": PhaseTag::Parked, "last_error_class": "parked_dead"}).to_string())
     .bind("gate process dead (fixture)")
     .bind(now_ms())
-    .bind(&op.id)
-    .execute(&fx.pool())
+    .bind(&op.id))
     .await
     .unwrap();
     drive.await.unwrap();
@@ -1736,13 +1763,12 @@ async fn unparseable_gate_result_carries_frozen_target() {
     let drive = spawn_drive(fx.scheduler(), task.clone());
     let op = wait_gate_parked(&fx, &task.id).await;
     assert_eq!(current(&fx.boot, "garbled").await.gate_attempt, 1);
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE operations SET phase = 'succeeded', tx_output_json = json_set(tx_output_json, '$.result', json('{\"garbage\":1}')), \
          lease_owner = NULL, lease_until_ms = NULL, completed_at_ms = ?1, updated_at_ms = ?1 WHERE id = ?2",
     )
     .bind(now_ms())
-    .bind(&op.id)
-    .execute(&fx.pool())
+    .bind(&op.id))
     .await
     .unwrap();
     drive.await.unwrap();
@@ -1790,9 +1816,9 @@ async fn legacy_lease_gate_runs_without_target_check() {
     let task = fx
         .running_task("legacy", "codex", &worker.card_id, gated("test -d ."))
         .await;
-    sqlx::query("UPDATE tasks SET status = 'verifying' WHERE id = ?1")
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status = 'verifying' WHERE id = ?1").bind(&task.id))
         .await
         .unwrap();
     let task = current(&fx.boot, "legacy").await;
@@ -1845,11 +1871,10 @@ async fn pre_upgrade_frozen_gate_boots_as_unbound() {
         "candidate"
     );
     // The pre-slice-4 freeze shape: no `target` key; dead to recovery, exit file 0.
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE operations SET tx_output_json = json_remove(tx_output_json, '$.data.target') WHERE id = ?1",
     )
-    .bind(&op.id)
-    .execute(&fx.pool())
+    .bind(&op.id))
     .await
     .unwrap();
     settle_without_observer(&fx, &op, &flag).await;
@@ -1889,13 +1914,12 @@ async fn legacy_verdict_reads_as_unbound() {
         "log_tail": "::gate-step t\n", "log_path": gate_log_path(&fx, &task.id), "attempt": 1,
         "cwd": lease.path,
     });
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status = 'done', gate_result_json = ?1, gate_attempt = 1, finished_at_ms = ?2 WHERE id = ?3",
     )
     .bind(recorded.to_string())
     .bind(now_ms())
-    .bind(&task.id)
-    .execute(&fx.pool())
+    .bind(&task.id))
     .await
     .unwrap();
 
@@ -2063,12 +2087,11 @@ async fn plan_list_verification_states() {
 
     // unbound (a legacy verdict)
     let (_, task, _, _) = settled_gated_task(&fx, "v-unbound", gated("true")).await;
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status = 'done', gate_attempt = 1, gate_result_json = ?1 WHERE id = ?2",
     )
     .bind(json!({"passed": true, "log_tail": "", "log_path": "/l", "attempt": 1}).to_string())
-    .bind(&task.id)
-    .execute(&fx.pool())
+    .bind(&task.id))
     .await
     .unwrap();
     let v = verification(&fx.plan_entry("v-unbound").await);
@@ -2262,32 +2285,35 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
     .await
     .unwrap();
     let pool = fx.db();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
+    let write_db = (fx.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        assert_eq!(
+            calm_server::db::sqlite::task_claim_pending_tx(
+                &mut tx,
+                &task.id,
+                now_ms(),
+                &closure.refs,
+                closure.closure_truncated,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        tx.commit().await.unwrap();
+        (pool).writer().execute(sqlx::query(
+            "UPDATE tasks SET status = 'running', worker_card_id = ?1, updated_at_ms = ?3 WHERE id = ?2",
+        )
+        .bind(worker)
+        .bind(&task.id)
+        .bind(now_ms()))
         .await
         .unwrap();
-    assert_eq!(
-        calm_server::db::sqlite::task_claim_pending_tx(
-            &mut tx,
-            &task.id,
-            now_ms(),
-            &closure.refs,
-            closure.closure_truncated,
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    sqlx::query(
-        "UPDATE tasks SET status = 'running', worker_card_id = ?1, updated_at_ms = ?3 WHERE id = ?2",
-    )
-    .bind(worker)
-    .bind(&task.id)
-    .bind(now_ms())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
-    current(&fx.boot, key).await
+        current(&fx.boot, key).await
+
+    })).await.expect("independent write operation")
 }
 
 /// The world of an out-of-process test, on a file-backed database the kernel binary is launched
@@ -2915,12 +2941,11 @@ async fn live_reattached_gate_result_discarded_when_tree_changed() {
     ));
     // The row is flipped by hand while the gate is parked (see the header): boot#2 has no
     // `verifying` row to drive, so nothing waits on `#g1` and nothing probes it.
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status = 'failed', status_detail = 'delivery-failed', finished_at_ms = ?1 WHERE id = ?2",
     )
     .bind(now_ms())
-    .bind(&task.id)
-    .execute(&fx.pool())
+    .bind(&task.id))
     .await
     .unwrap();
 

@@ -375,35 +375,46 @@ async fn historical_admission_rejects_another_real_user_even_with_owner_profile_
     let uri = format!("/api/cards/{card}/planner/input");
     let body = json!({"text":"Owner's original V1 keyed send"});
     post(&app, &cookie, &uri, "owned-send", body.clone()).await;
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Owner")
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::area_membership::application_user_register(
+                    &mut tx, "alice", "Owner",
+                )
+                .await
+                .unwrap();
+                // System Areas forbid human members. The historical entry must still
+                // reject a different registered identity with a spoofed owner profile.
+                tx.commit().await.unwrap();
+                let token = auth.sessions.create(
+                    crate::auth::SessionIdentity {
+                        user_id: "alice".into(),
+                        display_name: "Owner".into(),
+                        role: "owner".into(),
+                    },
+                    crate::auth::SessionAuthority::PasswordLogin,
+                );
+                let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
+                for key in ["owned-history", "alice-fresh"] {
+                    assert_eq!(
+                        status(&app, &alice, "/api/tracks", key, create.clone()).await,
+                        StatusCode::FORBIDDEN
+                    );
+                }
+                for key in ["owned-send", "alice-fresh"] {
+                    assert_eq!(
+                        status(&app, &alice, &uri, key, body.clone()).await,
+                        StatusCode::FORBIDDEN
+                    );
+                }
+                shutdown(&fixture, &state).await;
+            })
+        })
         .await
-        .unwrap();
-    // System Areas forbid human members. The historical entry must still
-    // reject a different registered identity with a spoofed owner profile.
-    tx.commit().await.unwrap();
-    let token = auth.sessions.create(
-        crate::auth::SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-        },
-        crate::auth::SessionAuthority::PasswordLogin,
-    );
-    let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
-    for key in ["owned-history", "alice-fresh"] {
-        assert_eq!(
-            status(&app, &alice, "/api/tracks", key, create.clone()).await,
-            StatusCode::FORBIDDEN
-        );
-    }
-    for key in ["owned-send", "alice-fresh"] {
-        assert_eq!(
-            status(&app, &alice, &uri, key, body.clone()).await,
-            StatusCode::FORBIDDEN
-        );
-    }
-    shutdown(&fixture, &state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -425,9 +436,9 @@ async fn known_canonical_creation_with_missing_current_never_enters_historical_s
         .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-        .bind(&card)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(&card))
         .await
         .unwrap();
     let uri = format!("/api/cards/{card}/planner/input");
@@ -455,16 +466,22 @@ async fn known_canonical_creation_with_missing_current_never_enters_historical_s
             .await
             .unwrap();
     assert_eq!(bindings, 0);
-    sqlx::query("UPDATE cards SET session_id=?2 WHERE id=?1")
-        .bind(&card)
-        .bind(&original_runtime)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET session_id=?2 WHERE id=?1")
+                .bind(&card)
+                .bind(&original_runtime),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&original_runtime)
-        .bind(r#"{"mode":"harness","schema_version":2,"canonical_inputs":false}"#)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                .bind(&original_runtime)
+                .bind(r#"{"mode":"harness","schema_version":2,"canonical_inputs":false}"#),
+        )
         .await
         .unwrap();
     assert!(
@@ -497,58 +514,61 @@ async fn canonical_collaborator_content_is_accepted_independently_of_private_exe
     let (state, app, cookie, auth) = fixture.application_with_auth(true).await;
     let area = area(&app, &cookie).await;
     let area_id = area["id"].as_str().unwrap();
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area_id)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let token = auth.sessions.create(
-        crate::auth::SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Alice".into(),
-            role: "member".into(),
-        },
-        crate::auth::SessionAuthority::PasswordLogin,
-    );
-    let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
-    for (key, history) in [
-        ("alice-private", "private"),
-        ("alice-shared", "shared_history"),
-    ] {
-        sqlx::query("UPDATE areas SET conversation_history_contract=?2 WHERE id=?1")
-            .bind(area_id)
-            .bind(history)
-            .execute(fixture.repo.pool())
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
             .await
             .unwrap();
-        let body = json!({"area_id":area_id,"planner_provider":"codex","title":"",
-            "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Alice may save content without a private execution grant"});
-        let created = post(&app, &alice, "/api/tracks", key, body.clone()).await;
-        let replayed = post(&app, &alice, "/api/tracks", key, body).await;
-        assert_eq!(created["id"], replayed["id"]);
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        let receipt =
-            crate::db::sqlite::conversation::human_track_creation_get_tx(&mut tx, area_id, key)
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(receipt.source_user_id, "alice");
-        tx.rollback().await.unwrap();
-        let (thread,): (Option<String>,) = sqlx::query_as("SELECT ws.thread_id FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id WHERE c.track_id=?1 AND c.role='planner'")
-            .bind(created["id"].as_str().unwrap()).fetch_one(fixture.repo.pool()).await.unwrap();
-        assert_eq!(
-            thread, None,
-            "saving content does not grant use of deployment credentials"
+        sqlx::query(
+            "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+        )
+        .bind(area_id)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let token = auth.sessions.create(
+            crate::auth::SessionIdentity {
+                user_id: "alice".into(),
+                display_name: "Alice".into(),
+                role: "member".into(),
+            },
+            crate::auth::SessionAuthority::PasswordLogin,
         );
-    }
-    shutdown(&fixture, &state).await;
+        let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
+        for (key, history) in [
+            ("alice-private", "private"),
+            ("alice-shared", "shared_history"),
+        ] {
+            (fixture.repo.db()).writer().execute(sqlx::query("UPDATE areas SET conversation_history_contract=?2 WHERE id=?1")
+                .bind(area_id)
+                .bind(history))
+                .await
+                .unwrap();
+            let body = json!({"area_id":area_id,"planner_provider":"codex","title":"",
+                "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Alice may save content without a private execution grant"});
+            let created = post(&app, &alice, "/api/tracks", key, body.clone()).await;
+            let replayed = post(&app, &alice, "/api/tracks", key, body).await;
+            assert_eq!(created["id"], replayed["id"]);
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let receipt =
+                crate::db::sqlite::conversation::human_track_creation_get_tx(&mut tx, area_id, key)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(receipt.source_user_id, "alice");
+            tx.rollback().await.unwrap();
+            let (thread,): (Option<String>,) = sqlx::query_as("SELECT ws.thread_id FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id WHERE c.track_id=?1 AND c.role='planner'")
+                .bind(created["id"].as_str().unwrap()).fetch_one(fixture.repo.pool()).await.unwrap();
+            assert_eq!(
+                thread, None,
+                "saving content does not grant use of deployment credentials"
+            );
+        }
+        shutdown(&fixture, &state).await;
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -737,55 +757,59 @@ async fn human_private_fence_keeps_http_save_accepted() {
         let (state, app, cookie) = fixture.application_with_historical_native(true).await;
         let area = area(&app, &cookie).await;
         let area_id = area["id"].as_str().unwrap();
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let created = post(
-            &app,
-            &cookie,
-            "/api/tracks",
-            "held-human",
-            json!({
-                "area_id":area_id,"planner_provider":"codex","title":"",
-                "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
-            }),
-        )
-        .await;
-        let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        if case == 1 {
-            sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)")
-                .bind(area_id).execute(&mut *tx).await.unwrap();
-        } else if case == 2 {
-            sqlx::query("DELETE FROM application_users WHERE id='alice'")
-                .execute(&mut *tx)
+        let write_db = (fixture.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
                 .await
                 .unwrap();
-            sqlx::query("UPDATE areas SET kind='user' WHERE kind='system'")
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
-                .bind(area_id)
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        tx.commit().await.unwrap();
-        post(
-            &app,
-            &cookie,
-            &format!("/api/cards/{card}/planner/input"),
-            "held-human-input",
-            json!({"text":"Save this Human input while private execution is held"}),
-        )
-        .await;
-        let (_, _, snapshot) = fixture.carrier(created["id"].as_str().unwrap()).await;
-        assert_eq!(snapshot.canonical_inputs.pending.len(), 2, "case {case}");
-        assert!(snapshot.canonical_inputs.active.is_none(), "case {case}");
-        assert!(snapshot.canonical_inputs.attempts.is_empty(), "case {case}");
-        shutdown(&fixture, &state).await;
+            tx.commit().await.unwrap();
+            let created = post(
+                &app,
+                &cookie,
+                "/api/tracks",
+                "held-human",
+                json!({
+                    "area_id":area_id,"planner_provider":"codex","title":"",
+                    "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
+                }),
+            )
+            .await;
+            let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            if case == 1 {
+                sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)")
+                    .bind(area_id).execute(&mut **tx).await.unwrap();
+            } else if case == 2 {
+                sqlx::query("DELETE FROM application_users WHERE id='alice'")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE areas SET kind='user' WHERE kind='system'")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
+                    .bind(area_id)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+            }
+            tx.commit().await.unwrap();
+            post(
+                &app,
+                &cookie,
+                &format!("/api/cards/{card}/planner/input"),
+                "held-human-input",
+                json!({"text":"Save this Human input while private execution is held"}),
+            )
+            .await;
+            let (_, _, snapshot) = fixture.carrier(created["id"].as_str().unwrap()).await;
+            assert_eq!(snapshot.canonical_inputs.pending.len(), 2, "case {case}");
+            assert!(snapshot.canonical_inputs.active.is_none(), "case {case}");
+            assert!(snapshot.canonical_inputs.attempts.is_empty(), "case {case}");
+            shutdown(&fixture, &state).await;
+
+    })).await.expect("independent write operation")
     }
 }

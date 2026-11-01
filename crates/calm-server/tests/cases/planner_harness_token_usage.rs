@@ -113,115 +113,119 @@ async fn boot() -> Boot {
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-
-    let worker_session_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
-    snapshot.last_turn_id = Some(SEED_TURN_ID.to_string());
-    session_start_runtime_tx(
-        &mut tx,
-        calm_server::session_projection_repo::WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
-            status: calm_server::session_projection_repo::WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(SEED_THREAD_ID.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let events = EventBus::new();
-    let state = AppState::from_parts(
-        repo.clone(),
-        events.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-token-usage"),
-            Vec::new(),
-            EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache.clone()),
-        Some(track_area_cache.clone()),
-    );
-
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            planner_card.id.as_ref(),
-            planner_card.track_id.as_ref(),
-            worker_session_id.as_ref(),
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let planner_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+            },
+            CardRole::Planner,
+            false,
+            &role_cache,
         )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: planner_card.track_id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(SEED_THREAD_ID.to_string()),
-        repo: repo_dyn,
-        events,
-        card_role_cache: role_cache,
-        track_area_cache,
+        .await
+        .unwrap();
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    state
-        .harness
-        .insert(worker_session_id.clone(), harness.clone());
+        let worker_session_id = new_id();
+        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+        snapshot.phase = HarnessPhaseTag::Idle;
+        snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
+        snapshot.last_turn_id = Some(SEED_TURN_ID.to_string());
+        session_start_runtime_tx(
+            &mut tx,
+            calm_server::session_projection_repo::WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: planner_card.id.to_string(),
+                kind: calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
+                status: calm_server::session_projection_repo::WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(SEED_THREAD_ID.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: calm_server::model::now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-    let app = crate::support::authenticated_router::application(state).await;
+        let events = EventBus::new();
+        let state = AppState::from_parts(
+            repo.clone(),
+            events.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-token-usage"),
+                Vec::new(),
+                EventBus::new(),
+                calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            Some(role_cache.clone()),
+            Some(track_area_cache.clone()),
+        );
 
-    Boot {
-        app,
-        repo,
-        daemon,
-        harness,
-        planner_card,
-        worker_session_id,
-    }
+        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                planner_card.id.as_ref(),
+                planner_card.track_id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
+            track_id: planner_card.track_id.clone(),
+            card_id: planner_card.id.clone(),
+            thread_id: Some(SEED_THREAD_ID.to_string()),
+            repo: repo_dyn,
+            events,
+            card_role_cache: role_cache,
+            track_area_cache,
+
+            registry: calm_server::harness::HarnessRegistry::new(),
+            config: HarnessConfig {
+                debounce_min_idle: Duration::from_secs(60),
+                debounce_max_wait: Duration::from_secs(60),
+                ..HarnessConfig::default()
+            },
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
+        state
+            .harness
+            .insert(worker_session_id.clone(), harness.clone());
+
+        let app = crate::support::authenticated_router::application(state).await;
+
+        Boot {
+            app,
+            repo,
+            daemon,
+            harness,
+            planner_card,
+            worker_session_id,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {

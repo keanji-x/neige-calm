@@ -188,26 +188,38 @@ pub async fn shutdown_shared_codex(shared: &Arc<SharedCodexAppServer>) {
 }
 
 pub async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
-    let mut tx = repo.pool().begin().await.expect("begin planner session tx");
-    session_start_runtime_tx(
-        &mut tx,
-        crate::support::planner::session_init(
-            PLANNER_SESSION_ID,
-            planner_card_id,
-            Some("planner-thread".into()),
-            WorkerSessionState::Running,
-            now_ms(),
-        ),
-    )
-    .await
-    .expect("seed planner session");
-    sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
-        .bind(PLANNER_SESSION_ID)
-        .bind(track_id)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin planner session tx");
+                session_start_runtime_tx(
+                    &mut tx,
+                    crate::support::planner::session_init(
+                        PLANNER_SESSION_ID,
+                        planner_card_id,
+                        Some("planner-thread".into()),
+                        WorkerSessionState::Running,
+                        now_ms(),
+                    ),
+                )
+                .await
+                .expect("seed planner session");
+                sqlx::query("UPDATE tracks SET root_session_id = ?1 WHERE id = ?2")
+                    .bind(PLANNER_SESSION_ID)
+                    .bind(track_id)
+                    .execute(&mut **tx)
+                    .await
+                    .expect("mark planner session as track root");
+                tx.commit().await.expect("commit planner session tx");
+            })
+        })
         .await
-        .expect("mark planner session as track root");
-    tx.commit().await.expect("commit planner session tx");
+        .expect("independent write operation")
 }
 
 pub async fn boot_plugin_host(

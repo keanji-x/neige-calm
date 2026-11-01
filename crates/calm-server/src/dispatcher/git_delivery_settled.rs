@@ -29,6 +29,22 @@ pub(super) async fn qualified_observation(
     event: &Event,
     strict: bool,
 ) -> Result<Option<Observation>> {
+    let track_id = track_id.clone();
+    let event = event.clone();
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move { qualified_observation_tx(tx, &track_id, &event, strict).await })
+    })
+    .await
+}
+
+/// Reuse the caller's writer for task identity and retained workspace facts.
+/// Both canonical acceptance and readmission must remain in that transaction.
+pub(super) async fn qualified_observation_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track_id: &TrackId,
+    event: &Event,
+    strict: bool,
+) -> Result<Option<Observation>> {
     let Event::TaskGitDeliverySettled {
         task_id,
         track_id: event_track_id,
@@ -41,48 +57,39 @@ pub(super) async fn qualified_observation(
     if event_track_id != track_id {
         return Ok(None);
     }
-    let track_id = track_id.clone();
-    let task_id = task_id.clone();
-    let result = result.clone();
-    write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            let Some(task) = crate::db::sqlite::task_get_tx(tx, &task_id).await? else {
-                if strict {
-                    return Err(crate::error::CalmError::Conflict(
-                        "settlement source execution is unavailable".into(),
-                    ));
-                }
-                return Ok(None);
-            };
-            if task.track_id != track_id.as_str() {
-                return Ok(None);
-            }
-            let workspace_missing = matches!(
-                &result,
-                DeliverySettlement::Failed {
-                    code: DeliveryFailureCode::WorkspaceMissing,
-                    ..
-                }
-            );
-            let retained_path = match task.worker_card_id.as_deref() {
-                Some(_) if workspace_missing => None,
-                Some(worker_card_id) => {
-                    crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
-                        tx,
-                        worker_card_id,
-                    )
-                    .await?
-                    .map(|facts| facts.path)
-                }
-                None => None,
-            };
-            Ok(Some(Observation::TaskGitDeliverySettled {
-                key: task.key,
-                attempt_id: task_id,
-                result,
-                retained_path,
-            }))
-        })
-    })
-    .await
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("git-settlement-qualification", task_id).await;
+    let Some(task) = crate::db::sqlite::task_get_tx(tx, task_id).await? else {
+        if strict {
+            return Err(crate::error::CalmError::Conflict(
+                "settlement source execution is unavailable".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    if task.track_id != track_id.as_str() {
+        return Ok(None);
+    }
+    let workspace_missing = matches!(
+        &result,
+        DeliverySettlement::Failed {
+            code: DeliveryFailureCode::WorkspaceMissing,
+            ..
+        }
+    );
+    let retained_path = match task.worker_card_id.as_deref() {
+        Some(_) if workspace_missing => None,
+        Some(worker_card_id) => {
+            crate::operation::workspace_lease::facts::worker_worktree_facts_tx(tx, worker_card_id)
+                .await?
+                .map(|facts| facts.path)
+        }
+        None => None,
+    };
+    Ok(Some(Observation::TaskGitDeliverySettled {
+        key: task.key,
+        attempt_id: task_id.clone(),
+        result: result.clone(),
+        retained_path,
+    }))
 }

@@ -62,69 +62,79 @@ async fn seed_harness(
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    track_area_cache.insert(track.id.clone(), area.id);
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id,
-        track_id: card.track_id.clone(),
-        card_id: card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo_dyn,
-        events,
-        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
-        track_area_cache,
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+                track_area_cache.insert(track.id.clone(), area.id);
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        card.id.as_ref(),
+                        card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id,
+                    track_id: card.track_id.clone(),
+                    card_id: card.id.clone(),
+                    thread_id: Some(thread_id),
+                    repo: repo_dyn,
+                    events,
+                    card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+                    track_area_cache,
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::from_secs(60),
+                        debounce_max_wait: Duration::from_secs(60),
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
 
-    (
-        harness,
-        daemon,
-        card.id.to_string(),
-        card.track_id.to_string(),
-    )
+                (
+                    harness,
+                    daemon,
+                    card.id.to_string(),
+                    card.track_id.to_string(),
+                )
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn wait_for_rows(

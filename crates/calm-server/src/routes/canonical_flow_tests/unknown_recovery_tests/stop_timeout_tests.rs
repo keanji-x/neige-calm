@@ -170,10 +170,13 @@ async fn stop_timeout_recovery() {
         } else {
             json!("foreign")
         };
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-            .bind(changed.to_string())
-            .bind(&worker)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                    .bind(changed.to_string())
+                    .bind(&worker),
+            )
             .await
             .unwrap();
         let held =
@@ -185,10 +188,13 @@ async fn stop_timeout_recovery() {
             "{path:?}"
         );
     }
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(baseline.to_string())
-        .bind(&worker)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(baseline.to_string())
+                .bind(&worker),
+        )
         .await
         .unwrap();
     let response = post(&app, &cookie, &uri, "recover-stop", request.clone()).await;

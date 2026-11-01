@@ -149,80 +149,90 @@ async fn boot() -> Boot {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Resumed;
     snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo_sqlx.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo_sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: planner_card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let harness_registry = HarnessRegistry::new();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            shared.clone(),
-            planner_card.id.as_ref(),
-            track.id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: track.id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo.clone(),
-        events: events.clone(),
-        card_role_cache: card_role_cache.clone(),
-        track_area_cache: track_area_cache.clone(),
+                let shared =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let harness_registry = HarnessRegistry::new();
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        shared.clone(),
+                        planner_card.id.as_ref(),
+                        track.id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: track.id.clone(),
+                    card_id: planner_card.id.clone(),
+                    thread_id: Some(thread_id),
+                    repo: repo.clone(),
+                    events: events.clone(),
+                    card_role_cache: card_role_cache.clone(),
+                    track_area_cache: track_area_cache.clone(),
 
-        registry: harness_registry.clone(),
-        config: HarnessConfig::default(),
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    harness_registry.insert(worker_session_id.clone(), harness.clone());
+                    registry: harness_registry.clone(),
+                    config: HarnessConfig::default(),
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                harness_registry.insert(worker_session_id.clone(), harness.clone());
 
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let renderer = TerminalRendererRegistry::new_with_repo(route_repo);
+                let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+                let renderer = TerminalRendererRegistry::new_with_repo(route_repo);
 
-    Boot {
-        app,
-        repo,
-        repo_sqlx,
-        events,
-        card_role_cache,
-        track_area_cache,
-        area_id: area.id,
-        track_id: track.id,
-        planner_card_id: planner_card.id,
-        worker_card_id: worker_card.id,
-        worker_session_id,
-        harness,
-        harness_registry,
-        codex,
-        daemon,
-        renderer,
-        shared,
-    }
+                Boot {
+                    app,
+                    repo,
+                    repo_sqlx,
+                    events,
+                    card_role_cache,
+                    track_area_cache,
+                    area_id: area.id,
+                    track_id: track.id,
+                    planner_card_id: planner_card.id,
+                    worker_card_id: worker_card.id,
+                    worker_session_id,
+                    harness,
+                    harness_registry,
+                    codex,
+                    daemon,
+                    renderer,
+                    shared,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// A gated tasks row on the boot track, bound to `worker_card_id` when given, in `status`.
@@ -264,12 +274,21 @@ async fn seed_task(
         updated_at_ms: 1,
         finished_at_ms: None,
     };
-    let mut tx = boot.repo_sqlx.pool().begin().await.unwrap();
-    crate::support::task::insert_task_tx(&mut tx, &task)
+    let write_db = (boot.repo_sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::support::task::insert_task_tx(&mut tx, &task)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                task
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    task
+        .expect("independent write operation")
 }
 
 /// The positive control for the negative tests below: a `task.gate_result` is always a wake.

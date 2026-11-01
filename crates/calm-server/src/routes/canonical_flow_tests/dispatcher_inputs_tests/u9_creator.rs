@@ -271,9 +271,8 @@ async fn u9_canonical_creator_cap_cross_instance() {
 async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
     let mut flow = Flow::running_with_admission(false, true).await;
     flow.state.dispatcher.abort_event_listener_for_test();
-    // Keep the DDL lifecycle on one connection: another pooled connection can
-    // still cache the dropped trigger's schema when preparing the next CREATE.
-    let mut ddl = flow.fixture.repo.pool().acquire().await.unwrap();
+    // All DDL and route writes use the same singleton writer, avoiding stale
+    // trigger schemas across independently pooled write connections.
     for (table, condition) in [
         ("mails", "1"),
         ("events", "NEW.kind='track.wake_requested'"),
@@ -282,11 +281,10 @@ async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
             worker_sessions),(SELECT count(*) FROM track_create_idempotency),(SELECT count(*) FROM \
             mails),(SELECT count(*) FROM events WHERE scope_track<>?1)")
             .bind(&flow.track).fetch_one(flow.fixture.repo.pool()).await.unwrap();
-        sqlx::query(&format!(
+        flow.fixture.repo.db().writer().execute(sqlx::query(&format!(
             "CREATE TRIGGER fail_creator BEFORE INSERT ON {table} WHEN {condition} BEGIN SELECT \
             RAISE(ABORT,'{table} injected fault'); END"
-        ))
-        .execute(&mut *ddl)
+        )))
         .await
         .unwrap();
         let request = input(&flow, table);
@@ -302,12 +300,14 @@ async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
             mails),(SELECT count(*) FROM events WHERE scope_track<>?1)")
             .bind(&flow.track).fetch_one(flow.fixture.repo.pool()).await.unwrap();
         assert_eq!(before, after);
-        sqlx::query("DROP TRIGGER fail_creator")
-            .execute(&mut *ddl)
+        flow.fixture
+            .repo
+            .db()
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_creator"))
             .await
             .unwrap();
     }
-    drop(ddl);
     for key in ["mails", "events"] {
         let track = route(&flow, 2).add(input(&flow, key)).await.unwrap();
         assert_eq!(
@@ -360,103 +360,107 @@ async fn deliver(fixture: &Fixture, state: &AppState, peer: &mut Peer, track: &s
         .as_ref()
         .unwrap()
         .submission_ids[0];
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
-        .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    use calm_types::conversation::{
-        PrivateHistoryPayload, SubmissionRenderInput, SubmissionRenderSegment,
-    };
-    let systems: Vec<_> = plan
-        .plan
-        .segments()
-        .iter()
-        .filter_map(|segment| match segment {
-            SubmissionRenderSegment::Input {
-                input:
-                    SubmissionRenderInput::System {
-                        payload: PrivateHistoryPayload::Present { value },
-                        ..
-                    },
-                ..
-            } => Some(value),
-            SubmissionRenderSegment::Input {
-                input: SubmissionRenderInput::Human { .. },
-                ..
-            } => panic!("agent content cannot acquire Human attribution"),
-            _ => None,
-        })
-        .collect();
-    let (mail, envelope): (String, i64) = sqlx::query_as(
-        "SELECT m.id,e.id FROM mails m JOIN events e ON json_extract(e.payload,'$.key')=m.id WHERE \
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        use calm_types::conversation::{
+            PrivateHistoryPayload, SubmissionRenderInput, SubmissionRenderSegment,
+        };
+        let systems: Vec<_> = plan
+            .plan
+            .segments()
+            .iter()
+            .filter_map(|segment| match segment {
+                SubmissionRenderSegment::Input {
+                    input:
+                        SubmissionRenderInput::System {
+                            payload: PrivateHistoryPayload::Present { value },
+                            ..
+                        },
+                    ..
+                } => Some(value),
+                SubmissionRenderSegment::Input {
+                    input: SubmissionRenderInput::Human { .. },
+                    ..
+                } => panic!("agent content cannot acquire Human attribution"),
+                _ => None,
+            })
+            .collect();
+        let (mail, envelope): (String, i64) = sqlx::query_as(
+            "SELECT m.id,e.id FROM mails m JOIN events e ON json_extract(e.payload,'$.key')=m.id WHERE \
             m.to_track_id=?1 AND e.kind='track.wake_requested'",
-    )
-    .bind(track)
-    .fetch_one(fixture.repo.pool())
-    .await
-    .unwrap();
-    let accepted_envelope: i64 = sqlx::query_scalar("SELECT envelope_id FROM conversation_submission_inputs WHERE submission_id=?1 AND input_kind='system' AND effective=1")
-        .bind(id.as_str()).fetch_one(fixture.repo.pool()).await.unwrap();
-    assert_eq!(accepted_envelope, envelope);
-    assert_eq!(systems.len(), 1);
-    assert!(
-        matches!(systems[0].observation(), calm_types::observation::Observation::TrackWake{source,key,text:body,..}
-        if source==calm_types::observation::MAIL_WAKE_SOURCE && body==text && key==&mail)
-    );
-    assert_eq!(counts(fixture, track).await, (1, 1, 1, 0, 1));
-    send(
-        peer,
-        json!({"id":call["id"],"result":{"turn":{"id":CHILD_TURN}}}),
-    )
-    .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        peer,
-        CHILD_THREAD,
-        "turn/started",
-        json!({"id":CHILD_TURN,"status":"inProgress"}),
-    )
-    .await;
-    fixture
-        .wait_phase(track, HarnessPhaseTag::TurnRunning)
-        .await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        peer,
-        CHILD_THREAD,
-        "turn/completed",
-        json!({"id":CHILD_TURN,"status":"completed"}),
-    )
-    .await;
-    let done = fixture
-        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
-        .await;
-    state.dispatcher.reconcile_tick_for_test().await;
-    state.dispatcher.reconcile_tick_for_test().await;
-    let route = crate::state::RouteState::from_ref(state);
-    let _fence = crate::per_card_lock::lock_card(&route.planner_recovery_locks, &card).await;
-    assert_eq!(
-        fixture.carrier(track).await.2.canonical_inputs,
-        done.canonical_inputs
-    );
-    assert_eq!(counts(fixture, track).await, (1, 1, 1, 0, 1));
-    assert_eq!(done.canonical_inputs.attempts.len(), 1);
-    if let Some(handle) = state.harness.remove(&worker) {
-        let mut stopping = tokio::spawn(async move { handle.shutdown().await });
-        tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::select! {
-                result = &mut stopping => result.unwrap().unwrap(),
-                call = request(peer) => {
-                    assert_eq!(call["method"],"turn/interrupt");
-                    send(peer,json!({"id":call["id"],"result":{}})).await;
-                    stopping.await.unwrap().unwrap();
-                }
-            }
-        })
+        )
+        .bind(track)
+        .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    }
+        let accepted_envelope: i64 = sqlx::query_scalar("SELECT envelope_id FROM conversation_submission_inputs WHERE submission_id=?1 AND input_kind='system' AND effective=1")
+            .bind(id.as_str()).fetch_one(fixture.repo.pool()).await.unwrap();
+        assert_eq!(accepted_envelope, envelope);
+        assert_eq!(systems.len(), 1);
+        assert!(
+            matches!(systems[0].observation(), calm_types::observation::Observation::TrackWake{source,key,text:body,..}
+            if source==calm_types::observation::MAIL_WAKE_SOURCE && body==text && key==&mail)
+        );
+        assert_eq!(counts(fixture, track).await, (1, 1, 1, 0, 1));
+        send(
+            peer,
+            json!({"id":call["id"],"result":{"turn":{"id":CHILD_TURN}}}),
+        )
+        .await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            peer,
+            CHILD_THREAD,
+            "turn/started",
+            json!({"id":CHILD_TURN,"status":"inProgress"}),
+        )
+        .await;
+        fixture
+            .wait_phase(track, HarnessPhaseTag::TurnRunning)
+            .await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            peer,
+            CHILD_THREAD,
+            "turn/completed",
+            json!({"id":CHILD_TURN,"status":"completed"}),
+        )
+        .await;
+        let done = fixture
+            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+            .await;
+        state.dispatcher.reconcile_tick_for_test().await;
+        state.dispatcher.reconcile_tick_for_test().await;
+        let route = crate::state::RouteState::from_ref(state);
+        let _fence = crate::per_card_lock::lock_card(&route.planner_recovery_locks, &card).await;
+        assert_eq!(
+            fixture.carrier(track).await.2.canonical_inputs,
+            done.canonical_inputs
+        );
+        assert_eq!(counts(fixture, track).await, (1, 1, 1, 0, 1));
+        assert_eq!(done.canonical_inputs.attempts.len(), 1);
+        if let Some(handle) = state.harness.remove(&worker) {
+            let mut stopping = tokio::spawn(async move { handle.shutdown().await });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    result = &mut stopping => result.unwrap().unwrap(),
+                    call = request(peer) => {
+                        assert_eq!(call["method"],"turn/interrupt");
+                        send(peer,json!({"id":call["id"],"result":{}})).await;
+                        stopping.await.unwrap().unwrap();
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn cold_creator(accepted: bool, changed_source: bool) {
@@ -489,9 +493,9 @@ async fn cold_creator(accepted: bool, changed_source: bool) {
     drop(route_state);
     let before = flow.fixture.carrier(track.id.as_str()).await.2;
     if changed_source {
-        sqlx::query("UPDATE events SET payload=json_set(payload,'$.text','changed source') WHERE scope_track=?1 \
+        (flow.fixture.repo.db()).writer().execute(sqlx::query("UPDATE events SET payload=json_set(payload,'$.text','changed source') WHERE scope_track=?1 \
             AND kind='track.wake_requested'")
-            .bind(track.id.as_str()).execute(flow.fixture.repo.pool()).await.unwrap();
+            .bind(track.id.as_str())).await.unwrap();
     }
     let Flow {
         mut fixture,

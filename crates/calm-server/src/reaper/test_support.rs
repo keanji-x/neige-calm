@@ -6,7 +6,7 @@ use crate::card_role_cache::CardRoleCache;
 use calm_exec::WorkerProvider;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
+use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_truth_test_harness::FakeProvider;
 use calm_types::ids::{CardId, TrackId};
 use calm_types::worker::{
@@ -79,9 +79,12 @@ pub(super) async fn seeded_repo_with_plan(
     )
     .await
     .expect("seed planner card");
-    sqlx::query("UPDATE cards SET role = 'planner', deletable = 0 WHERE id = ?1")
-        .bind(planner_card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner', deletable = 0 WHERE id = ?1")
+                .bind(planner_card.id.as_str()),
+        )
         .await
         .expect("mark seeded card as planner");
     (repo, track.id)
@@ -130,20 +133,29 @@ pub(super) async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) 
     )
     .await
     .expect("seed runtime card");
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    let session_id = session.id.clone();
-    session.card_id = Some(CardId(card.id.to_string()));
-    session_insert_tx(&mut tx, session)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                let session_id = session.id.clone();
+                session.card_id = Some(CardId(card.id.to_string()));
+                session_insert_tx(&mut tx, session)
+                    .await
+                    .expect("insert session");
+                sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                    .bind(session_id.as_str())
+                    .bind(card.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .expect("link card session");
+                tx.commit().await.expect("commit tx");
+                card
+            })
+        })
         .await
-        .expect("insert session");
-    sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
-        .bind(session_id.as_str())
-        .bind(card.id.as_str())
-        .execute(&mut **tx)
-        .await
-        .expect("link card session");
-    tx.commit().await.expect("commit tx");
-    card
+        .expect("independent write operation")
 }
 
 pub(super) fn exited_liveness() -> Liveness {
@@ -219,12 +231,21 @@ pub(super) async fn insert_task(
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    crate::test_support::insert_task_tx(&mut tx, &task)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                crate::test_support::insert_task_tx(&mut tx, &task)
+                    .await
+                    .expect("insert task");
+                tx.commit().await.expect("commit tx");
+                task
+            })
+        })
         .await
-        .expect("insert task");
-    tx.commit().await.expect("commit tx");
-    task
+        .expect("independent write operation")
 }
 
 pub(super) async fn insert_spawn_operation(
@@ -249,16 +270,19 @@ pub(super) async fn insert_spawn_operation(
         .await
         .expect("insert operation");
     if let Some(card_id) = target_card_id {
-        sqlx::query(
-            "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
                  WHERE id = ?3",
-        )
-        .bind(card_id)
-        .bind(json!({ "type": "card", "id": card_id }).to_string())
-        .bind(&op_id)
-        .execute(repo.pool())
-        .await
-        .expect("stamp operation target");
+                )
+                .bind(card_id)
+                .bind(json!({ "type": "card", "id": card_id }).to_string())
+                .bind(&op_id),
+            )
+            .await
+            .expect("stamp operation target");
     }
     op_id
 }
@@ -287,26 +311,36 @@ pub(super) async fn acquire_test_workspace_lease_as(
     access: crate::model::TaskAccess,
 ) -> (String, String) {
     crate::test_support::ensure_track_worktree(repo.db(), track_id.as_str()).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-    let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
-        &mut tx,
-        track_id.as_str(),
-        access,
-        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-    )
-    .await
-    .expect("prepare the worker lease");
-    let (lease, _event) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
-        &mut tx,
-        card_id,
-        track_id.as_str(),
-        lease_owner,
-        &plan,
-    )
-    .await
-    .expect("acquire workspace lease");
-    tx.commit().await.expect("commit lease");
-    (lease.lease_id, lease.path)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
+                    &mut tx,
+                    track_id.as_str(),
+                    access,
+                    &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+                )
+                .await
+                .expect("prepare the worker lease");
+                let (lease, _event) =
+                    crate::operation::workspace_lease::acquire_workspace_lease_tx(
+                        &mut tx,
+                        card_id,
+                        track_id.as_str(),
+                        lease_owner,
+                        &plan,
+                    )
+                    .await
+                    .expect("acquire workspace lease");
+                tx.commit().await.expect("commit lease");
+                (lease.lease_id, lease.path)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) fn init_git_repo(path: &Path) {

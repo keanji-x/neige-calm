@@ -75,15 +75,18 @@ async fn strip_report_cache_and_crdt(
     boot: &crate::mcp_track_report::Boot,
     track: &calm_server::model::Track,
 ) {
-    sqlx::query(
-        "UPDATE cards SET body_crdt = NULL, \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET body_crdt = NULL, \
          payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
          WHERE track_id = ?1 AND kind = 'track-report'",
-    )
-    .bind(track.id.as_str())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(track.id.as_str()),
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

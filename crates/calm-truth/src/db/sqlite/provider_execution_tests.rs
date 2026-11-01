@@ -5,17 +5,16 @@ use sqlx::{Sqlite, Transaction};
 
 async fn fixture() -> SqliteDb {
     let db = SqliteDb::connect("sqlite::memory:").await.unwrap();
-    sqlx::raw_sql("CREATE TABLE worker_sessions(id TEXT PRIMARY KEY, terminal_run_id TEXT, state TEXT NOT NULL, card_id TEXT);
+    (db).writer().execute(sqlx::raw_sql("CREATE TABLE worker_sessions(id TEXT PRIMARY KEY, terminal_run_id TEXT, state TEXT NOT NULL, card_id TEXT);
         CREATE TABLE cards(id TEXT PRIMARY KEY, session_id TEXT);
         INSERT INTO worker_sessions(id, card_id, state) VALUES ('worker','worker-card','idle'), ('empty','empty-card','idle');
-        INSERT INTO cards VALUES ('worker-card','worker'), ('empty-card','empty');")
-        .execute(db.writer_pool()).await.unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0185_provider_execution.sql"
-    ))
-    .execute(db.writer_pool())
-    .await
-    .unwrap();
+        INSERT INTO cards VALUES ('worker-card','worker'), ('empty-card','empty');")).await.unwrap();
+    (db).writer()
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0185_provider_execution.sql"
+        )))
+        .await
+        .unwrap();
     db
 }
 fn applied<T: std::fmt::Debug>(result: Cas<T>) -> T {
@@ -139,155 +138,176 @@ async fn migration_preserves_sessions_and_reads_fail_closed() {
         load(db.read_pool(), "deleted").await,
         Err(CalmError::Db(sqlx::Error::RowNotFound))
     ));
-    sqlx::query("UPDATE worker_sessions SET provider_execution_json = '{}' WHERE id = 'worker'")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET provider_execution_json = '{}' WHERE id = 'worker'",
+        ))
         .await
         .unwrap();
     assert!(load(db.read_pool(), "worker").await.is_err());
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let healthy = applied(
-        admit(
-            &mut tx,
-            "empty",
-            "healthy".into(),
-            Purpose::RewindCheck,
-            InitialRelease::NotRequired,
-        )
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let healthy = applied(
+                    admit(
+                        &mut tx,
+                        "empty",
+                        "healthy".into(),
+                        Purpose::RewindCheck,
+                        InitialRelease::NotRequired,
+                    )
+                    .await
+                    .unwrap(),
+                );
+                tx.commit().await.unwrap();
+                let inventory = list(db.read_pool()).await.unwrap();
+                assert_eq!(inventory.len(), 2);
+                assert_eq!(inventory[0].0, "empty");
+                assert_eq!(inventory[0].1.as_ref().unwrap(), &healthy);
+                assert_eq!(inventory[1].0, "worker");
+                assert!(inventory[1].1.is_err());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    admission(&mut tx, "must-not-adopt").await,
+                    Cas::LostOwnership
+                );
+                tx.rollback().await.unwrap();
+                // Also exercise the complete production migration chain.
+                let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                    .await
+                    .unwrap();
+                let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+                    sqlx::query_as("PRAGMA table_info(worker_sessions)")
+                        .fetch_all(repo.pool())
+                        .await
+                        .unwrap();
+                assert!(
+                    columns
+                        .iter()
+                        .any(|c| c.1 == "provider_execution_json" && c.2 == "TEXT" && c.3 == 0)
+                );
+            })
+        })
         .await
-        .unwrap(),
-    );
-    tx.commit().await.unwrap();
-    let inventory = list(db.read_pool()).await.unwrap();
-    assert_eq!(inventory.len(), 2);
-    assert_eq!(inventory[0].0, "empty");
-    assert_eq!(inventory[0].1.as_ref().unwrap(), &healthy);
-    assert_eq!(inventory[1].0, "worker");
-    assert!(inventory[1].1.is_err());
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    assert_eq!(
-        admission(&mut tx, "must-not-adopt").await,
-        Cas::LostOwnership
-    );
-    tx.rollback().await.unwrap();
-    // Also exercise the complete production migration chain.
-    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
-        .await
-        .unwrap();
-    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
-        sqlx::query_as("PRAGMA table_info(worker_sessions)")
-            .fetch_all(repo.pool())
-            .await
-            .unwrap();
-    assert!(
-        columns
-            .iter()
-            .any(|c| c.1 == "provider_execution_json" && c.2 == "TEXT" && c.3 == 0)
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn cas_transitions_compare_the_whole_record_and_preserve_other_fields() {
     let db = fixture().await;
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let held = applied(admission(&mut tx, "first").await);
-    assert_eq!(admission(&mut tx, "second").await, Cas::LostOwnership);
-    assert_eq!(load(&mut *tx, "worker").await.unwrap(), Some(held.clone()));
-    let releasing = applied(advance_release(&mut tx, "worker", &held, 11).await.unwrap());
-    assert_eq!(
-        releasing.record().release,
-        Release::Releasing {
-            authorized_at_ms: 11
-        }
-    );
-    assert_eq!(
-        advance_release(&mut tx, "worker", &held, 11).await.unwrap(),
-        Cas::LostOwnership
-    );
-    let stopping = applied(
-        stop(&mut tx, "worker", &releasing, StopReason::Shutdown, 22)
-            .await
-            .unwrap(),
-    );
-    assert_eq!(
-        stop(&mut tx, "worker", &releasing, StopReason::DriverLost, 23)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    // A driver with the old Observing claim cannot overwrite sweep's decision.
-    assert_eq!(
-        advance_release(&mut tx, "worker", &releasing, 11)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    assert_eq!(
-        clear_on_completion(&mut tx, "worker", &releasing)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    let released = applied(
-        advance_release(&mut tx, "worker", &stopping, 11)
-            .await
-            .unwrap(),
-    );
-    assert_eq!(
-        released.record().release,
-        Release::Released {
-            authorized_at_ms: 11
-        }
-    );
-    assert_eq!(
-        released.record().decision,
-        Decision::Stopping {
-            reason: StopReason::Shutdown,
-            at_ms: 22
-        }
-    );
-    assert_eq!(released.record().execution_id, "first");
-    assert_eq!(released.record().purpose, Purpose::RewindCheck);
-    assert_eq!(
-        advance_release(&mut tx, "worker", &stopping, 11)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    assert!(
-        advance_release(&mut tx, "worker", &released, 11)
-            .await
-            .is_err()
-    );
-    assert!(
-        stop(&mut tx, "worker", &released, StopReason::Finished, 33)
-            .await
-            .is_err()
-    );
-    let inventory = list(&mut *tx).await.unwrap();
-    assert_eq!(inventory.len(), 1);
-    assert_eq!(inventory[0].0, "worker");
-    assert_eq!(inventory[0].1.as_ref().unwrap(), &released);
-    applied(
-        clear_on_completion(&mut tx, "worker", &released)
-            .await
-            .unwrap(),
-    );
-    assert_eq!(
-        clear_on_completion(&mut tx, "worker", &released)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    let new = applied(admission(&mut tx, "different-execution").await);
-    assert_eq!(
-        clear_on_completion(&mut tx, "worker", &released)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    assert_eq!(load(&mut *tx, "worker").await.unwrap(), Some(new));
-    tx.rollback().await.unwrap();
-    assert!(load(db.read_pool(), "worker").await.unwrap().is_none());
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let held = applied(admission(&mut tx, "first").await);
+                assert_eq!(admission(&mut tx, "second").await, Cas::LostOwnership);
+                assert_eq!(load(&mut **tx, "worker").await.unwrap(), Some(held.clone()));
+                let releasing =
+                    applied(advance_release(&mut tx, "worker", &held, 11).await.unwrap());
+                assert_eq!(
+                    releasing.record().release,
+                    Release::Releasing {
+                        authorized_at_ms: 11
+                    }
+                );
+                assert_eq!(
+                    advance_release(&mut tx, "worker", &held, 11).await.unwrap(),
+                    Cas::LostOwnership
+                );
+                let stopping = applied(
+                    stop(&mut tx, "worker", &releasing, StopReason::Shutdown, 22)
+                        .await
+                        .unwrap(),
+                );
+                assert_eq!(
+                    stop(&mut tx, "worker", &releasing, StopReason::DriverLost, 23)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                // A driver with the old Observing claim cannot overwrite sweep's decision.
+                assert_eq!(
+                    advance_release(&mut tx, "worker", &releasing, 11)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                assert_eq!(
+                    clear_on_completion(&mut tx, "worker", &releasing)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                let released = applied(
+                    advance_release(&mut tx, "worker", &stopping, 11)
+                        .await
+                        .unwrap(),
+                );
+                assert_eq!(
+                    released.record().release,
+                    Release::Released {
+                        authorized_at_ms: 11
+                    }
+                );
+                assert_eq!(
+                    released.record().decision,
+                    Decision::Stopping {
+                        reason: StopReason::Shutdown,
+                        at_ms: 22
+                    }
+                );
+                assert_eq!(released.record().execution_id, "first");
+                assert_eq!(released.record().purpose, Purpose::RewindCheck);
+                assert_eq!(
+                    advance_release(&mut tx, "worker", &stopping, 11)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                assert!(
+                    advance_release(&mut tx, "worker", &released, 11)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    stop(&mut tx, "worker", &released, StopReason::Finished, 33)
+                        .await
+                        .is_err()
+                );
+                let inventory = list(&mut **tx).await.unwrap();
+                assert_eq!(inventory.len(), 1);
+                assert_eq!(inventory[0].0, "worker");
+                assert_eq!(inventory[0].1.as_ref().unwrap(), &released);
+                applied(
+                    clear_on_completion(&mut tx, "worker", &released)
+                        .await
+                        .unwrap(),
+                );
+                assert_eq!(
+                    clear_on_completion(&mut tx, "worker", &released)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                let new = applied(admission(&mut tx, "different-execution").await);
+                assert_eq!(
+                    clear_on_completion(&mut tx, "worker", &released)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                assert_eq!(load(&mut **tx, "worker").await.unwrap(), Some(new));
+                tx.rollback().await.unwrap();
+                assert!(load(db.read_pool(), "worker").await.unwrap().is_none());
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -295,326 +315,367 @@ async fn concurrent_admission_has_exactly_one_winner() {
     let db = fixture().await;
     // The single-writer pool serializes these transactions; this checks CAS
     // exclusion under competing tasks, not independent SQLite writer contention.
-    let race = |id: &'static str| {
-        let db = db.clone();
-        async move {
-            let mut tx = db.writer_pool().begin().await.unwrap();
-            let result = admit(
-                &mut tx,
-                "worker",
-                id.into(),
-                Purpose::Turn { turn_id: id.into() },
-                InitialRelease::NotRequired,
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            result
-        }
-    };
-    let (a, b) = tokio::join!(race("a"), race("b"));
-    let winner = match (a, b) {
-        (Cas::Applied(claim), Cas::LostOwnership) | (Cas::LostOwnership, Cas::Applied(claim)) => {
-            claim
-        }
-        other => panic!("expected exactly one winner: {other:?}"),
-    };
-    assert_eq!(
-        load(db.read_pool(), "worker").await.unwrap(),
-        Some(winner.clone())
-    );
-    assert_eq!(winner.record().release, Release::NotRequired);
-    assert_eq!(winner.record().decision, Decision::Observing);
-    // Deleting the owner also deletes the claim; stale writers cannot resurrect it.
-    sqlx::query("DELETE FROM worker_sessions WHERE id = 'worker'")
-        .execute(db.writer_pool())
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let race = |id: &'static str| {
+                    let db = db.clone();
+                    async move {
+                        let write_db = (db).clone();
+                        write_db
+                            .writer()
+                            .with_writer(|write_session_1| {
+                                Box::pin(async move {
+                                    let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                    let result = admit(
+                                        &mut tx,
+                                        "worker",
+                                        id.into(),
+                                        Purpose::Turn { turn_id: id.into() },
+                                        InitialRelease::NotRequired,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    tx.commit().await.unwrap();
+                                    result
+                                })
+                            })
+                            .await
+                            .expect("independent write operation")
+                    }
+                };
+                let (a, b) = tokio::join!(race("a"), race("b"));
+                let winner = match (a, b) {
+                    (Cas::Applied(claim), Cas::LostOwnership)
+                    | (Cas::LostOwnership, Cas::Applied(claim)) => claim,
+                    other => panic!("expected exactly one winner: {other:?}"),
+                };
+                assert_eq!(
+                    load(db.read_pool(), "worker").await.unwrap(),
+                    Some(winner.clone())
+                );
+                assert_eq!(winner.record().release, Release::NotRequired);
+                assert_eq!(winner.record().decision, Decision::Observing);
+                // Deleting the owner also deletes the claim; stale writers cannot resurrect it.
+                (db).writer()
+                    .execute(sqlx::query(
+                        "DELETE FROM worker_sessions WHERE id = 'worker'",
+                    ))
+                    .await
+                    .unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    clear_on_completion(&mut tx, "worker", &winner)
+                        .await
+                        .unwrap(),
+                    Cas::LostOwnership
+                );
+                assert_eq!(admission(&mut tx, "later").await, Cas::LostOwnership);
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    assert_eq!(
-        clear_on_completion(&mut tx, "worker", &winner)
-            .await
-            .unwrap(),
-        Cas::LostOwnership
-    );
-    assert_eq!(admission(&mut tx, "later").await, Cas::LostOwnership);
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn stale_completion_cannot_clear_a_different_execution() {
     let db = fixture().await;
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let old = applied(admission(&mut tx, "old").await);
-    applied(clear_on_completion(&mut tx, "worker", &old).await.unwrap());
-    let new = applied(admission(&mut tx, "new").await);
-    assert_eq!(
-        clear_on_completion(&mut tx, "worker", &old).await.unwrap(),
-        Cas::LostOwnership
-    );
-    assert_eq!(load(&mut *tx, "worker").await.unwrap(), Some(new));
-    tx.commit().await.unwrap();
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let old = applied(admission(&mut tx, "old").await);
+                applied(clear_on_completion(&mut tx, "worker", &old).await.unwrap());
+                let new = applied(admission(&mut tx, "new").await);
+                assert_eq!(
+                    clear_on_completion(&mut tx, "worker", &old).await.unwrap(),
+                    Cas::LostOwnership
+                );
+                assert_eq!(load(&mut **tx, "worker").await.unwrap(), Some(new));
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
     use super::workspace_execution as executions;
     let db = fixture().await;
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0170_workspace_executions.sql"
-    ))
-    .execute(db.writer_pool())
-    .await
-    .unwrap();
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let consumer = "consumer'with-quote";
-    for (id, session, settled, retired, selected) in [
-        (
-            "00000000000000000000000000000001",
-            "deleted-session",
-            false,
-            false,
-            true,
-        ),
-        (
-            "00000000000000000000000000000004",
-            "empty",
-            false,
-            false,
-            true,
-        ),
-        (
-            "00000000000000000000000000000003",
-            "worker",
-            false,
-            false,
-            true,
-        ),
-        (
-            "00000000000000000000000000000005",
-            "settled-session",
-            true,
-            false,
-            true,
-        ),
-        (
-            "00000000000000000000000000000002",
-            "healthy-session",
-            false,
-            false,
-            true,
-        ),
-        (
-            "00000000000000000000000000000006",
-            "retired-session",
-            true,
-            true,
-            true,
-        ),
-        (
-            "00000000000000000000000000000007",
-            "other-session",
-            false,
-            false,
-            false,
-        ),
-    ] {
-        sqlx::query(
-            "INSERT OR IGNORE INTO worker_sessions(id, card_id, state) VALUES (?, ?, 'idle')",
-        )
-        .bind(session)
-        .bind(format!("{session}-card"))
-        .execute(&mut *tx)
+    (db).writer()
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0170_workspace_executions.sql"
+        )))
         .await
         .unwrap();
-        sqlx::query("INSERT OR IGNORE INTO cards(id, session_id) VALUES (?, ?)")
-            .bind(format!("{session}-card"))
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let consumer = "consumer'with-quote";
+        for (id, session, settled, retired, selected) in [
+            (
+                "00000000000000000000000000000001",
+                "deleted-session",
+                false,
+                false,
+                true,
+            ),
+            (
+                "00000000000000000000000000000004",
+                "empty",
+                false,
+                false,
+                true,
+            ),
+            (
+                "00000000000000000000000000000003",
+                "worker",
+                false,
+                false,
+                true,
+            ),
+            (
+                "00000000000000000000000000000005",
+                "settled-session",
+                true,
+                false,
+                true,
+            ),
+            (
+                "00000000000000000000000000000002",
+                "healthy-session",
+                false,
+                false,
+                true,
+            ),
+            (
+                "00000000000000000000000000000006",
+                "retired-session",
+                true,
+                true,
+                true,
+            ),
+            (
+                "00000000000000000000000000000007",
+                "other-session",
+                false,
+                false,
+                false,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT OR IGNORE INTO worker_sessions(id, card_id, state) VALUES (?, ?, 'idle')",
+            )
             .bind(session)
-            .execute(&mut *tx)
+            .bind(format!("{session}-card"))
+            .execute(&mut **tx)
             .await
             .unwrap();
-        // ExecutionMetadata is persisted directly in intent_json by SqliteExecutionStore.
-        let intent = serde_json::json!({"consumer": if selected { consumer } else { "00000000000000000000000000000007" },
-            "alias": session})
-        .to_string();
-        executions::insert(&mut tx, id, "track", session, &intent, "{}")
-            .await
-            .unwrap();
-        if settled {
-            executions::settle_tx(&mut tx, id, "{}", 1).await.unwrap();
-        }
-        if retired {
-            executions::request(&mut tx, id, "retire").await.unwrap();
-        }
-        if id == "00000000000000000000000000000002" || id == "00000000000000000000000000000003" {
-            applied(
-                admit(
-                    &mut tx,
-                    session,
-                    if id == "00000000000000000000000000000002" {
-                        id
-                    } else {
-                        "another-execution"
-                    }
-                    .into(),
-                    Purpose::RewindCheck,
-                    InitialRelease::NotRequired,
-                )
+            sqlx::query("INSERT OR IGNORE INTO cards(id, session_id) VALUES (?, ?)")
+                .bind(format!("{session}-card"))
+                .bind(session)
+                .execute(&mut **tx)
                 .await
-                .unwrap(),
-            );
-        }
-    }
-    sqlx::query("DELETE FROM worker_sessions WHERE id = 'deleted-session'")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    // Exercise a stopped execution as well as desired=run.
-    executions::request(&mut tx, "00000000000000000000000000000003", "stop")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let inventory = executions::consumer_inventory(db.read_pool(), consumer)
-        .await
-        .unwrap();
-    assert_eq!(
-        inventory
-            .iter()
-            .map(|(id, row)| {
-                assert_eq!(id, &row.as_ref().unwrap().execution_id);
-                id.as_str()
-            })
-            .collect::<Vec<_>>(),
-        [
-            "00000000000000000000000000000001",
-            "00000000000000000000000000000002",
-            "00000000000000000000000000000003",
-            "00000000000000000000000000000004",
-            "00000000000000000000000000000005"
-        ]
-    );
-    let mut orphans = Vec::new();
-    for (_, row) in inventory {
-        let row = row.unwrap();
-        assert_eq!(
-            row.settled,
-            row.execution_id == "00000000000000000000000000000005"
-        );
-        let claim = load(db.read_pool(), &row.alias).await;
-        match row.execution_id.as_str() {
-            "00000000000000000000000000000001" => assert!(matches!(
-                &claim,
-                Err(CalmError::Db(sqlx::Error::RowNotFound))
-            )),
-            "00000000000000000000000000000004" | "00000000000000000000000000000005" => {
-                assert!(claim.as_ref().unwrap().is_none())
+                .unwrap();
+            // ExecutionMetadata is persisted directly in intent_json by SqliteExecutionStore.
+            let intent = serde_json::json!({"consumer": if selected { consumer } else { "00000000000000000000000000000007" },
+                "alias": session})
+            .to_string();
+            executions::insert(&mut tx, id, "track", session, &intent, "{}")
+                .await
+                .unwrap();
+            if settled {
+                executions::settle_tx(&mut tx, id, "{}", 1).await.unwrap();
             }
-            "00000000000000000000000000000003" => assert_eq!(
-                claim
-                    .as_ref()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .record()
-                    .execution_id,
-                "another-execution"
-            ),
-            "00000000000000000000000000000002" => assert_eq!(
-                claim
-                    .as_ref()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .record()
-                    .execution_id,
-                row.execution_id
-            ),
-            _ => unreachable!(),
+            if retired {
+                executions::request(&mut tx, id, "retire").await.unwrap();
+            }
+            if id == "00000000000000000000000000000002" || id == "00000000000000000000000000000003" {
+                applied(
+                    admit(
+                        &mut tx,
+                        session,
+                        if id == "00000000000000000000000000000002" {
+                            id
+                        } else {
+                            "another-execution"
+                        }
+                        .into(),
+                        Purpose::RewindCheck,
+                        InitialRelease::NotRequired,
+                    )
+                    .await
+                    .unwrap(),
+                );
+            }
         }
-        if !matches!(claim, Ok(Some(ref owner)) if owner.record().execution_id == row.execution_id)
-        {
-            orphans.push(row.execution_id);
-        }
-    }
-    assert_eq!(
-        orphans,
-        [
-            "00000000000000000000000000000001",
-            "00000000000000000000000000000003",
-            "00000000000000000000000000000004",
-            "00000000000000000000000000000005"
-        ]
-    );
-    assert!(
-        executions::consumer_inventory(db.read_pool(), "absent")
+        sqlx::query("DELETE FROM worker_sessions WHERE id = 'deleted-session'")
+            .execute(&mut **tx)
             .await
-            .unwrap()
-            .is_empty()
-    );
+            .unwrap();
+        // Exercise a stopped execution as well as desired=run.
+        executions::request(&mut tx, "00000000000000000000000000000003", "stop")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let inventory = executions::consumer_inventory(db.read_pool(), consumer)
+            .await
+            .unwrap();
+        assert_eq!(
+            inventory
+                .iter()
+                .map(|(id, row)| {
+                    assert_eq!(id, &row.as_ref().unwrap().execution_id);
+                    id.as_str()
+                })
+                .collect::<Vec<_>>(),
+            [
+                "00000000000000000000000000000001",
+                "00000000000000000000000000000002",
+                "00000000000000000000000000000003",
+                "00000000000000000000000000000004",
+                "00000000000000000000000000000005"
+            ]
+        );
+        let mut orphans = Vec::new();
+        for (_, row) in inventory {
+            let row = row.unwrap();
+            assert_eq!(
+                row.settled,
+                row.execution_id == "00000000000000000000000000000005"
+            );
+            let claim = load(db.read_pool(), &row.alias).await;
+            match row.execution_id.as_str() {
+                "00000000000000000000000000000001" => assert!(matches!(
+                    &claim,
+                    Err(CalmError::Db(sqlx::Error::RowNotFound))
+                )),
+                "00000000000000000000000000000004" | "00000000000000000000000000000005" => {
+                    assert!(claim.as_ref().unwrap().is_none())
+                }
+                "00000000000000000000000000000003" => assert_eq!(
+                    claim
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .record()
+                        .execution_id,
+                    "another-execution"
+                ),
+                "00000000000000000000000000000002" => assert_eq!(
+                    claim
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .record()
+                        .execution_id,
+                    row.execution_id
+                ),
+                _ => unreachable!(),
+            }
+            if !matches!(claim, Ok(Some(ref owner)) if owner.record().execution_id == row.execution_id)
+            {
+                orphans.push(row.execution_id);
+            }
+        }
+        assert_eq!(
+            orphans,
+            [
+                "00000000000000000000000000000001",
+                "00000000000000000000000000000003",
+                "00000000000000000000000000000004",
+                "00000000000000000000000000000005"
+            ]
+        );
+        assert!(
+            executions::consumer_inventory(db.read_pool(), "absent")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
 async fn provider_execution_column_decode_errors_are_isolated() {
     let db = fixture().await;
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let healthy = applied(admission(&mut tx, "healthy").await);
-    sqlx::raw_sql(
-        "INSERT INTO worker_sessions(id, provider_execution_json, state) VALUES
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let healthy = applied(admission(&mut tx, "healthy").await);
+                {
+                    let query = sqlx::raw_sql(
+                        "INSERT INTO worker_sessions(id, provider_execution_json, state) VALUES
         ('blob', x'FF', 'idle'), ('text', CAST(x'FF' AS TEXT), 'idle');",
-    )
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let inventory = list(db.read_pool()).await.unwrap();
-    assert_eq!(inventory.len(), 3);
-    for (id, claim) in inventory {
-        if id == "worker" {
-            assert_eq!(claim.unwrap(), healthy);
-        } else {
-            assert!(
-                matches!(claim, Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))),
-                "{id}"
-            );
-            assert!(
-                matches!(
-                    load(db.read_pool(), &id).await,
-                    Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))
-                ),
-                "{id}"
-            );
-        }
-    }
-    sqlx::query("DROP TABLE worker_sessions")
-        .execute(db.writer_pool())
+                    );
+                    sqlx::Executor::execute(&mut **tx, query).await
+                }
+                .unwrap();
+                tx.commit().await.unwrap();
+                let inventory = list(db.read_pool()).await.unwrap();
+                assert_eq!(inventory.len(), 3);
+                for (id, claim) in inventory {
+                    if id == "worker" {
+                        assert_eq!(claim.unwrap(), healthy);
+                    } else {
+                        assert!(
+                            matches!(claim, Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))),
+                            "{id}"
+                        );
+                        assert!(
+                            matches!(
+                                load(db.read_pool(), &id).await,
+                                Err(CalmError::Db(sqlx::Error::ColumnDecode { .. }))
+                            ),
+                            "{id}"
+                        );
+                    }
+                }
+                (db).writer()
+                    .execute(sqlx::query("DROP TABLE worker_sessions"))
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    list(db.read_pool()).await,
+                    Err(CalmError::Db(sqlx::Error::Database(_)))
+                ));
+            })
+        })
         .await
-        .unwrap();
-    assert!(matches!(
-        list(db.read_pool()).await,
-        Err(CalmError::Db(sqlx::Error::Database(_)))
-    ));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
     use super::workspace_execution as executions;
     let db = fixture().await;
-    sqlx::raw_sql(include_str!(
-        "../../../migrations/0170_workspace_executions.sql"
-    ))
-    .execute(db.writer_pool())
-    .await
-    .unwrap();
+    (db).writer()
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0170_workspace_executions.sql"
+        )))
+        .await
+        .unwrap();
     // Bypass the JSON CHECK only to exercise damaged persisted data, too.
-    sqlx::raw_sql(r#"PRAGMA ignore_check_constraints = ON;
+    (db).writer().execute(sqlx::raw_sql(r#"PRAGMA ignore_check_constraints = ON;
         INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES
         ('00000000000000000000000000000001','track','healthy','{"consumer":"selected","alias":"worker"}','{}','run'),
         ('00000000000000000000000000000002','track','blob',x'FF','{}','run'),
         ('00000000000000000000000000000003','track','text',CAST(x'FF' AS TEXT),'{}','run'),
         ('00000000000000000000000000000004','track','json','{','{}','run'),
         ('00000000000000000000000000000005','track','alias','{"consumer":"selected","alias":null}','{}','run');
-        PRAGMA ignore_check_constraints = OFF;"#)
-        .execute(db.writer_pool()).await.unwrap();
+        PRAGMA ignore_check_constraints = OFF;"#)).await.unwrap();
     let inventory = executions::consumer_inventory(db.read_pool(), "selected")
         .await
         .unwrap();
@@ -629,8 +690,8 @@ async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
             assert!(row.is_err(), "{id}");
         }
     }
-    sqlx::query("DROP TABLE workspace_executions")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TABLE workspace_executions"))
         .await
         .unwrap();
     assert!(matches!(
@@ -642,39 +703,59 @@ async fn provider_execution_consumer_inventory_isolates_corrupt_rows() {
 #[tokio::test]
 async fn c4_admission_refuses_terminal_bound_session() {
     let db = fixture().await;
-    let mut tx = super::begin_immediate_tx(&db).await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET terminal_run_id='terminal' WHERE id='worker'")
-        .execute(&mut **tx)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query(
+                    "UPDATE worker_sessions SET terminal_run_id='terminal' WHERE id='worker'",
+                )
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                let result = admit(
+                    &mut tx,
+                    "worker",
+                    "exec".into(),
+                    Purpose::RewindCheck,
+                    InitialRelease::Held,
+                )
+                .await;
+                assert!(matches!(
+                    result,
+                    Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
+                ));
+                assert!(load(&mut **tx, "worker").await.unwrap().is_none());
+            })
+        })
         .await
-        .unwrap();
-    let result = admit(
-        &mut tx,
-        "worker",
-        "exec".into(),
-        Purpose::RewindCheck,
-        InitialRelease::Held,
-    )
-    .await;
-    assert!(matches!(
-        result,
-        Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
-    ));
-    assert!(load(&mut **tx, "worker").await.unwrap().is_none());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn claim_session_comes_from_its_row_through_admit_load_list_and_replace() {
     let db = fixture().await;
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    let claim = applied(admission(&mut tx, "exec").await);
-    assert_eq!(claim.session(), "worker");
-    let next = applied(advance_release(&mut tx, "worker", &claim, 7).await.unwrap());
-    assert_eq!(next.session(), "worker");
-    tx.commit().await.unwrap();
-    let loaded = load(db.read_pool(), "worker").await.unwrap().unwrap();
-    assert_eq!(loaded.session(), "worker");
-    assert_eq!(loaded, next);
-    let listed = list(db.read_pool()).await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].1.as_ref().unwrap().session(), listed[0].0);
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let claim = applied(admission(&mut tx, "exec").await);
+                assert_eq!(claim.session(), "worker");
+                let next = applied(advance_release(&mut tx, "worker", &claim, 7).await.unwrap());
+                assert_eq!(next.session(), "worker");
+                tx.commit().await.unwrap();
+                let loaded = load(db.read_pool(), "worker").await.unwrap().unwrap();
+                assert_eq!(loaded.session(), "worker");
+                assert_eq!(loaded, next);
+                let listed = list(db.read_pool()).await.unwrap();
+                assert_eq!(listed.len(), 1);
+                assert_eq!(listed[0].1.as_ref().unwrap().session(), listed[0].0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

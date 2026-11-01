@@ -35,10 +35,10 @@ impl Failure {
     pub(super) async fn arm(self, owner: &super::super::dispatch_fixture::Owner) {
         match self {
             Self::SpawnRevoke | Self::PreparedRevoke | Self::PreparedBoth => {
-                sqlx::query(concat!(
+                (owner.repo.db()).writer().execute(sqlx::query(concat!(
                     "CREATE TRIGGER refuse_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions ",
                     "WHEN NEW.mcp_token_hash IS NULL BEGIN SELECT RAISE(ABORT,'refuse revoke'); END"
-                )).execute(owner.repo.pool()).await.unwrap();
+                ))).await.unwrap();
             }
             Self::PreparedStop => {}
         }
@@ -52,8 +52,9 @@ impl Failure {
     pub(super) async fn clear(self, owner: &super::super::dispatch_fixture::Owner) {
         match self {
             Self::SpawnRevoke | Self::PreparedRevoke | Self::PreparedBoth => {
-                sqlx::query("DROP TRIGGER refuse_revoke")
-                    .execute(owner.repo.pool())
+                (owner.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DROP TRIGGER refuse_revoke"))
                     .await
                     .unwrap();
             }

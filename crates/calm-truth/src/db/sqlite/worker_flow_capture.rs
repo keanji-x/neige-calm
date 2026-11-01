@@ -2,9 +2,9 @@
 use calm_exec::flow::{CaptureCheckpoint, CaptureOutcome};
 use sqlx::{Sqlite, Transaction};
 
+use super::SqlxRepo;
 #[cfg(feature = "fixtures")]
 use super::is_sqlite_busy;
-use super::{SqlxRepo, begin_immediate_tx_once};
 use crate::db::rows::WorkerFlowCursor;
 use crate::db::worker_flow_capture::WorkerFlowCapture;
 use crate::error::{Result, TruthError};
@@ -22,105 +22,123 @@ impl SqlxRepo {
             crate::capture_test_seam::CapturePoint::BeforeTransaction,
         )
         .await;
-        // The shared source writer owns retry/cancellation, not begin_immediate_tx's
+        // The shared source writer owns retry/cancellation, not begin_immediate's
         // bounded retry loop. A failed BEGIN owns no transaction and is safe to retry.
-        let mut tx = match begin_immediate_tx_once(&self.db).await {
-            Ok(tx) => tx,
-            Err(e) => {
-                #[cfg(feature = "fixtures")]
-                if is_sqlite_busy(&e) {
-                    crate::capture_test_seam::reach(
-                        &capture.card_id,
-                        capture.next.record_index,
-                        crate::capture_test_seam::CapturePoint::Busy,
-                    )
-                    .await;
-                }
-                return Err(e.into());
-            }
-        };
-        // The compare read runs inside the write transaction (CAS under BEGIN IMMEDIATE).
-        let stored =
-            worker_flow_cursor_select(&mut **tx, &capture.card_id, &capture.source_kind).await;
-        let stored = match stored {
-            Ok(stored) => stored,
-            Err(e) => {
-                tx.rollback().await.map_err(|rollback| {
-                    TruthError::Internal(format!("capture read rollback after {e}: {rollback}"))
-                })?;
-                return Err(e.into());
-            }
-        };
-        let expected = stored
-            .as_ref()
-            .map(CaptureCheckpoint::from)
-            .unwrap_or(CaptureCheckpoint::Missing);
-        if expected != capture.expected {
-            tx.rollback().await?;
-            return Ok(CaptureOutcome::Stale);
-        }
-        // This column also supplies task liveness: preserve wall-clock semantics,
-        // rather than advancing it as a logical counter during rapid empty batches.
-        let updated_at_ms = now_ms();
-        let result = async {
-            for item in &capture.items {
-                super::out_of_domain::worker_flow_item_insert_tx(
-                    &mut tx,
-                    Some(&capture.card_id),
-                    Some(capture.session_id.as_str()),
-                    capture.track_id.as_deref(),
-                    Some(capture.session_id.as_str()),
-                    &item.kind,
-                    &item.payload,
-                    now_ms(),
-                )
-                .await?;
-            }
-            // All source items are uncommitted here, before checkpoint SQL.
-            #[cfg(feature = "fixtures")]
-            crate::capture_test_seam::reach(
-                &capture.card_id,
-                capture.next.record_index,
-                crate::capture_test_seam::CapturePoint::ItemInserted,
-            )
-            .await;
-            worker_flow_cursor_upsert_tx(
-                &mut tx,
-                &capture.card_id,
-                &capture.source_kind,
-                &capture.next,
-                updated_at_ms,
-            )
-            .await
-        }
-        .await;
-        if let Err(e) = result {
-            // Only propagate retryable DB errors after confirmed full rollback.
-            tx.rollback().await.map_err(|rollback| {
-                TruthError::Internal(format!("capture rollback after {e}: {rollback}"))
-            })?;
-            return Err(e);
-        }
-        #[cfg(feature = "fixtures")]
-        crate::capture_test_seam::arm_commit(&mut tx, &capture.card_id, capture.next.record_index)
-            .await?;
-        // A COMMIT error is ambiguous; do not classify it as safe writer contention.
-        tx.commit().await.map_err(|e| {
-            TruthError::Internal(format!(
-                "capture commit acknowledgement uncertain; reload durable checkpoint: {e}"
-            ))
-        })?;
-        #[cfg(feature = "fixtures")]
-        crate::capture_test_seam::reach(
-            &capture.card_id,
-            capture.next.record_index,
-            crate::capture_test_seam::CapturePoint::Committed,
-        )
-        .await;
-        Ok(CaptureOutcome::Applied(CaptureCheckpoint::Present {
-            position: capture.next.clone(),
-            updated_at_ms,
-        }))
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                                let mut tx = match write_session.begin_immediate_once().await {
+                                    Ok(tx) => tx,
+                                    Err(e) => {
+                                        #[cfg(feature = "fixtures")]
+                                        if is_sqlite_busy(&e) {
+                                            crate::capture_test_seam::reach(
+                                                &capture.card_id,
+                                                capture.next.record_index,
+                                                crate::capture_test_seam::CapturePoint::Busy,
+                                            )
+                                            .await;
+                                        }
+                                        return Err(e.into());
+                                    }
+                                };
+                                // The compare read runs inside the write transaction (CAS under BEGIN IMMEDIATE).
+                                let stored = worker_flow_cursor_select(
+                                    &mut **tx,
+                                    &capture.card_id,
+                                    &capture.source_kind,
+                                )
+                                .await;
+                                let stored = match stored {
+                                    Ok(stored) => stored,
+                                    Err(e) => {
+                                        tx.rollback().await.map_err(|rollback| {
+                                            TruthError::Internal(format!(
+                                                "capture read rollback after {e}: {rollback}"
+                                            ))
+                                        })?;
+                                        return Err(e.into());
+                                    }
+                                };
+                                let expected = stored
+                                    .as_ref()
+                                    .map(CaptureCheckpoint::from)
+                                    .unwrap_or(CaptureCheckpoint::Missing);
+                                if expected != capture.expected {
+                                    tx.rollback().await?;
+                                    return Ok(CaptureOutcome::Stale);
+                                }
+                                // This column also supplies task liveness: preserve wall-clock semantics,
+                                // rather than advancing it as a logical counter during rapid empty batches.
+                                let updated_at_ms = now_ms();
+                                let result = async {
+                                    for item in &capture.items {
+                                        super::out_of_domain::worker_flow_item_insert_tx(
+                                            &mut tx,
+                                            Some(&capture.card_id),
+                                            Some(capture.session_id.as_str()),
+                                            capture.track_id.as_deref(),
+                                            Some(capture.session_id.as_str()),
+                                            &item.kind,
+                                            &item.payload,
+                                            now_ms(),
+                                        )
+                                        .await?;
+                                    }
+                                    // All source items are uncommitted here, before checkpoint SQL.
+                                    #[cfg(feature = "fixtures")]
+                                    crate::capture_test_seam::reach(
+                                        &capture.card_id,
+                                        capture.next.record_index,
+                                        crate::capture_test_seam::CapturePoint::ItemInserted,
+                                    )
+                                    .await;
+                                    worker_flow_cursor_upsert_tx(
+                                        &mut tx,
+                                        &capture.card_id,
+                                        &capture.source_kind,
+                                        &capture.next,
+                                        updated_at_ms,
+                                    )
+                                    .await
+                                }
+                                .await;
+                                if let Err(e) = result {
+                                    // Only propagate retryable DB errors after confirmed full rollback.
+                                    tx.rollback().await.map_err(|rollback| {
+                                        TruthError::Internal(format!("capture rollback after {e}: {rollback}"))
+                                    })?;
+                                    return Err(e);
+                                }
+                                #[cfg(feature = "fixtures")]
+                                crate::capture_test_seam::arm_commit(
+                                    &mut tx,
+                                    &capture.card_id,
+                                    capture.next.record_index,
+                                )
+                                .await?;
+                                // A COMMIT error is ambiguous; do not classify it as safe writer contention.
+                                tx.commit().await.map_err(|e| {
+                        TruthError::Internal(format!(
+                            "capture commit acknowledgement uncertain; reload durable checkpoint: {e}"
+                        ))
+                    })?;
+                                #[cfg(feature = "fixtures")]
+                                crate::capture_test_seam::reach(
+                                    &capture.card_id,
+                                    capture.next.record_index,
+                                    crate::capture_test_seam::CapturePoint::Committed,
+                                )
+                                .await;
+                                Ok(CaptureOutcome::Applied(CaptureCheckpoint::Present {
+                                    position: capture.next.clone(),
+                                    updated_at_ms,
+                                }))
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 }
 
@@ -156,10 +174,26 @@ pub async fn worker_flow_cursor_set_for_test(
     position: &calm_exec::flow::CapturePosition,
     updated_at_ms: i64,
 ) -> Result<()> {
-    let mut tx = super::begin_immediate_tx(pool).await?;
-    worker_flow_cursor_upsert_tx(&mut tx, card_id, source_kind, position, updated_at_ms).await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                worker_flow_cursor_upsert_tx(
+                    &mut tx,
+                    card_id,
+                    source_kind,
+                    position,
+                    updated_at_ms,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 /// `record_index` may move down when a source file is rewritten (compaction); the capture's

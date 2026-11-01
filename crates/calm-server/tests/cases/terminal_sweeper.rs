@@ -100,28 +100,37 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         })
         .await
         .unwrap();
-    let mut tx = concrete.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::Terminal,
-            agent_provider: None,
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(term.id.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card.id.to_string(), term.id)
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::Terminal,
+                        agent_provider: None,
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(term.id.clone()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card.id.to_string(), term.id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Seed a planner codex card + terminal whose active runtime is a shared-spec row with `thread_id`
@@ -159,51 +168,60 @@ async fn seed_shared_planner_pair(
         .await
         .unwrap();
 
-    let mut tx = concrete.pool().begin().await.unwrap();
-    let (card, term, _mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        track.id,
-        None,
-        None,
-        "/tmp".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        concrete.card_role_cache(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (card, term, _mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track.id,
+                    None,
+                    None,
+                    "/tmp".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    false,
+                    concrete.card_role_cache(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+                    .await
+                    .unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card.id.to_string(), term.id)
+            })
+        })
         .await
-        .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card.id.to_string(), term.id)
+        .expect("independent write operation")
 }
 
 async fn seed_migrated_shared_planner_pair(
@@ -238,47 +256,56 @@ async fn seed_migrated_shared_planner_pair(
         .await
         .unwrap();
 
-    let mut tx = concrete.pool().begin().await.unwrap();
-    let (card, term, _mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        track.id,
-        None,
-        None,
-        "/tmp".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        concrete.card_role_cache(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (card, term, _mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track.id,
+                    None,
+                    None,
+                    "/tmp".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    false,
+                    concrete.card_role_cache(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+                    .await
+                    .unwrap();
+                let init = WorkerSessionInit {
+                    id: new_id(),
+                    card_id: card.id.to_string(),
+                    kind: WorkerSessionKind::SharedPlanner,
+                    agent_provider: Some(AgentProvider::Codex),
+                    status: WorkerSessionState::Running,
+                    terminal_run_id: None,
+                    thread_id: Some("t1".into()),
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    spawn_op_id: None,
+                    now_ms: now_ms(),
+                };
+                session_start_runtime_tx(&mut tx, init).await.unwrap();
+                tx.commit().await.unwrap();
+                (card.id.to_string(), term.id)
+            })
+        })
         .await
-        .unwrap();
-    let init = WorkerSessionInit {
-        id: new_id(),
-        card_id: card.id.to_string(),
-        kind: WorkerSessionKind::SharedPlanner,
-        agent_provider: Some(AgentProvider::Codex),
-        status: WorkerSessionState::Running,
-        terminal_run_id: None,
-        thread_id: Some("t1".into()),
-        session_id: None,
-        active_turn_id: None,
-        handle_state_json: None,
-        spawn_op_id: None,
-        now_ms: now_ms(),
-    };
-    session_start_runtime_tx(&mut tx, init).await.unwrap();
-    tx.commit().await.unwrap();
-    (card.id.to_string(), term.id)
+        .expect("independent write operation")
 }
 
 /// Strip any legacy payload link; runtime ownership is the orphan contract.
@@ -311,9 +338,9 @@ async fn complete_terminal_runtime_for_card(state: &AppState, card_id: &str) {
 /// Backdate every terminal row's `created_at` to `now - 120 s`, past the sweeper's production 60 s grace.
 async fn age_all_terminals_past_grace(concrete: &SqlxRepo) {
     let cutoff = calm_server::model::now_ms() - 120_000;
-    sqlx::query("UPDATE terminals SET created_at = ?1")
-        .bind(cutoff)
-        .execute(concrete.pool())
+    (concrete.db())
+        .writer()
+        .execute(sqlx::query("UPDATE terminals SET created_at = ?1").bind(cutoff))
         .await
         .unwrap();
 }

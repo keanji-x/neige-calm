@@ -29,7 +29,7 @@ use super::view::{
     MISMATCH_DELIVERY_ROW_MISSING, NoBindingReason, UnboundReason, candidate_binding,
     delivery_state,
 };
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::forge_action_adapter::ForgeActionResultFile;
 use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
@@ -1245,12 +1245,22 @@ async fn kernel_lease(
         reader: None,
         catch_up: None,
     };
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (lease, _event) =
+                    acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
+                        .await
+                        .unwrap();
+                tx.commit().await.unwrap();
+                lease
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    lease
+        .expect("independent write operation")
 }
 
 async fn count(repo: &SqlxRepo, sql: &str) -> i64 {
@@ -1271,19 +1281,28 @@ impl DbFixture {
 
     /// A completed attempt's first row, committing with `message`.
     async fn insert_delivery_with(&self, attempt: &str, message: DeliveryMessage) -> DeliveryRow {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let row = insert_initial_delivery_tx(
-            &mut tx,
-            attempt,
-            &self.lease,
-            AttemptOutcome::Completed,
-            message,
-            1_000,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        row
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let row = insert_initial_delivery_tx(
+                        &mut tx,
+                        attempt,
+                        &self.lease,
+                        AttemptOutcome::Completed,
+                        message,
+                        1_000,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    row
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     fn candidate_for(&self, delivery: &DeliveryRow, commit_sha: &str) -> CandidateRow {
@@ -1328,25 +1347,28 @@ async fn delivery_policy_check_rejects_every_invalid_tuple() {
             Some(_) => (Some("head"), Some("/cp"), Some("/gcd")),
             None => (None, None, None),
         };
-        let result = sqlx::query(
-            "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, \
+        let result = (fx.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, \
              lease_owner, lease_until_ms, boot_id, created_at_ms, updated_at_ms, \
              base_sha, base_source, base_attempt_id, canonical_path, git_common_dir, \
              delivery_policy) \
              VALUES (?1, ?2, ?3, ?4, 'released', 'op-test', NULL, NULL, 1, 1, \
              ?5, ?6, NULL, ?7, ?8, ?9)",
-        )
-        .bind(format!("policy-{index}"))
-        .bind(&fx.card_id)
-        .bind(&fx.track_id)
-        .bind(format!("/tuple/{index}"))
-        .bind(sha)
-        .bind(source)
-        .bind(canonical_path)
-        .bind(git_common_dir)
-        .bind(policy)
-        .execute(fx.repo.pool())
-        .await;
+                )
+                .bind(format!("policy-{index}"))
+                .bind(&fx.card_id)
+                .bind(&fx.track_id)
+                .bind(format!("/tuple/{index}"))
+                .bind(sha)
+                .bind(source)
+                .bind(canonical_path)
+                .bind(git_common_dir)
+                .bind(policy),
+            )
+            .await;
         match result {
             Ok(_) => accepted.push((sha, policy)),
             Err(error) => assert!(
@@ -1390,30 +1412,33 @@ async fn settlement_check_rejects_every_invalid_tuple() {
                         for wake in wake_reasons {
                             total += 1;
                             index += 1;
-                            let result = sqlx::query(
-                                "INSERT INTO task_git_deliveries (delivery_id, track_id, \
+                            let result = (fx.repo.db())
+                                .writer()
+                                .execute(
+                                    sqlx::query(
+                                        "INSERT INTO task_git_deliveries (delivery_id, track_id, \
                                  producer_attempt_id, card_id, lease_id, ordinal, operation_key, \
                                  forge_idempotency_key, created_at_ms, settlement, \
                                  settled_event_id, failure_code, failure_reason, retry_allowed, \
                                  wake_reason) \
                                  VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 1, ?8, ?9, ?10, ?11, \
                                  ?12, ?13)",
-                            )
-                            .bind(format!("d-{index}"))
-                            .bind(&fx.track_id)
-                            .bind(format!("attempt-{index}"))
-                            .bind(&fx.card_id)
-                            .bind(&fx.lease.lease_id)
-                            .bind(format!("op-{index}"))
-                            .bind(format!("idem-{index}"))
-                            .bind(settlement)
-                            .bind(event_id)
-                            .bind(code)
-                            .bind(reason)
-                            .bind(retry)
-                            .bind(wake)
-                            .execute(fx.repo.pool())
-                            .await;
+                                    )
+                                    .bind(format!("d-{index}"))
+                                    .bind(&fx.track_id)
+                                    .bind(format!("attempt-{index}"))
+                                    .bind(&fx.card_id)
+                                    .bind(&fx.lease.lease_id)
+                                    .bind(format!("op-{index}"))
+                                    .bind(format!("idem-{index}"))
+                                    .bind(settlement)
+                                    .bind(event_id)
+                                    .bind(code)
+                                    .bind(reason)
+                                    .bind(retry)
+                                    .bind(wake),
+                                )
+                                .await;
                             match result {
                                 Ok(_) => {
                                     accepted.push((settlement, event_id, code, reason, retry, wake))
@@ -1500,9 +1525,9 @@ async fn settlement_written_once() {
         "UPDATE task_git_deliveries SET reason = 'edited' WHERE delivery_id = ?1",
         "UPDATE task_git_deliveries SET settlement = NULL WHERE delivery_id = ?1",
     ] {
-        let refused = sqlx::query(sql)
-            .bind(&pending.delivery_id)
-            .execute(fx.repo.pool())
+        let refused = (fx.repo.db())
+            .writer()
+            .execute(sqlx::query(sql).bind(&pending.delivery_id))
             .await;
         assert!(
             refused
@@ -1512,14 +1537,17 @@ async fn settlement_written_once() {
         );
     }
     // A first settlement that also changes a metadata column is refused as a whole.
-    let refused = sqlx::query(
-        "UPDATE task_git_deliveries SET settlement = 'failed', settled_event_id = 5, \
+    let refused = (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE task_git_deliveries SET settlement = 'failed', settled_event_id = 5, \
          failure_code = 'commit_failed', failure_reason = 'x', retry_allowed = 1, \
          wake_reason = 'failed', created_at_ms = created_at_ms + 1 WHERE delivery_id = ?1",
-    )
-    .bind(&pending.delivery_id)
-    .execute(fx.repo.pool())
-    .await;
+            )
+            .bind(&pending.delivery_id),
+        )
+        .await;
     assert!(
         refused
             .as_ref()
@@ -1527,158 +1555,177 @@ async fn settlement_written_once() {
         "{refused:?}"
     );
 
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    assert_eq!(
-        settle_failed_tx(
-            &mut tx,
-            &failed.delivery_id,
-            7,
-            DeliveryFailureCode::CommitFailed,
-            "hook exited 1",
-            true,
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        settle_candidate_tx(
-            &mut tx,
-            &candidate.delivery_id,
-            8,
-            DeliveryWakeReason::UngatedCandidate,
-            &fx.candidate_for(&candidate, &"c".repeat(40)),
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    settle_failed_tx(
+                        &mut tx,
+                        &failed.delivery_id,
+                        7,
+                        DeliveryFailureCode::CommitFailed,
+                        "hook exited 1",
+                        true,
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    settle_candidate_tx(
+                        &mut tx,
+                        &candidate.delivery_id,
+                        8,
+                        DeliveryWakeReason::UngatedCandidate,
+                        &fx.candidate_for(&candidate, &"c".repeat(40)),
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
 
-    for (column, value) in [
-        ("retry_allowed", "0"),
-        ("wake_reason", "'deferred_to_gate'"),
-    ] {
-        let sql =
-            format!("UPDATE task_git_deliveries SET {column} = {value} WHERE delivery_id = ?1");
-        let refused = sqlx::query(&sql)
-            .bind(&failed.delivery_id)
-            .execute(fx.repo.pool())
-            .await;
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|error| error.to_string().contains("written once")),
-            "{column}: {refused:?}"
-        );
-    }
+                for (column, value) in [
+                    ("retry_allowed", "0"),
+                    ("wake_reason", "'deferred_to_gate'"),
+                ] {
+                    let sql = format!(
+                        "UPDATE task_git_deliveries SET {column} = {value} WHERE delivery_id = ?1"
+                    );
+                    let refused = (fx.repo.db())
+                        .writer()
+                        .execute(sqlx::query(&sql).bind(&failed.delivery_id))
+                        .await;
+                    assert!(
+                        refused
+                            .as_ref()
+                            .is_err_and(|error| error.to_string().contains("written once")),
+                        "{column}: {refused:?}"
+                    );
+                }
 
-    // The second settlement of either kind is a guarded no-op, not an error.
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    assert_eq!(
-        settle_failed_tx(
-            &mut tx,
-            &failed.delivery_id,
-            9,
-            DeliveryFailureCode::Unresolved,
-            "again",
-            true,
-        )
-        .await
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        settle_candidate_tx(
-            &mut tx,
-            &candidate.delivery_id,
-            10,
-            DeliveryWakeReason::DeferredToGate,
-            &fx.candidate_for(&candidate, &"d".repeat(40)),
-        )
-        .await
-        .unwrap(),
-        0
-    );
-    let failed_row = delivery_by_id_tx(&mut tx, &failed.delivery_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        failed_row.settlement,
-        Some(DeliverySettled::Failed {
-            settled_event_id: 7,
-            code: DeliveryFailureCode::CommitFailed,
-            reason: "hook exited 1".into(),
-            wake_reason: DeliveryWakeReason::Failed,
+                // The second settlement of either kind is a guarded no-op, not an error.
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    settle_failed_tx(
+                        &mut tx,
+                        &failed.delivery_id,
+                        9,
+                        DeliveryFailureCode::Unresolved,
+                        "again",
+                        true,
+                    )
+                    .await
+                    .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    settle_candidate_tx(
+                        &mut tx,
+                        &candidate.delivery_id,
+                        10,
+                        DeliveryWakeReason::DeferredToGate,
+                        &fx.candidate_for(&candidate, &"d".repeat(40)),
+                    )
+                    .await
+                    .unwrap(),
+                    0
+                );
+                let failed_row = delivery_by_id_tx(&mut tx, &failed.delivery_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    failed_row.settlement,
+                    Some(DeliverySettled::Failed {
+                        settled_event_id: 7,
+                        code: DeliveryFailureCode::CommitFailed,
+                        reason: "hook exited 1".into(),
+                        wake_reason: DeliveryWakeReason::Failed,
+                    })
+                );
+                let candidate_row = delivery_by_id_tx(&mut tx, &candidate.delivery_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    candidate_row.settlement,
+                    Some(DeliverySettled::Candidate {
+                        settled_event_id: 8,
+                        wake_reason: DeliveryWakeReason::UngatedCandidate,
+                    })
+                );
+                let minted = candidate_for_attempt_tx(&mut tx, "attempt-candidate")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    minted.commit_sha,
+                    "c".repeat(40),
+                    "the first settlement's candidate stays"
+                );
+                assert_eq!(
+                    delivery_by_id_tx(&mut tx, &pending.delivery_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .settlement,
+                    None
+                );
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
+                    1
+                );
+            })
         })
-    );
-    let candidate_row = delivery_by_id_tx(&mut tx, &candidate.delivery_id)
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        candidate_row.settlement,
-        Some(DeliverySettled::Candidate {
-            settled_event_id: 8,
-            wake_reason: DeliveryWakeReason::UngatedCandidate,
-        })
-    );
-    let minted = candidate_for_attempt_tx(&mut tx, "attempt-candidate")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        minted.commit_sha,
-        "c".repeat(40),
-        "the first settlement's candidate stays"
-    );
-    assert_eq!(
-        delivery_by_id_tx(&mut tx, &pending.delivery_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .settlement,
-        None
-    );
-    tx.commit().await.unwrap();
-    assert_eq!(
-        count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
-        1
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn candidate_row_is_immutable() {
     let fx = db_fixture().await;
     let delivery = fx.insert_delivery("attempt-1").await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    settle_candidate_tx(
-        &mut tx,
-        &delivery.delivery_id,
-        1,
-        DeliveryWakeReason::UngatedCandidate,
-        &fx.candidate_for(&delivery, &"c".repeat(40)),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    for sql in [
-        "UPDATE task_candidates SET commit_sha = 'moved' WHERE candidate_id = ?1",
-        "UPDATE task_candidates SET branch = 'other' WHERE candidate_id = ?1",
-        "UPDATE task_candidates SET base_is_ancestor = 0 WHERE candidate_id = ?1",
-    ] {
-        let refused = sqlx::query(sql)
-            .bind(&delivery.delivery_id)
-            .execute(fx.repo.pool())
-            .await;
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|error| error.to_string().contains("immutable")),
-            "{sql}: {refused:?}"
-        );
-    }
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                settle_candidate_tx(
+                    &mut tx,
+                    &delivery.delivery_id,
+                    1,
+                    DeliveryWakeReason::UngatedCandidate,
+                    &fx.candidate_for(&delivery, &"c".repeat(40)),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                for sql in [
+                    "UPDATE task_candidates SET commit_sha = 'moved' WHERE candidate_id = ?1",
+                    "UPDATE task_candidates SET branch = 'other' WHERE candidate_id = ?1",
+                    "UPDATE task_candidates SET base_is_ancestor = 0 WHERE candidate_id = ?1",
+                ] {
+                    let refused = (fx.repo.db())
+                        .writer()
+                        .execute(sqlx::query(sql).bind(&delivery.delivery_id))
+                        .await;
+                    assert!(
+                        refused
+                            .as_ref()
+                            .is_err_and(|error| error.to_string().contains("immutable")),
+                        "{sql}: {refused:?}"
+                    );
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,25 +1736,34 @@ impl DbFixture {
     /// A delivery settled `failed`.
     async fn insert_failed_delivery(&self, attempt: &str) -> DeliveryRow {
         let row = self.insert_delivery(attempt).await;
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        settle_failed_tx(
-            &mut tx,
-            &row.delivery_id,
-            1,
-            DeliveryFailureCode::CommitFailed,
-            "hook",
-            true,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        delivery_by_id_tx(
-            &mut begin_immediate_tx(self.repo.db()).await.unwrap(),
-            &row.delivery_id,
-        )
-        .await
-        .unwrap()
-        .unwrap()
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    settle_failed_tx(
+                        &mut tx,
+                        &row.delivery_id,
+                        1,
+                        DeliveryFailureCode::CommitFailed,
+                        "hook",
+                        true,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    delivery_by_id_tx(
+                        &mut write_session.begin_immediate().await.unwrap(),
+                        &row.delivery_id,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -1721,59 +1777,68 @@ async fn delivery_tables_cascade_on_track_delete() {
         let settled = fx.insert_delivery("attempt-settled").await;
         let _pending = fx.insert_delivery("attempt-pending").await;
         let _failed = fx.insert_failed_delivery("attempt-failed").await;
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        settle_candidate_tx(
-            &mut tx,
-            &settled.delivery_id,
-            1,
-            DeliveryWakeReason::UngatedCandidate,
-            &fx.candidate_for(&settled, &"c".repeat(40)),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
-            3
-        );
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
-            1
-        );
-        let events_before = count(&fx.repo, "SELECT COUNT(*) FROM events").await;
-        assert!(events_before > 0, "the lease acquisition left an event");
+        let write_db = (fx.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    settle_candidate_tx(
+                        &mut tx,
+                        &settled.delivery_id,
+                        1,
+                        DeliveryWakeReason::UngatedCandidate,
+                        &fx.candidate_for(&settled, &"c".repeat(40)),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
+                        3
+                    );
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
+                        1
+                    );
+                    let events_before = count(&fx.repo, "SELECT COUNT(*) FROM events").await;
+                    assert!(events_before > 0, "the lease acquisition left an event");
 
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        if delete_area {
-            crate::db::sqlite::area_delete_tx(&mut tx, &fx.area_id)
-                .await
-                .unwrap();
-        } else {
-            crate::db::sqlite::track_delete_tx(
-                &mut tx,
-                &fx.track_id,
-                &crate::track_area_cache::TrackAreaCache::new(),
-            )
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    if delete_area {
+                        crate::db::sqlite::area_delete_tx(&mut tx, &fx.area_id)
+                            .await
+                            .unwrap();
+                    } else {
+                        crate::db::sqlite::track_delete_tx(
+                            &mut tx,
+                            &fx.track_id,
+                            &crate::track_area_cache::TrackAreaCache::new(),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
+                        0
+                    );
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
+                        0
+                    );
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM workspace_leases").await,
+                        0
+                    );
+                    assert_eq!(
+                        count(&fx.repo, "SELECT COUNT(*) FROM events").await,
+                        events_before
+                    );
+                })
+            })
             .await
-            .unwrap();
-        }
-        tx.commit().await.unwrap();
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM task_git_deliveries").await,
-            0
-        );
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM task_candidates").await,
-            0
-        );
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM workspace_leases").await,
-            0
-        );
-        assert_eq!(
-            count(&fx.repo, "SELECT COUNT(*) FROM events").await,
-            events_before
-        );
+            .expect("independent write operation")
     }
 }
 
@@ -1793,23 +1858,27 @@ async fn a_delivery_from_before_the_rename_finds_its_moved_operation() {
         "dev.neige.git-forge:{}:{}:git.commit:d:{}", // retired-name: rejection input
         fx.track_id, fx.card_id, row.delivery_id
     );
-    sqlx::query(
-        "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
          target_type, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
          VALUES ('op-1', ?1, ?2, ?3, 'h', 'card', '{}', '{}', 'succeeded', 1, 1)",
-    )
-    .bind(&row.operation_key)
-    .bind(crate::operation::forge_action_adapter::FORGE_ACTION_KIND)
-    .bind(&old_key)
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&row.operation_key)
+            .bind(crate::operation::forge_action_adapter::FORGE_ACTION_KIND)
+            .bind(&old_key),
+        )
+        .await
+        .unwrap();
     let migration = calm_truth::MIGRATOR
         .iter()
         .find(|m| m.description == "plugin names")
         .expect("the #2087 B5 migration is embedded");
-    sqlx::raw_sql(&migration.sql)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::raw_sql(&migration.sql))
         .await
         .unwrap();
 
@@ -1849,86 +1918,101 @@ async fn initial_delivery_row_and_readers() {
     assert_ne!(row.operation_key, row.delivery_id);
     assert_eq!(row.settlement, None);
 
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    assert_eq!(
-        delivery_latest_for_attempt_tx(&mut tx, "attempt-1")
-            .await
-            .unwrap(),
-        Some(row.clone())
-    );
-    assert_eq!(
-        delivery_by_id_tx(&mut tx, &row.delivery_id).await.unwrap(),
-        Some(row.clone())
-    );
-    assert_eq!(
-        delivery_latest_for_attempt_tx(&mut tx, "attempt-none")
-            .await
-            .unwrap(),
-        None
-    );
-    let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
-        .await
-        .unwrap();
-    assert_eq!(unsettled.len(), 1);
-    assert_eq!(unsettled[0].row, row);
-    assert_eq!(unsettled[0].operation_id, None, "no forge op yet");
-    let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
-    assert_eq!(lease.lease_id, fx.lease.lease_id);
-    assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
-    tx.commit().await.unwrap();
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    delivery_latest_for_attempt_tx(&mut tx, "attempt-1")
+                        .await
+                        .unwrap(),
+                    Some(row.clone())
+                );
+                assert_eq!(
+                    delivery_by_id_tx(&mut tx, &row.delivery_id).await.unwrap(),
+                    Some(row.clone())
+                );
+                assert_eq!(
+                    delivery_latest_for_attempt_tx(&mut tx, "attempt-none")
+                        .await
+                        .unwrap(),
+                    None
+                );
+                let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
+                    .await
+                    .unwrap();
+                assert_eq!(unsettled.len(), 1);
+                assert_eq!(unsettled[0].row, row);
+                assert_eq!(unsettled[0].operation_id, None, "no forge op yet");
+                let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
+                assert_eq!(lease.lease_id, fx.lease.lease_id);
+                assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
+                tx.commit().await.unwrap();
 
-    // A forge Operation under the row's key is found; the released lease still reads.
-    let op_repo = crate::operation::SqlxOperationRepo::new(fx.repo.db().clone());
-    let op_id = crate::operation::OperationRepo::insert_operation(
-        &op_repo,
-        crate::operation::forge_action_adapter::FORGE_ACTION_KIND,
-        crate::operation::OperationKey {
-            operation_key: row.operation_key.clone(),
-            idempotency_key: Some(row.forge_idempotency_key.clone()),
-            payload_hash: "hash".into(),
-        },
-        json!({}),
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE workspace_leases SET state = 'released' WHERE lease_id = ?1")
-        .bind(&fx.lease.lease_id)
-        .execute(fx.repo.pool())
-        .await
-        .unwrap();
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
-        .await
-        .unwrap();
-    assert_eq!(unsettled[0].operation_id.as_deref(), Some(op_id.as_str()));
-    let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
-    assert_eq!(lease.state, "released");
-    tx.commit().await.unwrap();
+                // A forge Operation under the row's key is found; the released lease still reads.
+                let op_repo = crate::operation::SqlxOperationRepo::new(fx.repo.db().clone());
+                let op_id = crate::operation::OperationRepo::insert_operation(
+                    &op_repo,
+                    crate::operation::forge_action_adapter::FORGE_ACTION_KIND,
+                    crate::operation::OperationKey {
+                        operation_key: row.operation_key.clone(),
+                        idempotency_key: Some(row.forge_idempotency_key.clone()),
+                        payload_hash: "hash".into(),
+                    },
+                    json!({}),
+                )
+                .await
+                .unwrap();
+                (fx.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE workspace_leases SET state = 'released' WHERE lease_id = ?1",
+                        )
+                        .bind(&fx.lease.lease_id),
+                    )
+                    .await
+                    .unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
+                    .await
+                    .unwrap();
+                assert_eq!(unsettled[0].operation_id.as_deref(), Some(op_id.as_str()));
+                let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
+                assert_eq!(lease.state, "released");
+                tx.commit().await.unwrap();
 
-    // A legacy (plain) lease never gets a delivery row.
-    let plain_card = new_card(&fx.repo, &fx.track_id).await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let (plain, _event) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
-        &mut tx,
-        &plain_card,
-        &fx.track_id,
-        "op-plain",
-        &fx._tmp.path().join("plain"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(plain.delivery_policy, None);
-    let refused = insert_initial_delivery_tx(
-        &mut tx,
-        "attempt-plain",
-        &plain,
-        AttemptOutcome::Failed,
-        DeliveryMessage::Kernel,
-        1,
-    )
-    .await;
-    assert!(refused.is_err(), "{refused:?}");
-    tx.rollback().await.unwrap();
+                // A legacy (plain) lease never gets a delivery row.
+                let plain_card = new_card(&fx.repo, &fx.track_id).await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (plain, _event) =
+                    crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+                        &mut tx,
+                        &plain_card,
+                        &fx.track_id,
+                        "op-plain",
+                        &fx._tmp.path().join("plain"),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(plain.delivery_policy, None);
+                let refused = insert_initial_delivery_tx(
+                    &mut tx,
+                    "attempt-plain",
+                    &plain,
+                    AttemptOutcome::Failed,
+                    DeliveryMessage::Kernel,
+                    1,
+                )
+                .await;
+                assert!(refused.is_err(), "{refused:?}");
+                tx.rollback().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The payload of one delivery row hashes the same every time it is assembled (the sweep's

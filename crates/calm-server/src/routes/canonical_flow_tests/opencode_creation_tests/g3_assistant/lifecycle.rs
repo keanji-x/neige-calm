@@ -230,8 +230,8 @@ async fn continuation(scenario: &str) {
     .unwrap();
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     if scenario == "registration-drift" {
-        sqlx::query("UPDATE acp_managed_sessions SET registration_digest='different' WHERE worker_session_id=?1")
-            .bind(&worker).execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("UPDATE acp_managed_sessions SET registration_digest='different' WHERE worker_session_id=?1")
+            .bind(&worker)).await.unwrap();
     }
     let (state, app, cookie) = fixture.application().await;
     assert_eq!(

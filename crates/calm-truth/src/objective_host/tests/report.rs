@@ -19,15 +19,18 @@ async fn objective_planner_source_cannot_define() {
 
 async fn report_row(repo: &SqlxRepo, block: &serde_json::Value) {
     let payload = serde_json::json!({"schemaVersion":1,"docRev":7,"summary":"","body":"","blocks":[{"id":"b_1111","kind":"objective","rev":0,"payload":block}]});
-    sqlx::query(
-        "INSERT INTO cards
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards
         (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at)
         VALUES('report','t','track-report',-1,?,'reportcard',0,0,0)",
-    )
-    .bind(payload.to_string())
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(payload.to_string()),
+        )
+        .await
+        .unwrap();
 }
 fn report_source() -> InputSource {
     serde_json::from_value(serde_json::json!({"source":"report_block","report_card_id":"report","doc_rev":7,"block_id":"b_1111"})).unwrap()
@@ -90,9 +93,9 @@ async fn objective_report_source_must_match_committed_block() {
         .unwrap();
     let mut row: serde_json::Value = serde_json::from_str(&raw).unwrap();
     row["blocks"][0]["payload"] = serde_json::to_value(negative).unwrap();
-    sqlx::query("UPDATE cards SET payload=? WHERE id='report'")
-        .bind(row.to_string())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET payload=? WHERE id='report'").bind(row.to_string()))
         .await
         .unwrap();
     assert!(matches!(
@@ -110,13 +113,16 @@ async fn objective_report_source_must_match_committed_block() {
     ));
     assert_eq!(counts(&repo).await, (0, 0, 0));
     row["blocks"][0]["payload"] = serde_json::to_value(definition()).unwrap();
-    sqlx::query("UPDATE cards SET payload=? WHERE id='report'")
-        .bind(row.to_string())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET payload=? WHERE id='report'").bind(row.to_string()))
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='report'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='report'",
+        ))
         .await
         .unwrap();
     let missing_revision = ObjectiveInput {
@@ -132,8 +138,11 @@ async fn objective_report_source_must_match_committed_block() {
         Err(TruthError::Forbidden(_))
     ));
     assert_eq!(counts(&repo).await, (0, 0, 0));
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.docRev',7) WHERE id='report'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload=json_set(payload,'$.docRev',7) WHERE id='report'",
+        ))
         .await
         .unwrap();
     react(repo.db(), valid.clone()).await.unwrap();
@@ -141,23 +150,28 @@ async fn objective_report_source_must_match_committed_block() {
         react(repo.db(), valid.clone()).await.unwrap().reaction(),
         Reaction::Duplicate { .. }
     ));
-    let rows = log::read_tx(
-        &mut begin_immediate_tx(repo.db()).await.unwrap(),
-        &"t".into(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(rows[0].source, report_source());
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].kind','app') WHERE id='report'",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    assert!(matches!(
-        react(repo.db(), valid).await,
-        Err(TruthError::Forbidden(_))
-    ));
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let rows = log::read_tx(&mut write_session.begin_immediate().await.unwrap(), &"t".into())
+                                .await
+                                .unwrap();
+                            assert_eq!(rows[0].source, report_source());
+                            (repo.db()).writer().execute(sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload,'$.blocks[0].kind','app') WHERE id='report'",
+                ))
+                .await
+                .unwrap();
+                            assert!(matches!(
+                                react(repo.db(), valid).await,
+                                Err(TruthError::Forbidden(_))
+                            ));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn block(definition: &ObjectiveDefinition) -> calm_types::track_report::ReportBlock {
@@ -174,27 +188,31 @@ async fn project(
     after: &[calm_types::track_report::ReportBlock],
     rev: u64,
 ) -> Result<()> {
-    let mut tx = begin_immediate_tx(repo.db()).await?;
-    let payload =
-        serde_json::json!({"schemaVersion":1,"docRev":rev,"summary":"","body":"","blocks":after});
-    sqlx::query("UPDATE cards SET payload=? WHERE id='report'")
-        .bind(payload.to_string())
-        .execute(&mut **tx)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let payload =
+            serde_json::json!({"schemaVersion":1,"docRev":rev,"summary":"","body":"","blocks":after});
+        sqlx::query("UPDATE cards SET payload=? WHERE id='report'")
+            .bind(payload.to_string())
+            .execute(&mut **tx)
+            .await?;
+        super::super::report::project_report_tx(
+            &mut tx,
+            super::super::report::ReportObjectiveWrite {
+                track_id: &"t".into(),
+                report_card_id: "report",
+                before,
+                after,
+                doc_rev: rev,
+            },
+            0,
+        )
         .await?;
-    super::super::report::project_report_tx(
-        &mut tx,
-        super::super::report::ReportObjectiveWrite {
-            track_id: &"t".into(),
-            report_card_id: "report",
-            before,
-            after,
-            doc_rev: rev,
-        },
-        0,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
+        tx.commit().await?;
+        Ok(())
+
+    })).await.map_err(crate::TruthError::from)?
 }
 #[tokio::test]
 async fn objective_added_changed_removed_lifecycle() {

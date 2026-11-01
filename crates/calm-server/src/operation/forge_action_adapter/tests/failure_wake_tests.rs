@@ -60,14 +60,15 @@ async fn settled(fx: &ForgeRuntimeFixture, id: &str) -> OperationResult {
 #[tokio::test]
 async fn failed_forge_wake_and_result_commit_atomically() {
     let fx = forge_runtime_fixture().await;
-    sqlx::query(
-        "CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events \
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_failure_wake BEFORE INSERT ON events \
          WHEN NEW.kind='track.wake_requested' BEGIN \
          SELECT RAISE(ABORT, 'injected failure wake rejection'); END",
-    )
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let payload = merge_payload(
         &fx,
         shell_probe("exit 7"),
@@ -100,13 +101,14 @@ async fn failed_forge_wake_and_result_commit_atomically() {
         "a missing wake must roll back terminal settlement"
     );
     assert_eq!(event_count(&fx.repo, "track.wake_requested").await, 0);
-    sqlx::query("DROP TRIGGER reject_failure_wake")
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_failure_wake"))
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?1")
-        .bind(&id)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?1").bind(&id))
         .await
         .unwrap();
     fx.runtime.sweep_parked().await.unwrap();

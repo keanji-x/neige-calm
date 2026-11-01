@@ -114,39 +114,48 @@ impl Fixture {
     async fn open(url: &str, dir: tempfile::TempDir, shared: bool) -> Self {
         let writer = Arc::new(SqlxRepo::open(url).await.unwrap());
         let (card, track) = super::super::session_conversation_tests::card(&writer).await;
-        sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-            .bind(&card)
-            .execute(writer.db().writer_pool())
+        (writer.db())
+            .writer()
+            .execute(sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1").bind(&card))
             .await
             .unwrap();
-        let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
-        super::super::session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::managed_assistant(
-                "title-runtime".into(),
-                card.clone(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                None,
-                json!({"pending":"original"}),
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let reader = if shared {
-            writer.clone()
-        } else {
-            Arc::new(SqlxRepo::open(url).await.unwrap())
-        };
-        Self {
-            reader,
-            writer,
-            card,
-            track,
-            _dir: dir,
-        }
+        let write_db = (writer.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    super::super::session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::managed_assistant(
+                            "title-runtime".into(),
+                            card.clone(),
+                            AgentProvider::Codex,
+                            WorkerSessionState::Idle,
+                            None,
+                            json!({"pending":"original"}),
+                            0,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let reader = if shared {
+                        writer.clone()
+                    } else {
+                        Arc::new(SqlxRepo::open(url).await.unwrap())
+                    };
+                    Self {
+                        reader,
+                        writer,
+                        card,
+                        track,
+                        _dir: dir,
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     async fn insert(&self, visible: bool, text: &str) -> i64 {
@@ -177,32 +186,40 @@ impl Fixture {
             held: Mutex::new(None),
         });
         // Instrument every connection while retaining the real repo pool/hooks.
-        let mut held = Vec::new();
-        for _ in 0..self
-            .reader
+        let trace_schedule = schedule.clone();
+        self.reader
             .db()
-            .writer_pool()
-            .options()
-            .get_max_connections()
-        {
-            let mut conn = self.reader.db().writer_pool().acquire().await.unwrap();
-            let mut handle = conn.lock_handle().await.unwrap();
-            let context = Box::into_raw(Box::new(schedule.clone())).cast();
-            assert_eq!(
-                unsafe {
-                    sqlite3_trace_v2(
-                        handle.as_raw_handle().as_ptr(),
-                        (SQLITE_TRACE_PROFILE | SQLITE_TRACE_CLOSE | SQLITE_TRACE_STMT) as c_uint,
-                        Some(trace),
-                        context,
-                    )
-                },
-                0
-            );
-            drop(handle);
-            held.push(conn);
-        }
-        drop(held);
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|conn| {
+                            Box::pin(async move {
+                                let mut handle = conn.lock_handle().await?;
+                                let context = Box::into_raw(Box::new(trace_schedule)).cast();
+                                assert_eq!(
+                                    unsafe {
+                                        sqlite3_trace_v2(
+                                            handle.as_raw_handle().as_ptr(),
+                                            (SQLITE_TRACE_PROFILE
+                                                | SQLITE_TRACE_CLOSE
+                                                | SQLITE_TRACE_STMT)
+                                                as c_uint,
+                                            Some(trace),
+                                            context,
+                                        )
+                                    },
+                                    0
+                                );
+                                Ok::<_, sqlx::Error>(())
+                            })
+                        })
+                        .await
+                        .unwrap();
+                })
+            })
+            .await
+            .unwrap();
         (schedule, ready_rx, commit_tx)
     }
 }
@@ -214,55 +231,69 @@ async fn conversation_title_snapshot_drain_between_reads_retains_source() {
     let writer = f.writer.clone();
     let card = f.card.clone();
     let track = f.track.clone();
-    let write = tokio::spawn(async move {
-        tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
+
+    {
+        let write = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                ready.recv_timeout(Duration::from_secs(10)).unwrap()
+            })
             .await
             .unwrap();
-        committed.send(()).unwrap();
-        super::tests::insert(&writer, &card, &track, None, "Migrating input").await;
-        let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
-        super::super::session_set_handle_state_tx(
-            &mut tx,
-            &"title-runtime".into(),
-            Some(json!({"pending":null})),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    });
-    let context = f
-        .reader
-        .conversation_title_context(std::slice::from_ref(&f.card))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), write)
-        .await
-        .expect("writer must complete after reader commit")
-        .unwrap();
-    assert!(schedule.fired.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(
-        schedule
-            .writer_started_before_return
-            .load(std::sync::atomic::Ordering::SeqCst)
-    );
-    assert!(context.sources[0].input.is_none());
-    assert_eq!(
-        context.runtimes[&f.card].handle_state_json,
-        Some(json!({"pending":"original"}))
-    );
-    let after = f
-        .writer
-        .conversation_title_context(std::slice::from_ref(&f.card))
-        .await
-        .unwrap();
-    assert_eq!(
-        after.sources[0].input.as_ref().unwrap().title().as_deref(),
-        Some("Migrating input")
-    );
-    assert_eq!(
-        after.runtimes[&f.card].handle_state_json,
-        Some(json!({"pending":null}))
-    );
+            committed.send(()).unwrap();
+            super::tests::insert(&writer, &card, &track, None, "Migrating input").await;
+            let write_db = (writer.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        super::super::session_set_handle_state_tx(
+                            &mut tx,
+                            &"title-runtime".into(),
+                            Some(json!({"pending":null})),
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let context = f
+            .reader
+            .conversation_title_context(std::slice::from_ref(&f.card))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), write)
+            .await
+            .expect("writer must complete after reader commit")
+            .unwrap();
+        assert!(schedule.fired.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            schedule
+                .writer_started_before_return
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(context.sources[0].input.is_none());
+        assert_eq!(
+            context.runtimes[&f.card].handle_state_json,
+            Some(json!({"pending":"original"}))
+        );
+        let after = f
+            .writer
+            .conversation_title_context(std::slice::from_ref(&f.card))
+            .await
+            .unwrap();
+        assert_eq!(
+            after.sources[0].input.as_ref().unwrap().title().as_deref(),
+            Some("Migrating input")
+        );
+        assert_eq!(
+            after.runtimes[&f.card].handle_state_json,
+            Some(json!({"pending":null}))
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -277,15 +308,27 @@ async fn conversation_title_shared_cache_reader_first_replace() {
 
 async fn atomic_replace(f: Fixture) {
     let old = f.insert(true, "Original first").await;
-    let mut tx = f.writer.db().writer_pool().begin().await.unwrap();
-    super::super::session_set_handle_state_tx(
-        &mut tx,
-        &"title-runtime".into(),
-        Some(json!({"pending":null})),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    {
+        let write_db = (f.writer.db()).clone();
+
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    super::super::session_set_handle_state_tx(
+                        &mut tx,
+                        &"title-runtime".into(),
+                        Some(json!({"pending":null})),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     let (schedule, ready, committed) = f.schedule().await;
     let writer = f.writer.clone();
     let card = f.card.clone();
@@ -294,22 +337,36 @@ async fn atomic_replace(f: Fixture) {
             .await
             .unwrap();
         committed.send(()).unwrap();
-        let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
-        // Same transaction boundary as replace_command: cut transcript and persist pending.
-        assert_eq!(
-            super::super::transcript_delete_thread_suffix_tx(&mut tx, &card, "thread", 0, old,)
+        {
+            let write_db = (writer.db()).clone();
+            let card = &card;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        // Same transaction boundary as replace_command: cut transcript and persist pending.
+                        assert_eq!(
+                            super::super::transcript_delete_thread_suffix_tx(
+                                &mut tx, card, "thread", 0, old,
+                            )
+                            .await
+                            .unwrap(),
+                            1
+                        );
+                        super::super::session_set_handle_state_tx(
+                            &mut tx,
+                            &"title-runtime".into(),
+                            Some(json!({"pending":"replacement"})),
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
                 .await
-                .unwrap(),
-            1
-        );
-        super::super::session_set_handle_state_tx(
-            &mut tx,
-            &"title-runtime".into(),
-            Some(json!({"pending":"replacement"})),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+                .expect("independent write operation")
+        };
     });
     let context = f
         .reader
@@ -361,58 +418,72 @@ async fn conversation_title_snapshot_candidate_batches_do_not_drift() {
     let (schedule, ready, committed) = f.schedule().await;
     let writer = f.writer.clone();
     let card = f.card.clone();
-    let write = tokio::spawn(async move {
-        tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
+
+    {
+        let write = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                ready.recv_timeout(Duration::from_secs(10)).unwrap()
+            })
             .await
             .unwrap();
-        committed.send(()).unwrap();
-        let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
-        assert_eq!(
-            super::super::transcript_delete_thread_suffix_tx(
-                &mut tx,
-                &card,
-                "thread",
-                visible - 1,
-                visible,
-            )
-            .await
-            .unwrap(),
-            1
-        );
-        tx.commit().await.unwrap();
-    });
-    let context = f
-        .reader
-        .conversation_title_context(std::slice::from_ref(&f.card))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), write)
-        .await
-        .expect("writer must complete after reader commit")
-        .unwrap();
-    assert!(schedule.fired.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(
-        schedule
-            .writer_started_before_return
-            .load(std::sync::atomic::Ordering::SeqCst)
-    );
-    assert_eq!(
-        context.sources[0]
-            .input
-            .as_ref()
-            .and_then(|input| input.title())
-            .as_deref(),
-        Some("Beyond first batch")
-    );
-    assert!(
-        f.writer
+            committed.send(()).unwrap();
+            let write_db = (writer.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        assert_eq!(
+                            super::super::transcript_delete_thread_suffix_tx(
+                                &mut tx,
+                                &card,
+                                "thread",
+                                visible - 1,
+                                visible,
+                            )
+                            .await
+                            .unwrap(),
+                            1
+                        );
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let context = f
+            .reader
             .conversation_title_context(std::slice::from_ref(&f.card))
             .await
-            .unwrap()
-            .sources[0]
-            .input
-            .is_none()
-    );
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), write)
+            .await
+            .expect("writer must complete after reader commit")
+            .unwrap();
+        assert!(schedule.fired.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            schedule
+                .writer_started_before_return
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert_eq!(
+            context.sources[0]
+                .input
+                .as_ref()
+                .and_then(|input| input.title())
+                .as_deref(),
+            Some("Beyond first batch")
+        );
+        assert!(
+            f.writer
+                .conversation_title_context(std::slice::from_ref(&f.card))
+                .await
+                .unwrap()
+                .sources[0]
+                .input
+                .is_none()
+        );
+    }
 }
 
 // Negative control: execute the same production candidate/runtime helpers with
@@ -424,38 +495,70 @@ async fn conversation_title_autocommit_control_loses_drain_source() {
     let writer = f.writer.clone();
     let card = f.card.clone();
     let track = f.track.clone();
-    let write = tokio::spawn(async move {
-        tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
+
+    {
+        let write = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                ready.recv_timeout(Duration::from_secs(10)).unwrap()
+            })
             .await
             .unwrap();
-        super::tests::insert(&writer, &card, &track, None, "Migrating input").await;
-        let mut tx = super::super::begin_immediate_tx(writer.db()).await.unwrap();
-        super::super::session_set_handle_state_tx(
-            &mut tx,
-            &"title-runtime".into(),
-            Some(json!({"pending":null})),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        committed.send(()).unwrap();
-    });
-    let mut conn = f.reader.db().writer_pool().acquire().await.unwrap();
-    let ids = std::slice::from_ref(&f.card);
-    let sources = sources_on_connection(&mut conn, ids).await.unwrap();
-    let runtimes =
-        super::super::session_projection::runtime_get_projectable_for_cards_on_connection(
-            &mut conn, ids,
-        )
-        .await
-        .unwrap();
-    write.await.unwrap();
-    assert!(schedule.writer_started_before_return.load(Ordering::SeqCst));
-    assert!(sources[0].input.is_none());
-    assert_eq!(
-        runtimes[&f.card].handle_state_json,
-        Some(json!({"pending":null}))
-    );
+            super::tests::insert(&writer, &card, &track, None, "Migrating input").await;
+            let write_db = (writer.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        super::super::session_set_handle_state_tx(
+                            &mut tx,
+                            &"title-runtime".into(),
+                            Some(json!({"pending":null})),
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        committed.send(()).unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let card = &f.card;
+        let (sources, runtimes) = f
+            .reader
+            .db()
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    write_session
+                        .autocommit(|conn| {
+                            Box::pin(async move {
+                                let ids = std::slice::from_ref(card);
+                                let sources = sources_on_connection(conn, ids).await.unwrap();
+                                let runtimes =
+                super::super::session_projection::runtime_get_projectable_for_cards_on_connection(
+                    conn, ids,
+                )
+                .await
+                .unwrap();
+                                Ok::<_, sqlx::Error>((sources, runtimes))
+                            })
+                        })
+                        .await
+                        .unwrap()
+                })
+            })
+            .await
+            .unwrap();
+        write.await.unwrap();
+        assert!(schedule.writer_started_before_return.load(Ordering::SeqCst));
+        assert!(sources[0].input.is_none());
+        assert_eq!(
+            runtimes[&f.card].handle_state_json,
+            Some(json!({"pending":null}))
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -463,72 +566,100 @@ async fn conversation_title_shared_cache_reverse_writer_first() {
     let f = Fixture::memory().await;
     let old = f.insert(true, "Original first").await;
     let (schedule, ready, release) = f.schedule().await;
-    let mut tx = super::super::begin_immediate_tx(f.writer.db())
+    let write_db = (f.writer.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                // Real reset/replace order: runtime first, transcript second, reverse of metadata.
+                super::super::session_set_handle_state_tx(
+                    &mut tx,
+                    &"title-runtime".into(),
+                    Some(json!({"pending":"replacement"})),
+                )
+                .await
+                .unwrap();
+                schedule.begin_boundary.store(true, Ordering::SeqCst);
+                let reader = f.reader.clone();
+                let card = f.card.clone();
+                let read =
+                    tokio::spawn(async move { reader.conversation_title_context(&[card]).await });
+                tokio::task::spawn_blocking(move || {
+                    ready.recv_timeout(Duration::from_secs(10)).unwrap()
+                })
+                .await
+                .unwrap();
+                let began_before_read = schedule.begin_seen.load(Ordering::SeqCst);
+                if began_before_read {
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        super::super::transcript_delete_thread_suffix_tx(
+                            &mut tx, &f.card, "thread", 0, old,
+                        ),
+                    )
+                    .await
+                    .expect("metadata must hold no table locks while waiting at BEGIN")
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                } else {
+                    // Safely conclude a mutated deferred reader's cycle before reporting red.
+                    tx.rollback().await.unwrap();
+                }
+                release.send(()).unwrap();
+                let context = tokio::time::timeout(Duration::from_secs(10), read)
+                    .await
+                    .expect("metadata must finish after writer release")
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    began_before_read,
+                    "metadata must claim writer eligibility before candidate SELECT"
+                );
+                assert!(context.sources[0].input.is_none());
+                assert_eq!(
+                    context.runtimes[&f.card].handle_state_json,
+                    Some(json!({"pending":"replacement"}))
+                );
+            })
+        })
         .await
-        .unwrap();
-    // Real reset/replace order: runtime first, transcript second, reverse of metadata.
-    super::super::session_set_handle_state_tx(
-        &mut tx,
-        &"title-runtime".into(),
-        Some(json!({"pending":"replacement"})),
-    )
-    .await
-    .unwrap();
-    schedule.begin_boundary.store(true, Ordering::SeqCst);
-    let reader = f.reader.clone();
-    let card = f.card.clone();
-    let read = tokio::spawn(async move { reader.conversation_title_context(&[card]).await });
-    tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
-        .await
-        .unwrap();
-    let began_before_read = schedule.begin_seen.load(Ordering::SeqCst);
-    if began_before_read {
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            super::super::transcript_delete_thread_suffix_tx(&mut tx, &f.card, "thread", 0, old),
-        )
-        .await
-        .expect("metadata must hold no table locks while waiting at BEGIN")
-        .unwrap();
-        tx.commit().await.unwrap();
-    } else {
-        // Safely conclude a mutated deferred reader's cycle before reporting red.
-        tx.rollback().await.unwrap();
-    }
-    release.send(()).unwrap();
-    let context = tokio::time::timeout(Duration::from_secs(10), read)
-        .await
-        .expect("metadata must finish after writer release")
-        .unwrap()
-        .unwrap();
-    assert!(
-        began_before_read,
-        "metadata must claim writer eligibility before candidate SELECT"
-    );
-    assert!(context.sources[0].input.is_none());
-    assert_eq!(
-        context.runtimes[&f.card].handle_state_json,
-        Some(json!({"pending":"replacement"}))
-    );
+        .expect("independent write operation")
 }
 
 async fn assert_pool_reusable(repo: &SqlxRepo) {
-    let tx = tokio::time::timeout(
-        Duration::from_secs(10),
-        super::super::begin_immediate_tx(repo.db()),
-    )
-    .await
-    .expect("released metadata transaction must not retain writer eligibility")
-    .unwrap();
-    tx.commit().await.unwrap();
-    for pool in [repo.db().read_pool(), repo.db().writer_pool()] {
-        let mut held = Vec::new();
-        for _ in 0..pool.options().get_max_connections() {
-            let conn = pool.acquire().await.unwrap();
-            assert!(!sqlx::Connection::is_in_transaction(&*conn));
-            held.push(conn);
-        }
-    }
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let tx =
+                    tokio::time::timeout(Duration::from_secs(10), write_session.begin_immediate())
+                        .await
+                        .expect("released metadata transaction must not retain writer eligibility")
+                        .unwrap();
+                tx.commit().await.unwrap();
+                write_session
+                    .autocommit(|conn| {
+                        Box::pin(async move {
+                            assert!(!sqlx::Connection::is_in_transaction(&**conn));
+                            Ok::<_, sqlx::Error>(())
+                        })
+                    })
+                    .await
+                    .unwrap();
+                for pool in [repo.db().read_pool()] {
+                    let mut held = Vec::new();
+                    for _ in 0..pool.options().get_max_connections() {
+                        let conn = pool.acquire().await.unwrap();
+                        assert!(!sqlx::Connection::is_in_transaction(&*conn));
+                        held.push(conn);
+                    }
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -616,21 +747,31 @@ async fn conversation_title_query_and_lock_cost() {
 async fn conversation_title_shared_cache_cancel_begin_releases_connection() {
     let f = Fixture::memory().await;
     let (schedule, ready, release) = f.schedule().await;
-    let tx = super::super::begin_immediate_tx(f.writer.db())
+    let write_db = (f.writer.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let tx = write_session.begin_immediate().await.unwrap();
+                schedule.begin_boundary.store(true, Ordering::SeqCst);
+                let reader = f.reader.clone();
+                let card = f.card.clone();
+                let read =
+                    tokio::spawn(async move { reader.conversation_title_context(&[card]).await });
+                tokio::task::spawn_blocking(move || {
+                    ready.recv_timeout(Duration::from_secs(10)).unwrap()
+                })
+                .await
+                .unwrap();
+                read.abort();
+                release.send(()).unwrap();
+                assert!(read.await.unwrap_err().is_cancelled());
+                tx.commit().await.unwrap();
+                assert_pool_reusable(&f.reader).await;
+            })
+        })
         .await
-        .unwrap();
-    schedule.begin_boundary.store(true, Ordering::SeqCst);
-    let reader = f.reader.clone();
-    let card = f.card.clone();
-    let read = tokio::spawn(async move { reader.conversation_title_context(&[card]).await });
-    tokio::task::spawn_blocking(move || ready.recv_timeout(Duration::from_secs(10)).unwrap())
-        .await
-        .unwrap();
-    read.abort();
-    release.send(()).unwrap();
-    assert!(read.await.unwrap_err().is_cancelled());
-    tx.commit().await.unwrap();
-    assert_pool_reusable(&f.reader).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]

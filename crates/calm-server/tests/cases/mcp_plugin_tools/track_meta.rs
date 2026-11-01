@@ -11,12 +11,11 @@ use super::*;
 async fn plugin_track_meta_carries_provenance() {
     let fx = boot_fixture().await;
     // The provenance `neige_track_add` stamps: both columns, which the table's CHECK requires.
-    sqlx::query(
+    (fx.repo.db()).writer().execute(sqlx::query(
         "UPDATE tracks SET creator_track_id = 'track-portfolio', creator_key = 'invest-US-SPY-1' \
          WHERE id = ?1",
     )
-    .bind(&fx.track_id)
-    .execute(fx.repo.pool())
+    .bind(&fx.track_id))
     .await
     .unwrap();
     let (token, thread) = mint_card_with_thread(

@@ -80,8 +80,8 @@ impl ProviderAdapter for BrokenOwner {
                 Some(owner_event()),
             )))),
             _ => {
-                sqlx::query("UPDATE operations SET lease_owner='replacement',last_error='replacement error' WHERE id=?1")
-                    .bind(&op.id).execute(ctx.operation_repo.sqlite_db().writer_pool()).await?;
+                (ctx.operation_repo.sqlite_db()).writer().execute(sqlx::query("UPDATE operations SET lease_owner='replacement',last_error='replacement error' WHERE id=?1")
+                    .bind(&op.id)).await?;
                 Err(CalmError::Conflict("stale recovery".into()))
             }
         }
@@ -133,8 +133,8 @@ async fn error_keeps_lease_and_writes_last_error() {
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE operations SET phase='parked',parked_at_ms=1,parked_deadline_ms=?1,tx_output_json=?2 WHERE id=?3")
-            .bind(crate::model::now_ms()+60_000).bind(serde_json::to_string(&TxOutput::new("unknown",None,json!({}))).unwrap()).bind(&id).execute(db.pool()).await.unwrap();
+        (db.db()).writer().execute(sqlx::query("UPDATE operations SET phase='parked',parked_at_ms=1,parked_deadline_ms=?1,tx_output_json=?2 WHERE id=?3")
+            .bind(crate::model::now_ms()+60_000).bind(serde_json::to_string(&TxOutput::new("unknown",None,json!({}))).unwrap()).bind(&id)).await.unwrap();
         let op = repo.claim_parked(&id).await.unwrap().unwrap();
         let ctx = SpawnCtx::new(
             db.clone(),
@@ -203,19 +203,20 @@ async fn c3_complete_appends_owner_event_in_completion_tx() {
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE operations SET phase='parked',parked_at_ms=1,parked_deadline_ms=?1,tx_output_json=?2 WHERE id=?3")
+        (db.db()).writer().execute(sqlx::query("UPDATE operations SET phase='parked',parked_at_ms=1,parked_deadline_ms=?1,tx_output_json=?2 WHERE id=?3")
             .bind(crate::model::now_ms()+60_000)
             .bind(serde_json::to_string(&TxOutput::new("unknown",None,json!({}))).unwrap())
-            .bind(&id).execute(db.pool()).await.unwrap();
-        sqlx::query("CREATE TABLE completion_parent (id INTEGER PRIMARY KEY)")
-            .execute(db.pool())
+            .bind(&id)).await.unwrap();
+        (db.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TABLE completion_parent (id INTEGER PRIMARY KEY)",
+            ))
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE completion_child (id INTEGER REFERENCES completion_parent(id) DEFERRABLE INITIALLY DEFERRED)")
-            .execute(db.pool()).await.unwrap();
+        (db.db()).writer().execute(sqlx::query("CREATE TABLE completion_child (id INTEGER REFERENCES completion_parent(id) DEFERRABLE INITIALLY DEFERRED)")).await.unwrap();
         if case == 6 {
-            sqlx::query("CREATE TRIGGER refuse_owner_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event append refused'); END")
-                .execute(db.pool()).await.unwrap();
+            (db.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_owner_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event append refused'); END")).await.unwrap();
         }
         let op = repo.claim_parked(&id).await.unwrap().unwrap();
         let bus = crate::event::EventBus::new();

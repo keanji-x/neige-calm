@@ -45,20 +45,29 @@ async fn event(flow: &Flow, body: &str) -> (Event, i64) {
 }
 
 async fn changed(flow: &Flow, role: bool) {
-    let mut tx = flow.fixture.repo.pool().begin().await.unwrap();
-    if role {
-        sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-            .bind(&flow.card)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    sqlx::query("UPDATE tracks SET planner_revision=planner_revision+1 WHERE id=?1")
-        .bind(&flow.track)
-        .execute(&mut *tx)
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                if role {
+                    sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
+                        .bind(&flow.card)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                sqlx::query("UPDATE tracks SET planner_revision=planner_revision+1 WHERE id=?1")
+                    .bind(&flow.track)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn snapshot(flow: &Flow) -> CanonicalHarnessSnapshot {
@@ -75,9 +84,9 @@ async fn finish(mut flow: Flow) {
     flow.state.dispatcher.retire();
     // Assertions are complete. Restore the original Human turn's role solely
     // so the protocol peer can finish and shut down its original live owner.
-    sqlx::query("UPDATE cards SET role='planner' WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET role='planner' WHERE id=?1").bind(&flow.card))
         .await
         .unwrap();
     flow.end(TURN).await;
@@ -117,10 +126,15 @@ async fn planner_switch_dispatcher_baseline() {
     flow.state.dispatcher.abort_event_listener_for_test();
     let (old, baseline) = event(&flow, "before new tenure").await;
     let before = snapshot(&flow).await;
-    sqlx::query("UPDATE tracks SET planner_revision=1,planner_event_baseline=?1 WHERE id=?2")
-        .bind(baseline)
-        .bind(&flow.track)
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tracks SET planner_revision=1,planner_event_baseline=?1 WHERE id=?2",
+            )
+            .bind(baseline)
+            .bind(&flow.track),
+        )
         .await
         .unwrap();
     flow.state
@@ -164,9 +178,11 @@ async fn planner_switch_dispatcher_accept_rechecks_revision() {
             .await
             .unwrap();
         if role_only {
-            sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-                .bind(&flow.card)
-                .execute(flow.fixture.repo.pool())
+            (flow.fixture.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1").bind(&flow.card),
+                )
                 .await
                 .unwrap();
         } else {
@@ -212,91 +228,105 @@ async fn planner_switch_dispatcher_old_wake_refused() {
     let crate::conversation_inputs::InputSource::Dispatcher(source) = source else {
         panic!("Dispatcher source")
     };
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
+                    &mut tx, &flow.card,
+                )
+                .await
+                .unwrap();
+                source
+                    .authorize_resource_tx(&mut tx, &carrier)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                (flow.fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
+                            .bind(&flow.card),
+                    )
+                    .await
+                    .unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    source
+                        .authorize_resource_tx(&mut tx, &carrier)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                (flow.fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET role='planner' WHERE id=?1").bind(&flow.card),
+                    )
+                    .await
+                    .unwrap();
+                // A queued source still holds its old carrier object after the pointer moves.
+                (flow.fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
+                            .bind(&flow.card),
+                    )
+                    .await
+                    .unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    source
+                        .authorize_resource_tx(&mut tx, &carrier)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                (flow.fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                            .bind(&flow.worker)
+                            .bind(&flow.card),
+                    )
+                    .await
+                    .unwrap();
+                changed(&flow, false).await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
+                    &mut tx, &flow.card,
+                )
+                .await
+                .unwrap();
+                assert!(
+                    source
+                        .authorize_resource_tx(&mut tx, &carrier)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                let wake = crate::planner_hibernation::WakeContext::new(
+                    crate::state::RouteState::from_ref(&flow.state),
+                    flow.fixture.repo.clone(),
+                    crate::state::CodexShellState::from_ref(&flow.state),
+                );
+                let result = wake
+                    .wake_canonical(
+                        &flow.card.clone().into(),
+                        crate::conversation_inputs::InputSource::Dispatcher(source),
+                    )
+                    .await;
+                assert!(
+                    matches!(result, Err(crate::error::CalmError::Forbidden(ref reason))
+                if reason == "Dispatcher Planner tenure changed")
+                );
+                finish(flow).await;
+            })
+        })
         .await
-        .unwrap();
-    let carrier =
-        crate::db::sqlite::conversation::current_input_content_carrier_tx(&mut tx, &flow.card)
-            .await
-            .unwrap();
-    source
-        .authorize_resource_tx(&mut tx, &carrier)
-        .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
-        .await
-        .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
-        .await
-        .unwrap();
-    assert!(
-        source
-            .authorize_resource_tx(&mut tx, &carrier)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE cards SET role='planner' WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
-        .await
-        .unwrap();
-    // A queued source still holds its old carrier object after the pointer moves.
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
-        .await
-        .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
-        .await
-        .unwrap();
-    assert!(
-        source
-            .authorize_resource_tx(&mut tx, &carrier)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
-        .bind(&flow.worker)
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
-        .await
-        .unwrap();
-    changed(&flow, false).await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
-        .await
-        .unwrap();
-    let carrier =
-        crate::db::sqlite::conversation::current_input_content_carrier_tx(&mut tx, &flow.card)
-            .await
-            .unwrap();
-    assert!(
-        source
-            .authorize_resource_tx(&mut tx, &carrier)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let wake = crate::planner_hibernation::WakeContext::new(
-        crate::state::RouteState::from_ref(&flow.state),
-        flow.fixture.repo.clone(),
-        crate::state::CodexShellState::from_ref(&flow.state),
-    );
-    let result = wake
-        .wake_canonical(
-            &flow.card.clone().into(),
-            crate::conversation_inputs::InputSource::Dispatcher(source),
-        )
-        .await;
-    assert!(
-        matches!(result, Err(crate::error::CalmError::Forbidden(ref reason))
-        if reason == "Dispatcher Planner tenure changed")
-    );
-    finish(flow).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -312,15 +342,15 @@ async fn planner_switch_dispatcher_reopen_rechecks_tenure() {
         .unwrap();
     assert_eq!(target.card, CardId::from(flow.card.clone()));
     assert!(wake.ensure_planner_reopen(&target).await.unwrap().is_some());
-    sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1").bind(&flow.card))
         .await
         .unwrap();
     assert!(wake.ensure_planner_reopen(&target).await.unwrap().is_none());
-    sqlx::query("UPDATE cards SET role='planner' WHERE id=?1")
-        .bind(&flow.card)
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET role='planner' WHERE id=?1").bind(&flow.card))
         .await
         .unwrap();
     let pause = PausePoint::default();

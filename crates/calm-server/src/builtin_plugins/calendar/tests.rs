@@ -138,14 +138,17 @@ impl Fixture {
             })
             .await
             .unwrap();
-        sqlx::query("UPDATE cards SET role=? WHERE id=?")
-            .bind(if role == CardRole::Planner {
-                "planner"
-            } else {
-                "assistant"
-            })
-            .bind(card.id.as_str())
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role=? WHERE id=?")
+                    .bind(if role == CardRole::Planner {
+                        "planner"
+                    } else {
+                        "assistant"
+                    })
+                    .bind(card.id.as_str()),
+            )
             .await
             .unwrap();
         self.repo.seed_card_role_cache(&self.roles).await.unwrap();
@@ -155,36 +158,45 @@ impl Fixture {
             .await
             .unwrap();
         let session_id = crate::model::new_id();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        crate::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            crate::session_projection_repo::WorkerSessionInit {
-                id: session_id.clone(),
-                card_id: card.id.to_string(),
-                kind,
-                agent_provider: Some(AgentProvider::Codex),
-                status: crate::session_projection_repo::WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(session_id.clone()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: handle_state,
-                spawn_op_id: None,
-                now_ms: crate::model::now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        ToolCallIdentity {
-            card_id: card.id.to_string(),
-            role,
-            provider: AgentProvider::Codex,
-            session_id: session_id.clone(),
-            track_id: Some(track.id.to_string()),
-            area_id: area.id.to_string(),
-            thread_id: session_id,
-        }
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    crate::db::sqlite::session_start_runtime_tx(
+                        &mut tx,
+                        crate::session_projection_repo::WorkerSessionInit {
+                            id: session_id.clone(),
+                            card_id: card.id.to_string(),
+                            kind,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: crate::session_projection_repo::WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(session_id.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: handle_state,
+                            spawn_op_id: None,
+                            now_ms: crate::model::now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    ToolCallIdentity {
+                        card_id: card.id.to_string(),
+                        role,
+                        provider: AgentProvider::Codex,
+                        session_id: session_id.clone(),
+                        track_id: Some(track.id.to_string()),
+                        area_id: area.id.to_string(),
+                        thread_id: session_id,
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 impl Fixture {
@@ -633,10 +645,13 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     // a development-owned Planner cannot discover or invoke Calendar's native tools.
     let owner = crate::builtin_plugins::dev::PLUGIN_ID;
     fx.host.enable(owner).await.unwrap();
-    sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
-        .bind(owner)
-        .bind(planner.track_id.as_deref().unwrap())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
+                .bind(owner)
+                .bind(planner.track_id.as_deref().unwrap()),
+        )
         .await
         .unwrap();
     let scope = crate::mcp_server::tool_visibility::plugin_scope_for_track(
@@ -778,10 +793,13 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
         .enable(crate::builtin_plugins::dev::PLUGIN_ID)
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
-        .bind(crate::builtin_plugins::dev::PLUGIN_ID)
-        .bind(identity.track_id.unwrap())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope=? WHERE id=?")
+                .bind(crate::builtin_plugins::dev::PLUGIN_ID)
+                .bind(identity.track_id.unwrap()),
+        )
         .await
         .unwrap();
     let names = tool_descriptors_for_connection(&fx.ctx, &registry, &bound, None)
@@ -813,9 +831,9 @@ async fn calendar_always_enabled_policy_preserves_legacy_data_and_rejects_disabl
             .enabled
     );
     fx.host.stop(PLUGIN_ID).await.unwrap();
-    sqlx::query("UPDATE plugins SET enabled=0 WHERE id=?")
-        .bind(PLUGIN_ID)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE plugins SET enabled=0 WHERE id=?").bind(PLUGIN_ID))
         .await
         .unwrap();
     fx.host.reconcile_builtins().await.unwrap();

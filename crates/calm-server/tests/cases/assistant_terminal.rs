@@ -37,89 +37,102 @@ async fn agent_token_provider(
     provider: calm_server::session_projection_repo::AgentProvider,
 ) -> (String, String, String) {
     let (card, session) = (new_id(), new_id());
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let token = if role == CardRole::Assistant {
-        calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card.clone(), calm_server::model::NewCard {
-            track_id:track.into(),title:None,kind:"codex".into(),sort:None,
-            payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
-        },role,true,&CardRoleCache::new()).await.unwrap();
-        calm_server::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            calm_server::session_projection_repo::WorkerSessionInit::managed_assistant(
-                session.clone(),
+    let write_db = (h.sql.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let token = if role == CardRole::Assistant {
+            calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card.clone(), calm_server::model::NewCard {
+                track_id:track.into(),title:None,kind:"codex".into(),sort:None,
+                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+            },role,true,&CardRoleCache::new()).await.unwrap();
+            calm_server::db::sqlite::session_start_runtime_tx(
+                &mut tx,
+                calm_server::session_projection_repo::WorkerSessionInit::managed_assistant(
+                    session.clone(),
+                    card.clone(),
+                    provider,
+                    calm_server::session_projection_repo::WorkerSessionState::Running,
+                    None,
+                    json!({}),
+                    now_ms(),
+                ),
+            )
+            .await
+            .unwrap();
+            None
+        } else {
+            let (_, _, token) = card_with_codex_create_tx(
+                &mut tx,
                 card.clone(),
-                provider,
-                calm_server::session_projection_repo::WorkerSessionState::Running,
+                &session,
                 None,
+                track.to_owned().into(),
+                None,
+                None,
+                h.root.path().to_str().unwrap().into(),
                 json!({}),
-                now_ms(),
-            ),
-        )
-        .await
-        .unwrap();
-        None
-    } else {
-        let (_, _, token) = card_with_codex_create_tx(
-            &mut tx,
-            card.clone(),
-            &session,
-            None,
-            track.to_owned().into(),
-            None,
-            None,
-            h.root.path().to_str().unwrap().into(),
-            json!({}),
-            None,
-            None,
-            None,
-            role,
-            true,
-            &CardRoleCache::new(),
-            calm_server::routes::theme::RequestTheme::default_dark(),
-        )
-        .await
-        .unwrap();
-        token
-    };
-    // An Assistant's token is minted by its harness start, as `planner-harness-start` persists it.
-    let token = token.unwrap_or_else(|| {
-        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-        token.into_inner()
-    });
-    let hash = calm_server::mcp_server::auth::hash_token(&token);
-    card_mcp_token_set_tx(&mut tx, &card, &hash).await.unwrap();
-    session_mcp_token_set_tx(&mut tx, &session, &hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    (card, session, token)
+                None,
+                None,
+                None,
+                role,
+                true,
+                &CardRoleCache::new(),
+                calm_server::routes::theme::RequestTheme::default_dark(),
+            )
+            .await
+            .unwrap();
+            token
+        };
+        // An Assistant's token is minted by its harness start, as `planner-harness-start` persists it.
+        let token = token.unwrap_or_else(|| {
+            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+            token.into_inner()
+        });
+        let hash = calm_server::mcp_server::auth::hash_token(&token);
+        card_mcp_token_set_tx(&mut tx, &card, &hash).await.unwrap();
+        session_mcp_token_set_tx(&mut tx, &session, &hash)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        (card, session, token)
+
+    })).await.expect("independent write operation")
 }
 
 /// A terminal card in `track` that no task owns; returns its terminal id.
 async fn terminal_card(h: &Harness, track: &str) -> String {
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (_, terminal) = card_with_terminal_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        track.to_owned().into(),
-        None,
-        None,
-        "/bin/sh".into(),
-        h.root.path().to_str().unwrap().to_owned(),
-        json!({}),
-        CardRole::Worker,
-        true,
-        &CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    terminal.id
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_, terminal) = card_with_terminal_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track.to_owned().into(),
+                    None,
+                    None,
+                    "/bin/sh".into(),
+                    h.root.path().to_str().unwrap().to_owned(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    &CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                terminal.id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(crate) async fn foreign_track(h: &Harness) -> String {
@@ -336,10 +349,13 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
         json!({"attempt_id":finished.task,"wait_ms":50}),
     )
     .await;
-    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-        .bind(&finished.task)
-        .bind(now_ms())
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                .bind(&finished.task)
+                .bind(now_ms()),
+        )
         .await
         .unwrap();
     let late = h
@@ -380,31 +396,40 @@ async fn an_assistant_opens_no_terminal_card() {
 
 /// A same-Track claude Worker card that no task owns, as the owner opens one; returns its terminal.
 async fn manual_claude_card(h: &Harness) -> String {
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (_, terminal) = card_with_claude_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        h.track.clone().into(),
-        None,
-        None,
-        "/bin/sh".into(),
-        h.root.path().to_str().unwrap().to_owned(),
-        json!({}),
-        None,
-        None,
-        None,
-        "unused-settings".into(),
-        new_id(),
-        CardRole::Worker,
-        true,
-        &CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    terminal.id
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_, terminal) = card_with_claude_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    h.track.clone().into(),
+                    None,
+                    None,
+                    "/bin/sh".into(),
+                    h.root.path().to_str().unwrap().to_owned(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    "unused-settings".into(),
+                    new_id(),
+                    CardRole::Worker,
+                    true,
+                    &CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                terminal.id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The Planner drives a manual Terminal card or a task-less claude Worker card

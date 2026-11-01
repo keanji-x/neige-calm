@@ -1750,75 +1750,84 @@ async fn open_with_claim_reports_a_takeover_folded_with_its_grant() {
 async fn codex_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (card, term, _token) = calm_truth::db::sqlite::card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &new_id(),
-        None,
-        h.track.clone().into(),
-        None,
-        None,
-        h.root.path().to_str().unwrap().into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true,
-        h.state.write().role_cache(),
-        RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(card.kind, "codex");
-    assert!(
-        !calm_server::routes::codex::is_planner_terminal_card(&card),
-        "{}",
-        card.payload
-    );
-    let mut bus = h.state.events.subscribe();
-    let stop = json!({"hook_event_name":"Stop","session_id":"codex-worker-session"});
-    assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
-    let hooked = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let envelope = bus.recv().await.unwrap();
-            if let Event::CodexHook {
-                card_id: hooked,
-                kind,
-                ..
-            } = envelope.event
-            {
-                assert_eq!(hooked.as_str(), card_id);
-                assert_eq!(kind, "hook.codex.stop");
-                break;
-            }
-        }
-    })
-    .await;
-    assert!(
-        hooked.is_ok(),
-        "the codex hook must be broadcast as worker state"
-    );
-    assert_eq!(
-        h.persisted_hook_events().await,
-        1,
-        "persisted, not ring-only"
-    );
-    assert!(
-        h.state
-            .repo
-            .overlays_for("card", &card_id)
-            .await
-            .unwrap()
-            .is_empty(),
-        "no kernel projection writes a card overlay from a hook"
-    );
-    // The same body again is deduped by the worker cache, not appended twice.
-    assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
-    assert_eq!(h.persisted_hook_events().await, 1);
-    h.stop(&term.id).await;
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (card, term, _token) = calm_truth::db::sqlite::card_with_codex_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &new_id(),
+                    None,
+                    h.track.clone().into(),
+                    None,
+                    None,
+                    h.root.path().to_str().unwrap().into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    h.state.write().role_cache(),
+                    RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(card.kind, "codex");
+                assert!(
+                    !calm_server::routes::codex::is_planner_terminal_card(&card),
+                    "{}",
+                    card.payload
+                );
+                let mut bus = h.state.events.subscribe();
+                let stop = json!({"hook_event_name":"Stop","session_id":"codex-worker-session"});
+                assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
+                let hooked = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let envelope = bus.recv().await.unwrap();
+                        if let Event::CodexHook {
+                            card_id: hooked,
+                            kind,
+                            ..
+                        } = envelope.event
+                        {
+                            assert_eq!(hooked.as_str(), card_id);
+                            assert_eq!(kind, "hook.codex.stop");
+                            break;
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    hooked.is_ok(),
+                    "the codex hook must be broadcast as worker state"
+                );
+                assert_eq!(
+                    h.persisted_hook_events().await,
+                    1,
+                    "persisted, not ring-only"
+                );
+                assert!(
+                    h.state
+                        .repo
+                        .overlays_for("card", &card_id)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "no kernel projection writes a card overlay from a hook"
+                );
+                // The same body again is deduped by the worker cache, not appended twice.
+                assert_eq!(h.post_codex_hook(&card_id, &stop).await, 204);
+                assert_eq!(h.persisted_hook_events().await, 1);
+                h.stop(&term.id).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1826,74 +1835,83 @@ async fn codex_worker_card_hooks_are_still_persisted() {
 async fn claude_worker_card_hooks_are_still_persisted() {
     let h = Harness::start().await;
     let card_id = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (card, term) = calm_truth::db::sqlite::card_with_claude_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &new_id(),
-        h.track.clone().into(),
-        None,
-        None,
-        "claude".into(),
-        h.root.path().to_str().unwrap().into(),
-        json!({}),
-        None,
-        None,
-        None,
-        h.root.path().join("settings.json").display().to_string(),
-        new_id(),
-        CardRole::Worker,
-        true,
-        h.state.write().role_cache(),
-        RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(card.kind, "claude");
-    assert!(
-        !calm_server::routes::codex::is_planner_terminal_card(&card),
-        "{}",
-        card.payload
-    );
-    let mut bus = h.state.events.subscribe();
-    let stop = json!({"hook_event_name":"Stop","session_id":"claude-worker-session"});
-    assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
-    let hooked = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let envelope = bus.recv().await.unwrap();
-            if let Event::ClaudeHook {
-                card_id: hooked,
-                kind,
-                ..
-            } = envelope.event
-            {
-                assert_eq!(hooked.as_str(), card_id);
-                assert_eq!(kind, "hook.claude.stop");
-                break;
-            }
-        }
-    })
-    .await;
-    assert!(
-        hooked.is_ok(),
-        "the Claude hook must be broadcast as worker state"
-    );
-    assert_eq!(
-        h.persisted_hook_events().await,
-        1,
-        "persisted, not ring-only"
-    );
-    assert!(
-        h.state
-            .repo
-            .overlays_for("card", &card_id)
-            .await
-            .unwrap()
-            .is_empty(),
-        "no kernel projection writes a card overlay from a hook"
-    );
-    h.stop(&term.id).await;
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (card, term) = calm_truth::db::sqlite::card_with_claude_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &new_id(),
+                    h.track.clone().into(),
+                    None,
+                    None,
+                    "claude".into(),
+                    h.root.path().to_str().unwrap().into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    h.root.path().join("settings.json").display().to_string(),
+                    new_id(),
+                    CardRole::Worker,
+                    true,
+                    h.state.write().role_cache(),
+                    RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(card.kind, "claude");
+                assert!(
+                    !calm_server::routes::codex::is_planner_terminal_card(&card),
+                    "{}",
+                    card.payload
+                );
+                let mut bus = h.state.events.subscribe();
+                let stop = json!({"hook_event_name":"Stop","session_id":"claude-worker-session"});
+                assert_eq!(h.post_claude_hook(&card_id, &stop).await, 200);
+                let hooked = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let envelope = bus.recv().await.unwrap();
+                        if let Event::ClaudeHook {
+                            card_id: hooked,
+                            kind,
+                            ..
+                        } = envelope.event
+                        {
+                            assert_eq!(hooked.as_str(), card_id);
+                            assert_eq!(kind, "hook.claude.stop");
+                            break;
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    hooked.is_ok(),
+                    "the Claude hook must be broadcast as worker state"
+                );
+                assert_eq!(
+                    h.persisted_hook_events().await,
+                    1,
+                    "persisted, not ring-only"
+                );
+                assert!(
+                    h.state
+                        .repo
+                        .overlays_for("card", &card_id)
+                        .await
+                        .unwrap()
+                        .is_empty(),
+                    "no kernel projection writes a card overlay from a hook"
+                );
+                h.stop(&term.id).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2187,9 +2205,14 @@ async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::SettledWo
 /// Turn a sleeper's session row into a shared-daemon codex worker (`provider = 'codex'`, `thread_id = 't-1'`)
 /// and register `turn-1` as the thread's active turn on the fake app-server.
 async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
-    sqlx::query("UPDATE worker_sessions SET provider = 'codex', thread_id = 't-1' WHERE id = ?1")
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET provider = 'codex', thread_id = 't-1' WHERE id = ?1",
+            )
+            .bind(&p.session),
+        )
         .await
         .unwrap();
     h.state
@@ -2439,27 +2462,33 @@ async fn task_bound_worker_output_is_ignored() {
     assert!(a.working, "never bound: output counts: {a:?}");
 
     let task_id = format!("{}:build", h.track);
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id, \
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id, \
                            declared_by,created_at_ms,updated_at_ms) \
          VALUES (?1,?2,'build','terminal','test','[]','running',?3,'user',?4,?4)",
-    )
-    .bind(&task_id)
-    .bind(&h.track)
-    .bind(&p.card)
-    .bind(calm_server::model::now_ms())
-    .execute(h.sql.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&task_id)
+            .bind(&h.track)
+            .bind(&p.card)
+            .bind(calm_server::model::now_ms()),
+        )
+        .await
+        .unwrap();
     let a = recompute(&h, &pj).await;
     assert!(a.working, "W: the running task: {a:?}");
     assert_eq!(card_state(&a, &p.card), Some(CardState::Working));
 
     let finished_at = calm_server::model::now_ms();
-    sqlx::query("UPDATE tasks SET status = 'done', finished_at_ms = ?2 WHERE id = ?1")
-        .bind(&task_id)
-        .bind(finished_at)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status = 'done', finished_at_ms = ?2 WHERE id = ?1")
+                .bind(&task_id)
+                .bind(finished_at),
+        )
         .await
         .unwrap();
     // The PTY keeps printing: the stamp advances past the completion.
@@ -2485,13 +2514,12 @@ async fn interactive_codex_card_uses_output_not_thread_status() {
     let h = Harness::start().await;
     let pj = projector(&h);
     let p = open_program(&h, "codex-status", "exec sleep 600", false).await;
-    sqlx::query(
+    (h.sql.db()).writer().execute(sqlx::query(
         "UPDATE worker_sessions SET provider = 'codex', mode = 'resumable', thread_id = 't-1', \
                 last_thread_status = 'active', last_activity_ms = ?2 WHERE id = ?1",
     )
     .bind(&p.session)
-    .bind(calm_server::model::now_ms())
-    .execute(h.sql.pool())
+    .bind(calm_server::model::now_ms()))
     .await
     .unwrap();
     let a = recompute(&h, &pj).await;
@@ -2529,12 +2557,11 @@ async fn signal_killed_codex_interactive_card_is_not_failed() {
     let h = Harness::start().await;
     let pj = projector(&h);
     let p = open_sleeper(&h, "sigterm-codex").await;
-    sqlx::query(
+    (h.sql.db()).writer().execute(sqlx::query(
         "UPDATE worker_sessions SET provider = 'codex', mode = 'resumable', thread_id = 't-1' \
           WHERE id = ?1",
     )
-    .bind(&p.session)
-    .execute(h.sql.pool())
+    .bind(&p.session))
     .await
     .unwrap();
     let entry = h.state.terminal_renderer.get(&p.terminal).unwrap();
@@ -3199,120 +3226,124 @@ async fn s0_row_without_terminal_row_decodes_closed() {
     // 1. the idle harness row: no PTY.
     let planner_card = new_id();
     let planner_ws = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        planner_card.clone(),
-        NewCard {
-            track_id: track.clone().into(),
-            title: None,
-            kind: "planner".into(),
-            sort: None,
-            payload: json!({}),
-        },
-        CardRole::Planner,
-        true,
-        &h.state.card_role_cache,
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: planner_ws.clone(),
-            card_id: planner_card.clone(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("th-planner".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(
-                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-            ),
-            spawn_op_id: None,
-            now_ms: 1_000,
-        },
-    )
-    .await
-    .unwrap();
-    // 2. the interactive terminal session whose terminal row is deleted.
-    let term_card = new_id();
-    let term_ws = new_id();
-    card_create_with_id_tx(
-        &mut tx,
-        term_card.clone(),
-        NewCard {
-            track_id: track.clone().into(),
-            title: None,
-            kind: "terminal".into(),
-            sort: None,
-            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
-        },
-        CardRole::Worker,
-        true,
-        &h.state.card_role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let terminal = h
-        .sql
-        .terminal_create(NewTerminal {
-            card_id: term_card.clone().into(),
-            program: "sleep 600".into(),
-            cwd: h.root.path().to_str().unwrap().into(),
-            env: json!({}),
-            theme: RequestTheme::default_dark(),
-        })
+    let write_db = (h.sql.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        card_create_with_id_tx(
+            &mut tx,
+            planner_card.clone(),
+            NewCard {
+                track_id: track.clone().into(),
+                title: None,
+                kind: "planner".into(),
+                sort: None,
+                payload: json!({}),
+            },
+            CardRole::Planner,
+            true,
+            &h.state.card_role_cache,
+        )
         .await
         .unwrap();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: term_ws.clone(),
-            card_id: term_card.clone(),
-            kind: WorkerSessionKind::Terminal,
-            agent_provider: None,
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(terminal.id.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 2_000,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    h.sql.terminal_delete(&terminal.id).await.unwrap();
-    let linked: Option<String> =
-        sqlx::query_scalar("SELECT terminal_run_id FROM worker_sessions WHERE id = ?1")
-            .bind(&term_ws)
-            .fetch_one(h.sql.pool())
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: planner_ws.clone(),
+                card_id: planner_card.clone(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some("th-planner".into()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(
+                    serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                ),
+                spawn_op_id: None,
+                now_ms: 1_000,
+            },
+        )
+        .await
+        .unwrap();
+        // 2. the interactive terminal session whose terminal row is deleted.
+        let term_card = new_id();
+        let term_ws = new_id();
+        card_create_with_id_tx(
+            &mut tx,
+            term_card.clone(),
+            NewCard {
+                track_id: track.clone().into(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
+            },
+            CardRole::Worker,
+            true,
+            &h.state.card_role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let terminal = h
+            .sql
+            .terminal_create(NewTerminal {
+                card_id: term_card.clone().into(),
+                program: "sleep 600".into(),
+                cwd: h.root.path().to_str().unwrap().into(),
+                env: json!({}),
+                theme: RequestTheme::default_dark(),
+            })
             .await
             .unwrap();
-    assert_eq!(linked, None, "FK ON DELETE SET NULL");
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: term_ws.clone(),
+                card_id: term_card.clone(),
+                kind: WorkerSessionKind::Terminal,
+                agent_provider: None,
+                status: WorkerSessionState::Running,
+                terminal_run_id: Some(terminal.id.clone()),
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: 2_000,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        h.sql.terminal_delete(&terminal.id).await.unwrap();
+        let linked: Option<String> =
+            sqlx::query_scalar("SELECT terminal_run_id FROM worker_sessions WHERE id = ?1")
+                .bind(&term_ws)
+                .fetch_one(h.sql.pool())
+                .await
+                .unwrap();
+        assert_eq!(linked, None, "FK ON DELETE SET NULL");
 
-    let rows = eligible_sessions(h.sql.pool(), &track).await.unwrap();
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    for ws in &rows {
-        assert!(ws.terminal_run_id.is_none(), "{ws:?}");
-        assert!(!ws.pty_open, "no terminal row reads closed: {ws:?}");
-    }
-    assert!(rows.iter().any(|ws| ws.id == planner_ws));
-    assert!(rows.iter().any(|ws| ws.id == term_ws));
-    let pj = projector(&h);
-    let a = match pj.recompute_track(&track).await.unwrap() {
-        Recompute::NoTrack => panic!("track vanished"),
-        Recompute::Unchanged(p) | Recompute::Written(p) => p,
-    };
-    assert!(!a.working, "{a:?}");
-    assert_eq!(a.attention, Attention::None);
-    assert!(a.cards.is_empty());
-    h.stop("no-terminal").await;
+        let rows = eligible_sessions(h.sql.pool(), &track).await.unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for ws in &rows {
+            assert!(ws.terminal_run_id.is_none(), "{ws:?}");
+            assert!(!ws.pty_open, "no terminal row reads closed: {ws:?}");
+        }
+        assert!(rows.iter().any(|ws| ws.id == planner_ws));
+        assert!(rows.iter().any(|ws| ws.id == term_ws));
+        let pj = projector(&h);
+        let a = match pj.recompute_track(&track).await.unwrap() {
+            Recompute::NoTrack => panic!("track vanished"),
+            Recompute::Unchanged(p) | Recompute::Written(p) => p,
+        };
+        assert!(!a.working, "{a:?}");
+        assert_eq!(a.attention, Attention::None);
+        assert!(a.cards.is_empty());
+        h.stop("no-terminal").await;
+
+    })).await.expect("independent write operation")
 }

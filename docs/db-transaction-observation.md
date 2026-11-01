@@ -16,10 +16,41 @@ context is captured when the helper future is first polled and retained even if
 the future is later dropped outside that context. This supports the existing
 operation tracing context, including instrumented futures.
 
+## Scoped writer ownership
+
+An operation enters through `SqliteDb::writer().with_writer(...)`. Its callback
+borrows a non-cloneable `WriteSession`; `begin_immediate` returns a transaction
+that keeps that session mutably borrowed until commit, rollback or drop. Pass the
+transaction to domain `_tx` helpers rather than opening another root. The callback
+cannot return its managed `WriteTx` or keep a borrowed callback reference. The
+writer pool is private, and database clones share one manager and its existing fair queue.
+
+The supported interface composes borrowed writes; it is not an adversarial
+capability boundary. Existing domain helpers still borrow raw SQLx types.
+Extracting, replacing, swapping or returning those underlying resources is
+unsupported. Opaque executor hardening is deferred to [#3436](https://github.com/keanji-x/neige-calm/issues/3436).
+This limitation does not relax ordinary session borrowing or alias reentry checks.
+
+An alias attempting another root while its manager is active receives
+`NestedWrite` before queueing. Separate operation futures remain independent,
+even on one Tokio task. This check covers the callback's awaited future scope;
+ordinary `tokio::spawn` does not inherit task-local context. Supported owned child
+work must be wrapped with `inherit_write_scope` before spawning. The inherited
+context refers to the current lease, and stops rejecting after that lease ends;
+it does not follow later unrelated transactions. This is not a guarantee for
+arbitrary detached-task dependency graphs or independently opened databases.
+
+Use scoped autocommit for statements such as `VACUUM`, migrations and fixture
+operations requiring connection-local pragmas. It shares writer admission and
+reentry enforcement without adding an SQLite transaction. Published file readers
+use native read-only opens; every read connection, including recovered and shared
+memory connections, enables `query_only`. Tests deliberately exercising unsafe
+raw transaction behavior remain private to the storage infrastructure.
+
 ## Coverage
 
-`begin_immediate_tx` retains its existing bounded busy retries. The single-attempt
-`begin_immediate_tx_once` serves callers that already own their retry policy,
+`WriteSession::begin_immediate` retains the existing bounded busy retries. The single-attempt
+`WriteSession::begin_immediate_once` serves callers that already own their retry policy,
 including source-record capture and startup backfill. Both use the same observed
 acquisition/BEGIN implementation. Domain `_tx` helpers still borrow SQLx's raw
 transaction; authorization, projection and atomic publication contracts stay in

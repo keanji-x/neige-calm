@@ -8,9 +8,8 @@ async fn compact_task_is_admitted_beside_writer_and_waits_without_worker_or_leas
     let writer = plan_task(&boot.track_id, "writer", TaskKind::Codex, &[]);
     seed_projected_task(&boot, writer.clone()).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
-        .bind(&writer.id)
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("UPDATE tasks SET status='running' WHERE id=?1").bind(&writer.id))
         .await
         .unwrap();
     let (track, card, current) =
@@ -106,9 +105,8 @@ async fn compact_task_is_admitted_beside_writer_and_waits_without_worker_or_leas
     }
     assert_eq!((dispatched, failures), (1, 0));
     // Only the compact row remains active; it must never occupy the checkout.
-    sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
-        .bind(&writer.id)
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE id=?1").bind(&writer.id))
         .await
         .unwrap();
     let mut conn = db.read_pool().acquire().await.unwrap();

@@ -48,22 +48,46 @@ pub(crate) async fn worker_running(
         .unwrap();
     // This fixture records an already-finished spawn operation; it never drives
     // a provider adapter or starts a real model.
-    sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
-        .bind(&op)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1").bind(&op))
         .await
         .unwrap();
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(h.sql.db())
-        .await
-        .unwrap();
-    // The server's own cache, as the production create path writes through it: the hook ingest's
-    // role gate reads the worker card's role and Track from it.
-    let roles = h.state.card_role_cache.clone();
-    let theme = calm_server::routes::theme::RequestTheme::default_dark();
-    let cwd = h.root.path().to_str().unwrap().to_owned();
-    let (_, terminal) = match kind {
-        "codex" => {
-            let (c, t, _) = card_with_codex_create_tx(
+    let write_db = (h.sql.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        // The server's own cache, as the production create path writes through it: the hook ingest's
+        // role gate reads the worker card's role and Track from it.
+        let roles = h.state.card_role_cache.clone();
+        let theme = calm_server::routes::theme::RequestTheme::default_dark();
+        let cwd = h.root.path().to_str().unwrap().to_owned();
+        let (_, terminal) = match kind {
+            "codex" => {
+                let (c, t, _) = card_with_codex_create_tx(
+                    &mut tx,
+                    card.clone(),
+                    &session,
+                    Some(&op),
+                    track.into(),
+                    None,
+                    None,
+                    cwd.clone(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    &roles,
+                    theme,
+                )
+                .await
+                .unwrap();
+                (c, t)
+            }
+            "claude" => card_with_claude_worker_create_tx(
                 &mut tx,
                 card.clone(),
                 &session,
@@ -71,83 +95,63 @@ pub(crate) async fn worker_running(
                 track.into(),
                 None,
                 None,
+                "/bin/sh".into(),
                 cwd.clone(),
                 json!({}),
                 None,
                 None,
                 None,
-                CardRole::Worker,
-                true,
+                "unused-settings".into(),
+                new_id(),
                 &roles,
                 theme,
             )
             .await
+            .unwrap(),
+            "terminal" => card_with_terminal_create_tx(
+                &mut tx,
+                card.clone(),
+                &session,
+                Some(&op),
+                track.into(),
+                None,
+                None,
+                "/bin/sh".into(),
+                cwd.clone(),
+                json!({}),
+                CardRole::Worker,
+                true,
+                &roles,
+                theme,
+                false,
+                calm_types::card_presentation::CardCreationSource::Manual,
+            )
+            .await
+            .unwrap(),
+            _ => panic!("unsupported fixture kind"),
+        };
+        tx.commit().await.unwrap();
+        h.sql
+            .session_projection_set_status_for_card(
+                &card,
+                calm_server::session_projection_repo::WorkerSessionState::Running,
+            )
+            .await
             .unwrap();
-            (c, t)
+        if let Some(script) = viewer {
+            spawn_viewer_running(h, &terminal.id, script).await;
         }
-        "claude" => card_with_claude_worker_create_tx(
-            &mut tx,
-            card.clone(),
-            &session,
-            Some(&op),
-            track.into(),
-            None,
-            None,
-            "/bin/sh".into(),
-            cwd.clone(),
-            json!({}),
-            None,
-            None,
-            None,
-            "unused-settings".into(),
-            new_id(),
-            &roles,
-            theme,
-        )
-        .await
-        .unwrap(),
-        "terminal" => card_with_terminal_create_tx(
-            &mut tx,
-            card.clone(),
-            &session,
-            Some(&op),
-            track.into(),
-            None,
-            None,
-            "/bin/sh".into(),
-            cwd.clone(),
-            json!({}),
-            CardRole::Worker,
-            true,
-            &roles,
-            theme,
-            false,
-            calm_types::card_presentation::CardCreationSource::Manual,
-        )
-        .await
-        .unwrap(),
-        _ => panic!("unsupported fixture kind"),
-    };
-    tx.commit().await.unwrap();
-    h.sql
-        .session_projection_set_status_for_card(
-            &card,
-            calm_server::session_projection_repo::WorkerSessionState::Running,
-        )
-        .await
-        .unwrap();
-    if let Some(script) = viewer {
-        spawn_viewer_running(h, &terminal.id, script).await;
-    }
-    // Stamp the task/worker association after its viewer exists.
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
-        .bind(&task).bind(track).bind(key).bind(kind).bind(&card).bind(now_ms()).execute(h.sql.pool()).await.unwrap();
-    Worker {
-        task,
-        card,
-        session,
-        terminal: terminal.id,
-    }
+        // Stamp the task/worker association after its viewer exists.
+        (h.sql.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
+            .bind(&task).bind(track).bind(key).bind(kind).bind(&card).bind(now_ms())).await.unwrap();
+        Worker {
+            task,
+            card,
+            session,
+            terminal: terminal.id,
+        }
+
+    })).await.expect("independent write operation")
 }
 pub(crate) async fn spawn_viewer(h: &Harness, terminal: &str) {
     spawn_viewer_running(h, terminal, ECHO_WORKER).await;
@@ -339,10 +343,13 @@ async fn task_completion_revokes_control_but_preserves_current_output() {
     )
     .await;
     let before = snapshot(&h, json!({"attempt_id":w.task})).await;
-    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-        .bind(&w.task)
-        .bind(now_ms())
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                .bind(&w.task)
+                .bind(now_ms()),
+        )
         .await
         .unwrap();
     let after = snapshot(&h, json!({"attempt_id":w.task})).await;
@@ -390,10 +397,13 @@ async fn readback_reports_a_task_that_finished_during_the_wait() {
         while waiters() == before {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-            .bind(&w.task)
-            .bind(now_ms())
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                    .bind(&w.task)
+                    .bind(now_ms()),
+            )
             .await
             .unwrap();
         entry
@@ -470,10 +480,13 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-                .bind(&w.task)
-                .bind(now_ms())
-                .execute(h.sql.pool())
+            (h.sql.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                        .bind(&w.task)
+                        .bind(now_ms()),
+                )
                 .await
                 .unwrap();
             entry
@@ -516,74 +529,78 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
     };
     let h = Harness::start().await;
     // A codex task Worker is read-only (#1784); it keeps the observation half.
-    for (kind, session_kind, provider) in [
-        (
-            "claude",
-            WorkerSessionKind::ClaudeCard,
-            AgentProvider::Claude,
-        ),
-        ("codex", WorkerSessionKind::CodexCard, AgentProvider::Codex),
-    ] {
-        let writable = kind == "claude";
-        let w = worker(&h, kind, &h.track, true).await;
-        if writable {
-            h.ok(
-                "neige_terminal_control",
-                json!({"attempt_id":w.task,"action":"claim"}),
+    let write_db = (h.sql.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for (kind, session_kind, provider) in [
+            (
+                "claude",
+                WorkerSessionKind::ClaudeCard,
+                AgentProvider::Claude,
+            ),
+            ("codex", WorkerSessionKind::CodexCard, AgentProvider::Codex),
+        ] {
+            let writable = kind == "claude";
+            let w = worker(&h, kind, &h.track, true).await;
+            if writable {
+                h.ok(
+                    "neige_terminal_control",
+                    json!({"attempt_id":w.task,"action":"claim"}),
+                )
+                .await;
+            }
+            let before = snapshot(&h, json!({"attempt_id":w.task})).await;
+            let old = h
+                .sql
+                .session_get_by_id(&w.session.clone().into())
+                .await
+                .unwrap()
+                .unwrap();
+            let next = new_id();
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            session_supersede_and_start_tx(
+                &mut tx,
+                &w.session,
+                WorkerSessionInit {
+                    id: next.clone(),
+                    card_id: w.card.clone(),
+                    kind: session_kind,
+                    agent_provider: Some(provider),
+                    status: WorkerSessionState::Running,
+                    terminal_run_id: Some(w.terminal.clone()),
+                    thread_id: None,
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    spawn_op_id: old.spawn_op_id,
+                    now_ms: now_ms(),
+                },
             )
-            .await;
-        }
-        let before = snapshot(&h, json!({"attempt_id":w.task})).await;
-        let old = h
-            .sql
-            .session_get_by_id(&w.session.clone().into())
             .await
-            .unwrap()
             .unwrap();
-        let next = new_id();
-        let mut tx = h.sql.pool().begin().await.unwrap();
-        session_supersede_and_start_tx(
-            &mut tx,
-            &w.session,
-            WorkerSessionInit {
-                id: next.clone(),
-                card_id: w.card.clone(),
-                kind: session_kind,
-                agent_provider: Some(provider),
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(w.terminal.clone()),
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: old.spawn_op_id,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let resolved = h
-            .ok("neige_terminal_show", json!({"attempt_id":w.task}))
-            .await;
-        assert_eq!(resolved["worker_session_id"], next);
-        if writable {
-            h.ok(
-                "neige_terminal_control",
-                json!({"attempt_id":w.task,"action":"claim"}),
-            )
-            .await;
+            tx.commit().await.unwrap();
+            let resolved = h
+                .ok("neige_terminal_show", json!({"attempt_id":w.task}))
+                .await;
+            assert_eq!(resolved["worker_session_id"], next);
+            if writable {
+                h.ok(
+                    "neige_terminal_control",
+                    json!({"attempt_id":w.task,"action":"claim"}),
+                )
+                .await;
+            }
+            let fresh = snapshot(&h, json!({"attempt_id":w.task})).await;
+            assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
+            let rejected=h.call("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"old","action":{"type":"text","text":"stale"}})).await;
+            assert!(rejected.get("error").is_some(), "{rejected}");
+            if writable {
+                let accepted=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"idempotency_key":"new","action":{"type":"text","text":"current"}})).await;
+                assert_eq!(accepted["outcome"], "written");
+            }
+            stop(&h, &w).await;
         }
-        let fresh = snapshot(&h, json!({"attempt_id":w.task})).await;
-        assert_ne!(before["connection_id"], fresh["connection_id"], "{kind}");
-        let rejected=h.call("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":before["observation_id"],"idempotency_key":"old","action":{"type":"text","text":"stale"}})).await;
-        assert!(rejected.get("error").is_some(), "{rejected}");
-        if writable {
-            let accepted=h.ok("neige_terminal_input",json!({"attempt_id":w.task,"observation_id":fresh["observation_id"],"idempotency_key":"new","action":{"type":"text","text":"current"}})).await;
-            assert_eq!(accepted["outcome"], "written");
-        }
-        stop(&h, &w).await;
-    }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -599,63 +616,72 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
     )
     .await;
     let task = h.sql.task_get(&w.task).await.unwrap().unwrap();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    sqlx::query("UPDATE tasks SET status='failed',finished_at_ms=?2 WHERE id=?1")
-        .bind(&w.task)
-        .bind(now_ms())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    // A released recovery allocation, as 4140 stores one: no code writes one any more.
-    let origin = TaskAttemptOrigin::Recovery {
-        previous_attempt_id: w.task.clone(),
-        idempotency_key: "next-generation".into(),
-        request_fingerprint: "fingerprint".into(),
-        reason: "test explicit new attempt".into(),
-        actor: calm_server::ids::ActorId::User,
-        constraint: TaskRecoveryConstraint::V1 {
-            refs: vec![calm_types::event::TaskContextRef {
-                track_id: h.track.clone().into(),
-                block_id: "b_1000".into(),
-                rev: 1,
-                hash: "0".repeat(64),
-                is_root: true,
-            }],
-            spawn: TASK_IN_TRACK_ROUTE.into(),
-            declared_by: "user".into(),
-        },
-    };
-    let recovered = format!("{}:2", w.task);
-    sqlx::query(
-        "INSERT INTO task_attempt_allocations \
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE tasks SET status='failed',finished_at_ms=?2 WHERE id=?1")
+                    .bind(&w.task)
+                    .bind(now_ms())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                // A released recovery allocation, as 4140 stores one: no code writes one any more.
+                let origin = TaskAttemptOrigin::Recovery {
+                    previous_attempt_id: w.task.clone(),
+                    idempotency_key: "next-generation".into(),
+                    request_fingerprint: "fingerprint".into(),
+                    reason: "test explicit new attempt".into(),
+                    actor: calm_server::ids::ActorId::User,
+                    constraint: TaskRecoveryConstraint::V1 {
+                        refs: vec![calm_types::event::TaskContextRef {
+                            track_id: h.track.clone().into(),
+                            block_id: "b_1000".into(),
+                            rev: 1,
+                            hash: "0".repeat(64),
+                            is_root: true,
+                        }],
+                        spawn: TASK_IN_TRACK_ROUTE.into(),
+                        declared_by: "user".into(),
+                    },
+                };
+                let recovered = format!("{}:2", w.task);
+                sqlx::query(
+                    "INSERT INTO task_attempt_allocations \
          (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
-    )
-    .bind(&recovered)
-    .bind(&h.track)
-    .bind(&task.key)
-    .bind(serde_json::to_string(&origin).unwrap())
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_ne!(recovered, w.task);
-    for target in [
-        json!({"attempt_id":w.task}),
-        json!({"terminal_id":w.terminal}),
-    ] {
-        assert!(
-            h.call("neige_terminal_read", target)
+                )
+                .bind(&recovered)
+                .bind(&h.track)
+                .bind(&task.key)
+                .bind(serde_json::to_string(&origin).unwrap())
+                .execute(&mut **tx)
                 .await
-                .get("error")
-                .is_some()
-        );
-    }
-    h.ok(
-        "neige_terminal_control",
-        json!({"attempt_id":w.task,"action":"detach"}),
-    )
-    .await;
-    stop(&h, &w).await;
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_ne!(recovered, w.task);
+                for target in [
+                    json!({"attempt_id":w.task}),
+                    json!({"terminal_id":w.terminal}),
+                ] {
+                    assert!(
+                        h.call("neige_terminal_read", target)
+                            .await
+                            .get("error")
+                            .is_some()
+                    );
+                }
+                h.ok(
+                    "neige_terminal_control",
+                    json!({"attempt_id":w.task,"action":"detach"}),
+                )
+                .await;
+                stop(&h, &w).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -663,10 +689,13 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
     let h = Harness::start().await;
     let old = worker(&h, "claude", &h.track, true).await;
     let other = worker(&h, "claude", &h.track, true).await;
-    sqlx::query("UPDATE tasks SET worker_card_id=?2 WHERE id=?1")
-        .bind(&old.task)
-        .bind(&other.card)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id=?2 WHERE id=?1")
+                .bind(&old.task)
+                .bind(&other.card),
+        )
         .await
         .unwrap();
     for target in [
@@ -683,9 +712,12 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
     let restarted = worker(&h, "claude", &h.track, true).await;
     // The current task still names this card, but its replaced session
     // no longer carries the owning task operation. Direct ID must not bypass it.
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id=NULL WHERE id=?1")
-        .bind(&restarted.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id=NULL WHERE id=?1")
+                .bind(&restarted.session),
+        )
         .await
         .unwrap();
     assert!(
@@ -711,9 +743,9 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
             .await["available"],
         true
     );
-    sqlx::query("DELETE FROM tasks WHERE id=?1")
-        .bind(&w.task)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM tasks WHERE id=?1").bind(&w.task))
         .await
         .unwrap();
     let result = h
@@ -729,95 +761,104 @@ async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
 #[tokio::test]
 async fn manual_codex_and_claude_workers_are_controllable_without_a_task() {
     let h = Harness::start().await;
-    for kind in ["codex", "claude"] {
-        let card = new_id();
-        let session = new_id();
-        let roles = CardRoleCache::new();
-        let theme = calm_server::routes::theme::RequestTheme::default_dark();
-        let cwd = h.root.path().to_str().unwrap().to_owned();
-        let mut tx = h.sql.pool().begin().await.unwrap();
-        let terminal = if kind == "codex" {
-            card_with_codex_create_tx(
-                &mut tx,
-                card.clone(),
-                &session,
-                None,
-                h.track.clone().into(),
-                None,
-                None,
-                cwd,
-                json!({}),
-                None,
-                None,
-                None,
-                CardRole::Worker,
-                true,
-                &roles,
-                theme,
-            )
-            .await
-            .unwrap()
-            .1
-        } else {
-            card_with_claude_create_tx(
-                &mut tx,
-                card.clone(),
-                &session,
-                h.track.clone().into(),
-                None,
-                None,
-                "/bin/sh".into(),
-                cwd,
-                json!({}),
-                None,
-                None,
-                None,
-                "unused-settings".into(),
-                new_id(),
-                CardRole::Worker,
-                true,
-                &roles,
-                theme,
-            )
-            .await
-            .unwrap()
-            .1
-        };
-        tx.commit().await.unwrap();
-        spawn_viewer(&h, &terminal.id).await;
-        let resolved = h
-            .ok("neige_terminal_show", json!({"terminal_id":terminal.id}))
-            .await;
-        assert_eq!(resolved["task"], Value::Null);
-        assert_eq!(resolved["card_kind"], kind);
-        assert_eq!(resolved["available"], true);
-        assert_eq!(resolved["controllable"], true);
-        h.ok(
-            "neige_terminal_control",
-            json!({"terminal_id":terminal.id,"action":"claim"}),
-        )
-        .await;
-        let before = h.observe_text(&terminal.id, "WORKER_READY").await;
-        let written = h
-            .input(
-                &terminal.id,
-                &before,
-                "manual-text",
-                json!({"type":"text","text":"manual"}),
-            )
-            .await;
-        assert_eq!(written["outcome"], "written");
-        let before = snapshot(&h, json!({"terminal_id":terminal.id})).await;
-        let entered = h
-            .input(
-                &terminal.id,
-                &before,
-                "manual-enter",
-                json!({"type":"key","key":"Enter"}),
-            )
-            .await;
-        assert_eq!(entered["outcome"], "written");
-        h.observe_text(&terminal.id, "WORKER_REPLY:manual").await;
-        h.state.terminal_renderer.drop_entry(&terminal.id).await;
-    }
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for kind in ["codex", "claude"] {
+                    let card = new_id();
+                    let session = new_id();
+                    let roles = CardRoleCache::new();
+                    let theme = calm_server::routes::theme::RequestTheme::default_dark();
+                    let cwd = h.root.path().to_str().unwrap().to_owned();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let terminal = if kind == "codex" {
+                        card_with_codex_create_tx(
+                            &mut tx,
+                            card.clone(),
+                            &session,
+                            None,
+                            h.track.clone().into(),
+                            None,
+                            None,
+                            cwd,
+                            json!({}),
+                            None,
+                            None,
+                            None,
+                            CardRole::Worker,
+                            true,
+                            &roles,
+                            theme,
+                        )
+                        .await
+                        .unwrap()
+                        .1
+                    } else {
+                        card_with_claude_create_tx(
+                            &mut tx,
+                            card.clone(),
+                            &session,
+                            h.track.clone().into(),
+                            None,
+                            None,
+                            "/bin/sh".into(),
+                            cwd,
+                            json!({}),
+                            None,
+                            None,
+                            None,
+                            "unused-settings".into(),
+                            new_id(),
+                            CardRole::Worker,
+                            true,
+                            &roles,
+                            theme,
+                        )
+                        .await
+                        .unwrap()
+                        .1
+                    };
+                    tx.commit().await.unwrap();
+                    spawn_viewer(&h, &terminal.id).await;
+                    let resolved = h
+                        .ok("neige_terminal_show", json!({"terminal_id":terminal.id}))
+                        .await;
+                    assert_eq!(resolved["task"], Value::Null);
+                    assert_eq!(resolved["card_kind"], kind);
+                    assert_eq!(resolved["available"], true);
+                    assert_eq!(resolved["controllable"], true);
+                    h.ok(
+                        "neige_terminal_control",
+                        json!({"terminal_id":terminal.id,"action":"claim"}),
+                    )
+                    .await;
+                    let before = h.observe_text(&terminal.id, "WORKER_READY").await;
+                    let written = h
+                        .input(
+                            &terminal.id,
+                            &before,
+                            "manual-text",
+                            json!({"type":"text","text":"manual"}),
+                        )
+                        .await;
+                    assert_eq!(written["outcome"], "written");
+                    let before = snapshot(&h, json!({"terminal_id":terminal.id})).await;
+                    let entered = h
+                        .input(
+                            &terminal.id,
+                            &before,
+                            "manual-enter",
+                            json!({"type":"key","key":"Enter"}),
+                        )
+                        .await;
+                    assert_eq!(entered["outcome"], "written");
+                    h.observe_text(&terminal.id, "WORKER_REPLY:manual").await;
+                    h.state.terminal_renderer.drop_entry(&terminal.id).await;
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

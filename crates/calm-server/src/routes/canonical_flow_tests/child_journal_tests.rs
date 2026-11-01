@@ -18,9 +18,11 @@ async fn journal_flow(damaged: bool) {
     prepare_parent_resource(&fixture, &app, &cookie, &parent).await;
     let parent_row = fixture.repo.track_get(&parent).await.unwrap().unwrap();
     let borrowed = parent_row.workspace.path;
-    sqlx::query("UPDATE tracks SET workspace_kind='attached' WHERE id=?1")
-        .bind(&parent)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET workspace_kind='attached' WHERE id=?1").bind(&parent),
+        )
         .await
         .unwrap();
     let mut children = Vec::new();
@@ -38,15 +40,18 @@ async fn journal_flow(damaged: bool) {
     }
     let (client, mut peer) = connect(&state.shared_codex_appserver).await;
     for (damage, child) in children.into_iter().enumerate() {
-        sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-            .bind(&parent)
-            .bind(&child)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                    .bind(&parent)
+                    .bind(&child),
+            )
             .await
             .unwrap();
         if !damaged {
-            sqlx::query("UPDATE tracks SET workspace_kind='attached',workspace_path=?2,workspace_worktree_path=NULL WHERE id=?1")
-            .bind(&child).bind(&borrowed).execute(fixture.repo.pool()).await.unwrap();
+            (fixture.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET workspace_kind='attached',workspace_path=?2,workspace_worktree_path=NULL WHERE id=?1")
+            .bind(&child).bind(&borrowed)).await.unwrap();
         }
         let cards: Vec<(String, String)> =
             sqlx::query_as("SELECT id,role FROM cards WHERE track_id=?1")
@@ -55,9 +60,11 @@ async fn journal_flow(damaged: bool) {
                 .await
                 .unwrap();
         let id = |role| cards.iter().find(|(_, r)| r == role).unwrap().0.clone();
-        sqlx::query("UPDATE tracks SET workspace_frozen_at=1 WHERE id=?1")
-            .bind(&child)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET workspace_frozen_at=1 WHERE id=?1").bind(&child),
+            )
             .await
             .unwrap();
         let frozen = fixture.repo.track_get(&child).await.unwrap().unwrap();
@@ -110,13 +117,12 @@ async fn journal_flow(damaged: bool) {
         if damaged && damage != 4 {
             output.result = output.data.clone();
         }
-        sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,
+        (fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,
             target_type,target_id,target_json,payload_json,tx_output_json,phase,phase_detail_json,created_at_ms,updated_at_ms)
             VALUES(?1,?1,'child-track',?1,'released','track',?2,'{}','{}',?3,?4,
             '{\"kind\":\"mint_and_await\"}',1,1)")
             .bind(format!("old-child-{child}")).bind(&child)
-            .bind(serde_json::to_string(&output).unwrap()).bind(phase)
-            .execute(fixture.repo.pool()).await.unwrap();
+            .bind(serde_json::to_string(&output).unwrap()).bind(phase)).await.unwrap();
         let uri = format!("/api/tracks/{child}/conversations");
         let body = json!({"provider":"codex","text":FIRST_BODY});
         let created = post(&app, &cookie, &uri, "journal-assistant", body.clone()).await;

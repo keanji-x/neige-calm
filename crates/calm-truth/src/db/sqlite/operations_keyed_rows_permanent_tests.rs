@@ -10,19 +10,22 @@ async fn repo() -> SqlxRepo {
 }
 
 async fn insert_operation(repo: &SqlxRepo, id: &str, idempotency_key: Option<&str>) {
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
              id, operation_key, kind, idempotency_key, payload_hash,
              target_type, target_json, payload_json, phase,
              created_at_ms, updated_at_ms
            ) VALUES (?1, ?1, 'planner-harness-start', ?2, 'hash', 'track', '{}', '{}',
                      'succeeded', 0, 0)"#,
-    )
-    .bind(id)
-    .bind(idempotency_key)
-    .execute(repo.pool())
-    .await
-    .expect("insert operation");
+            )
+            .bind(id)
+            .bind(idempotency_key),
+        )
+        .await
+        .expect("insert operation");
 }
 
 async fn surviving_ids(repo: &SqlxRepo) -> Vec<String> {
@@ -37,8 +40,9 @@ async fn a_keyed_operations_row_cannot_be_deleted() {
     let repo = repo().await;
     insert_operation(&repo, "keyed", Some("some-idempotency-key")).await;
 
-    let refused = sqlx::query("DELETE FROM operations WHERE id = 'keyed'")
-        .execute(repo.pool())
+    let refused = (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM operations WHERE id = 'keyed'"))
         .await
         .expect_err("deleting a keyed operations row must be refused");
 
@@ -68,8 +72,11 @@ async fn an_unkeyed_operations_row_is_still_deletable() {
     insert_operation(&repo, "keyed", Some("some-idempotency-key")).await;
     insert_operation(&repo, "unkeyed", None).await;
 
-    sqlx::query("DELETE FROM operations WHERE idempotency_key IS NULL")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "DELETE FROM operations WHERE idempotency_key IS NULL",
+        ))
         .await
         .expect("an unkeyed operations row must remain deletable");
 
@@ -87,8 +94,9 @@ async fn a_bare_delete_from_operations_also_aborts() {
     insert_operation(&repo, "keyed", Some("some-idempotency-key")).await;
     insert_operation(&repo, "unkeyed", None).await;
 
-    sqlx::query("DELETE FROM operations")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM operations"))
         .await
         .expect_err("a bare DELETE FROM operations must abort on the keyed row");
 

@@ -53,51 +53,56 @@ pub(super) async fn seed_with_url(
         })
         .await
         .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        let card = card_create_with_id_tx(&mut tx, new_id(), NewCard { track_id: track.id.clone(),
+            title: None, kind: "codex".into(), sort: None,
+            payload: serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider.wire_name(),"permission_mode":"never"}) },
+            CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
+        let thread = Uuid::new_v4().to_string();
+        let worker = new_id();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(provider),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: crate::model::now_ms(),
+            },
+        )
         .await
         .unwrap();
-    let card = card_create_with_id_tx(&mut tx, new_id(), NewCard { track_id: track.id.clone(),
-        title: None, kind: "codex".into(), sort: None,
-        payload: serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider.wire_name(),"permission_mode":"never"}) },
-        CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
-    let thread = Uuid::new_v4().to_string();
-    let worker = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(provider),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: crate::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    Owner {
-        db_url: db_url.to_owned(),
-        repo,
-        card: card.id.to_string(),
-        track: track.id.to_string(),
-        worker,
-        thread,
-    }
+        tx.commit().await.unwrap();
+        Owner {
+            db_url: db_url.to_owned(),
+            repo,
+            card: card.id.to_string(),
+            track: track.id.to_string(),
+            worker,
+            thread,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 pub(super) async fn fail_terminal_outcome(repo: &crate::db::sqlite::SqlxRepo) {
-    sqlx::query(
-        "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_outcome BEFORE INSERT ON harness_items
         WHEN NEW.method='turn/completed' BEGIN SELECT RAISE(ABORT,'outcome failed'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 }

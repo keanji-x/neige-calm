@@ -125,8 +125,11 @@ async fn task_recovery_migration_preserves_all_execution_values_refs_and_operati
     ] {
         assert!(indexes.iter().any(|index| index == name), "missing {name}");
     }
-    sqlx::query("UPDATE tasks SET status='done' WHERE id='nonconventional-running'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tasks SET status='done' WHERE id='nonconventional-running'",
+        ))
         .await
         .unwrap();
     assert_eq!(

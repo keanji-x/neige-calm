@@ -12,88 +12,97 @@ use calm_types::worker::{
 };
 
 async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, String) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "w".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        "card-1".into(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "worker".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    session_insert_tx(
-        &mut tx,
-        WorkerSession {
-            id: WorkerSessionId::from(session_id),
-            track_id: track.id.clone(),
-            provider: WorkerProviderKind::Codex,
-            mode: SessionMode::Resumable,
-            contract: WorkerContract::Executor,
-            parent_session_id: None,
-            requester_session_id: None,
-            state: WorkerSessionState::Running,
-            mcp_token_hash: None,
-            thread_id: Some(format!("thread-{session_id}")),
-            agent_session_id: Some(format!("agent-{session_id}")),
-            active_turn_id: None,
-            terminal_run_id: None,
-            card_id: Some(card.id.clone()),
-            handle_state_json: None,
-            liveness: LivenessTag::Alive,
-            liveness_probed_at_ms: None,
-            exit_code: None,
-            exit_interpretation: None,
-            spawn_op_id: None,
-            last_activity_ms: None,
-            last_thread_status: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            completed_at_ms: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card.id.to_string(), track.id.to_string())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "c".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "w".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    "card-1".into(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "worker".into(),
+                        sort: None,
+                        payload: serde_json::json!({}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                session_insert_tx(
+                    &mut tx,
+                    WorkerSession {
+                        id: WorkerSessionId::from(session_id),
+                        track_id: track.id.clone(),
+                        provider: WorkerProviderKind::Codex,
+                        mode: SessionMode::Resumable,
+                        contract: WorkerContract::Executor,
+                        parent_session_id: None,
+                        requester_session_id: None,
+                        state: WorkerSessionState::Running,
+                        mcp_token_hash: None,
+                        thread_id: Some(format!("thread-{session_id}")),
+                        agent_session_id: Some(format!("agent-{session_id}")),
+                        active_turn_id: None,
+                        terminal_run_id: None,
+                        card_id: Some(card.id.clone()),
+                        handle_state_json: None,
+                        liveness: LivenessTag::Alive,
+                        liveness_probed_at_ms: None,
+                        exit_code: None,
+                        exit_interpretation: None,
+                        spawn_op_id: None,
+                        last_activity_ms: None,
+                        last_thread_status: None,
+                        created_at_ms: 1,
+                        updated_at_ms: 1,
+                        completed_at_ms: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card.id.to_string(), track.id.to_string())
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -103,76 +112,85 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
     let (card_id, track_id) = seed_card_and_session(&repo, session_id).await;
 
     let mut ids = Vec::new();
-    for (n, kind) in [
-        (1_i64, "user_message"),
-        (2, "assistant_message"),
-        (3, "tool_call"),
-    ] {
-        let mut tx = repo.pool().begin().await.unwrap();
-        let id = worker_flow_item_insert_tx(
-            &mut tx,
-            Some(&card_id),
-            Some(session_id),
-            Some(&track_id),
-            Some(session_id),
-            kind,
-            &format!(r#"{{"kind":"{kind}","seq":{n}}}"#),
-            1_000 + n,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        ids.push(id);
-    }
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            for (n, kind) in [
+                                (1_i64, "user_message"),
+                                (2, "assistant_message"),
+                                (3, "tool_call"),
+                            ] {
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                let id = worker_flow_item_insert_tx(
+                                    &mut tx,
+                                    Some(&card_id),
+                                    Some(session_id),
+                                    Some(&track_id),
+                                    Some(session_id),
+                                    kind,
+                                    &format!(r#"{{"kind":"{kind}","seq":{n}}}"#),
+                                    1_000 + n,
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                ids.push(id);
+                            }
 
-    let asc = repo
-        .worker_flow_item_list_by_card(&card_id, 0, 100, false)
-        .await
-        .unwrap();
-    assert_eq!(asc.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
-    assert_eq!(asc[0].kind, "user_message");
-    assert_eq!(asc[0].card_id.as_deref(), Some(card_id.as_str()));
-    assert_eq!(asc[0].captured_session_id.as_deref(), Some(session_id));
-    assert_eq!(asc[0].worker_session_id.as_deref(), Some(session_id));
+                            let asc = repo
+                                .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+                                .await
+                                .unwrap();
+                            assert_eq!(asc.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
+                            assert_eq!(asc[0].kind, "user_message");
+                            assert_eq!(asc[0].card_id.as_deref(), Some(card_id.as_str()));
+                            assert_eq!(asc[0].captured_session_id.as_deref(), Some(session_id));
+                            assert_eq!(asc[0].worker_session_id.as_deref(), Some(session_id));
 
-    let page = repo
-        .worker_flow_item_list_by_card(&card_id, ids[0], 1, false)
-        .await
-        .unwrap();
-    assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
+                            let page = repo
+                                .worker_flow_item_list_by_card(&card_id, ids[0], 1, false)
+                                .await
+                                .unwrap();
+                            assert_eq!(page.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
 
-    let desc = repo
-        .worker_flow_item_list_by_card(&card_id, 0, 2, true)
-        .await
-        .unwrap();
-    assert_eq!(
-        desc.iter().map(|r| r.id).collect::<Vec<_>>(),
-        vec![ids[1], ids[2]]
-    );
+                            let desc = repo
+                                .worker_flow_item_list_by_card(&card_id, 0, 2, true)
+                                .await
+                                .unwrap();
+                            assert_eq!(
+                                desc.iter().map(|r| r.id).collect::<Vec<_>>(),
+                                vec![ids[1], ids[2]]
+                            );
 
-    {
-        let mut tx = repo.pool().begin().await.unwrap();
-        super::card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-    }
-    let after_card_delete = repo
-        .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+                            {
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                super::card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+                                    .await
+                                    .unwrap();
+                                tx.commit().await.unwrap();
+                            }
+                            let after_card_delete = repo
+                                .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+                                .await
+                                .unwrap();
+                            assert!(
+                                after_card_delete.is_empty(),
+                                "card_id should be NULL, not match"
+                            );
+                            let (surviving, null_cards): (i64, i64) = sqlx::query_as(
+                    "SELECT COUNT(*), COUNT(*) FILTER (WHERE card_id IS NULL) FROM worker_flow_items",
+                )
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+                            assert_eq!(surviving, 3, "rows must survive card delete");
+                            assert_eq!(null_cards, 3, "FK ON DELETE SET NULL must null card_id");
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        after_card_delete.is_empty(),
-        "card_id should be NULL, not match"
-    );
-    let (surviving, null_cards): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE card_id IS NULL) FROM worker_flow_items",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(surviving, 3, "rows must survive card delete");
-    assert_eq!(null_cards, 3, "FK ON DELETE SET NULL must null card_id");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -180,32 +198,41 @@ async fn delete_by_card_tx_purges_rows() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let session_id = "rt-flow-item-delete";
     let (card_id, track_id) = seed_card_and_session(&repo, session_id).await;
-    for n in 1..=2 {
-        let mut tx = repo.pool().begin().await.unwrap();
-        worker_flow_item_insert_tx(
-            &mut tx,
-            Some(&card_id),
-            Some(session_id),
-            Some(&track_id),
-            Some(session_id),
-            "user_message",
-            &format!(r#"{{"seq":{n}}}"#),
-            n,
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for n in 1..=2 {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    worker_flow_item_insert_tx(
+                        &mut tx,
+                        Some(&card_id),
+                        Some(session_id),
+                        Some(&track_id),
+                        Some(session_id),
+                        "user_message",
+                        &format!(r#"{{"seq":{n}}}"#),
+                        n,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                worker_flow_items_delete_by_card_tx(&mut tx, &card_id)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let rows = repo
+                    .worker_flow_item_list_by_card(&card_id, 0, 100, false)
+                    .await
+                    .unwrap();
+                assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-    let mut tx = repo.pool().begin().await.unwrap();
-    worker_flow_items_delete_by_card_tx(&mut tx, &card_id)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let rows = repo
-        .worker_flow_item_list_by_card(&card_id, 0, 100, false)
-        .await
-        .unwrap();
-    assert!(rows.is_empty(), "explicit delete-by-card must purge rows");
+        .expect("independent write operation")
 }
 
 // Migration 0086 renames `runtime_id` to `captured_session_id`; the shape

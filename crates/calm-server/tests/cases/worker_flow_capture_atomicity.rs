@@ -281,15 +281,16 @@ async fn capture_atomicity_claude_partial_record_crash_no_duplicates_or_loss() {
 
 async fn cursor_error(claude: bool, card: &str) {
     let (case, repo) = Case::new(claude, false, card).await;
-    sqlx::query(&format!(
-        r#"CREATE TRIGGER fail_capture_cursor BEFORE UPDATE ON worker_flow_cursors
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(&format!(
+            r#"CREATE TRIGGER fail_capture_cursor BEFORE UPDATE ON worker_flow_cursors
            WHEN NEW.record_index = {}
            BEGIN SELECT RAISE(ABORT, 'capture cursor rejected'); END"#,
-        case.interrupted,
-    ))
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            case.interrupted,
+        )))
+        .await
+        .unwrap();
     let (_, task) = case.spawn(repo.clone());
     let err = tokio::time::timeout(wf::LIVENESS_BUDGET, task)
         .await
@@ -312,8 +313,9 @@ async fn cursor_error(claude: bool, card: &str) {
             .record_index,
         case.interrupted - 1
     );
-    sqlx::query("DROP TRIGGER fail_capture_cursor")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_capture_cursor"))
         .await
         .unwrap();
     repo.pool().close().await;

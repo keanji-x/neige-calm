@@ -1,5 +1,4 @@
 use super::gc_writer_tests::Fixture;
-use crate::db::sqlite::begin_immediate_tx;
 
 async fn revision(f: &Fixture) -> i64 {
     sqlx::query_scalar("SELECT revision FROM track_vcs_gc_state WHERE singleton=1")
@@ -24,7 +23,11 @@ async fn gc_revision_rejects_reset_replace_delete_and_outer_ignore() {
         "UPDATE track_vcs_gc_state SET singleton=2,revision=revision+1",
     ] {
         let before = revision(&f).await;
-        let error = sqlx::query(sql).execute(f.repo.pool()).await.unwrap_err();
+        let error = (f.repo.db())
+            .writer()
+            .execute(sqlx::query(sql))
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("track-vcs:"), "{sql}: {error}");
         assert_eq!(revision(&f).await, before, "{sql}");
     }
@@ -34,28 +37,36 @@ async fn gc_revision_rejects_reset_replace_delete_and_outer_ignore() {
 async fn gc_revision_source_rollback_is_atomic_and_ignore_is_a_noop() {
     let f = Fixture::new().await;
     let before = revision(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlx::query("UPDATE track_vcs_objects SET created_at=created_at WHERE hash=?1")
-        .bind(&f.tree.tree_hash)
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query("UPDATE track_vcs_objects SET created_at=created_at WHERE hash=?1")
+                                .bind(&f.tree.tree_hash)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            let inside: i64 =
+                                sqlx::query_scalar("SELECT revision FROM track_vcs_gc_state WHERE singleton=1")
+                                    .fetch_one(&mut **tx)
+                                    .await
+                                    .unwrap();
+                            assert!(inside > before);
+                            tx.rollback().await.unwrap();
+                            assert_eq!(revision(&f).await, before);
+                            (f.repo.db()).writer().execute(sqlx::query(
+                    "INSERT OR IGNORE INTO track_vcs_objects SELECT * FROM track_vcs_objects WHERE hash=?1",
+                )
+                .bind(&f.tree.tree_hash))
+                .await
+                .unwrap();
+                            assert_eq!(revision(&f).await, before);
+            })
+        })
         .await
-        .unwrap();
-    let inside: i64 =
-        sqlx::query_scalar("SELECT revision FROM track_vcs_gc_state WHERE singleton=1")
-            .fetch_one(&mut **tx)
-            .await
-            .unwrap();
-    assert!(inside > before);
-    tx.rollback().await.unwrap();
-    assert_eq!(revision(&f).await, before);
-    sqlx::query(
-        "INSERT OR IGNORE INTO track_vcs_objects SELECT * FROM track_vcs_objects WHERE hash=?1",
-    )
-    .bind(&f.tree.tree_hash)
-    .execute(f.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(revision(&f).await, before);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -63,25 +74,27 @@ async fn gc_revision_object_replace_invalidates_but_same_head_upsert_preserves_e
     let f = Fixture::new().await;
     let before = revision(&f).await;
     // This object is not FK-referenced; replacement may omit DELETE triggers but must INSERT.
-    sqlx::query(
+    (f.repo.db()).writer().execute(sqlx::query(
         "INSERT OR REPLACE INTO track_vcs_objects SELECT * FROM track_vcs_objects WHERE hash=?1",
     )
-    .bind(&f.tree.tree_hash)
-    .execute(f.repo.pool())
+    .bind(&f.tree.tree_hash))
     .await
     .unwrap();
     assert!(revision(&f).await > before);
     let before = revision(&f).await;
-    sqlx::query(concat!(
-        "INSERT INTO track_vcs_refs(track_id,head_hash,updated_event_id) ",
-        "VALUES(?1,?2,NULL) ON CONFLICT(track_id) DO UPDATE SET ",
-        "head_hash=excluded.head_hash",
-    ))
-    .bind(f.track.as_str())
-    .bind(&f.commit)
-    .execute(f.repo.pool())
-    .await
-    .unwrap();
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "INSERT INTO track_vcs_refs(track_id,head_hash,updated_event_id) ",
+                "VALUES(?1,?2,NULL) ON CONFLICT(track_id) DO UPDATE SET ",
+                "head_hash=excluded.head_hash",
+            ))
+            .bind(f.track.as_str())
+            .bind(&f.commit),
+        )
+        .await
+        .unwrap();
     assert_eq!(revision(&f).await, before);
 }
 
@@ -98,9 +111,9 @@ async fn gc_revision_missing_row_aborts_source_write_even_under_ignore() {
         let sql =
             format!("UPDATE{modifier} track_vcs_objects SET created_at=created_at+1 WHERE hash=?1");
         assert!(
-            sqlx::query(&sql)
-                .bind(&f.tree.tree_hash)
-                .execute(f.repo.pool())
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(&sql).bind(&f.tree.tree_hash))
                 .await
                 .is_err()
         );
@@ -112,8 +125,7 @@ async fn gc_revision_missing_row_aborts_source_write_even_under_ignore() {
                 .unwrap();
         assert_eq!(after, before);
     }
-    let error = sqlx::query("INSERT OR IGNORE INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES('missing-state-probe','blob',X'00',0)")
-        .execute(f.repo.pool()).await.unwrap_err();
+    let error = (f.repo.db()).writer().execute(sqlx::query("INSERT OR IGNORE INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES('missing-state-probe','blob',X'00',0)")).await.unwrap_err();
     assert!(
         error
             .to_string()
@@ -142,9 +154,9 @@ async fn gc_revision_integer_overflow_aborts_the_source_write() {
         "UPDATE OR IGNORE track_vcs_objects SET created_at=created_at+1 WHERE hash=?1",
     ] {
         assert!(
-            sqlx::query(sql)
-                .bind(&f.tree.tree_hash)
-                .execute(f.repo.pool())
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(sql).bind(&f.tree.tree_hash))
                 .await
                 .is_err()
         );
@@ -162,7 +174,6 @@ async fn gc_revision_integer_overflow_aborts_the_source_write() {
 #[tokio::test]
 async fn gc_revision_all_nine_source_operations_are_visible_across_connections() {
     let f = Fixture::new().await;
-    let mut writer = f.repo.pool().acquire().await.unwrap();
     let mut reader = f.repo.pool().acquire().await.unwrap();
     let operations = [
         (
@@ -211,8 +222,11 @@ async fn gc_revision_all_nine_source_operations_are_visible_across_connections()
                     .fetch_one(&mut *reader)
                     .await
                     .unwrap();
-            let affected = sqlx::query(statement)
-                .execute(&mut *writer)
+            let affected = f
+                .repo
+                .db()
+                .writer()
+                .execute(sqlx::query(statement))
                 .await
                 .unwrap()
                 .rows_affected();
@@ -241,23 +255,34 @@ async fn gc_revision_bulk_history_prune_advances_for_every_removed_row() {
     for _ in 0..10 {
         parent = f.publish(&f.tree, Some(&parent)).await;
     }
-    sqlx::query("UPDATE track_vcs_commits SET created_at=0 WHERE hash<>?1")
-        .bind(&parent)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_commits SET created_at=0 WHERE hash<>?1").bind(&parent),
+        )
         .await
         .unwrap();
     let before = revision(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let deleted = crate::track_vcs::prune_track_history_tx(&mut tx, &f.track, 1)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let deleted = crate::track_vcs::prune_track_history_tx(&mut tx, &f.track, 1)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert!(deleted >= 2);
+                assert_eq!(revision(&f).await, before + deleted as i64);
+                assert_eq!(
+                    crate::track_vcs::head(f.repo.pool(), &f.track)
+                        .await
+                        .unwrap(),
+                    Some(parent)
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(deleted >= 2);
-    assert_eq!(revision(&f).await, before + deleted as i64);
-    assert_eq!(
-        crate::track_vcs::head(f.repo.pool(), &f.track)
-            .await
-            .unwrap(),
-        Some(parent)
-    );
+        .expect("independent write operation")
 }

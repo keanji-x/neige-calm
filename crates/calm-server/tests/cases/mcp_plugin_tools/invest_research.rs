@@ -76,12 +76,11 @@ async fn invest_recipe_slots_resolve() {
         .await
         .unwrap();
     // The provenance `neige_track_add` stamps on the Track it adds.
-    sqlx::query(
+    (fx.repo.db()).writer().execute(sqlx::query(
         "UPDATE tracks SET creator_track_id = ?1, creator_key = 'invest-US-SPY-1' WHERE id = ?2",
     )
     .bind(&portfolio)
-    .bind(&research)
-    .execute(fx.repo.pool())
+    .bind(&research))
     .await
     .unwrap();
     let guard = fx.plugin_host.try_lock_lifecycle(&id).unwrap();

@@ -1,6 +1,6 @@
 //! Consumer-delegated disposal; callers authorize the scope and hold its admission fence.
 use crate::{
-    db::sqlite::{SqliteDb, begin_immediate_tx},
+    db::sqlite::SqliteDb,
     error::{CalmError, Result},
     event::BroadcastEnvelope,
     execution_store::SqliteExecutionStore,
@@ -57,63 +57,72 @@ pub async fn dispose(
         .engine()
         .ok_or_else(|| conflict("missing Engine"))?;
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = begin_immediate_tx(&pool).await?;
-    let mut owners = Vec::new();
-    let mut unique = std::collections::BTreeSet::new();
-    for id in ids {
-        if !unique.insert(id.clone()) {
-            continue;
-        }
-        let metadata: ExecutionMetadata = serde_json::from_str(
-            &sql::intent_tx(&mut tx, id.as_str())
-                .await
-                .map_err(conflict)?,
-        )
-        .map_err(conflict)?;
-        if metadata.id != *id {
-            return Err(conflict("execution identity mismatch"));
-        }
-        let owner = store
-            .projection(&metadata.consumer)
-            .map_err(|e| conflict(e.0))?
-            .disposal()
-            .ok_or_else(|| conflict("consumer has no disposal ports"))?;
-        owner
-            .prepare_disposal_tx(&mut tx, &metadata)
-            .await
-            .map_err(conflict)?;
-        owners.push((metadata, owner));
-    }
-    let mut events = Vec::new();
-    for (metadata, owner) in &owners {
-        events.extend(owner.stop_tx(&mut tx, metadata).await.map_err(conflict)?);
-    }
-    tx.commit().await?;
-    for event in events {
-        ctx.events.emit_envelope(event);
-    }
-    ctx.execution
-        .drive(owners.iter().map(|(metadata, _)| metadata.id.clone()));
-    // Include owner completion and executor retirement in one budget, not only settlement.
-    tokio::time::timeout(workspace_runtime::execution::QUIESCE_DEADLINE, async {
-        for (metadata, owner) in &owners {
-            engine
-                .wait_settled(&metadata.id)
-                .await
-                .map_err(|e| conflict(format!("{e:?}")))?;
-            loop {
-                if owner.finish(runtime, metadata).await.map_err(conflict)?
-                    && retired(&pool, &metadata.id).await?
-                {
-                    break;
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                let mut owners = Vec::new();
+                let mut unique = std::collections::BTreeSet::new();
+                for id in ids {
+                    if !unique.insert(id.clone()) {
+                        continue;
+                    }
+                    let metadata: ExecutionMetadata = serde_json::from_str(
+                        &sql::intent_tx(&mut tx, id.as_str())
+                            .await
+                            .map_err(conflict)?,
+                    )
+                    .map_err(conflict)?;
+                    if metadata.id != *id {
+                        return Err(conflict("execution identity mismatch"));
+                    }
+                    let owner = store
+                        .projection(&metadata.consumer)
+                        .map_err(|e| conflict(e.0))?
+                        .disposal()
+                        .ok_or_else(|| conflict("consumer has no disposal ports"))?;
+                    owner
+                        .prepare_disposal_tx(&mut tx, &metadata)
+                        .await
+                        .map_err(conflict)?;
+                    owners.push((metadata, owner));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-        }
-        Ok(())
-    })
-    .await
-    .map_err(conflict)?
+                let mut events = Vec::new();
+                for (metadata, owner) in &owners {
+                    events.extend(owner.stop_tx(&mut tx, metadata).await.map_err(conflict)?);
+                }
+                tx.commit().await?;
+                for event in events {
+                    ctx.events.emit_envelope(event);
+                }
+                ctx.execution
+                    .drive(owners.iter().map(|(metadata, _)| metadata.id.clone()));
+                // Include owner completion and executor retirement in one budget, not only settlement.
+                tokio::time::timeout(workspace_runtime::execution::QUIESCE_DEADLINE, async {
+                    for (metadata, owner) in &owners {
+                        engine
+                            .wait_settled(&metadata.id)
+                            .await
+                            .map_err(|e| conflict(format!("{e:?}")))?;
+                        loop {
+                            if owner.finish(runtime, metadata).await.map_err(conflict)?
+                                && retired(&pool, &metadata.id).await?
+                            {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(conflict)?
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn retired(pool: &SqliteDb, id: &ExecutionId) -> Result<bool> {

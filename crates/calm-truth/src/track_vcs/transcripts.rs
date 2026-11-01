@@ -11,7 +11,7 @@ use super::store::{
 };
 use super::types::CardVisibility;
 use super::{CommitHash, ManifestEntry};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::error::{CalmError, Result};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::now_ms;
@@ -192,44 +192,53 @@ pub async fn snapshot_transcripts_for_cards_in_track(
     manifest_schema_version: i64,
 ) -> Result<CommitHash> {
     let mut prepared = HashMap::new();
-    for _ in 0..PREPARATION_ATTEMPTS {
-        prepare(pool.read_pool(), track_id, &mut prepared).await?;
-        #[cfg(test)]
-        super::transcript_writer_tests::at_phase(
-            super::transcript_writer_tests::Phase::BeforeWrite,
-        )
-        .await;
-        let mut tx = begin_immediate_tx(pool).await?;
-        if !inputs_are_current(&mut tx, track_id, &prepared).await? {
-            tx.rollback().await?;
-            continue;
-        }
-        let mut delta = PathDelta::default();
-        for card_id in prepared.keys() {
-            add_card_event_paths(&mut delta, card_id);
-        }
-        let author = ActorId::Kernel.to_string();
-        let commit = commit_delta_in_tx(
-            &mut tx,
-            track_id,
-            delta,
-            CommitTreeMeta {
-                parent_hash: None,
-                author: Some(author.as_str()),
-                event_id,
-                message: "transcript refresh",
-                manifest_schema_version,
-                created_at: now_ms(),
-            },
-            HookInputs::Prepared(&prepared),
-        )
-        .await?;
-        tx.commit().await?;
-        return Ok(commit);
-    }
-    Err(CalmError::Internal(
-        "track-vcs: transcript inputs changed throughout preparation retries".into(),
-    ))
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for _ in 0..PREPARATION_ATTEMPTS {
+                    prepare(pool.read_pool(), track_id, &mut prepared).await?;
+                    #[cfg(test)]
+                    super::transcript_writer_tests::at_phase(
+                        super::transcript_writer_tests::Phase::BeforeWrite,
+                    )
+                    .await;
+                    let mut tx = write_session.begin_immediate().await?;
+                    if !inputs_are_current(&mut tx, track_id, &prepared).await? {
+                        tx.rollback().await?;
+                        continue;
+                    }
+                    let mut delta = PathDelta::default();
+                    for card_id in prepared.keys() {
+                        add_card_event_paths(&mut delta, card_id);
+                    }
+                    let author = ActorId::Kernel.to_string();
+                    let commit = commit_delta_in_tx(
+                        &mut tx,
+                        track_id,
+                        delta,
+                        CommitTreeMeta {
+                            parent_hash: None,
+                            author: Some(author.as_str()),
+                            event_id,
+                            message: "transcript refresh",
+                            manifest_schema_version,
+                            created_at: now_ms(),
+                        },
+                        HookInputs::Prepared(&prepared),
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(commit);
+                }
+                Err(CalmError::Internal(
+                    "track-vcs: transcript inputs changed throughout preparation retries".into(),
+                ))
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 #[cfg(test)]

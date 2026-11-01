@@ -156,9 +156,12 @@ async fn a_refused_send_binds_nothing_and_its_key_can_be_sent_again() {
     tokio::time::timeout(Duration::from_secs(5), entered.notified())
         .await
         .expect("the send reached the queue");
-    sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
     release.notify_one();
@@ -175,9 +178,12 @@ async fn a_refused_send_binds_nothing_and_its_key_can_be_sent_again() {
         "nothing was stored, so nothing is bound"
     );
 
-    sqlx::query("UPDATE worker_sessions SET state = 'idle' WHERE id = ?1")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'idle' WHERE id = ?1")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
     let (status, body) = post_input_keyed(

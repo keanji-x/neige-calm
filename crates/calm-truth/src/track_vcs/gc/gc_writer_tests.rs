@@ -1,6 +1,6 @@
 //! Task-local observability at the real sweep phases; no alternate GC implementation.
 use crate::db::prelude::RepoSyncDomainRaw;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::ids::TrackId;
 use crate::model::{NewArea, NewTrack, RequestTheme, now_ms};
 use crate::track_vcs::{self, ManifestEntry, TreeSnapshot, commit_tree, put_blob};
@@ -128,124 +128,184 @@ impl Fixture {
             })
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let blob = put_blob(&mut tx, "blob", b"retained document")
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let blob = put_blob(&mut tx, "blob", b"retained document")
+                        .await
+                        .unwrap();
+                    let entries = BTreeMap::from([(
+                        "documents/report.md".into(),
+                        ManifestEntry {
+                            blob_hash: blob,
+                            byte_len: 17,
+                            content_type: "text/markdown".into(),
+                        },
+                    )]);
+                    let tree = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
+                        .await
+                        .unwrap();
+                    let commit =
+                        commit_tree(&mut tx, &track.id, None, &tree, None, "GC fixture", 1)
+                            .await
+                            .unwrap();
+                    sqlx::query("CREATE TABLE unrelated_gc_writer_probe (value INTEGER NOT NULL)")
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    Self {
+                        _directory: directory,
+                        repo,
+                        track: track.id,
+                        tree,
+                        commit,
+                    }
+                })
+            })
             .await
-            .unwrap();
-        let entries = BTreeMap::from([(
-            "documents/report.md".into(),
-            ManifestEntry {
-                blob_hash: blob,
-                byte_len: 17,
-                content_type: "text/markdown".into(),
-            },
-        )]);
-        let tree = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
-            .await
-            .unwrap();
-        let commit = commit_tree(&mut tx, &track.id, None, &tree, None, "GC fixture", 1)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE unrelated_gc_writer_probe (value INTEGER NOT NULL)")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        Self {
-            _directory: directory,
-            repo,
-            track: track.id,
-            tree,
-            commit,
-        }
+            .expect("independent write operation")
     }
     pub(super) async fn exhaust_revision(&self) {
         // Seed the otherwise valid representable final integer state without 2^63 writes;
         // restore the exact real migration-created guard SQL before exercising mutation.
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let guard: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='track_vcs_gc_state_monotonic'")
-        .fetch_one(&mut **tx).await.unwrap();
-        sqlx::query("DROP TRIGGER track_vcs_gc_state_monotonic")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE track_vcs_gc_state SET revision=9223372036854775807")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        sqlx::query(&guard).execute(&mut **tx).await.unwrap();
-        tx.commit().await.unwrap();
+        let write_db = (self.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let guard: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='track_vcs_gc_state_monotonic'")
+            .fetch_one(&mut **tx).await.unwrap();
+            sqlx::query("DROP TRIGGER track_vcs_gc_state_monotonic")
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE track_vcs_gc_state SET revision=9223372036854775807")
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            sqlx::query(&guard).execute(&mut **tx).await.unwrap();
+            tx.commit().await.unwrap();
+
+    })).await.expect("independent write operation")
     }
 
     pub(super) async fn remove_required_revision(&self) {
         // Isolated corruption fixture: supported DML cannot remove this required state.
         // Schema-sensitive steps share one physical connection and commit atomically.
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        sqlx::query("DROP TRIGGER track_vcs_gc_state_no_delete")
-            .execute(&mut **tx)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    sqlx::query("DROP TRIGGER track_vcs_gc_state_no_delete")
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                    sqlx::query("DELETE FROM track_vcs_gc_state")
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        sqlx::query("DELETE FROM track_vcs_gc_state")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+            .expect("independent write operation")
     }
 
     pub(super) async fn tree(&self, label: &str, count: usize) -> TreeSnapshot {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
-        let entries = (0..count)
-            .map(|i| {
-                (
-                    format!("documents/{i:032x}.md"),
-                    ManifestEntry {
-                        blob_hash: blob.clone(),
-                        byte_len: label.len() as u64,
-                        content_type: "text/markdown".into(),
-                    },
-                )
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
+                    let entries = (0..count)
+                        .map(|i| {
+                            (
+                                format!("documents/{i:032x}.md"),
+                                ManifestEntry {
+                                    blob_hash: blob.clone(),
+                                    byte_len: label.len() as u64,
+                                    content_type: "text/markdown".into(),
+                                },
+                            )
+                        })
+                        .collect();
+                    let tree = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    tree
+                })
             })
-            .collect();
-        let tree = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        tree
+            .expect("independent write operation")
     }
     pub(super) async fn publish(&self, tree: &TreeSnapshot, parent: Option<&str>) -> String {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let commit = commit_tree(&mut tx, &self.track, parent, tree, None, "published", 1)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let commit =
+                        commit_tree(&mut tx, &self.track, parent, tree, None, "published", 1)
+                            .await
+                            .unwrap();
+                    tx.commit().await.unwrap();
+                    commit
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        commit
+            .expect("independent write operation")
     }
     pub(super) async fn orphan(&self, label: &str) -> String {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
-        sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
-            .bind(now_ms() - 7_200_000)
-            .bind(&blob)
-            .execute(&mut **tx)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
+                    sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
+                        .bind(now_ms() - 7_200_000)
+                        .bind(&blob)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    blob
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        blob
+            .expect("independent write operation")
     }
     pub(super) async fn age(&self, tree: &TreeSnapshot) {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        for hash in std::iter::once(&tree.tree_hash)
-            .chain(tree.manifest.entries.values().map(|entry| &entry.blob_hash))
-        {
-            sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
-                .bind(now_ms() - 7_200_000)
-                .bind(hash)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-        }
-        tx.commit().await.unwrap();
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    for hash in std::iter::once(&tree.tree_hash)
+                        .chain(tree.manifest.entries.values().map(|entry| &entry.blob_hash))
+                    {
+                        sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
+                            .bind(now_ms() - 7_200_000)
+                            .bind(hash)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    }
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
     pub(super) async fn exists(&self, hash: &str) -> bool {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM track_vcs_objects WHERE hash=?1)")
@@ -262,72 +322,93 @@ async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::Parse]);
     pause.entered().await;
     let pool = f.repo.db().clone();
-    let mut writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, crate::error::CalmError>(())
-    });
-    let committed_before_parse_release =
-        tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
-    // Drain both real tasks before reporting the assertion, including an expected red run.
-    pause.release();
-    finish(sweep).await.unwrap();
-    if committed_before_parse_release.is_err() {
-        tokio::time::timeout(Duration::from_secs(10), writer)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+
+    {
+        let mut writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let committed_before_parse_release =
+            tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        // Drain both real tasks before reporting the assertion, including an expected red run.
+        pause.release();
+        finish(sweep).await.unwrap();
+        if committed_before_parse_release.is_err() {
+            tokio::time::timeout(Duration::from_secs(10), writer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        assert!(
+            matches!(committed_before_parse_release, Ok(Ok(Ok(())))),
+            "unrelated writer waited for manifest parsing: {committed_before_parse_release:?}"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM unrelated_gc_writer_probe")
+                .fetch_one(f.repo.pool())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            track_vcs::cat_at(f.repo.pool(), &f.commit, "documents/report.md")
+                .await
+                .unwrap()
+                .content,
+            "retained document"
+        );
     }
-    assert!(
-        matches!(committed_before_parse_release, Ok(Ok(Ok(())))),
-        "unrelated writer waited for manifest parsing: {committed_before_parse_release:?}"
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM unrelated_gc_writer_probe")
-            .fetch_one(f.repo.pool())
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        track_vcs::cat_at(f.repo.pool(), &f.commit, "documents/report.md")
-            .await
-            .unwrap()
-            .content,
-        "retained document"
-    );
 }
 
 #[tokio::test]
 async fn canonical_retry_v5_has_no_history_endpoints() {
     let f = Fixture::new().await;
     let frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlx::query(
-        "INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,handle_state_json,
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query(
+                    "INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,handle_state_json,
         created_at_ms,updated_at_ms) VALUES(?1,?2,'codex','resumable','planner','idle',?3,0,0)",
-    )
-    .bind(crate::model::new_id())
-    .bind(f.track.as_str())
-    .bind(serde_json::to_string(&frame).unwrap())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    assert!(matches!(
-        super::active_diff_endpoint_commits_tx(&mut tx, &f.track)
-            .await
-            .unwrap(),
-        super::ActiveLastSeenHeads::Safe(records) if records.is_empty()
-    ));
-    assert_eq!(
-        super::prune_track_history_tx(&mut tx, &f.track, 1)
-            .await
-            .unwrap(),
-        0
-    );
-    tx.commit().await.unwrap();
+                )
+                .bind(crate::model::new_id())
+                .bind(f.track.as_str())
+                .bind(serde_json::to_string(&frame).unwrap())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            assert!(matches!(
+                                super::active_diff_endpoint_commits_tx(&mut tx, &f.track)
+                                    .await
+                                    .unwrap(),
+                                super::ActiveLastSeenHeads::Safe(records) if records.is_empty()
+                            ));
+                            assert_eq!(
+                                super::prune_track_history_tx(&mut tx, &f.track, 1)
+                                    .await
+                                    .unwrap(),
+                                0
+                            );
+                            tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

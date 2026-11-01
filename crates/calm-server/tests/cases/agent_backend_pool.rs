@@ -161,58 +161,80 @@ async fn agent_backend_b7_explicit_bindings_restore_only_their_own_instance() {
     let card = seed_card(&repo, 1).await;
     let session = seed_runtime_thread(&repo, &card, "bound-thread").await;
     // A fixture represents the future session owner ordering: binding before native ID.
-    let mut tx = repo.pool().begin().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
-        .bind(&session)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
+                    .bind(&session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                calm_truth::db::sqlite::session_backend::insert_tx(
+                    &mut tx, &session, "codex", "other",
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id='bound-thread' WHERE id=?")
+                    .bind(&session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut cleanup = Vec::new();
+                for instance in backends.instances() {
+                    instance.boot().await.unwrap();
+                    cleanup.push(DaemonGroup(instance.status_snapshot().runtime.unwrap().pid));
+                    if instance.backend_id().as_str() == "default" {
+                        assert!(instance.resume_candidates_for_test().is_empty());
+                    } else {
+                        assert_eq!(
+                            instance.resume_candidates_for_test(),
+                            vec![("bound-thread".into(), card.clone())]
+                        );
+                    }
+                }
+                // Existing sessions resolve their immutable backend.
+                assert!(Arc::ptr_eq(
+                    backends.for_session(&session).await.unwrap(),
+                    &backends.instances()[1]
+                ));
+            })
+        })
         .await
-        .unwrap();
-    calm_truth::db::sqlite::session_backend::insert_tx(&mut tx, &session, "codex", "other")
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id='bound-thread' WHERE id=?")
-        .bind(&session)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut cleanup = Vec::new();
-    for instance in backends.instances() {
-        instance.boot().await.unwrap();
-        cleanup.push(DaemonGroup(instance.status_snapshot().runtime.unwrap().pid));
-        if instance.backend_id().as_str() == "default" {
-            assert!(instance.resume_candidates_for_test().is_empty());
-        } else {
-            assert_eq!(
-                instance.resume_candidates_for_test(),
-                vec![("bound-thread".into(), card.clone())]
-            );
-        }
-    }
-    // Existing sessions resolve their immutable backend.
-    assert!(Arc::ptr_eq(
-        backends.for_session(&session).await.unwrap(),
-        &backends.instances()[1]
-    ));
+        .expect("independent write operation")
 }
 
 pub(super) async fn bind_fixture(repo: &SqlxRepo, session: &str, thread: &str, backend: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
-        .bind(session)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
+                    .bind(session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                calm_truth::db::sqlite::session_backend::insert_tx(
+                    &mut tx, session, "codex", backend,
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
+                    .bind(thread)
+                    .bind(session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    calm_truth::db::sqlite::session_backend::insert_tx(&mut tx, session, "codex", backend)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
-        .bind(thread)
-        .bind(session)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 struct BootFixture {
@@ -391,27 +413,39 @@ async fn agent_backend_production_settings_respawns_each_daemon_and_sweeper_rele
         cleanup.push(DaemonGroup(pid));
         assert_ne!(pid, old);
     }
-    for card in &fx.cards {
-        let mut tx = fx.repo.pool().begin().await.unwrap();
-        calm_server::db::sqlite::session_complete_for_card_tx(
-            &mut tx,
-            card,
-            WorkerSessionState::Exited,
-        )
+    let fx = &fx;
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for card in &fx.cards {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    calm_server::db::sqlite::session_complete_for_card_tx(
+                        &mut tx,
+                        card,
+                        WorkerSessionState::Exited,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                calm_server::terminal_sweeper::sweep(&fx.state)
+                    .await
+                    .unwrap();
+                for (instance, card) in instances.iter().zip(&fx.cards) {
+                    let thread = format!("thread-{}", instance.backend_id().as_str());
+                    assert_eq!(instance.cached_card_for_thread(&thread), None, "{card}");
+                    let released = std::fs::read_to_string(
+                        instance.sock_path().with_extension("unsubscribed"),
+                    )
+                    .unwrap();
+                    assert!(released.lines().any(|id| id == thread));
+                }
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-    calm_server::terminal_sweeper::sweep(&fx.state)
-        .await
-        .unwrap();
-    for (instance, card) in instances.iter().zip(&fx.cards) {
-        let thread = format!("thread-{}", instance.backend_id().as_str());
-        assert_eq!(instance.cached_card_for_thread(&thread), None, "{card}");
-        let released =
-            std::fs::read_to_string(instance.sock_path().with_extension("unsubscribed")).unwrap();
-        assert!(released.lines().any(|id| id == thread));
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test]

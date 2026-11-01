@@ -106,7 +106,7 @@ async fn track_delete_observation_distinguishes_operation_lock_from_writer_admis
     assert!(logs.find("operation_lock", "ok").is_empty());
     assert!(logs.find("preflight", "begin").is_empty());
     // Hold the real sole writer before allowing deletion past the lifecycle fence.
-    let writer = b.repo.db().writer_pool().acquire().await.unwrap();
+    let writer = b.repo.db().hold_writer_for_test().await.unwrap();
     drop(operation);
     logs.wait("reprojection", "begin").await;
     tokio::time::sleep(PARK).await;

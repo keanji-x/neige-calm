@@ -29,28 +29,37 @@ pub(crate) async fn event(
         body_after: after.into(),
         agent_message: None,
     };
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await.unwrap();
-    let id = crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::Kernel,
-        &EventScope::Track {
-            track: track.id.clone(),
-            area: track.area_id.clone(),
-        },
-        None,
-        &edit,
-    )
-    .await
-    .unwrap();
-    // Pin historical date edges after the authoritative event writer supplies the event contract.
-    sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
-        .bind(at)
-        .bind(id)
-        .execute(&mut **tx)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let id = crate::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &crate::ids::ActorId::Kernel,
+                    &EventScope::Track {
+                        track: track.id.clone(),
+                        area: track.area_id.clone(),
+                    },
+                    None,
+                    &edit,
+                )
+                .await
+                .unwrap();
+                // Pin historical date edges after the authoritative event writer supplies the event contract.
+                sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
+                    .bind(at)
+                    .bind(id)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                id
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    id
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -173,9 +182,12 @@ async fn report_edit_pagination_pins_a_snapshot_and_reports_malformed_data() {
     .unwrap();
     assert_eq!(second.edits.len(), 5);
     assert!(second.next_cursor.is_none());
-    sqlx::query("UPDATE events SET payload='{}' WHERE id=?1")
-        .bind(second.edits[4].event_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE events SET payload='{}' WHERE id=?1")
+                .bind(second.edits[4].event_id),
+        )
         .await
         .unwrap();
     assert!(

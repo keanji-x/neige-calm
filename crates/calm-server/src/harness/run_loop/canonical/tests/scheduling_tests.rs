@@ -33,82 +33,92 @@ async fn ordinary_turn_wakes_from_idle_and_returns_without_fifty_ms_probes() {
         polled.is_err(),
         "an unchanged idle conversation must not run the active polling pipeline"
     );
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
+                        .await
+                        .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "wake the sleeping conversation".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human input")
+                };
+                fx.harness
+                    .observe_canonical_source(message, fx.source.clone())
+                    .await
+                    .unwrap();
+                let call = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let call = request(&mut peer).await;
+                        if call["method"] == "turn/start" {
+                            break call;
+                        }
+                        assert_eq!(call["method"], "config/read");
+                        send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+                    }
+                })
+                .await
+                .expect("a saved input must wake the loop without its 30-second reconciliation");
+                assert!(
+                    call["params"]["input"]
+                        .to_string()
+                        .contains("wake the sleeping conversation")
+                );
+                notify_thread(
+                    &fx.daemon,
+                    &mut peer,
+                    &thread,
+                    "turn/started",
+                    json!({"id":"next-normal-turn","status":"inProgress"}),
+                )
+                .await;
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":"next-normal-turn"}}}),
+                )
+                .await;
+                fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                let idle_again = PausePoint::default();
+                install_pause_for_test("canonical-idle-wait", card, idle_again.clone());
+                notify_thread(
+                    &fx.daemon,
+                    &mut peer,
+                    &thread,
+                    "turn/completed",
+                    json!({"id":"next-normal-turn","status":"completed"}),
+                )
+                .await;
+                tokio::time::timeout(Duration::from_secs(5), idle_again.entered.notified())
+                    .await
+                    .unwrap();
+                let done = fx.frame().await;
+                assert!(done.canonical_inputs.active.is_none());
+                assert!(done.canonical_inputs.pending.is_empty());
+                assert_eq!(
+                    done.header.last_turn_id.as_deref(),
+                    Some("next-normal-turn")
+                );
+                idle_again.release.notify_one();
+                fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "wake the sleeping conversation".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human input")
-    };
-    fx.harness
-        .observe_canonical_source(message, fx.source.clone())
-        .await
-        .unwrap();
-    let call = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let call = request(&mut peer).await;
-            if call["method"] == "turn/start" {
-                break call;
-            }
-            assert_eq!(call["method"], "config/read");
-            send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
-        }
-    })
-    .await
-    .expect("a saved input must wake the loop without its 30-second reconciliation");
-    assert!(
-        call["params"]["input"]
-            .to_string()
-            .contains("wake the sleeping conversation")
-    );
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        &thread,
-        "turn/started",
-        json!({"id":"next-normal-turn","status":"inProgress"}),
-    )
-    .await;
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"next-normal-turn"}}}),
-    )
-    .await;
-    fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    let idle_again = PausePoint::default();
-    install_pause_for_test("canonical-idle-wait", card, idle_again.clone());
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        &thread,
-        "turn/completed",
-        json!({"id":"next-normal-turn","status":"completed"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(5), idle_again.entered.notified())
-        .await
-        .unwrap();
-    let done = fx.frame().await;
-    assert!(done.canonical_inputs.active.is_none());
-    assert!(done.canonical_inputs.pending.is_empty());
-    assert_eq!(
-        done.header.last_turn_id.as_deref(),
-        Some("next-normal-turn")
-    );
-    idle_again.release.notify_one();
-    fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -321,130 +331,141 @@ async fn compact_completion_wakes_queued_input_and_returns_to_stable_idle() {
     )
     .await;
     let card = fx.harness.inner.card_id.as_str();
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
+                        .await
+                        .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "run after maintenance".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human")
+                };
+                fx.harness
+                    .observe_canonical_source(message, fx.source.clone())
+                    .await
+                    .unwrap();
+                // Finish the start observation before measuring absence of repeated probes.
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while fx
+                        .frame()
+                        .await
+                        .header
+                        .compact_outcome
+                        .as_ref()
+                        .and_then(|outcome| outcome.turn_id.as_deref())
+                        != Some("maintenance")
+                    {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let advance = PausePoint::default();
+                install_pause_for_test("canonical-before-progress-advance", card, advance.clone());
+                fx.harness.request_progress();
+                tokio::time::timeout(Duration::from_secs(3), advance.entered.notified())
+                    .await
+                    .unwrap();
+                let waiting = PausePoint::default();
+                install_pause_for_test("canonical-result-wait", card, waiting.clone());
+                advance.release.notify_one();
+                tokio::time::timeout(Duration::from_secs(3), waiting.entered.notified())
+                    .await
+                    .unwrap();
+                let probe = PausePoint::default();
+                install_pause_for_test("canonical-before-end-probe", card, probe.clone());
+                waiting.release.notify_one();
+                let polled =
+                    tokio::time::timeout(Duration::from_millis(250), probe.entered.notified())
+                        .await
+                        .is_ok();
+                probe.release.notify_one();
+                crate::test_seams::take("canonical-before-end-probe", card);
+                assert!(
+                    !polled,
+                    "pending input cannot require periodic probes while maintenance owns execution"
+                );
+                notify_thread(
+                    &fx.daemon,
+                    &mut peer,
+                    thread,
+                    "turn/completed",
+                    json!({"id":"maintenance","status":"completed"}),
+                )
+                .await;
+                // No new source notification here: it was already observed while compacting.
+                let call = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let call = request(&mut peer).await;
+                        if call["method"] == "turn/start" {
+                            break call;
+                        }
+                        assert_eq!(call["method"], "config/read");
+                        send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+                    }
+                })
+                .await
+                .expect("committed maintenance completion must wake the already-queued input");
+                assert!(
+                    call["params"]["input"]
+                        .to_string()
+                        .contains("run after maintenance")
+                );
+                notify_thread(
+                    &fx.daemon,
+                    &mut peer,
+                    thread,
+                    "turn/started",
+                    json!({"id":"after-maintenance"}),
+                )
+                .await;
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":"after-maintenance"}}}),
+                )
+                .await;
+                fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                let idle = PausePoint::default();
+                install_pause_for_test("canonical-idle-wait", card, idle.clone());
+                notify_thread(
+                    &fx.daemon,
+                    &mut peer,
+                    thread,
+                    "turn/completed",
+                    json!({"id":"after-maintenance","status":"completed"}),
+                )
+                .await;
+                tokio::time::timeout(Duration::from_secs(3), idle.entered.notified())
+                    .await
+                    .expect("a settled maintenance outcome must not retain active probing");
+                let done = fx.frame().await;
+                assert!(done.canonical_inputs.active.is_none());
+                assert!(done.canonical_inputs.pending.is_empty());
+                assert_eq!(
+                    done.header.compact_outcome.unwrap().status,
+                    crate::harness::compact_outcome::CompactStatus::Completed
+                );
+                idle.release.notify_one();
+                peer.close(None).await.unwrap();
+                fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "run after maintenance".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human")
-    };
-    fx.harness
-        .observe_canonical_source(message, fx.source.clone())
-        .await
-        .unwrap();
-    // Finish the start observation before measuring absence of repeated probes.
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while fx
-            .frame()
-            .await
-            .header
-            .compact_outcome
-            .as_ref()
-            .and_then(|outcome| outcome.turn_id.as_deref())
-            != Some("maintenance")
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let advance = PausePoint::default();
-    install_pause_for_test("canonical-before-progress-advance", card, advance.clone());
-    fx.harness.request_progress();
-    tokio::time::timeout(Duration::from_secs(3), advance.entered.notified())
-        .await
-        .unwrap();
-    let waiting = PausePoint::default();
-    install_pause_for_test("canonical-result-wait", card, waiting.clone());
-    advance.release.notify_one();
-    tokio::time::timeout(Duration::from_secs(3), waiting.entered.notified())
-        .await
-        .unwrap();
-    let probe = PausePoint::default();
-    install_pause_for_test("canonical-before-end-probe", card, probe.clone());
-    waiting.release.notify_one();
-    let polled = tokio::time::timeout(Duration::from_millis(250), probe.entered.notified())
-        .await
-        .is_ok();
-    probe.release.notify_one();
-    crate::test_seams::take("canonical-before-end-probe", card);
-    assert!(
-        !polled,
-        "pending input cannot require periodic probes while maintenance owns execution"
-    );
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/completed",
-        json!({"id":"maintenance","status":"completed"}),
-    )
-    .await;
-    // No new source notification here: it was already observed while compacting.
-    let call = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let call = request(&mut peer).await;
-            if call["method"] == "turn/start" {
-                break call;
-            }
-            assert_eq!(call["method"], "config/read");
-            send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
-        }
-    })
-    .await
-    .expect("committed maintenance completion must wake the already-queued input");
-    assert!(
-        call["params"]["input"]
-            .to_string()
-            .contains("run after maintenance")
-    );
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/started",
-        json!({"id":"after-maintenance"}),
-    )
-    .await;
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"after-maintenance"}}}),
-    )
-    .await;
-    fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    let idle = PausePoint::default();
-    install_pause_for_test("canonical-idle-wait", card, idle.clone());
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/completed",
-        json!({"id":"after-maintenance","status":"completed"}),
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(3), idle.entered.notified())
-        .await
-        .expect("a settled maintenance outcome must not retain active probing");
-    let done = fx.frame().await;
-    assert!(done.canonical_inputs.active.is_none());
-    assert!(done.canonical_inputs.pending.is_empty());
-    assert_eq!(
-        done.header.compact_outcome.unwrap().status,
-        crate::harness::compact_outcome::CompactStatus::Completed
-    );
-    idle.release.notify_one();
-    peer.close(None).await.unwrap();
-    fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

@@ -31,29 +31,36 @@ async fn seed_worker_started_at(boot: &Boot, label: &str, started_ms: i64) -> Li
     let task_id = task.id.clone();
     seed_task(boot, task).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let deadline = started_ms + WorkerLiveness::DEFAULT.cap.as_millis() as i64;
+                let rows = calm_truth::db::sqlite::task_mark_running_tx(
+                    &mut tx,
+                    &task_id,
+                    Some(&card_id),
+                    started_ms,
+                    deadline,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(rows, 1, "the fixture row enters running");
+                LivenessWorker {
+                    key: label.to_string(),
+                    task_id,
+                    card_id,
+                    session_row_id,
+                    lease_id,
+                    _lease_dir: lease_dir,
+                }
+            })
+        })
         .await
-        .unwrap();
-    let deadline = started_ms + WorkerLiveness::DEFAULT.cap.as_millis() as i64;
-    let rows = calm_truth::db::sqlite::task_mark_running_tx(
-        &mut tx,
-        &task_id,
-        Some(&card_id),
-        started_ms,
-        deadline,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(rows, 1, "the fixture row enters running");
-    LivenessWorker {
-        key: label.to_string(),
-        task_id,
-        card_id,
-        session_row_id,
-        lease_id,
-        _lease_dir: lease_dir,
-    }
+        .expect("independent write operation")
 }
 
 /// The transcript capture's checkpoint standing at `at_ms`, a time the wall-clock capture commit

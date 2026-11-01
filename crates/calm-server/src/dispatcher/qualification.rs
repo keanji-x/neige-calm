@@ -1,5 +1,6 @@
 //! Current task results carry their owner's notification declaration. Only the
 //! explicit old-protocol reader consults historical task and delivery facts.
+use super::observation_reads::ObservationReads;
 use super::*;
 use crate::error::Result;
 mod legacy;
@@ -16,7 +17,30 @@ impl FactReads {
 }
 
 pub(super) async fn qualified_observation(
-    repo: &dyn Repo,
+    repo: Arc<dyn Repo>,
+    track: &TrackId,
+    envelope: &crate::db::TrackEvent,
+) -> Result<Option<HarnessObservation>> {
+    let track = track.clone();
+    let envelope = envelope.clone();
+    let reader = repo.clone();
+    crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            qualified_observation_tx(
+                tx,
+                &ObservationReads::new(reader.as_ref()),
+                &track,
+                &envelope,
+            )
+            .await
+        })
+    })
+    .await
+}
+
+pub(super) async fn qualified_observation_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    repo: &ObservationReads<'_>,
     track: &TrackId,
     envelope: &crate::db::TrackEvent,
 ) -> Result<Option<HarnessObservation>> {
@@ -33,19 +57,31 @@ pub(super) async fn qualified_observation(
     {
         return Ok(None);
     }
-    resolve_event_observation(repo, track, event, true).await
+    if matches!(event, Event::TaskGitDeliverySettled { .. }) {
+        git_delivery_settled::qualified_observation_tx(tx, track, event, true).await
+    } else {
+        resolve_event_observation(repo, track, event, true).await
+    }
 }
 
 /// A later delivery/gate event carries the wake for a deferred worker self-report.
 /// The historical caller preserves delivery-error -> consult gate and task-error
 /// -> push. The durable prefix must know these required facts before accepting.
 pub(crate) async fn is_deferred_self_report(repo: &dyn Repo, event: &Event) -> bool {
-    deferred_self_report(repo, event, FactReads::HistoricalAudit)
-        .await
-        .unwrap_or(false)
+    deferred_self_report(
+        &ObservationReads::new(repo),
+        event,
+        FactReads::HistoricalAudit,
+    )
+    .await
+    .unwrap_or(false)
 }
 
-async fn deferred_self_report(repo: &dyn Repo, event: &Event, reads: FactReads) -> Result<bool> {
+async fn deferred_self_report(
+    repo: &ObservationReads<'_>,
+    event: &Event,
+    reads: FactReads,
+) -> Result<bool> {
     match event.task_notification() {
         Some(calm_types::event::PlannerNotification::Notify) => return Ok(false),
         Some(calm_types::event::PlannerNotification::Suppress) => return Ok(true),
@@ -58,12 +94,20 @@ async fn deferred_self_report(repo: &dyn Repo, event: &Event, reads: FactReads) 
 /// Historical worker hooks push on missing task rows or read failure. Required
 /// durable qualification distinguishes a known missing row from an unavailable read.
 pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn Repo, event: &Event) -> bool {
-    stale_worker_stop_hook(repo, event, FactReads::HistoricalAudit)
-        .await
-        .unwrap_or(false)
+    stale_worker_stop_hook(
+        &ObservationReads::new(repo),
+        event,
+        FactReads::HistoricalAudit,
+    )
+    .await
+    .unwrap_or(false)
 }
 
-async fn stale_worker_stop_hook(repo: &dyn Repo, event: &Event, reads: FactReads) -> Result<bool> {
+async fn stale_worker_stop_hook(
+    repo: &ObservationReads<'_>,
+    event: &Event,
+    reads: FactReads,
+) -> Result<bool> {
     let card_id = match event {
         Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
         _ => return Ok(false),
@@ -79,7 +123,7 @@ async fn stale_worker_stop_hook(repo: &dyn Repo, event: &Event, reads: FactReads
                 tracing::warn!(%card_id, %error,
                     "dispatcher push: stale-worker-stop lookup failed; pushing stop hook (fail-open)");
             }
-            Err(error.into())
+            Err(error)
         }
     }
 }

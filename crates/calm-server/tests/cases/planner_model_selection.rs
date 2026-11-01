@@ -303,9 +303,12 @@ async fn a_card_id_nobody_has_is_a_404() {
 #[tokio::test]
 async fn a_card_that_is_not_a_planner_codex_card_is_refused() {
     let boot = boot_with(idle_snapshot(vec![])).await;
-    sqlx::query("UPDATE cards SET kind = 'terminal' WHERE id = ?1")
-        .bind(boot.planner_card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET kind = 'terminal' WHERE id = ?1")
+                .bind(boot.planner_card.id.as_str()),
+        )
         .await
         .expect("retarget the card kind");
 
@@ -453,9 +456,14 @@ async fn a_deferred_turn_retries_without_anyone_touching_the_rest_port() {
     assert!(boot.daemon.started_turn_selections_for_test().is_empty());
 
     // Repair the payload behind the harness's back — no REST call, so only its own next tick can pick this up.
-    sqlx::query("UPDATE cards SET payload = json_set(payload, '$.model', 'gpt-5') WHERE id = ?1")
-        .bind(boot.planner_card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_set(payload, '$.model', 'gpt-5') WHERE id = ?1",
+            )
+            .bind(boot.planner_card.id.as_str()),
+        )
         .await
         .expect("repair the selection");
 
@@ -552,9 +560,14 @@ async fn a_refused_turn_is_retried_on_a_pace_rather_than_every_tick() {
 #[tokio::test]
 async fn a_refusal_that_cannot_clear_itself_tells_the_reader_what_to_do() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-    sqlx::query("UPDATE cards SET payload = json_set(payload, '$.model', 42) WHERE id = ?1")
-        .bind(boot.planner_card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_set(payload, '$.model', 42) WHERE id = ?1",
+            )
+            .bind(boot.planner_card.id.as_str()),
+        )
         .await
         .expect("store a selection nothing can read");
     post_input(boot.app.clone(), boot.planner_card.id.as_str(), "hello").await;

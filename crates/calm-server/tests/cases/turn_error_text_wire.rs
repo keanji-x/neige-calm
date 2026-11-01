@@ -18,9 +18,8 @@ async fn a_failed_turn_row_carries_its_readable_error_text() {
     let f = fx().await;
     let p = codex_planner(&f).await;
     // A real Planner card: a codex card whose payload names its provider (the route serves only those).
-    sqlx::query("UPDATE cards SET kind = 'codex', payload = '{\"planner_provider\":\"codex\"}' WHERE id = ?1")
-        .bind(&p.card)
-        .execute(&f.pool)
+    (f.db()).writer().execute(sqlx::query("UPDATE cards SET kind = 'codex', payload = '{\"planner_provider\":\"codex\"}' WHERE id = ?1")
+        .bind(&p.card))
         .await
         .unwrap();
     let raw = r#"{"type":"error","status":400,"error":{"message":"Upgrade Codex."}}"#;

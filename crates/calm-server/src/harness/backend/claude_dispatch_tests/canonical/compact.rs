@@ -89,15 +89,16 @@ async fn canonical_claude_compact_uses_current_human_and_commits_before_line() {
 #[tokio::test]
 async fn canonical_claude_compact_guard_failure_writes_nothing() {
     let (fx, harness, before) = ready().await;
-    sqlx::query(
-        "CREATE TRIGGER fail_compact_guard
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_compact_guard
          BEFORE UPDATE OF handle_state_json ON worker_sessions
          WHEN json_extract(NEW.handle_state_json,'$.compact_outcome.status')='started'
          BEGIN SELECT RAISE(ABORT,'guard failed'); END",
-    )
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let error = harness
         .compact_canonical(fx.source.clone())
         .await
@@ -141,95 +142,96 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
             async move { harness.compact_canonical(source).await }
         });
         entered(&blocked).await;
-        match change {
-            "thread" => {
-                sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
-                    .bind(uuid::Uuid::new_v4().to_string())
-                    .bind(&fx.owner.worker)
-                    .execute(fx.owner.repo.pool())
-                    .await
-                    .unwrap();
-            }
-            "binding" => {
-                sqlx::query("UPDATE cards SET payload=json_set(payload,'$.planner_provider','codex') WHERE id=?1")
-                    .bind(&fx.owner.card).execute(fx.owner.repo.pool()).await.unwrap();
-            }
-            "membership" => {
-                let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-                let area = conversation_area_tx(&mut tx, &fx.owner.card).await.unwrap();
-                sqlx::query(
-                    "UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2",
-                )
-                .bind(area.id.as_str())
-                .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-                tx.commit().await.unwrap();
-            }
-            "logout" => {
-                fx.auth.sessions.remove(&fx.login).unwrap();
-            }
-            "resource" => {
-                sqlx::query("UPDATE areas SET conversation_history_contract='shared_history'")
-                    .execute(fx.owner.repo.pool())
-                    .await
-                    .unwrap();
-            }
-            "archive" => {
-                sqlx::query("INSERT INTO assistant_conversation_archives(card_id,archived_at_ms) VALUES(?1,1)")
-                    .bind(&fx.owner.card)
-                    .execute(fx.owner.repo.pool())
-                    .await
-                    .unwrap();
-            }
-            "frame" => {
-                let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-                let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-                    .await
-                    .unwrap();
-                let mut header = RuntimeExecutionFence::from_carrier(&carrier)
-                    .header()
-                    .clone();
-                header["compact_outcome"]["operation_id"] = serde_json::json!("new-operation");
-                persist_runtime_frame_tx(
-                    &mut tx,
-                    &fx.owner.card,
-                    &fx.owner.worker,
-                    &RuntimeExecutionFence::from_carrier(&carrier),
-                    header,
-                )
-                .await
-                .unwrap();
-                tx.commit().await.unwrap();
-            }
-            "pending" => {
-                let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-                let mut carrier =
-                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            match change {
+                "thread" => {
+                    (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                        .bind(uuid::Uuid::new_v4().to_string())
+                        .bind(&fx.owner.worker))
                         .await
                         .unwrap();
-                crate::conversation_inputs::accept_human_tx(
-                    &mut tx,
-                    &fx.source.current_principal().unwrap(),
-                    &mut carrier,
-                    HumanPayload {
-                        text: "later human".into(),
-                        bound_attachments: vec![],
-                    },
-                )
-                .await
-                .unwrap();
-                tx.commit().await.unwrap();
+                }
+                "binding" => {
+                    (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload,'$.planner_provider','codex') WHERE id=?1")
+                        .bind(&fx.owner.card)).await.unwrap();
+                }
+                "membership" => {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let area = conversation_area_tx(&mut tx, &fx.owner.card).await.unwrap();
+                    sqlx::query(
+                        "UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2",
+                    )
+                    .bind(area.id.as_str())
+                    .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                "logout" => {
+                    fx.auth.sessions.remove(&fx.login).unwrap();
+                }
+                "resource" => {
+                    (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE areas SET conversation_history_contract='shared_history'"))
+                        .await
+                        .unwrap();
+                }
+                "archive" => {
+                    (fx.owner.repo.db()).writer().execute(sqlx::query("INSERT INTO assistant_conversation_archives(card_id,archived_at_ms) VALUES(?1,1)")
+                        .bind(&fx.owner.card))
+                        .await
+                        .unwrap();
+                }
+                "frame" => {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                    let mut header = RuntimeExecutionFence::from_carrier(&carrier)
+                        .header()
+                        .clone();
+                    header["compact_outcome"]["operation_id"] = serde_json::json!("new-operation");
+                    persist_runtime_frame_tx(
+                        &mut tx,
+                        &fx.owner.card,
+                        &fx.owner.worker,
+                        &RuntimeExecutionFence::from_carrier(&carrier),
+                        header,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                "pending" => {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let mut carrier =
+                        current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &fx.source.current_principal().unwrap(),
+                        &mut carrier,
+                        HumanPayload {
+                            text: "later human".into(),
+                            bound_attachments: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                other => panic!("unexpected change {other}"),
             }
-            other => panic!("unexpected change {other}"),
-        }
-        blocked.release.notify_one();
-        assert!(compact.await.unwrap().is_err(), "{change}");
-        assert_eq!(lines(&fx), 1, "{change}");
-        let after = fx.frame().await;
-        assert_eq!(after["last_turn_id"], before["last_turn_id"]);
-        harness.shutdown().await.unwrap();
+            blocked.release.notify_one();
+            assert!(compact.await.unwrap().is_err(), "{change}");
+            assert_eq!(lines(&fx), 1, "{change}");
+            let after = fx.frame().await;
+            assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+            harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -361,55 +363,59 @@ async fn canonical_claude_compact_restart_never_reissues() {
         }
         harness.shutdown().await.unwrap();
         // Crash-window seed uses the real protected writer, not a maintenance reducer copy.
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-            .await
-            .unwrap();
-        let fence = RuntimeExecutionFence::from_carrier(&carrier);
-        let mut header = fence.header().clone();
-        header["phase"] = serde_json::json!("compacting");
-        if window == "guard" {
-            header["compact_outcome"] = serde_json::json!({"operation_id":crate::model::new_id(),"thread_id":fx.owner.thread,"turn_id":null,"status":"started"});
-        } else if window == "written" {
-            header["compact_outcome"]["turn_id"] = serde_json::Value::Null;
-        }
-        persist_runtime_frame_tx(&mut tx, &fx.owner.card, &fx.owner.worker, &fence, header)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let repo = Arc::new(
-            crate::db::sqlite::SqlxRepo::open(&fx.owner.db_url)
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                 .await
-                .unwrap(),
-        );
-        let roles = crate::card_role_cache::CardRoleCache::new();
-        roles.seed_from_db(repo.pool()).await.unwrap();
-        let areas = crate::track_area_cache::TrackAreaCache::new();
-        areas.seed_from_db(repo.pool()).await.unwrap();
-        let rebooted = PlannerHarness::run(PlannerHarnessParams {
-            track_delete_locks: Default::default(),
-            worker_session_id: fx.owner.worker.clone(),
-            track_id: crate::ids::TrackId(fx.owner.track.clone()),
-            card_id: crate::ids::CardId(fx.owner.card.clone()),
-            thread_id: Some(fx.owner.thread.clone()),
-            repo,
-            events: crate::event::EventBus::new(),
-            card_role_cache: roles,
-            track_area_cache: areas,
-            backend: fx.backend.clone(),
-            registry: Default::default(),
-            config: Default::default(),
-            snapshot: HarnessRuntimeSnapshot::decode(fx.frame().await).unwrap(),
-        })
-        .await
-        .unwrap();
-        let after = fx.phase("wedged").await;
-        assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
-        assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
-        assert_eq!(after["last_turn_id"], before["last_turn_id"]);
-        assert!(rebooted.compact_canonical(fx.source.clone()).await.is_err());
-        assert_eq!(lines(&fx), if window == "guard" { 1 } else { 2 });
-        rebooted.shutdown().await.unwrap();
+                .unwrap();
+            let fence = RuntimeExecutionFence::from_carrier(&carrier);
+            let mut header = fence.header().clone();
+            header["phase"] = serde_json::json!("compacting");
+            if window == "guard" {
+                header["compact_outcome"] = serde_json::json!({"operation_id":crate::model::new_id(),"thread_id":fx.owner.thread,"turn_id":null,"status":"started"});
+            } else if window == "written" {
+                header["compact_outcome"]["turn_id"] = serde_json::Value::Null;
+            }
+            persist_runtime_frame_tx(&mut tx, &fx.owner.card, &fx.owner.worker, &fence, header)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            let repo = Arc::new(
+                crate::db::sqlite::SqlxRepo::open(&fx.owner.db_url)
+                    .await
+                    .unwrap(),
+            );
+            let roles = crate::card_role_cache::CardRoleCache::new();
+            roles.seed_from_db(repo.pool()).await.unwrap();
+            let areas = crate::track_area_cache::TrackAreaCache::new();
+            areas.seed_from_db(repo.pool()).await.unwrap();
+            let rebooted = PlannerHarness::run(PlannerHarnessParams {
+                track_delete_locks: Default::default(),
+                worker_session_id: fx.owner.worker.clone(),
+                track_id: crate::ids::TrackId(fx.owner.track.clone()),
+                card_id: crate::ids::CardId(fx.owner.card.clone()),
+                thread_id: Some(fx.owner.thread.clone()),
+                repo,
+                events: crate::event::EventBus::new(),
+                card_role_cache: roles,
+                track_area_cache: areas,
+                backend: fx.backend.clone(),
+                registry: Default::default(),
+                config: Default::default(),
+                snapshot: HarnessRuntimeSnapshot::decode(fx.frame().await).unwrap(),
+            })
+            .await
+            .unwrap();
+            let after = fx.phase("wedged").await;
+            assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
+            assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
+            assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+            assert!(rebooted.compact_canonical(fx.source.clone()).await.is_err());
+            assert_eq!(lines(&fx), if window == "guard" { 1 } else { 2 });
+            rebooted.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -471,32 +477,48 @@ async fn canonical_claude_compact_bad_session_and_failed_cleanup_cannot_complete
             other => panic!("unexpected failure {other}"),
         }
         harness.compact_canonical(fx.source.clone()).await.unwrap();
-        if failure == "turn" {
-            entered(&blocked).await;
-            let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-            let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-                .await
-                .unwrap();
-            let fence = RuntimeExecutionFence::from_carrier(&carrier);
-            let mut header = fence.header().clone();
-            header["compact_outcome"]["turn_id"] = serde_json::json!("foreign-turn");
-            persist_runtime_frame_tx(&mut tx, &fx.owner.card, &fx.owner.worker, &fence, header)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            blocked.release.notify_one();
-        }
-        let after = fx.phase("wedged").await;
-        assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
-        assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
-        assert_eq!(after["last_turn_id"], before["last_turn_id"]);
-        if failure == "stop" {
-            crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await;
-        }
-        if let Some(path) = broken_instruction.lock().unwrap().take() {
-            std::fs::remove_dir(path).unwrap();
-        }
-        harness.shutdown().await.unwrap();
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    if failure == "turn" {
+                        entered(&blocked).await;
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let carrier =
+                            current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                                .await
+                                .unwrap();
+                        let fence = RuntimeExecutionFence::from_carrier(&carrier);
+                        let mut header = fence.header().clone();
+                        header["compact_outcome"]["turn_id"] = serde_json::json!("foreign-turn");
+                        persist_runtime_frame_tx(
+                            &mut tx,
+                            &fx.owner.card,
+                            &fx.owner.worker,
+                            &fence,
+                            header,
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        blocked.release.notify_one();
+                    }
+                    let after = fx.phase("wedged").await;
+                    assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
+                    assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
+                    assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+                    if failure == "stop" {
+                        crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await;
+                    }
+                    if let Some(path) = broken_instruction.lock().unwrap().take() {
+                        std::fs::remove_dir(path).unwrap();
+                    }
+                    harness.shutdown().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -546,37 +568,47 @@ async fn canonical_claude_compact_start_without_end_expires() {
     })
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "later input".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let pending = fx.frame().await;
+                harness
+                    .rewind_compaction_clock_for_test(
+                        crate::harness::HarnessConfig::default().max_turn_duration,
+                    )
+                    .await;
+                let after = tokio::time::timeout(Duration::from_secs(5), fx.phase("wedged"))
+                    .await
+                    .unwrap();
+                assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
+                assert_eq!(after["last_turn_id"], before["last_turn_id"]);
+                assert_eq!(after["canonical_inputs"], pending["canonical_inputs"]);
+                assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
+                assert_eq!(fx.session.user_line_writes_for_test(), 2);
+                harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "later input".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let pending = fx.frame().await;
-    harness
-        .rewind_compaction_clock_for_test(
-            crate::harness::HarnessConfig::default().max_turn_duration,
-        )
-        .await;
-    let after = tokio::time::timeout(Duration::from_secs(5), fx.phase("wedged"))
-        .await
-        .unwrap();
-    assert_eq!(after["compact_outcome"]["status"], "unconfirmed");
-    assert_eq!(after["last_turn_id"], before["last_turn_id"]);
-    assert_eq!(after["canonical_inputs"], pending["canonical_inputs"]);
-    assert!(harness.compact_canonical(fx.source.clone()).await.is_err());
-    assert_eq!(fx.session.user_line_writes_for_test(), 2);
-    harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]

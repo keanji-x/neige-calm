@@ -318,26 +318,37 @@ async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
             InputDeliveryFact::Accepted { .. }
         ));
         assert!(done.2.canonical_inputs.receipts.is_empty());
-        let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-            .await
-            .unwrap();
-        let submission = crate::db::sqlite::conversation::submission_plan_tx(
-            &mut tx,
-            &done.2.canonical_inputs.attempts[0].attempt.submission_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            submission.plan.input_refs().unwrap(),
-            original
-                .2
-                .canonical_inputs
-                .pending
-                .iter()
-                .map(|entry| entry.accepted_input_ref().unwrap())
-                .collect::<Vec<_>>()
-        );
-        tx.rollback().await.unwrap();
+        {
+            let write_db = (fixture.repo.db()).clone();
+            let done = &done;
+            let original = &original;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let submission = crate::db::sqlite::conversation::submission_plan_tx(
+                            &mut tx,
+                            &done.2.canonical_inputs.attempts[0].attempt.submission_id,
+                        )
+                        .await
+                        .unwrap();
+                        assert_eq!(
+                            submission.plan.input_refs().unwrap(),
+                            original
+                                .2
+                                .canonical_inputs
+                                .pending
+                                .iter()
+                                .map(|entry| entry.accepted_input_ref().unwrap())
+                                .collect::<Vec<_>>()
+                        );
+                        tx.rollback().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         if provider_id.protocol() == calm_types::runtime::AgentProtocol::Claude {
             let input = super::super::claude_creation_tests::assistant::read(&fixture, "stdin");
             assert_eq!(input.lines().count(), 1);

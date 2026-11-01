@@ -1,4 +1,3 @@
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::ids::TrackId;
 use calm_types::harness::snapshot::history::HarnessHistoryEndpoints;
@@ -143,52 +142,61 @@ pub async fn prune_all_tracks_once(pool: &crate::db::sqlite::SqliteDb, keep: usi
     let track_count = track_ids.len();
     let mut total_pruned = 0;
 
-    for track_id in track_ids {
-        let track_id = TrackId::from(track_id);
-        let mut tx = match begin_immediate_tx(pool).await {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::warn!(
-                    track_id = %track_id.as_str(),
-                    error = %e,
-                    "track_vcs: prune failed for track; continuing"
-                );
-                continue;
-            }
-        };
-        let res = prune_track_history_tx(&mut tx, &track_id, keep).await;
-        match res {
-            Ok(pruned) => {
-                if let Err(e) = tx.commit().await {
-                    tracing::warn!(
-                        track_id = %track_id.as_str(),
-                        error = %e,
-                        "track_vcs: prune failed for track; continuing"
-                    );
-                } else {
-                    total_pruned += pruned;
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for track_id in track_ids {
+                    let track_id = TrackId::from(track_id);
+                    let mut tx = match write_session.begin_immediate().await {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            tracing::warn!(
+                                track_id = %track_id.as_str(),
+                                error = %e,
+                                "track_vcs: prune failed for track; continuing"
+                            );
+                            continue;
+                        }
+                    };
+                    let res = prune_track_history_tx(&mut tx, &track_id, keep).await;
+                    match res {
+                        Ok(pruned) => {
+                            if let Err(e) = tx.commit().await {
+                                tracing::warn!(
+                                    track_id = %track_id.as_str(),
+                                    error = %e,
+                                    "track_vcs: prune failed for track; continuing"
+                                );
+                            } else {
+                                total_pruned += pruned;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            tracing::warn!(
+                                track_id = %track_id.as_str(),
+                                error = %e,
+                                "track_vcs: prune failed for track; continuing"
+                            );
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                tracing::warn!(
-                    track_id = %track_id.as_str(),
-                    error = %e,
-                    "track_vcs: prune failed for track; continuing"
-                );
-            }
-        }
-    }
 
-    if total_pruned > 0 {
-        tracing::info!(
-            pruned = total_pruned,
-            tracks = track_count,
-            keep,
-            "track_vcs: pruned track history"
-        );
-    }
-    Ok(total_pruned)
+                if total_pruned > 0 {
+                    tracing::info!(
+                        pruned = total_pruned,
+                        tracks = track_count,
+                        keep,
+                        "track_vcs: pruned track history"
+                    );
+                }
+                Ok(total_pruned)
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 async fn insert_prune_keep_refs_tx<'a, I>(tx: &mut Transaction<'_, Sqlite>, hashes: I) -> Result<()>

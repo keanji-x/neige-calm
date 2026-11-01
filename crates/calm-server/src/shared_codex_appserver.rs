@@ -4773,8 +4773,9 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        sqlx::query("DROP TABLE settings")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TABLE settings"))
             .await
             .unwrap();
 

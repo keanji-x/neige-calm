@@ -69,47 +69,51 @@ pub async fn acp_registration_claim(
     digest: &str,
     native_bound: bool,
 ) -> std::result::Result<(), AcpRegistrationError> {
-    let mut tx = super::begin_immediate_tx(pool).await?;
-    use crate::decision_gate::{PrincipalDecisionGate, WriteTx};
-    let id = crate::worker::WorkerSessionId::from(worker);
-    let session = tx
-        .read_worker_session(&id)
-        .await?
-        .ok_or_else(|| CalmError::Conflict("ACP registration owner changed"))?;
-    let principal = crate::worker::Principal::Agent {
-        session_id: id,
-        track_id: session.track_id.clone(),
-        area_id: tx
-            .read_track_area(&session.track_id)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        use crate::decision_gate::{PrincipalDecisionGate, WriteTx};
+        let id = crate::worker::WorkerSessionId::from(worker);
+        let session = tx
+            .read_worker_session(&id)
             .await?
-            .ok_or_else(|| CalmError::Conflict("ACP registration track changed"))?,
-    };
-    if !PrincipalDecisionGate::new(principal)
-        .recorder_grant(&mut *tx, &session.track_id)
-        .await?
-    {
-        return Err(CalmError::Conflict("ACP registration owner changed").into());
-    }
-    let prior: Option<String> = sqlx::query_scalar(
-        "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
-    )
-    .bind(worker)
-    .fetch_optional(&mut **tx)
-    .await?;
-    match prior {
-        Some(prior) if prior == digest => {}
-        Some(_) => {
-            return Err(AcpRegistrationError::Changed);
+            .ok_or_else(|| CalmError::Conflict("ACP registration owner changed"))?;
+        let principal = crate::worker::Principal::Agent {
+            session_id: id,
+            track_id: session.track_id.clone(),
+            area_id: tx
+                .read_track_area(&session.track_id)
+                .await?
+                .ok_or_else(|| CalmError::Conflict("ACP registration track changed"))?,
+        };
+        if !PrincipalDecisionGate::new(principal)
+            .recorder_grant(&mut *tx, &session.track_id)
+            .await?
+        {
+            return Err(CalmError::Conflict("ACP registration owner changed").into());
         }
-        None if native_bound => {
-            return Err(AcpRegistrationError::UnownedNative);
+        let prior: Option<String> = sqlx::query_scalar(
+            "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
+        )
+        .bind(worker)
+        .fetch_optional(&mut **tx)
+        .await?;
+        match prior {
+            Some(prior) if prior == digest => {}
+            Some(_) => {
+                return Err(AcpRegistrationError::Changed);
+            }
+            None if native_bound => {
+                return Err(AcpRegistrationError::UnownedNative);
+            }
+            None => {
+                sqlx::query("INSERT INTO acp_managed_sessions(worker_session_id,registration_digest) VALUES(?1,?2)").bind(worker).bind(digest).execute(&mut **tx).await?;
+            }
         }
-        None => {
-            sqlx::query("INSERT INTO acp_managed_sessions(worker_session_id,registration_digest) VALUES(?1,?2)").bind(worker).bind(digest).execute(&mut **tx).await?;
-        }
-    }
-    tx.commit().await?;
-    Ok(())
+        tx.commit().await?;
+        Ok(())
+
+    })).await.map_err(crate::TruthError::from)?
 }
 pub async fn acp_submission_get<'e, E>(
     executor: E,
@@ -142,17 +146,27 @@ pub async fn acp_submission_recover_turn(
     worker: &str,
     turn: &str,
 ) -> Result<Option<AcpSubmission>> {
-    let mut tx = super::begin_immediate_tx(pool).await?;
-    let Some(mut receipt) = acp_submission_for_turn(&mut **tx, worker, turn).await? else {
-        return Ok(None);
-    };
-    if !matches!(receipt.state, AcpSubmissionState::Completed) {
-        finish_tx(&mut tx, worker, &receipt.client_id, None).await?;
-        receipt.state = AcpSubmissionState::Unknown;
-        receipt.outcome_json = None;
-    }
-    tx.commit().await?;
-    Ok(Some(receipt))
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                let Some(mut receipt) = acp_submission_for_turn(&mut **tx, worker, turn).await?
+                else {
+                    return Ok(None);
+                };
+                if !matches!(receipt.state, AcpSubmissionState::Completed) {
+                    finish_tx(&mut tx, worker, &receipt.client_id, None).await?;
+                    receipt.state = AcpSubmissionState::Unknown;
+                    receipt.outcome_json = None;
+                }
+                tx.commit().await?;
+                Ok(Some(receipt))
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 pub async fn acp_submission_unresolved(pool: &SqlitePool, worker: &str) -> Result<bool> {
@@ -218,15 +232,25 @@ pub async fn acp_submission_prepare(
     receipt: &AcpSubmission,
     at_ms: i64,
 ) -> std::result::Result<(), AcpPrepareError> {
-    let mut tx = super::begin_immediate_tx(pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .map_err(AcpPrepareError::BeforeReceipt)?;
+                prepare_tx(&mut tx, receipt, at_ms)
+                    .await
+                    .map_err(AcpPrepareError::BeforeReceipt)?;
+                tx.commit()
+                    .await
+                    .map_err(|error| AcpPrepareError::CommitUncertain(error.into()))
+            })
+        })
         .await
-        .map_err(AcpPrepareError::BeforeReceipt)?;
-    prepare_tx(&mut tx, receipt, at_ms)
-        .await
-        .map_err(AcpPrepareError::BeforeReceipt)?;
-    tx.commit()
-        .await
-        .map_err(|error| AcpPrepareError::CommitUncertain(error.into()))
+        .map_err(|error| AcpPrepareError::BeforeReceipt(error.into()))?
 }
 async fn prepare_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -270,10 +294,19 @@ pub async fn acp_submission_finish(
     client: &str,
     outcome: Option<&str>,
 ) -> Result<()> {
-    let mut tx = super::begin_immediate_tx(pool).await?;
-    finish_tx(&mut tx, worker, client, outcome).await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                finish_tx(&mut tx, worker, client, outcome).await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 async fn finish_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,

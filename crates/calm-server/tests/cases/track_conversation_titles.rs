@@ -191,9 +191,9 @@ async fn conversation_title_structured_system_legacy_isolation_and_replacement()
     );
     // Simulate the transcript cut performed by replace: the projection is over actual rows,
     // never a name-once value. No runtime is required for these persisted sources.
-    sqlx::query("DELETE FROM harness_items WHERE id=?1")
-        .bind(first)
-        .execute(b.repo.db().writer_pool())
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM harness_items WHERE id=?1").bind(first))
         .await
         .unwrap();
     assert_eq!(detail_title(&b, &track, &card).await, "Later page input");
@@ -213,95 +213,96 @@ async fn conversation_title_assistant_create_replay_pending_and_no_live_session(
     // Freeze a typed, projectable pending snapshot so the pending-only assertion is
     // independent of when the background loop drains after the HTTP response.
     b.shutdown_harnesses().await;
-    let mut tx = b.repo.db().writer_pool().begin().await.unwrap();
-    calm_server::db::sqlite::harness_items_delete_by_card_tx(&mut tx, card)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let pending = calm_server::harness::HarnessSnapshot::initial(
-        0,
-        vec![
-            calm_server::harness::queue::QueueEntry::user_message("  ".into(), None, Vec::new()),
-            calm_server::harness::queue::QueueEntry::user_message(
-                "Pending first input\nsecond".into(),
-                None,
-                Vec::new(),
-            ),
-        ],
-    );
-    sqlx::query("UPDATE worker_sessions SET state='idle',handle_state_json=?1 WHERE card_id=?2")
-        .bind(serde_json::to_string(&pending).unwrap())
-        .bind(card)
-        .execute(b.repo.db().writer_pool())
-        .await
-        .unwrap();
-    // Invisible persisted records must permit the same pending fallback as no records.
-    input(
-        &b,
-        &track,
-        card,
-        None,
-        "## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\n",
-    )
-    .await;
-    input(
-        &b,
-        &track,
-        card,
-        Some(json!([
-            {"presentation":"system","text":"context","attachments":[]},
-            {"presentation":"user","text":"User says:\n  ","attachments":[]}
-        ])),
-        "not authoritative",
-    )
-    .await;
-    let (status, pending_rows) = b.list_conversations(&track).await;
-    assert_eq!(status, StatusCode::OK, "{pending_rows}");
-    assert_eq!(pending_rows[0]["title"], "Pending first input");
-    assert_eq!(
-        b.scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1", card)
-            .await,
-        2,
-        "only the two invisible records exist; the title comes from the pending snapshot"
-    );
-    let (status, replay) = b
-        .create_internal_conversation(&track, "title-replay", "Pending first input\nsecond")
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        calm_server::db::sqlite::harness_items_delete_by_card_tx(&mut tx, card)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let pending = calm_server::harness::HarnessSnapshot::initial(
+            0,
+            vec![
+                calm_server::harness::queue::QueueEntry::user_message("  ".into(), None, Vec::new()),
+                calm_server::harness::queue::QueueEntry::user_message(
+                    "Pending first input\nsecond".into(),
+                    None,
+                    Vec::new(),
+                ),
+            ],
+        );
+        (b.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='idle',handle_state_json=?1 WHERE card_id=?2")
+            .bind(serde_json::to_string(&pending).unwrap())
+            .bind(card))
+            .await
+            .unwrap();
+        // Invisible persisted records must permit the same pending fallback as no records.
+        input(
+            &b,
+            &track,
+            card,
+            None,
+            "## Track state changes since your last turn\nchanged\n\n---\n\nUser says:\n",
+        )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{replay}");
-    assert_eq!(replay["id"], first["id"]);
-    assert_eq!(replay["title"], first["title"]);
-    let image = input(&b, &track, card, Some(json!([
-        {"presentation":"user","text":"", "attachments":[]},
-        {"presentation":"user","text":"", "attachments":[{
-            "id":"12345678-1234-4234-8234-123456789abc.png", "contentType":"image/png", "size":1,
-            "url":"/api/cards/image/planner/attachments/12345678-1234-4234-8234-123456789abc.png"
-        }]},
-        {"presentation":"user","text":"Later segment cannot name image-only input", "attachments":[]}
-    ])), "flattened").await;
-    assert_eq!(
-        b.list_conversations(&track).await.1[0]["title"],
-        Value::Null
-    );
-    input(&b, &track, card, None, "Durable input wins over pending").await;
-    assert_eq!(
-        b.list_conversations(&track).await.1[0]["title"],
-        Value::Null
-    );
-    sqlx::query("DELETE FROM harness_items WHERE id=?1")
-        .bind(image)
-        .execute(b.repo.db().writer_pool())
-        .await
-        .unwrap();
-    b.shutdown_harnesses().await;
-    sqlx::query("DELETE FROM worker_sessions WHERE card_id=?1")
-        .bind(card)
-        .execute(b.repo.db().writer_pool())
-        .await
-        .unwrap();
-    let (status, rows) = b.list_conversations(&track).await;
-    assert_eq!(status, StatusCode::OK, "{rows}");
-    assert_eq!(rows[0]["title"], "Durable input wins over pending");
-    assert_eq!(rows[0]["state"], Value::Null);
+        input(
+            &b,
+            &track,
+            card,
+            Some(json!([
+                {"presentation":"system","text":"context","attachments":[]},
+                {"presentation":"user","text":"User says:\n  ","attachments":[]}
+            ])),
+            "not authoritative",
+        )
+        .await;
+        let (status, pending_rows) = b.list_conversations(&track).await;
+        assert_eq!(status, StatusCode::OK, "{pending_rows}");
+        assert_eq!(pending_rows[0]["title"], "Pending first input");
+        assert_eq!(
+            b.scalar("SELECT COUNT(*) FROM harness_items WHERE card_id=?1", card)
+                .await,
+            2,
+            "only the two invisible records exist; the title comes from the pending snapshot"
+        );
+        let (status, replay) = b
+            .create_internal_conversation(&track, "title-replay", "Pending first input\nsecond")
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{replay}");
+        assert_eq!(replay["id"], first["id"]);
+        assert_eq!(replay["title"], first["title"]);
+        let image = input(&b, &track, card, Some(json!([
+            {"presentation":"user","text":"", "attachments":[]},
+            {"presentation":"user","text":"", "attachments":[{
+                "id":"12345678-1234-4234-8234-123456789abc.png", "contentType":"image/png", "size":1,
+                "url":"/api/cards/image/planner/attachments/12345678-1234-4234-8234-123456789abc.png"
+            }]},
+            {"presentation":"user","text":"Later segment cannot name image-only input", "attachments":[]}
+        ])), "flattened").await;
+        assert_eq!(
+            b.list_conversations(&track).await.1[0]["title"],
+            Value::Null
+        );
+        input(&b, &track, card, None, "Durable input wins over pending").await;
+        assert_eq!(
+            b.list_conversations(&track).await.1[0]["title"],
+            Value::Null
+        );
+        (b.repo.db()).writer().execute(sqlx::query("DELETE FROM harness_items WHERE id=?1")
+            .bind(image))
+            .await
+            .unwrap();
+        b.shutdown_harnesses().await;
+        (b.repo.db()).writer().execute(sqlx::query("DELETE FROM worker_sessions WHERE card_id=?1")
+            .bind(card))
+            .await
+            .unwrap();
+        let (status, rows) = b.list_conversations(&track).await;
+        assert_eq!(status, StatusCode::OK, "{rows}");
+        assert_eq!(rows[0]["title"], "Durable input wins over pending");
+        assert_eq!(rows[0]["state"], Value::Null);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

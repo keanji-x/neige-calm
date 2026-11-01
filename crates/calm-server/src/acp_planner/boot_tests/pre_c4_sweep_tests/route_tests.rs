@@ -179,63 +179,73 @@ async fn area_delete(proven: bool) {
     let mut intent = workspace_runtime::execution::test_support::intent(root.path().into());
     intent.metadata.track = workspace_runtime::execution::TrackId(row.track.clone());
     let execution = intent.metadata.id.as_str().to_owned();
-    if !proven {
-        // A generic unsettled execution exposes a Stop committed before the ACP sweep.
-        let mut tx = repo.pool().begin().await.unwrap();
-        calm_truth::db::sqlite::workspace_execution::insert(
-            &mut tx,
-            &execution,
-            &row.track,
-            &intent.metadata.alias.0,
-            &serde_json::to_string(&intent.metadata).unwrap(),
-            &serde_json::to_string(&intent.secrets).unwrap(),
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                if !proven {
+                    // A generic unsettled execution exposes a Stop committed before the ACP sweep.
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    calm_truth::db::sqlite::workspace_execution::insert(
+                        &mut tx,
+                        &execution,
+                        &row.track,
+                        &intent.metadata.alias.0,
+                        &serde_json::to_string(&intent.metadata).unwrap(),
+                        &serde_json::to_string(&intent.secrets).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                }
+                let result = crate::routes::areas::delete_area(
+                    State(RouteState::from_ref(&state)),
+                    State(WorkerState::from_ref(&state)),
+                    State(CodexShellState::from_ref(&state)),
+                    crate::actor::Actor::server_send(),
+                    crate::auth::Principal {
+                        user_id: LEGACY_OWNER_USER_ID.into(),
+                        display_name: "Owner".into(),
+                        role: "owner".into(),
+                        session_id: "preflight-test".into(),
+                    },
+                    RoutePath(track.area_id.to_string()),
+                )
+                .await;
+                if proven {
+                    assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+                    assert!(
+                        repo.area_get(track.area_id.as_str())
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                } else {
+                    assert!(matches!(result, Err(CalmError::Conflict(_))), "{result:?}");
+                    let execution =
+                        calm_truth::db::sqlite::workspace_execution::load(repo.pool(), &execution)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(
+                        execution.desired, "run",
+                        "no Stop may be persisted or handed to a driver"
+                    );
+                    assert_eq!(status(&repo, &row).await, "idle");
+                    assert_eq!(token(&repo, &row).await, Some(old_hash(&row)));
+                    assert!(repo.track_get(&row.track).await.unwrap().is_some());
+                    assert!(
+                        repo.area_get(track.area_id.as_str())
+                            .await
+                            .unwrap()
+                            .is_some()
+                    );
+                }
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-    let result = crate::routes::areas::delete_area(
-        State(RouteState::from_ref(&state)),
-        State(WorkerState::from_ref(&state)),
-        State(CodexShellState::from_ref(&state)),
-        crate::actor::Actor::server_send(),
-        crate::auth::Principal {
-            user_id: LEGACY_OWNER_USER_ID.into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-            session_id: "preflight-test".into(),
-        },
-        RoutePath(track.area_id.to_string()),
-    )
-    .await;
-    if proven {
-        assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
-        assert!(
-            repo.area_get(track.area_id.as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
-    } else {
-        assert!(matches!(result, Err(CalmError::Conflict(_))), "{result:?}");
-        let execution = calm_truth::db::sqlite::workspace_execution::load(repo.pool(), &execution)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            execution.desired, "run",
-            "no Stop may be persisted or handed to a driver"
-        );
-        assert_eq!(status(&repo, &row).await, "idle");
-        assert_eq!(token(&repo, &row).await, Some(old_hash(&row)));
-        assert!(repo.track_get(&row.track).await.unwrap().is_some());
-        assert!(
-            repo.area_get(track.area_id.as_str())
-                .await
-                .unwrap()
-                .is_some()
-        );
-    }
+        .expect("independent write operation")
 }
 #[tokio::test]
 async fn acp_pre_c4_area_delete_refuses_before_stop() {

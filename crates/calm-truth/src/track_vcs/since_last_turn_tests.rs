@@ -45,44 +45,53 @@ async fn commit(
     author: Option<&str>,
     files: &[(&str, &str)],
 ) -> String {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let mut entries = BTreeMap::new();
-    for (path, text) in files {
-        put_rendered_entry(
-            &mut tx,
-            &mut entries,
-            *path,
-            BlobContent {
-                bytes: text.as_bytes().to_vec(),
-                content_type: "text/plain".into(),
-            },
-            1,
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut entries = BTreeMap::new();
+                for (path, text) in files {
+                    put_rendered_entry(
+                        &mut tx,
+                        &mut entries,
+                        *path,
+                        BlobContent {
+                            bytes: text.as_bytes().to_vec(),
+                            content_type: "text/plain".into(),
+                        },
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                }
+                static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+                let created_at = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, entries, 1)
+                    .await
+                    .unwrap();
+                let hash = commit_tree_at_tx(
+                    &mut tx,
+                    track,
+                    &tree,
+                    CommitTreeMeta {
+                        parent_hash: parent,
+                        author,
+                        event_id: None,
+                        message: "test",
+                        manifest_schema_version: MANIFEST_SCHEMA_VERSION,
+                        created_at,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                hash
+            })
+        })
         .await
-        .unwrap();
-    }
-    static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-    let created_at = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, entries, 1)
-        .await
-        .unwrap();
-    let hash = commit_tree_at_tx(
-        &mut tx,
-        track,
-        &tree,
-        CommitTreeMeta {
-            parent_hash: parent,
-            author,
-            event_id: None,
-            message: "test",
-            manifest_schema_version: MANIFEST_SCHEMA_VERSION,
-            created_at,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    hash
+        .expect("independent write operation")
 }
 
 #[tokio::test]

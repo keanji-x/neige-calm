@@ -185,16 +185,28 @@ async fn launchpad_with_data_blocks(b: &Boot) -> (String, Vec<String>) {
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let claimed_rows = calm_server::db::sqlite::task_claim_pending_tx(
+                    &mut tx,
+                    &claimed_id,
+                    1,
+                    &[],
+                    false,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(claimed_rows, 1, "the fixture must hold a claimed task");
+                (track_id, vec![queued, claimed])
+            })
+        })
         .await
-        .unwrap();
-    let claimed_rows =
-        calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &claimed_id, 1, &[], false)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(claimed_rows, 1, "the fixture must hold a claimed task");
-    (track_id, vec![queued, claimed])
+        .expect("independent write operation")
 }
 
 /// Each task row of the track as `key|status|stale`, sorted.

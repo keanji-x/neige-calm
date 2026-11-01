@@ -486,9 +486,12 @@ async fn regate_after_the_checkout_moved_is_a_target_mismatch() {
 async fn regated_row_counts_against_the_ceiling_without_wedging_the_projection() {
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
-    sqlx::query("UPDATE tracks SET planner_task_ceiling = 1 WHERE id = ?1")
-        .bind(fx.track())
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET planner_task_ceiling = 1 WHERE id = ?1")
+                .bind(fx.track()),
+        )
         .await
         .unwrap();
     let green = outside(&fx, "green");

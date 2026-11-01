@@ -287,8 +287,9 @@ async fn initial_input_inspection_rejects_failed_issuance_residue_after_queue_de
     else {
         panic!("failed issuance must rebuffer the actual input before deletion");
     };
-    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
-        .execute(fx.repo.db().writer_pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_projection_cleanup"))
         .await
         .unwrap();
     fx.harness
@@ -343,13 +344,14 @@ async fn initial_input_inspection_does_not_lose_a_steer_whose_projection_failed(
     let entry = QueueEntry::user_message("accepted by the running turn".into(), None, vec![]);
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry]).await;
-    sqlx::query(
-        "CREATE TRIGGER refuse_steer_projection BEFORE INSERT ON harness_items \
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_steer_projection BEFORE INSERT ON harness_items \
          BEGIN SELECT RAISE(ABORT, 'forced steer projection failure'); END",
-    )
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     fx.harness
         .steer_pending_entry(id.clone(), 0, ActorId::User)
         .await

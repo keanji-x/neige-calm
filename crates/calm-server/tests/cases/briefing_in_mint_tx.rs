@@ -146,23 +146,28 @@ impl Boot {
     /// Rows the briefing's `ACTIVITY_QUERY` actually counts, so the join walks rows in all three tables.
     async fn seed_activity(&self, track_id: &str, n: usize) {
         for _ in 0..n {
-            sqlx::query(
-                "INSERT INTO events (at, actor, kind, scope_track, payload) \
+            (self.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "INSERT INTO events (at, actor, kind, scope_track, payload) \
                  VALUES (?1, 'owner', 'task.completed', ?2, '{}')",
-            )
-            .bind(now_ms())
-            .bind(track_id)
-            .execute(self.repo.pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(now_ms())
+                    .bind(track_id),
+                )
+                .await
+                .unwrap();
         }
     }
 
     /// Written directly rather than through `ensure_today_launchpad`, which would add a second writer.
     async fn make_launchpad(&self, track_id: &str) {
-        sqlx::query("UPDATE tracks SET purpose = 'launchpad' WHERE id = ?1")
-            .bind(track_id)
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET purpose = 'launchpad' WHERE id = ?1").bind(track_id),
+            )
             .await
             .unwrap();
     }

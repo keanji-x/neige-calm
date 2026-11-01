@@ -144,9 +144,7 @@ async fn c5d_engine_loss_during_writer_wait_keeps_fence_refusal() {
         crate::harness::run_loop::issuance::track_fence_for_test(&binding.track).await,
     );
     handoff.release();
-    let writer = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
-        .await
-        .unwrap();
+    let writer = repo.db().hold_writer_for_test().await.unwrap();
     let admit = owner.admit(
         repo.db(),
         &engine,
@@ -167,7 +165,7 @@ async fn c5d_engine_loss_during_writer_wait_keeps_fence_refusal() {
         super::super::engine(Some(&engine)),
         Err(CalmError::ExecutionUnavailable)
     ));
-    drop(writer);
+    writer.release().await.unwrap();
     assert!(matches!(admit.await, Err(CalmError::Conflict(_))));
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_executions")
         .fetch_one(repo.pool())

@@ -1220,7 +1220,7 @@ mod tests {
     use calm_types::report_blocks::{TASK_FIELDS, flat_text};
 
     use crate::db::Repo;
-    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
     use calm_truth::db::RepoSyncDomainRaw;
     use calm_types::track_report::TrackReportPayload;
@@ -1280,39 +1280,45 @@ mod tests {
             .unwrap();
         let task_id = format!("{}:terminal", track.id);
         let pool = repo.sqlite_db().unwrap();
-        sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-            .bind(
-                serde_json::to_string(&TrackReportPayload {
-                    schema_version: 3,
-                    doc_rev: 1,
-                    summary: String::new(),
-                    body: String::new(),
-                    blocks: Some(vec![root]),
-                })
-                .unwrap(),
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                    .bind(
+                        serde_json::to_string(&TrackReportPayload {
+                            schema_version: 3,
+                            doc_rev: 1,
+                            summary: String::new(),
+                            body: String::new(),
+                            blocks: Some(vec![root]),
+                        })
+                        .unwrap(),
+                    )
+                    .bind(report_card.id.as_str()),
             )
-            .bind(report_card.id.as_str())
-            .execute(pool.writer_pool())
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO tasks \
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO tasks \
              (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
               declared_by,claim_context_json,context_stale_at_ms,\
               context_closure_truncated,decl_ready,decl_released_by_user,\
               context_verify_failures,spawn,created_at_ms,updated_at_ms) \
              VALUES (?1,?2,'terminal','terminal','true','null','[]',0,?3,\
                      'planner',?4,?5,0,1,0,0,'in-wave',1,1)",
-        )
-        .bind(&task_id)
-        .bind(track.id.as_str())
-        .bind(status)
-        .bind(serde_json::to_string(&vec![frozen]).unwrap())
-        .bind(stale_at_ms)
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
-        sqlx::query(
+                )
+                .bind(&task_id)
+                .bind(track.id.as_str())
+                .bind(status)
+                .bind(serde_json::to_string(&vec![frozen]).unwrap())
+                .bind(stale_at_ms),
+            )
+            .await
+            .unwrap();
+        (pool).writer().execute(sqlx::query(
             "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_track) \
              VALUES('task.context_advanced',?1,'kernel',1,12,'track',?2)",
         )
@@ -1324,8 +1330,7 @@ mod tests {
             })
             .to_string(),
         )
-        .bind(track.id.as_str())
-        .execute(pool.writer_pool())
+        .bind(track.id.as_str()))
         .await
         .unwrap();
         (repo, track.id.to_string(), task_id)
@@ -1356,19 +1361,21 @@ mod tests {
         let mut payload = TrackReportPayload::new(summary, body);
         payload.blocks = Some(doc.blocks_snapshot().unwrap());
         let pool = repo.sqlite_db().unwrap();
-        sqlx::query(
+        (pool).writer().execute(sqlx::query(
             "UPDATE cards SET payload=?1,body_crdt=?2 WHERE track_id=?3 AND kind='track-report'",
         )
         .bind(serde_json::to_string(&payload).unwrap())
         .bind(doc.to_bytes())
-        .bind(&track_id)
-        .execute(pool.writer_pool())
+        .bind(&track_id))
         .await
         .unwrap();
-        sqlx::query("UPDATE tasks SET claim_context_json=?1 WHERE id=?2")
-            .bind(serde_json::to_string(&vec![frozen]).unwrap())
-            .bind(&task_id)
-            .execute(pool.writer_pool())
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET claim_context_json=?1 WHERE id=?2")
+                    .bind(serde_json::to_string(&vec![frozen]).unwrap())
+                    .bind(&task_id),
+            )
             .await
             .unwrap();
         // Exercise the production boot/event context sweep over the persisted running task.
@@ -1465,40 +1472,48 @@ mod tests {
         let (repo, track_id, task_id) = seed_restore_transaction_fixture("failed", Some(1)).await;
         let pool = repo.sqlite_db().unwrap();
 
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        let error = restore_context_tx(&mut tx, &task_id, &track_id)
-            .await
-            .expect_err("the transaction guard must reject a terminal row from any caller");
-        assert!(
-            matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
-            "the direct caller must be rejected by the terminal/stale eligibility guard: {error}"
-        );
-        tx.rollback().await.unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT context_stale_at_ms FROM tasks WHERE id=?1"
-            )
-            .bind(&task_id)
-            .fetch_one(pool.read_pool())
-            .await
-            .unwrap(),
-            Some(1)
-        );
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let error = restore_context_tx(&mut tx, &task_id, &track_id)
+                .await
+                .expect_err("the transaction guard must reject a terminal row from any caller");
+            assert!(
+                matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
+                "the direct caller must be rejected by the terminal/stale eligibility guard: {error}"
+            );
+            tx.rollback().await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, Option<i64>>(
+                    "SELECT context_stale_at_ms FROM tasks WHERE id=?1"
+                )
+                .bind(&task_id)
+                .fetch_one(pool.read_pool())
+                .await
+                .unwrap(),
+                Some(1)
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]
     async fn restore_update_rejects_a_fresh_candidate_even_after_equal_evidence() {
         let (repo, track_id, task_id) = seed_restore_transaction_fixture("running", None).await;
         let pool = repo.sqlite_db().unwrap();
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        let error = restore_context_tx(&mut tx, &task_id, &track_id)
-            .await
-            .expect_err("the conditional update must reject a row that is no longer stale");
-        assert!(
-            matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
-            "the conditional update must own the stale-level guard: {error}"
-        );
-        tx.rollback().await.unwrap();
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let error = restore_context_tx(&mut tx, &task_id, &track_id)
+                .await
+                .expect_err("the conditional update must reject a row that is no longer stale");
+            assert!(
+                matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
+                "the conditional update must own the stale-level guard: {error}"
+            );
+            tx.rollback().await.unwrap();
+
+    })).await.expect("independent write operation")
     }
 
     #[test]

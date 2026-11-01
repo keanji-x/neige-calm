@@ -455,44 +455,51 @@ impl Fx {
     pub(super) async fn new_worker(&self, name: &str, provider: AgentProvider) -> ToolCallIdentity {
         let card_id = format!("worker-{name}");
         let session_id = format!("{card_id}-session");
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&self.db())
+        let write_db = (self.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    card_create_with_id_tx(
+                        &mut tx,
+                        card_id.clone(),
+                        NewCard {
+                            track_id: self.boot.track_id.clone(),
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: Value::Null,
+                        },
+                        CardRole::Worker,
+                        true,
+                        &self.boot.card_role_cache,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    crate::mcp_track_report::seed_non_root_session_with_provider(
+                        self.boot.repo.as_ref(),
+                        &self.boot.track_id,
+                        &calm_server::ids::CardId::from(card_id.clone()),
+                        &session_id,
+                        match provider {
+                            AgentProvider::Claude => calm_types::worker::WorkerProviderKind::Claude,
+                            _ => calm_types::worker::WorkerProviderKind::Codex,
+                        },
+                    )
+                    .await;
+                    ToolCallIdentity {
+                        card_id,
+                        provider,
+                        session_id,
+                        thread_id: format!("{name}-thread"),
+                        ..worker_identity(&self.boot)
+                    }
+                })
+            })
             .await
-            .unwrap();
-        card_create_with_id_tx(
-            &mut tx,
-            card_id.clone(),
-            NewCard {
-                track_id: self.boot.track_id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: Value::Null,
-            },
-            CardRole::Worker,
-            true,
-            &self.boot.card_role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        crate::mcp_track_report::seed_non_root_session_with_provider(
-            self.boot.repo.as_ref(),
-            &self.boot.track_id,
-            &calm_server::ids::CardId::from(card_id.clone()),
-            &session_id,
-            match provider {
-                AgentProvider::Claude => calm_types::worker::WorkerProviderKind::Claude,
-                _ => calm_types::worker::WorkerProviderKind::Codex,
-            },
-        )
-        .await;
-        ToolCallIdentity {
-            card_id,
-            provider,
-            session_id,
-            thread_id: format!("{name}-thread"),
-            ..worker_identity(&self.boot)
-        }
+            .expect("independent write operation")
     }
 
     /// Declare a task and claim its current attempt onto `worker` as `running`, the state a
@@ -526,13 +533,12 @@ impl Fx {
     }
 
     pub(super) async fn claim_running(&self, task_id: &str, worker: &str) {
-        sqlx::query(
+        (self.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET status = 'running', worker_card_id = ?1, updated_at_ms = ?3 WHERE id = ?2",
         )
         .bind(worker)
         .bind(task_id)
-        .bind(now_ms())
-        .execute(&self.pool())
+        .bind(now_ms()))
         .await
         .unwrap();
     }
@@ -549,9 +555,12 @@ impl Fx {
     /// stages several attempts at once needs it, as the track's checkout takes one held lease at a
     /// time (#1830 S2).
     pub(super) async fn release_lease_by_hand(&self, card: &str) {
-        sqlx::query("UPDATE workspace_leases SET state = 'released' WHERE card_id = ?1")
-            .bind(card)
-            .execute(&self.pool())
+        (self.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE workspace_leases SET state = 'released' WHERE card_id = ?1")
+                    .bind(card),
+            )
             .await
             .unwrap();
     }
@@ -944,61 +953,68 @@ impl Fx {
         let mut snapshot = HarnessSnapshot::initial(0, vec![]);
         snapshot.phase = HarnessPhaseTag::Idle;
         snapshot.last_thread_id = Some("planner-observer".into());
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&self.db())
-            .await
-            .unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: worker_session_id.clone(),
-                card_id: self.boot.planner_card_id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: Some("planner-observer".into()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let handle = PlannerHarness::run(PlannerHarnessParams {
-            track_delete_locks: Default::default(),
-            backend: calm_server::harness::backend::PlannerBackend::codex(
-                SharedCodexAppServer::new_stub(self.boot.repo.clone()),
-                self.boot.planner_card_id.as_ref(),
-                self.boot.track_id.as_ref(),
-                worker_session_id.as_ref(),
-            )
-            .unwrap(),
-            worker_session_id: worker_session_id.clone(),
-            track_id: self.boot.track_id.clone(),
-            card_id: self.boot.planner_card_id.clone(),
-            thread_id: Some("planner-observer".into()),
-            repo: self.boot.repo.clone(),
-            events: self.boot.ctx.events.clone(),
-            card_role_cache: self.boot.card_role_cache.clone(),
-            track_area_cache: areas,
+        let write_db = (self.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: worker_session_id.clone(),
+                            card_id: self.boot.planner_card_id.to_string(),
+                            kind: WorkerSessionKind::SharedPlanner,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Idle,
+                            terminal_run_id: None,
+                            thread_id: Some("planner-observer".into()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let handle = PlannerHarness::run(PlannerHarnessParams {
+                        track_delete_locks: Default::default(),
+                        backend: calm_server::harness::backend::PlannerBackend::codex(
+                            SharedCodexAppServer::new_stub(self.boot.repo.clone()),
+                            self.boot.planner_card_id.as_ref(),
+                            self.boot.track_id.as_ref(),
+                            worker_session_id.as_ref(),
+                        )
+                        .unwrap(),
+                        worker_session_id: worker_session_id.clone(),
+                        track_id: self.boot.track_id.clone(),
+                        card_id: self.boot.planner_card_id.clone(),
+                        thread_id: Some("planner-observer".into()),
+                        repo: self.boot.repo.clone(),
+                        events: self.boot.ctx.events.clone(),
+                        card_role_cache: self.boot.card_role_cache.clone(),
+                        track_area_cache: areas,
 
-            registry: self.harness.clone(),
-            config: HarnessConfig::default(),
-            snapshot: (snapshot)
-                .try_into()
-                .expect("historical fixture snapshot contract"),
-        })
-        .await
-        .expect("historical fixture harness");
-        handle
-            .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
+                        registry: self.harness.clone(),
+                        config: HarnessConfig::default(),
+                        snapshot: (snapshot)
+                            .try_into()
+                            .expect("historical fixture snapshot contract"),
+                    })
+                    .await
+                    .expect("historical fixture harness");
+                    handle
+                        .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
+                        .await
+                        .unwrap();
+                    self.harness.insert(worker_session_id, handle.clone());
+                    handle
+                })
+            })
             .await
-            .unwrap();
-        self.harness.insert(worker_session_id, handle.clone());
-        handle
+            .expect("independent write operation")
     }
 }
 
@@ -1391,9 +1407,12 @@ async fn candidate_row_is_minted_from_operation_result_not_events() {
     );
 
     // The event is gone before the settlement runs.
-    sqlx::query("DELETE FROM events WHERE kind = 'worktree.committed' AND scope_card = ?1")
-        .bind(&worker.card_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM events WHERE kind = 'worktree.committed' AND scope_card = ?1")
+                .bind(&worker.card_id),
+        )
         .await
         .unwrap();
     assert!(
@@ -1435,18 +1454,21 @@ pub(super) async fn park_without_result_file(fx: &Fx, attempt: &str) -> PathBuf 
         path.push(suffix);
         let _ = std::fs::remove_file(path);
     }
-    sqlx::query(
-        "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
          spawn_artifacts_json=NULL,phase_detail_json=NULL,last_error=NULL,completed_at_ms=NULL, \
          lease_owner=?3,lease_until_ms=?2 WHERE id=?4",
-    )
-    .bind(now_ms())
-    .bind(now_ms() + 600_000)
-    .bind(calm_server::model::new_id())
-    .bind(&op.id)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
+            )
+            .bind(now_ms())
+            .bind(now_ms() + 600_000)
+            .bind(calm_server::model::new_id())
+            .bind(&op.id),
+        )
+        .await
+        .unwrap();
     result_path
 }
 
@@ -2470,13 +2492,12 @@ async fn candidate_settlement_wakes_when_gate_already_flipped() {
             .is_none(),
         "the gate waits for settlement"
     );
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status = 'done', gate_attempt = 1, gate_result_json = ?1, finished_at_ms = ?2 WHERE id = ?3",
     )
     .bind(json!({"passed": true, "exit_code": 0, "log_tail": "", "log_path": "/l", "attempt": 1}).to_string())
     .bind(now_ms())
-    .bind(&task.id)
-    .execute(&fx.pool())
+    .bind(&task.id))
     .await
     .unwrap();
     assert_observations_settle_at(&planner, 0).await;
@@ -2576,70 +2597,81 @@ async fn settlement_wake_is_replay_stable() {
     let mut snapshot = HarnessSnapshot::initial(settled.id - 1, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("planner-observer".into());
-    let mut tx = fx.pool().begin().await.unwrap();
-    session_set_handle_state_tx(
-        &mut tx,
-        &planner_session,
-        Some(serde_json::to_value(&snapshot).unwrap()),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let registry = HarnessRegistry::new();
-    let areas = calm_server::track_area_cache::TrackAreaCache::new();
-    fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
-    let claude_wiring =
-        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(fx.boot.repo.clone());
-    let recovery_daemon =
-        SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
-    let recovered = recover_harnesses_on_boot(
-        fx.boot.repo.clone(),
-        EventBus::new(),
-        fx.boot.card_role_cache.clone(),
-        areas,
-        recovery_daemon.clone(),
-        recovery_daemon.thread_seals().clone(),
-        &claude_wiring,
-        &registry,
-        &calm_server::harness::new_track_delete_locks(),
-        calm_server::harness::BootRows::All,
-    )
-    .await
-    .unwrap();
-    assert_eq!(recovered, 1);
-    let stored = fx
-        .boot
-        .repo
-        .session_projection_by_id(&planner_session)
+    let write_db = (fx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_set_handle_state_tx(
+                    &mut tx,
+                    &planner_session,
+                    Some(serde_json::to_value(&snapshot).unwrap()),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let registry = HarnessRegistry::new();
+                let areas = calm_server::track_area_cache::TrackAreaCache::new();
+                fx.boot.repo.seed_track_area_cache(&areas).await.unwrap();
+                let claude_wiring =
+                    calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(
+                        fx.boot.repo.clone(),
+                    );
+                let recovery_daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(fx.boot.repo.clone(), None);
+                let recovered = recover_harnesses_on_boot(
+                    fx.boot.repo.clone(),
+                    EventBus::new(),
+                    fx.boot.card_role_cache.clone(),
+                    areas,
+                    recovery_daemon.clone(),
+                    recovery_daemon.thread_seals().clone(),
+                    &claude_wiring,
+                    &registry,
+                    &calm_server::harness::new_track_delete_locks(),
+                    calm_server::harness::BootRows::All,
+                )
+                .await
+                .unwrap();
+                assert_eq!(recovered, 1);
+                let stored = fx
+                    .boot
+                    .repo
+                    .session_projection_by_id(&planner_session)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let stored: HarnessSnapshot =
+                    serde_json::from_value(stored.handle_state_json.unwrap()).unwrap();
+                let replayed = stored.pending_observations();
+                assert_eq!(
+                    replayed.len(),
+                    1,
+                    "the row is `done` now, the event still says deferred: {replayed:?}"
+                );
+                assert!(
+                    matches!(
+                        &replayed[0],
+                        Observation::TaskGateResult { passed: true, .. }
+                    ),
+                    "{replayed:?}"
+                );
+                assert_eq!(
+                    replayed
+                        .iter()
+                        .map(std::mem::discriminant)
+                        .collect::<Vec<_>>(),
+                    live.iter().map(std::mem::discriminant).collect::<Vec<_>>(),
+                    "live and replay agree"
+                );
+                if let Some(handle) = registry.remove(&planner_session) {
+                    handle.shutdown().await.unwrap();
+                }
+            })
+        })
         .await
-        .unwrap()
-        .unwrap();
-    let stored: HarnessSnapshot =
-        serde_json::from_value(stored.handle_state_json.unwrap()).unwrap();
-    let replayed = stored.pending_observations();
-    assert_eq!(
-        replayed.len(),
-        1,
-        "the row is `done` now, the event still says deferred: {replayed:?}"
-    );
-    assert!(
-        matches!(
-            &replayed[0],
-            Observation::TaskGateResult { passed: true, .. }
-        ),
-        "{replayed:?}"
-    );
-    assert_eq!(
-        replayed
-            .iter()
-            .map(std::mem::discriminant)
-            .collect::<Vec<_>>(),
-        live.iter().map(std::mem::discriminant).collect::<Vec<_>>(),
-        "live and replay agree"
-    );
-    if let Some(handle) = registry.remove(&planner_session) {
-        handle.shutdown().await.unwrap();
-    }
+        .expect("independent write operation")
 }
 
 // ---------------------------------------------------------------------------
@@ -2656,9 +2688,14 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
     ] {
         let worker = fx.new_worker(name, provider.clone()).await;
         let lease = fx.kernel_lease(&worker.card_id).await;
-        sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
-            .bind(&lease.lease_id)
-            .execute(&fx.pool())
+        (fx.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1",
+                )
+                .bind(&lease.lease_id),
+            )
             .await
             .unwrap();
         let (base_sha, policy): (Option<String>, Option<String>) = sqlx::query_as(
@@ -2723,9 +2760,12 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
     // delivery to wait for), frozen and recorded `Unbound { LegacyLease }`, no sample taken.
     let worker = fx.new_worker("legacy-gated", AgentProvider::Claude).await;
     let lease = fx.kernel_lease(&worker.card_id).await;
-    sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
-        .bind(&lease.lease_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
+                .bind(&lease.lease_id),
+        )
         .await
         .unwrap();
     let task = fx
@@ -2803,10 +2843,9 @@ async fn candidate_view_is_total_over_task_status() {
     let task = fx
         .running_task("spawn-failed", "codex", &spawn_failed.card_id, json!({}))
         .await;
-    sqlx::query("UPDATE tasks SET status = 'failed', status_detail = 'spawn-failed', finished_at_ms = ?2 WHERE id = ?1")
+    (fx.db()).writer().execute(sqlx::query("UPDATE tasks SET status = 'failed', status_detail = 'spawn-failed', finished_at_ms = ?2 WHERE id = ?1")
         .bind(&task.id)
-        .bind(now_ms())
-        .execute(&fx.pool())
+        .bind(now_ms()))
         .await
         .unwrap();
     fx.release_lease_by_hand(&spawn_failed.card_id).await;
@@ -2822,10 +2861,9 @@ async fn candidate_view_is_total_over_task_status() {
             json!({"gate": {"steps": [{"name": "t", "cmd": "true"}]}, "no_gate_reason": null}),
         )
         .await;
-    sqlx::query("UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout', finished_at_ms = ?2 WHERE id = ?1")
+    (fx.db()).writer().execute(sqlx::query("UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout', finished_at_ms = ?2 WHERE id = ?1")
         .bind(&task.id)
-        .bind(now_ms())
-        .execute(&fx.pool())
+        .bind(now_ms()))
         .await
         .unwrap();
     fx.release_lease_by_hand(&timed_out.card_id).await;
@@ -2839,9 +2877,12 @@ async fn candidate_view_is_total_over_task_status() {
     fx.report_only(&done, &task.id, "test: complete worker attempt")
         .await;
     assert_eq!(fx.delivery_count(&task.id).await, 1);
-    sqlx::query("DELETE FROM task_git_deliveries WHERE producer_attempt_id = ?1")
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM task_git_deliveries WHERE producer_attempt_id = ?1")
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     assert_eq!(current(&fx.boot, "done").await.status, TaskStatus::Done);

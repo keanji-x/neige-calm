@@ -24,8 +24,8 @@ use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, card_mcp_token_set_tx,
-    card_with_codex_create_tx, session_bind_attribution_tx, session_fail_if_active_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
+    session_bind_attribution_tx, session_fail_if_active_runtime_tx,
     session_mark_superseded_runtime_tx, session_mcp_token_set_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
 };
@@ -96,69 +96,73 @@ async fn boot_with_registry_and_daemon_hash(
 
     let card_role_cache = CardRoleCache::new();
     let planner_card_id = calm_server::model::new_id();
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_planner_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        planner_card_id.clone(),
-        &calm_server::model::new_id(),
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let worker = repo
-        .card_create(calm_server::model::NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "terminal".into(),
-            sort: None,
-            payload: serde_json::json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
-        })
+    let write_db = (sqlx_repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let (_planner_card, _term, mcp_token) = card_with_codex_create_tx(
+            &mut tx,
+            planner_card_id.clone(),
+            &calm_server::model::new_id(),
+            None,
+            track.id.clone(),
+            None,
+            None,
+            "/workspace".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            CardRole::Planner,
+            false,
+            &card_role_cache,
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
         .await
         .unwrap();
-    card_role_cache.insert(worker.id.clone(), CardRole::Worker, track.id.clone());
+        tx.commit().await.unwrap();
 
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    let server = McpServer::spawn(
-        repo.clone(),
-        EventBus::new(),
-        calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
-        socket_path.clone(),
-        PathBuf::from("/nonexistent-shim-bin"),
-        registry,
-        daemon_token_hash,
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::env::temp_dir().join("neige-test-gate-logs"),
-    )
-    .await
-    .unwrap();
+        let worker = repo
+            .card_create(calm_server::model::NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "terminal".into(),
+                sort: None,
+                payload: serde_json::json!({"terminal_presentation":{"source":"unrecorded","in_workbench":false}}),
+            })
+            .await
+            .unwrap();
+        card_role_cache.insert(worker.id.clone(), CardRole::Worker, track.id.clone());
 
-    Boot {
-        server,
-        sqlx_repo,
-        card_role_cache,
-        socket_path,
-        raw_token: mcp_token.unwrap(),
-        track_id: track.id.as_str().to_string(),
-        planner_card_id: planner_card_id.as_str().to_string(),
-        worker_card_id: worker.id.as_str().to_string(),
-        _tmp: tmp,
-    }
+        let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+        repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+        let server = McpServer::spawn(
+            repo.clone(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(card_role_cache.clone(), track_area_cache),
+            socket_path.clone(),
+            PathBuf::from("/nonexistent-shim-bin"),
+            registry,
+            daemon_token_hash,
+            std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            std::env::temp_dir().join("neige-test-gate-logs"),
+        )
+        .await
+        .unwrap();
+
+        Boot {
+            server,
+            sqlx_repo,
+            card_role_cache,
+            socket_path,
+            raw_token: mcp_token.unwrap(),
+            track_id: track.id.as_str().to_string(),
+            planner_card_id: planner_card_id.as_str().to_string(),
+            worker_card_id: worker.id.as_str().to_string(),
+            _tmp: tmp,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 struct TokenCard {
@@ -222,46 +226,55 @@ const FIXTURE_ROLES: &[CardRole] = &[
 ];
 
 async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
-    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+    let write_db = (boot.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+                    .await
+                    .unwrap()
+                {
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            worker_session_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                } else {
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                }
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap()
-    {
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime.id,
-            ThreadAttribution {
-                worker_session_id: runtime.id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .unwrap();
-    } else {
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-    }
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -294,70 +307,88 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         .unwrap();
     let card_id = calm_server::model::new_id();
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        card_id.clone(),
-        calm_server::model::NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: serde_json::json!({"planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        true,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_create_with_id_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    calm_server::model::NewCard {
+                        track_id: track.id,
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: serde_json::json!({"planner_provider": "codex"}),
+                    },
+                    CardRole::Planner,
+                    true,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let token_a = auth::CardMcpToken::generate();
-    let hash_a = auth::hash_token(token_a.as_str());
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &hash_a)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        repo.card_mcp_token_lookup_by_hash(&hash_a).await.unwrap(),
-        Some((card_id.clone(), hash_a.clone()))
-    );
+                let token_a = auth::CardMcpToken::generate();
+                let hash_a = auth::hash_token(token_a.as_str());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card_id, &hash_a)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    repo.card_mcp_token_lookup_by_hash(&hash_a).await.unwrap(),
+                    Some((card_id.clone(), hash_a.clone()))
+                );
 
-    let token_b = auth::CardMcpToken::generate();
-    let hash_b = auth::hash_token(token_b.as_str());
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &hash_b)
+                let token_b = auth::CardMcpToken::generate();
+                let hash_b = auth::hash_token(token_b.as_str());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card_id, &hash_b)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert!(
+                    repo.card_mcp_token_lookup_by_hash(&hash_a)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(
+                    repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
+                    Some((card_id, hash_b))
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(
-        repo.card_mcp_token_lookup_by_hash(&hash_a)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        repo.card_mcp_token_lookup_by_hash(&hash_b).await.unwrap(),
-        Some((card_id, hash_b))
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn session_mcp_token_set_tx_fails_closed_without_mirror_row() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = session_mcp_token_set_tx(&mut tx, "missing-session", "hash")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let err = session_mcp_token_set_tx(&mut tx, "missing-session", "hash")
+                                .await
+                                .expect_err("missing worker_sessions mirror row must fail closed");
+                            assert!(
+                    err.to_string().contains(
+                        "expected 1 worker_sessions mirror row for MCP token session missing-session"
+                    ),
+                    "unexpected error: {err}"
+                );
+                            tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .expect_err("missing worker_sessions mirror row must fail closed");
-    assert!(
-        err.to_string().contains(
-            "expected 1 worker_sessions mirror row for MCP token session missing-session"
-        ),
-        "unexpected error: {err}"
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -391,129 +422,148 @@ async fn remint_updates_one_worker_session_hash_row() {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (_card, _term, first_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &runtime_id,
-        None,
-        track.id,
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true,
-        &role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let (_card, _term, first_token) = card_with_codex_create_tx(
+                                &mut tx,
+                                card_id.clone(),
+                                &runtime_id,
+                                None,
+                                track.id,
+                                None,
+                                None,
+                                "/workspace".into(),
+                                json!({}),
+                                None,
+                                None,
+                                None,
+                                CardRole::Worker,
+                                true,
+                                &role_cache,
+                                calm_server::routes::theme::RequestTheme::default_dark(),
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
 
-    let first_hash = auth::hash_token(
-        first_token
-            .as_deref()
-            .expect("worker card mint must return raw token"),
-    );
-    let initial_session_hash: String =
-        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
-            .bind(&runtime_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(initial_session_hash, first_hash);
+                            let first_hash = auth::hash_token(
+                                first_token
+                                    .as_deref()
+                                    .expect("worker card mint must return raw token"),
+                            );
+                            let initial_session_hash: String =
+                                sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
+                                    .bind(&runtime_id)
+                                    .fetch_one(repo.pool())
+                                    .await
+                                    .unwrap();
+                            assert_eq!(initial_session_hash, first_hash);
 
-    let second_token = auth::CardMcpToken::generate();
-    let second_hash = auth::hash_token(second_token.as_str());
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &second_hash)
+                            let second_token = auth::CardMcpToken::generate();
+                            let second_hash = auth::hash_token(second_token.as_str());
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            card_mcp_token_set_tx(&mut tx, &card_id, &second_hash)
+                                .await
+                                .unwrap();
+                            session_mcp_token_set_tx(&mut tx, &runtime_id, &second_hash)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+
+                            let non_null_rows: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM worker_sessions WHERE id = ?1 AND mcp_token_hash IS NOT NULL",
+                )
+                .bind(&runtime_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+                            assert_eq!(non_null_rows, 1);
+                            let card_hash: String = sqlx::query_scalar(
+                                "SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1",
+                            )
+                            .bind(&card_id)
+                            .fetch_one(repo.pool())
+                            .await
+                            .unwrap();
+                            let session_hash: String =
+                                sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
+                                    .bind(&runtime_id)
+                                    .fetch_one(repo.pool())
+                                    .await
+                                    .unwrap();
+                            assert_eq!(card_hash, second_hash);
+                            assert_eq!(session_hash, second_hash);
+            })
+        })
         .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &second_hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    let non_null_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM worker_sessions WHERE id = ?1 AND mcp_token_hash IS NOT NULL",
-    )
-    .bind(&runtime_id)
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(non_null_rows, 1);
-    let card_hash: String =
-        sqlx::query_scalar("SELECT hashed_token FROM card_mcp_tokens WHERE card_id = ?1")
-            .bind(&card_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    let session_hash: String =
-        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id = ?1")
-            .bind(&runtime_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(card_hash, second_hash);
-    assert_eq!(session_hash, second_hash);
+        .expect("independent write operation")
 }
 
 async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) -> TokenCard {
     let token = auth::CardMcpToken::generate();
     let token_hash = auth::hash_token(token.as_str());
     let runtime_id = calm_server::model::new_id();
-    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let card = calm_server::model::NewCard {
-        track_id: boot.track_id.as_str().into(),
-        title: None,
-        kind: "codex".into(),
-        sort: None,
-        payload: Value::Null,
-    };
-    card_create_with_id_tx(
-        &mut tx,
-        card_id.to_string(),
-        card,
-        role,
-        true,
-        &boot.card_role_cache,
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    card_mcp_token_set_tx(&mut tx, card_id, &token_hash)
+    let write_db = (boot.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let card = calm_server::model::NewCard {
+                    track_id: boot.track_id.as_str().into(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: Value::Null,
+                };
+                card_create_with_id_tx(
+                    &mut tx,
+                    card_id.to_string(),
+                    card,
+                    role,
+                    true,
+                    &boot.card_role_cache,
+                )
+                .await
+                .unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                card_mcp_token_set_tx(&mut tx, card_id, &token_hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                TokenCard {
+                    card_id: card_id.to_string(),
+                    mcp_token: token.into_inner(),
+                }
+            })
+        })
         .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    TokenCard {
-        card_id: card_id.to_string(),
-        mcp_token: token.into_inner(),
-    }
+        .expect("independent write operation")
 }
 
 async fn connect(
@@ -774,32 +824,41 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
-    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
-        .await
-        .unwrap()
-        .expect("active bound runtime");
-    session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (boot.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
+                    .await
+                    .unwrap()
+                    .expect("active bound runtime");
+                session_mark_superseded_runtime_tx(&mut tx, &runtime.id)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    send_frame(
-        &mut wr,
-        tools_call_frame(3, "test.capture_identity", None, json!({})),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(
-        resp.get("error").is_some(),
-        "superseded CardBound no-thread call must reject: {resp:#?}"
-    );
-    assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
-    assert!(
-        rx.try_recv().is_err(),
-        "handler must not run after bound session is superseded"
-    );
-    let _ = &boot.server;
+                send_frame(
+                    &mut wr,
+                    tools_call_frame(3, "test.capture_identity", None, json!({})),
+                )
+                .await;
+                let resp = recv_frame(&mut rd).await;
+                assert!(
+                    resp.get("error").is_some(),
+                    "superseded CardBound no-thread call must reject: {resp:#?}"
+                );
+                assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
+                assert!(
+                    rx.try_recv().is_err(),
+                    "handler must not run after bound session is superseded"
+                );
+                let _ = &boot.server;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -821,32 +880,41 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
     let identity = rx.recv().await.unwrap();
     assert_eq!(identity.card_id, boot.planner_card_id);
 
-    let mut tx = begin_immediate_tx(boot.sqlx_repo.db()).await.unwrap();
-    let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
-        .await
-        .unwrap()
-        .expect("active bound runtime");
-    session_fail_if_active_runtime_tx(&mut tx, &runtime.id)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (boot.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
+                    .await
+                    .unwrap()
+                    .expect("active bound runtime");
+                session_fail_if_active_runtime_tx(&mut tx, &runtime.id)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    send_frame(
-        &mut wr,
-        tools_call_frame(3, "test.capture_identity", None, json!({})),
-    )
-    .await;
-    let resp = recv_frame(&mut rd).await;
-    assert!(
-        resp.get("error").is_some(),
-        "failed CardBound no-thread call must reject: {resp:#?}"
-    );
-    assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
-    assert!(
-        rx.try_recv().is_err(),
-        "handler must not run after bound session fails"
-    );
-    let _ = &boot.server;
+                send_frame(
+                    &mut wr,
+                    tools_call_frame(3, "test.capture_identity", None, json!({})),
+                )
+                .await;
+                let resp = recv_frame(&mut rd).await;
+                assert!(
+                    resp.get("error").is_some(),
+                    "failed CardBound no-thread call must reject: {resp:#?}"
+                );
+                assert_eq!(resp["error"]["code"], json!(TOKEN_NOT_RECOGNIZED_CODE));
+                assert!(
+                    rx.try_recv().is_err(),
+                    "handler must not run after bound session fails"
+                );
+                let _ = &boot.server;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

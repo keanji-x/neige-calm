@@ -53,27 +53,36 @@ async fn canonical_acp_unchanged_normal_join_and_kept_cleanup_do_not_need_writer
             .unwrap();
     assert_eq!(count, 1);
     let mut blocked = Vec::new();
-    for kept in [false, true] {
-        if kept {
-            fx.keep_unknown(&fx.submission, "keep-after-genuine-join")
-                .await;
-            assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
-        }
-        let writer = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_millis(250),
-            fx.backend.settle_kept_execution(),
-        )
-        .await;
-        writer.rollback().await.unwrap();
-        match result {
-            Ok(result) => assert!(result.unwrap().is_none()),
-            Err(_) => blocked.push(kept),
-        }
-    }
-    fx.session.shutdown().await.unwrap();
-    assert!(
-        blocked.is_empty(),
-        "unchanged ACP observations waited for writer: kept={blocked:?}"
-    );
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for kept in [false, true] {
+                    if kept {
+                        fx.keep_unknown(&fx.submission, "keep-after-genuine-join")
+                            .await;
+                        assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
+                    }
+                    let writer = write_session.begin_immediate().await.unwrap();
+                    let result = tokio::time::timeout(
+                        Duration::from_millis(250),
+                        fx.backend.settle_kept_execution(),
+                    )
+                    .await;
+                    writer.rollback().await.unwrap();
+                    match result {
+                        Ok(result) => assert!(result.unwrap().is_none()),
+                        Err(_) => blocked.push(kept),
+                    }
+                }
+                fx.session.shutdown().await.unwrap();
+                assert!(
+                    blocked.is_empty(),
+                    "unchanged ACP observations waited for writer: kept={blocked:?}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

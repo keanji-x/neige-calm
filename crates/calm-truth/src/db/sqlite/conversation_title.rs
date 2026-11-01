@@ -119,13 +119,24 @@ pub(super) async fn context(
     // Claim writer eligibility before any SELECT: shared-cache readers must not
     // hold a table lock while waiting on an existing writer on another table.
     // This serializes metadata with writers until all local reads commit.
-    let mut tx = super::begin_immediate_tx(repo.db()).await?;
-    let sources = sources_on_connection(&mut tx, ids).await?;
-    let runtimes =
-        super::session_projection::runtime_get_projectable_for_cards_on_connection(&mut tx, ids)
-            .await?;
-    tx.commit().await?;
-    Ok(crate::conversation_title::ConversationTitleContext { sources, runtimes })
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                let sources = sources_on_connection(&mut tx, ids).await?;
+                let runtimes =
+                    super::session_projection::runtime_get_projectable_for_cards_on_connection(
+                        &mut tx, ids,
+                    )
+                    .await?;
+                tx.commit().await?;
+                Ok(crate::conversation_title::ConversationTitleContext { sources, runtimes })
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 #[cfg(test)]
@@ -167,7 +178,7 @@ mod tests {
         let (card, _) = card(&repo).await;
         // Occupy the shared admission lease without taking an SQLite lock:
         // BEGIN on another pool would succeed, so SQLite contention cannot mask a bypass.
-        let holder = repo.db().writer_pool().acquire().await.unwrap();
+        let holder = repo.db().hold_writer_for_test().await.unwrap();
         let readers = repo.db().read_pool();
         let mut held = Vec::new();
         for _ in 0..readers.options().get_max_connections() {
@@ -220,11 +231,14 @@ mod tests {
         let (b, other_track) = card(&repo).await;
         let (empty, _) = card(&repo).await;
         // The source query intentionally selects conversation roles, independent of provider.
-        sqlx::query("UPDATE cards SET role='assistant' WHERE id IN (?1,?2,?3)")
-            .bind(&a)
-            .bind(&b)
-            .bind(&empty)
-            .execute(repo.db().writer_pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role='assistant' WHERE id IN (?1,?2,?3)")
+                    .bind(&a)
+                    .bind(&b)
+                    .bind(&empty),
+            )
             .await
             .unwrap();
         insert(
@@ -262,10 +276,13 @@ mod tests {
         assert_eq!(title(&a), Some("Original first".into()));
         assert_eq!(title(&b), Some("Other card".into()));
         for provider in calm_types::runtime::AgentProvider::ALL.map(|p| p.wire_name()) {
-            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-                .bind(json!({"assistant_provider":provider}).to_string())
-                .bind(&b)
-                .execute(repo.db().writer_pool())
+            (repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                        .bind(json!({"assistant_provider":provider}).to_string())
+                        .bind(&b),
+                )
                 .await
                 .unwrap();
             assert_eq!(
@@ -318,34 +335,43 @@ mod tests {
                 .any(|line| line.contains("SCAN candidate") || line.starts_with("SCAN h")),
             "{details:?}"
         );
-        let mut tx = repo.db().writer_pool().begin().await.unwrap();
-        assert_eq!(
-            super::super::transcript_delete_thread_suffix_tx(
-                &mut tx,
-                &a,
-                "thread",
-                first - 1,
-                first,
-            )
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    assert_eq!(
+                        super::super::transcript_delete_thread_suffix_tx(
+                            &mut tx,
+                            &a,
+                            "thread",
+                            first - 1,
+                            first,
+                        )
+                        .await
+                        .unwrap(),
+                        1
+                    );
+                    tx.commit().await.unwrap();
+                    let replaced = repo.conversation_title_context(&[a]).await.unwrap().sources;
+                    assert_eq!(
+                        replaced[0].input.as_ref().unwrap().title(),
+                        Some("latest page title".into())
+                    );
+                })
+            })
             .await
-            .unwrap(),
-            1
-        );
-        tx.commit().await.unwrap();
-        let replaced = repo.conversation_title_context(&[a]).await.unwrap().sources;
-        assert_eq!(
-            replaced[0].input.as_ref().unwrap().title(),
-            Some("latest page title".into())
-        );
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn conversation_title_invisible_records_and_system_do_not_block() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let (a, track) = card(&repo).await;
-        sqlx::query("UPDATE cards SET role='planner' WHERE id=?1")
-            .bind(&a)
-            .execute(repo.db().writer_pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE cards SET role='planner' WHERE id=?1").bind(&a))
             .await
             .unwrap();
         insert(

@@ -140,58 +140,62 @@ impl Native<'_> {
         "SELECT json_extract(r.receipt_json,'$.originalWorker'),r.observation_id FROM conversation_submission_inputs i JOIN conversation_system_assistant_receipts r ON r.observation_id=i.observation_id AND r.event_id=i.envelope_id WHERE i.submission_id=?1 AND i.effective=1"
     ).bind(original_attempt.attempt.submission_id.as_str()).fetch_one(fixture.repo.pool()).await.unwrap();
         assert_eq!(claimed.0, worker);
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        let plan = crate::db::sqlite::conversation::submission_plan_tx(
-            &mut tx,
-            &original_attempt.attempt.submission_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            plan.plan.input_refs().unwrap(),
-            vec![calm_types::conversation::AcceptedInputRef::System {
-                observation_id: calm_types::conversation::SystemObservationId::parse(&claimed.1)
-                    .unwrap(),
-            }]
-        );
-        let identity = crate::db::sqlite::conversation::submission_identity_tx(
-            &mut tx,
-            &original_attempt.attempt.submission_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(identity.card_id, card);
-        assert!(matches!(
-            identity.execution,
-            calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-                provider: crate::session_projection_repo::AgentProvider::Codex,
-                profile: crate::harness::profile::HarnessProfile::Assistant,
-                ..
-            }
-        ));
-        tx.rollback().await.unwrap();
+        let write_db = (fixture.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let plan = crate::db::sqlite::conversation::submission_plan_tx(
+                &mut tx,
+                &original_attempt.attempt.submission_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                plan.plan.input_refs().unwrap(),
+                vec![calm_types::conversation::AcceptedInputRef::System {
+                    observation_id: calm_types::conversation::SystemObservationId::parse(&claimed.1)
+                        .unwrap(),
+                }]
+            );
+            let identity = crate::db::sqlite::conversation::submission_identity_tx(
+                &mut tx,
+                &original_attempt.attempt.submission_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(identity.card_id, card);
+            assert!(matches!(
+                identity.execution,
+                calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+                    provider: crate::session_projection_repo::AgentProvider::Codex,
+                    profile: crate::harness::profile::HarnessProfile::Assistant,
+                    ..
+                }
+            ));
+            tx.rollback().await.unwrap();
 
-        assert!(
-            matches!(crossing.canonical_inputs.active.as_ref().unwrap().submission_ids.as_slice(), [id] if id == &original_attempt.attempt.submission_id)
-        );
-        send(peer, json!({"id":call["id"],"result":{"turn":{"id":turn}}})).await;
-        notify_thread(
-            &state.shared_codex_appserver,
-            peer,
-            THREAD,
-            "turn/started",
-            json!({"id":turn,"status":"inProgress"}),
-        )
-        .await;
-        let running = phase(fixture, card, HarnessPhaseTag::TurnRunning).await;
-        let attempt = running.canonical_inputs.attempts.last().unwrap();
-        assert!(
-            matches!(&attempt.delivery, InputDeliveryFact::Accepted { evidence: calm_types::conversation::NativeInputAcceptance::NativeTurn { native_turn_id }, .. } if native_turn_id == turn)
-        );
-        assert_eq!(
-            call["params"]["clientUserMessageId"],
-            attempt.attempt.submission_id.as_str()
-        );
+            assert!(
+                matches!(crossing.canonical_inputs.active.as_ref().unwrap().submission_ids.as_slice(), [id] if id == &original_attempt.attempt.submission_id)
+            );
+            send(peer, json!({"id":call["id"],"result":{"turn":{"id":turn}}})).await;
+            notify_thread(
+                &state.shared_codex_appserver,
+                peer,
+                THREAD,
+                "turn/started",
+                json!({"id":turn,"status":"inProgress"}),
+            )
+            .await;
+            let running = phase(fixture, card, HarnessPhaseTag::TurnRunning).await;
+            let attempt = running.canonical_inputs.attempts.last().unwrap();
+            assert!(
+                matches!(&attempt.delivery, InputDeliveryFact::Accepted { evidence: calm_types::conversation::NativeInputAcceptance::NativeTurn { native_turn_id }, .. } if native_turn_id == turn)
+            );
+            assert_eq!(
+                call["params"]["clientUserMessageId"],
+                attempt.attempt.submission_id.as_str()
+            );
+
+    })).await.expect("independent write operation")
     }
 
     async fn complete(&self, peer: &mut Peer, call: Value, expected: &str, turn: &str) {

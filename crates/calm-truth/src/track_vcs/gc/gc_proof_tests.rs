@@ -1,5 +1,5 @@
 use super::gc_writer_tests::{Fixture, Phase, finish, start};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::track_vcs;
 
 #[tokio::test]
@@ -25,8 +25,9 @@ async fn object_sweep_required_revision_error_never_falls_back_to_unversioned_pr
     let f = Fixture::new().await;
     let orphan = f.orphan("must retain without required state").await;
     // Explicit corruption of this isolated test database, not an ordinary supported DML path.
-    sqlx::query("DROP TABLE track_vcs_gc_state")
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TABLE track_vcs_gc_state"))
         .await
         .unwrap();
     assert!(
@@ -43,9 +44,12 @@ async fn object_sweep_revision_mismatch_after_admission_preparation_rechecks_cac
     let orphan = f.orphan("retain when cached root is invalidated").await;
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
-        .bind(&f.tree.tree_hash)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
+                .bind(&f.tree.tree_hash),
+        )
         .await
         .unwrap();
     pause.release();
@@ -118,23 +122,32 @@ async fn object_sweep_metadata_bracket_observes_committed_head_aba() {
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::AfterMetadata]);
     pause.entered().await;
     f.publish(&f.tree, Some(&f.commit)).await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
-        .bind(&f.commit)
-        .bind(f.track.as_str())
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
+                    .bind(&f.commit)
+                    .bind(f.track.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                pause.release();
+                assert_eq!(finish(sweep).await.unwrap(), 1);
+                // Same HEAD cannot hide the two committed mutations from the initial bracket.
+                assert_eq!(pause.metadata_queries(), 2);
+                assert_eq!(
+                    track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
+                    Some(f.commit.clone())
+                );
+                assert!(!f.exists(&orphan).await);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    pause.release();
-    assert_eq!(finish(sweep).await.unwrap(), 1);
-    // Same HEAD cannot hide the two committed mutations from the initial bracket.
-    assert_eq!(pause.metadata_queries(), 2);
-    assert_eq!(
-        track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
-        Some(f.commit.clone())
-    );
-    assert!(!f.exists(&orphan).await);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -152,9 +165,12 @@ async fn object_sweep_missing_revision_row_fails_closed_before_deletion() {
 
 // The real storage mutation invalidates both required proofs without changing tree contents.
 async fn invalidate_frontier(f: &Fixture) {
-    sqlx::query("UPDATE track_vcs_commits SET message=message || ' changed' WHERE hash=?1")
-        .bind(&f.commit)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_commits SET message=message || ' changed' WHERE hash=?1")
+                .bind(&f.commit),
+        )
         .await
         .unwrap();
 }

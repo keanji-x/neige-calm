@@ -95,78 +95,88 @@ async fn boot() -> Boot {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: planner_card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            planner_card.id.as_ref(),
-            track.id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: track.id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(thread_id.clone()),
-        repo: repo_dyn,
-        events: events.clone(),
-        card_role_cache: roles.clone(),
-        track_area_cache: track_area_cache.clone(),
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        planner_card.id.as_ref(),
+                        track.id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: track.id.clone(),
+                    card_id: planner_card.id.clone(),
+                    thread_id: Some(thread_id.clone()),
+                    repo: repo_dyn,
+                    events: events.clone(),
+                    card_role_cache: roles.clone(),
+                    track_area_cache: track_area_cache.clone(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_millis(10),
-            debounce_max_wait: Duration::from_millis(200),
-            // The report-edit pair too, so a queue of nothing but a `ReportEdited` issues within the suite's budget.
-            report_edit_min_idle: Duration::from_millis(10),
-            report_edit_max_wait: Duration::from_millis(200),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::from_millis(10),
+                        debounce_max_wait: Duration::from_millis(200),
+                        // The report-edit pair too, so a queue of nothing but a `ReportEdited` issues within the suite's budget.
+                        report_edit_min_idle: Duration::from_millis(10),
+                        report_edit_max_wait: Duration::from_millis(200),
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
 
-    Boot {
-        repo,
-        harness,
-        daemon,
-        events,
-        roles,
-        track_area_cache,
-        write,
-        worker_session_id,
-        track_id: track.id,
-        area_id: area.id,
-        planner_card_id: planner_card.id,
-        thread_id,
-    }
+                Boot {
+                    repo,
+                    harness,
+                    daemon,
+                    events,
+                    roles,
+                    track_area_cache,
+                    write,
+                    worker_session_id,
+                    track_id: track.id,
+                    area_id: area.id,
+                    planner_card_id: planner_card.id,
+                    thread_id,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -190,91 +200,95 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: chat_card.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            boot.daemon.clone(),
-            chat_card.id.as_ref(),
-            boot.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id,
-        track_id: boot.track_id.clone(),
-        card_id: chat_card.id,
-        thread_id: Some(thread_id),
-        repo: repo_dyn,
-        events: boot.events.clone(),
-        card_role_cache: boot.roles.clone(),
-        track_area_cache: boot.track_area_cache.clone(),
-
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_millis(10),
-            debounce_max_wait: Duration::from_millis(100),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    let before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
-    )
-    .bind(boot.track_id.as_str())
-    .fetch_one(boot.repo.pool())
-    .await
-    .unwrap();
-    // User text goes through the durable route, the only one that mints a queue id; `observe` refuses a `UserMessage` outright.
-    harness
-        .observe_user_message_durable(
-            "hello without vcs".into(),
-            Vec::new(),
-            calm_server::harness::SendKey::unique_for_test(),
+    let write_db = (boot.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: chat_card.id.to_string(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
         )
         .await
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while boot.daemon.turn_start_count_for_test() == 0 && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(boot.daemon.turn_start_count_for_test(), 1);
-    let after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
-    )
-    .bind(boot.track_id.as_str())
-    .fetch_one(boot.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        after, before,
-        "PlainChat turn must not create a track-VCS transcript-refresh commit"
-    );
-    harness.shutdown().await.unwrap();
+        tx.commit().await.unwrap();
+        let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+        let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                boot.daemon.clone(),
+                chat_card.id.as_ref(),
+                boot.track_id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id,
+            track_id: boot.track_id.clone(),
+            card_id: chat_card.id,
+            thread_id: Some(thread_id),
+            repo: repo_dyn,
+            events: boot.events.clone(),
+            card_role_cache: boot.roles.clone(),
+            track_area_cache: boot.track_area_cache.clone(),
+
+            registry: calm_server::harness::HarnessRegistry::new(),
+            config: HarnessConfig {
+                debounce_min_idle: Duration::from_millis(10),
+                debounce_max_wait: Duration::from_millis(100),
+                ..HarnessConfig::default()
+            },
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
+        )
+        .bind(boot.track_id.as_str())
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+        // User text goes through the durable route, the only one that mints a queue id; `observe` refuses a `UserMessage` outright.
+        harness
+            .observe_user_message_durable(
+                "hello without vcs".into(),
+                Vec::new(),
+                calm_server::harness::SendKey::unique_for_test(),
+            )
+            .await
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while boot.daemon.turn_start_count_for_test() == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(boot.daemon.turn_start_count_for_test(), 1);
+        let after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1 AND message = 'transcript refresh'",
+        )
+        .bind(boot.track_id.as_str())
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "PlainChat turn must not create a track-VCS transcript-refresh commit"
+        );
+        harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 /// The assistant skips the per-turn transcript-refresh write (N conversations would contend for the sqlite write lock)
@@ -329,93 +343,102 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
     snapshot.last_seen_head = Some(baseline_head.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit::managed_assistant(
-            worker_session_id.clone(),
-            assistant_card.id.to_string(),
-            AgentProvider::Codex,
-            WorkerSessionState::Idle,
-            Some(thread_id.clone()),
-            serde_json::to_value(&snapshot).unwrap(),
-            now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit::managed_assistant(
+                        worker_session_id.clone(),
+                        assistant_card.id.to_string(),
+                        AgentProvider::Codex,
+                        WorkerSessionState::Idle,
+                        Some(thread_id.clone()),
+                        serde_json::to_value(&snapshot).unwrap(),
+                        now_ms(),
+                    ),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let refresh_commits = || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM track_vcs_commits \
+                let refresh_commits = || async {
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM track_vcs_commits \
               WHERE track_id = ?1 AND message = 'transcript refresh'",
-        )
-        .bind(boot.track_id.as_str())
-        .fetch_one(boot.repo.pool())
-        .await
-        .unwrap()
-    };
-    let before = refresh_commits().await;
+                    )
+                    .bind(boot.track_id.as_str())
+                    .fetch_one(boot.repo.pool())
+                    .await
+                    .unwrap()
+                };
+                let before = refresh_commits().await;
 
-    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            boot.daemon.clone(),
-            assistant_card.id.as_ref(),
-            boot.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id,
-        track_id: boot.track_id.clone(),
-        card_id: assistant_card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo_dyn,
-        events: boot.events.clone(),
-        card_role_cache: boot.roles.clone(),
-        track_area_cache: boot.track_area_cache.clone(),
+                let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        boot.daemon.clone(),
+                        assistant_card.id.as_ref(),
+                        boot.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id,
+                    track_id: boot.track_id.clone(),
+                    card_id: assistant_card.id.clone(),
+                    thread_id: Some(thread_id),
+                    repo: repo_dyn,
+                    events: boot.events.clone(),
+                    card_role_cache: boot.roles.clone(),
+                    track_area_cache: boot.track_area_cache.clone(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_millis(10),
-            debounce_max_wait: Duration::from_millis(100),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    // User text goes through the durable route, the only one that mints a queue id.
-    harness
-        .observe_user_message_durable(
-            "what changed?".into(),
-            Vec::new(),
-            calm_server::harness::SendKey::unique_for_test(),
-        )
-        .await
-        .unwrap();
-    wait_for_turn_count(&boot.daemon, 1).await;
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::from_millis(10),
+                        debounce_max_wait: Duration::from_millis(100),
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                // User text goes through the durable route, the only one that mints a queue id.
+                harness
+                    .observe_user_message_durable(
+                        "what changed?".into(),
+                        Vec::new(),
+                        calm_server::harness::SendKey::unique_for_test(),
+                    )
+                    .await
+                    .unwrap();
+                wait_for_turn_count(&boot.daemon, 1).await;
 
-    assert_eq!(
-        refresh_commits().await,
-        before,
-        "an assistant turn must not add a track-level transcript-refresh commit"
-    );
-    let text = turn_text(&boot.daemon, 0);
-    assert!(
-        text.contains("Track state changes since your last turn"),
-        "the assistant lost the since-last-turn diff block: {text}"
-    );
-    assert!(
-        text.contains(short(&moved_head)),
-        "the diff block must be computed against the track's CURRENT head, not \
+                assert_eq!(
+                    refresh_commits().await,
+                    before,
+                    "an assistant turn must not add a track-level transcript-refresh commit"
+                );
+                let text = turn_text(&boot.daemon, 0);
+                assert!(
+                    text.contains("Track state changes since your last turn"),
+                    "the assistant lost the since-last-turn diff block: {text}"
+                );
+                assert!(
+                    text.contains(short(&moved_head)),
+                    "the diff block must be computed against the track's CURRENT head, not \
          the assistant's stale baseline: {text}"
-    );
-    harness.shutdown().await.unwrap();
+                );
+                harness.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -851,10 +874,13 @@ async fn set_last_seen_head_raw(boot: &Boot, head: &str) {
 }
 
 async fn corrupt_card_payload(boot: &Boot, card_id: &CardId) {
-    let res = sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-        .bind("{not-json")
-        .bind(card_id.as_str())
-        .execute(boot.repo.pool())
+    let res = (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind("{not-json")
+                .bind(card_id.as_str()),
+        )
         .await
         .expect("corrupt card payload");
     assert_eq!(res.rows_affected(), 1, "card payload should be corrupted");
@@ -880,17 +906,20 @@ async fn runtime_snapshot(boot: &Boot) -> HarnessSnapshot {
 
 async fn persist_runtime_snapshot(boot: &Boot, snapshot: &HarnessSnapshot) {
     let state_text = serde_json::to_string(snapshot).expect("snapshot json");
-    sqlx::query(
-        r#"UPDATE worker_sessions
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
               SET handle_state_json = ?1
             WHERE card_id = ?2
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(&state_text)
-    .bind(boot.planner_card_id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .expect("persist worker session snapshot");
+            )
+            .bind(&state_text)
+            .bind(boot.planner_card_id.as_str()),
+        )
+        .await
+        .expect("persist worker session snapshot");
 }
 
 async fn update_card_payload_with_event(boot: &Boot, card: &Card, payload: Value) -> Card {

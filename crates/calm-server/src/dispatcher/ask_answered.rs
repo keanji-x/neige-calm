@@ -5,23 +5,13 @@
 //! goes on. An ask that is not on this track maps to no observation.
 use calm_types::observation::AnsweredQuestion;
 
-use crate::db::RepoEventWrite;
 use crate::error::Result;
 use crate::event::{AskAnswer, AskDelivery, Event};
 use crate::harness::Observation;
 use crate::ids::TrackId;
 
-pub(crate) async fn observation(
-    repo: &dyn RepoEventWrite,
-    track_id: &TrackId,
-    ask_id: i64,
-    answers: &[AskAnswer],
-) -> Result<Option<Observation>> {
-    qualified_observation(repo, track_id, ask_id, answers, false).await
-}
-
 pub(super) async fn qualified_observation(
-    repo: &dyn RepoEventWrite,
+    repo: &super::observation_reads::ObservationReads<'_>,
     track_id: &TrackId,
     ask_id: i64,
     answers: &[AskAnswer],

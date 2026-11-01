@@ -216,54 +216,72 @@ impl Boot {
     /// A genuine codex worker card, minted through the production transaction rather than an INSERT.
     async fn mint_codex_worker_card(&self, track_id: &str) -> String {
         let card_id = calm_server::model::new_id();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        card_with_codex_create_tx(
-            &mut tx,
-            card_id.clone(),
-            &calm_server::model::new_id(),
-            None,
-            calm_server::ids::TrackId::from(track_id.to_string()),
-            Some("worker".into()),
-            None,
-            "/workspace".into(),
-            json!({}),
-            None,
-            None,
-            None,
-            CardRole::Worker,
-            true,
-            &self.card_role_cache,
-            RequestTheme::default_dark(),
-        )
-        .await
-        .expect("mint codex worker card");
-        tx.commit().await.unwrap();
-        card_id
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    card_with_codex_create_tx(
+                        &mut tx,
+                        card_id.clone(),
+                        &calm_server::model::new_id(),
+                        None,
+                        calm_server::ids::TrackId::from(track_id.to_string()),
+                        Some("worker".into()),
+                        None,
+                        "/workspace".into(),
+                        json!({}),
+                        None,
+                        None,
+                        None,
+                        CardRole::Worker,
+                        true,
+                        &self.card_role_cache,
+                        RequestTheme::default_dark(),
+                    )
+                    .await
+                    .expect("mint codex worker card");
+                    tx.commit().await.unwrap();
+                    card_id
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// A codex card carrying only HALF of the `(role, marker)` pair the list predicate requires — the shape
     /// a predicate that dropped one conjunct would leak.
     async fn mint_half_marked_card(&self, track_id: &str, role: CardRole, marker: &str) -> String {
         let card_id = calm_server::model::new_id();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        card_create_with_id_tx(
-            &mut tx,
-            card_id.clone(),
-            calm_server::model::NewCard {
-                track_id: calm_server::ids::TrackId::from(track_id.to_string()),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({"schemaVersion": 1, "harness_profile": marker}),
-            },
-            role,
-            true,
-            &self.card_role_cache,
-        )
-        .await
-        .expect("mint half-marked card");
-        tx.commit().await.unwrap();
-        card_id
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    card_create_with_id_tx(
+                        &mut tx,
+                        card_id.clone(),
+                        calm_server::model::NewCard {
+                            track_id: calm_server::ids::TrackId::from(track_id.to_string()),
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: json!({"schemaVersion": 1, "harness_profile": marker}),
+                        },
+                        role,
+                        true,
+                        &self.card_role_cache,
+                    )
+                    .await
+                    .expect("mint half-marked card");
+                    tx.commit().await.unwrap();
+                    card_id
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     async fn scalar(&self, sql: &str, bind: &str) -> i64 {
@@ -806,13 +824,12 @@ async fn the_list_carries_the_last_non_interrupted_turn_completion() {
         );
     }
     let (completed, interrupted) = (outcome_ids[0], outcome_ids[1]);
-    sqlx::query(
+    (b.repo.db()).writer().execute(sqlx::query(
         "UPDATE harness_items SET created_at_ms = CASE id WHEN ?1 THEN 1000 WHEN ?2 THEN 2000 END \
          WHERE id IN (?1, ?2)",
     )
     .bind(completed)
-    .bind(interrupted)
-    .execute(b.repo.pool())
+    .bind(interrupted))
     .await
     .unwrap();
 
@@ -983,9 +1000,11 @@ async fn the_endpoint_refuses_unknown_tracks_chat_tracks_and_a_missing_key() {
     );
 
     // A row created by an older build, before Area conversations were retired.
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&track_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1").bind(&track_id),
+        )
         .await
         .unwrap();
     let (status, body) = b.create_conversation(&track_id, "idem-chat", "hi").await;
@@ -1256,23 +1275,27 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
         .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["payload"]["side_source_card_id"], parent["id"]);
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let updated = calm_server::db::sqlite::card_update_tx(&mut tx, id, calm_server::model::CardPatch {
-        payload: Some(json!({"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": "forged-trusted-source"})),
-        ..Default::default()
-    }).await.unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(updated.payload["side_source_card_id"], parent["id"]);
-    let (_, rows) = b.list_conversations(&track).await;
-    assert_eq!(
-        rows.as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == child["id"])
-            .unwrap()["sourceCardId"],
-        parent["id"]
-    );
-    b.shutdown_harnesses().await;
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let updated = calm_server::db::sqlite::card_update_tx(&mut tx, id, calm_server::model::CardPatch {
+            payload: Some(json!({"schemaVersion": 1, "harness_profile": "assistant", "side_source_card_id": "forged-trusted-source"})),
+            ..Default::default()
+        }).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(updated.payload["side_source_card_id"], parent["id"]);
+        let (_, rows) = b.list_conversations(&track).await;
+        assert_eq!(
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == child["id"])
+                .unwrap()["sourceCardId"],
+            parent["id"]
+        );
+        b.shutdown_harnesses().await;
+
+    })).await.expect("independent write operation")
 }
 
 #[path = "track_conversations_keyed.rs"]

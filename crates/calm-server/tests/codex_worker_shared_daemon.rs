@@ -288,25 +288,34 @@ async fn boot(start_shared: bool) -> Boot {
 }
 
 async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        crate::support::planner::session_init(
-            "planner-session",
-            planner_card_id,
-            Some("planner-thread".into()),
-            WorkerSessionState::Running,
-            now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
-        .bind(track_id)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    crate::support::planner::session_init(
+                        "planner-session",
+                        planner_card_id,
+                        Some("planner-thread".into()),
+                        WorkerSessionState::Running,
+                        now_ms(),
+                    ),
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
+                    .bind(track_id)
+                    .execute(&mut **tx)
+                    .await
+                    .expect("mark planner session as track root");
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .expect("mark planner session as track root");
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
@@ -489,45 +498,51 @@ async fn ordered_event_rows(repo: &SqlxRepo, kinds: &[&str]) -> Vec<PersistedEve
 
 async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                phase, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
-    )
-    .bind(&op.id)
-    .bind(&op.operation_key)
-    .bind(&op.kind)
-    .bind(&op.idempotency_key)
-    .bind(&op.payload_hash)
-    .bind(&op.target_type)
-    .bind(op.target_id.as_deref())
-    .bind(serde_json::to_string(&op.target).unwrap())
-    .bind(serde_json::to_string(&op.payload).unwrap())
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op.id)
+            .bind(&op.operation_key)
+            .bind(&op.kind)
+            .bind(&op.idempotency_key)
+            .bind(&op.payload_hash)
+            .bind(&op.target_type)
+            .bind(op.target_id.as_deref())
+            .bind(serde_json::to_string(&op.target).unwrap())
+            .bind(serde_json::to_string(&op.payload).unwrap())
+            .bind(now),
+        )
+        .await
+        .unwrap();
 }
 
 async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &TrackId, task_id: &str, kind: &str) {
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO tasks (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO tasks (
                id, track_id, key, kind, goal, context_json, depends_on_json,
                status, claim_context_json, created_at_ms, updated_at_ms
            ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
                      'dispatched', '[]', ?4, ?4)"#,
-    )
-    .bind(task_id)
-    .bind(track_id.as_str())
-    .bind(kind)
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(task_id)
+            .bind(track_id.as_str())
+            .bind(kind)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 }
 
 async fn assert_card_session_mcp_hash_parity(repo: &SqlxRepo, card_id: &str, runtime_id: &str) {
@@ -732,13 +747,19 @@ async fn worker_operation_verifies_the_track_worktree_before_session_started_and
     );
 
     let session_started_before = event_count(&repo, "worker_session.started").await;
-    sqlx::query("UPDATE terminals SET exit_code = 0, signal_killed = 0 WHERE id = ?1")
-        .bind(&terminal_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE terminals SET exit_code = 0, signal_killed = 0 WHERE id = ?1")
+                .bind(&terminal_id),
+        )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
               SET phase = 'app_server_interact',
                   phase_detail_json = ?2,
                   completed_at_ms = NULL,
@@ -746,18 +767,18 @@ async fn worker_operation_verifies_the_track_worktree_before_session_started_and
                   lease_until_ms = NULL,
                   last_error = NULL
             WHERE id = ?1"#,
-    )
-    .bind(&op_id)
-    .bind(
-        json!({
-            "kind": "register_pending",
-            "entry_id": card_id,
-        })
-        .to_string(),
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op_id)
+            .bind(
+                json!({
+                    "kind": "register_pending",
+                    "entry_id": card_id,
+                })
+                .to_string(),
+            ),
+        )
+        .await
+        .unwrap();
 
     state.operation_runtime.drive().await.unwrap();
     assert_eq!(
@@ -885,8 +906,11 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     })
     .await;
 
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
               SET phase = 'spawn_started',
                   phase_detail_json = NULL,
                   completed_at_ms = NULL,
@@ -894,31 +918,37 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
                   lease_until_ms = NULL,
                   last_error = NULL
             WHERE id = ?1"#,
-    )
-    .bind(&op_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    sqlx::query(
-        r#"UPDATE worker_sessions
+            )
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
               SET state = 'running',
                   completed_at_ms = NULL
             WHERE id = ?1"#,
-    )
-    .bind(&runtime_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    sqlx::query(
-        r#"UPDATE worker_sessions
+            )
+            .bind(&runtime_id),
+        )
+        .await
+        .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
               SET state = 'running',
                   completed_at_ms = NULL
             WHERE id = ?1"#,
-    )
-    .bind(&runtime_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&runtime_id),
+        )
+        .await
+        .unwrap();
 
     state.operation_runtime.drive().await.unwrap();
     assert!(matches!(
@@ -1006,34 +1036,40 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
     let thread_id = "thread-crash-replay-worker";
     let turn_id = "turn-crash-replay-worker";
-    sqlx::query(
-        r#"UPDATE worker_sessions
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
               SET state = 'running',
                   thread_id = ?1,
                   active_turn_id = ?2,
                   completed_at_ms = NULL
             WHERE id = ?3"#,
-    )
-    .bind(thread_id)
-    .bind(turn_id)
-    .bind(&runtime_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    sqlx::query(
-        r#"UPDATE worker_sessions
+            )
+            .bind(thread_id)
+            .bind(turn_id)
+            .bind(&runtime_id),
+        )
+        .await
+        .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
               SET state = 'running',
                   thread_id = ?1,
                   active_turn_id = ?2,
                   completed_at_ms = NULL
             WHERE id = ?3"#,
-    )
-    .bind(thread_id)
-    .bind(turn_id)
-    .bind(&runtime_id)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(thread_id)
+            .bind(turn_id)
+            .bind(&runtime_id),
+        )
+        .await
+        .unwrap();
 
     let recovered_shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     assert!(

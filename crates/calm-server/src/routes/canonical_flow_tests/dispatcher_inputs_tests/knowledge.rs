@@ -273,9 +273,8 @@ async fn report_knowledge_delta_small_utf8_large_and_missing_history_are_complet
         "large blocks are referenced whole: {text}"
     );
     mcp(&flow, "neige_report_read", json!({})).await;
-    sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=? AND block_id=?")
-        .bind(original_reference).bind(&flow.worker).bind(&id)
-        .execute(flow.fixture.repo.pool()).await.unwrap();
+    (flow.fixture.repo.db()).writer().execute(sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=? AND block_id=?")
+        .bind(original_reference).bind(&flow.worker).bind(&id)).await.unwrap();
     let missing = user_edit(&flow, &id, "# Data\n\ncurrent\n").await;
     let text = accepted(&flow, missing.id).await.to_turn_text();
     assert!(
@@ -287,9 +286,8 @@ async fn report_knowledge_delta_small_utf8_large_and_missing_history_are_complet
         "missing history is not an empty before: {text}"
     );
     mcp(&flow, "neige_report_read", json!({})).await;
-    sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=? AND block_id=?")
-        .bind(json!({"commit":"f".repeat(64)}).to_string()).bind(&flow.worker).bind(&id)
-        .execute(flow.fixture.repo.pool()).await.unwrap();
+    (flow.fixture.repo.db()).writer().execute(sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=? AND block_id=?")
+        .bind(json!({"commit":"f".repeat(64)}).to_string()).bind(&flow.worker).bind(&id)).await.unwrap();
     let absent = user_edit(&flow, &id, "# Data\n\ncurrent again\n").await;
     let text = accepted(&flow, absent.id).await.to_turn_text();
     assert!(
@@ -458,9 +456,9 @@ async fn report_knowledge_delta_partial_structure_and_absent_head_do_not_short_c
         !with_head.contains(&id) && with_head.contains(&other),
         "partial reads certify only rendered blocks: {with_head}"
     );
-    sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
-        .bind(&flow.track)
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?").bind(&flow.track))
         .await
         .unwrap();
     assert_eq!(

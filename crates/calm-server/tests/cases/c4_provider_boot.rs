@@ -49,35 +49,52 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
             intent.metadata.id.as_str(),
         ));
         let id = intent.metadata.id.clone();
-        let mut tx = repo.pool().begin().await.unwrap();
-        store.insert(&mut tx, &intent).await.unwrap();
-        assert!(matches!(
-            sql::admit(
-                &mut tx,
-                &session,
-                id.as_str().into(),
-                owner::Purpose::RewindCheck,
-                sql::InitialRelease::Held
+        {
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        store.insert(&mut tx, &intent).await.unwrap();
+                        assert!(matches!(
+                            sql::admit(
+                                &mut tx,
+                                &session,
+                                id.as_str().into(),
+                                owner::Purpose::RewindCheck,
+                                sql::InitialRelease::Held
+                            )
+                            .await
+                            .unwrap(),
+                            sql::Cas::Applied(_)
+                        ));
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE worker_sessions SET mcp_token_hash='old-token-hash' WHERE id=?",
+                )
+                .bind(&session),
             )
-            .await
-            .unwrap(),
-            sql::Cas::Applied(_)
-        ));
-        tx.commit().await.unwrap();
-        sqlx::query("UPDATE worker_sessions SET mcp_token_hash='old-token-hash' WHERE id=?")
-            .bind(&session)
-            .execute(repo.pool())
             .await
             .unwrap();
         if fail_pass_a {
-            sqlx::query(
-                "CREATE TRIGGER c4_pass_a_failure
+            (repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    "CREATE TRIGGER c4_pass_a_failure
              BEFORE UPDATE OF provider_execution_json ON worker_sessions
              BEGIN SELECT RAISE(FAIL, 'pass A failure'); END",
-            )
-            .execute(repo.pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
         }
         let revoke = PausePoint::default();
         let pass_a = PausePoint::default();
@@ -112,8 +129,9 @@ async fn c4_boot_pass_a_precedes_listener_and_failure_is_covered_by_sweep() {
         );
         assert!(std::os::unix::net::UnixStream::connect(&socket).is_err());
         if fail_pass_a {
-            sqlx::query("DROP TRIGGER c4_pass_a_failure")
-                .execute(repo.pool())
+            (repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER c4_pass_a_failure"))
                 .await
                 .unwrap();
         }
@@ -171,18 +189,22 @@ async fn c4_claude_boot_revocation_error_prevents_listener() {
     let (card, _) = planner_card(&repo).await;
     let session = uuid::Uuid::new_v4().to_string();
     worker_session_row(&repo, &session, &card, &uuid::Uuid::new_v4().to_string()).await;
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash='old-token-hash' WHERE id=?")
-        .bind(&session)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash='old-token-hash' WHERE id=?")
+                .bind(&session),
+        )
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER refuse_claude_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_claude_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions
          BEGIN SELECT RAISE(ABORT, 'injected Claude revoke failure'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let error = match calm_server::state::AppState::boot(&cfg).await {
         Err(error) => error,
         Ok(application) => {

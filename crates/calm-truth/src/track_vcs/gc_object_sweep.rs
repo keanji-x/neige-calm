@@ -1,5 +1,5 @@
 //! Object GC: observe immutable trees without a writer, then validate and delete bounded batches.
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 use crate::track_vcs::{ObjectHash, TreeManifest};
@@ -323,77 +323,88 @@ async fn delete_validated_batch(
     candidates: Vec<String>,
     observed: &mut Observed,
 ) -> Result<Option<u64>> {
-    for attempt in 0..VALIDATION_ATTEMPTS {
-        prepare_validation(pool.read_pool(), observed).await?;
-        #[cfg(test)]
-        super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete).await;
-        let mut tx = begin_immediate_tx(pool).await?;
-        let locked = frontier::locked_epochs(&mut tx).await?;
-        let snapshot = frontier::snapshot(&mut tx).await?;
-        let (current, reuse_parsed) = if observed.proof.legacy == Some(locked.legacy) {
-            // Released171 is independently sufficient, even after conservative U bumps.
-            (Vec::new(), true)
-        } else if let Some(proof) = observed.proof.frontier.as_ref()
-            && proof.unknown == locked.unknown
-        {
-            match frontier::reconcile(&mut tx, proof, &snapshot).await? {
-                Some(trees) => (trees, true),
-                None => {
-                    tx.rollback().await?;
-                    if attempt + 1 == VALIDATION_ATTEMPTS {
-                        return Ok(None);
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for attempt in 0..VALIDATION_ATTEMPTS {
+                    prepare_validation(pool.read_pool(), observed).await?;
+                    #[cfg(test)]
+                    super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete)
+                        .await;
+                    let mut tx = write_session.begin_immediate().await?;
+                    let locked = frontier::locked_epochs(&mut tx).await?;
+                    let snapshot = frontier::snapshot(&mut tx).await?;
+                    let (current, reuse_parsed) = if observed.proof.legacy == Some(locked.legacy) {
+                        // Released171 is independently sufficient, even after conservative U bumps.
+                        (Vec::new(), true)
+                    } else if let Some(proof) = observed.proof.frontier.as_ref()
+                        && proof.unknown == locked.unknown
+                    {
+                        match frontier::reconcile(&mut tx, proof, &snapshot).await? {
+                            Some(trees) => (trees, true),
+                            None => {
+                                tx.rollback().await?;
+                                if attempt + 1 == VALIDATION_ATTEMPTS {
+                                    return Ok(None);
+                                }
+                                prepare_full(pool.read_pool(), observed).await?;
+                                continue;
+                            }
+                        }
+                    } else {
+                        // Unknown mutations may change cached object bytes. A full query proves metadata,
+                        // but all its payloads must be re-observed before granting a new certificate.
+                        (reachable_trees(&mut **tx).await?, false)
+                    };
+                    let delta: Vec<_> = current
+                        .into_iter()
+                        .filter(|tree| !reuse_parsed || !observed.trees.contains(&tree.hash))
+                        .collect();
+                    let bytes = delta
+                        .iter()
+                        .fold(0u64, |sum, tree| sum.saturating_add(tree.byte_len));
+                    if delta.len() > INLINE_TREE_LIMIT || bytes > INLINE_BYTE_LIMIT {
+                        tx.rollback().await?;
+                        if attempt + 1 == VALIDATION_ATTEMPTS {
+                            return Ok(None);
+                        }
+                        prepare_full(pool.read_pool(), observed).await?;
+                        continue;
                     }
-                    prepare_full(pool.read_pool(), observed).await?;
-                    continue;
+                    // Both count and byte limits are checked before fetching or parsing any inline payload.
+                    // This bounded delta prevents ordinary continuous commits starving a full external scan.
+                    observe_batch(&mut **tx, &delta, observed).await?;
+                    let candidates: Vec<_> = candidates
+                        .iter()
+                        .filter(|hash| !observed.live.contains(*hash))
+                        .collect();
+                    if candidates.is_empty() {
+                        tx.commit().await?;
+                        observed.proof = Certificates::complete(locked, snapshot);
+                        return Ok(Some(0));
+                    }
+                    let mut query = QueryBuilder::<Sqlite>::new(
+                        "DELETE FROM track_vcs_objects WHERE created_at < ",
+                    );
+                    query.push_bind(cutoff).push(" AND hash IN (");
+                    let mut separated = query.separated(", ");
+                    for hash in candidates {
+                        separated.push_bind(hash);
+                    }
+                    separated.push_unseparated(")");
+                    let count = query.build().execute(&mut **tx).await?.rows_affected();
+                    // Only objects proven unreachable were deleted. Their trigger increments preserve this
+                    // complete live proof, but do not advance its local certificate until COMMIT acknowledges.
+                    let after_delete = frontier::locked_epochs(&mut tx).await?;
+                    tx.commit().await?;
+                    observed.proof = Certificates::complete(after_delete, snapshot);
+                    return Ok(Some(count));
                 }
-            }
-        } else {
-            // Unknown mutations may change cached object bytes. A full query proves metadata,
-            // but all its payloads must be re-observed before granting a new certificate.
-            (reachable_trees(&mut **tx).await?, false)
-        };
-        let delta: Vec<_> = current
-            .into_iter()
-            .filter(|tree| !reuse_parsed || !observed.trees.contains(&tree.hash))
-            .collect();
-        let bytes = delta
-            .iter()
-            .fold(0u64, |sum, tree| sum.saturating_add(tree.byte_len));
-        if delta.len() > INLINE_TREE_LIMIT || bytes > INLINE_BYTE_LIMIT {
-            tx.rollback().await?;
-            if attempt + 1 == VALIDATION_ATTEMPTS {
-                return Ok(None);
-            }
-            prepare_full(pool.read_pool(), observed).await?;
-            continue;
-        }
-        // Both count and byte limits are checked before fetching or parsing any inline payload.
-        // This bounded delta prevents ordinary continuous commits starving a full external scan.
-        observe_batch(&mut **tx, &delta, observed).await?;
-        let candidates: Vec<_> = candidates
-            .iter()
-            .filter(|hash| !observed.live.contains(*hash))
-            .collect();
-        if candidates.is_empty() {
-            tx.commit().await?;
-            observed.proof = Certificates::complete(locked, snapshot);
-            return Ok(Some(0));
-        }
-        let mut query =
-            QueryBuilder::<Sqlite>::new("DELETE FROM track_vcs_objects WHERE created_at < ");
-        query.push_bind(cutoff).push(" AND hash IN (");
-        let mut separated = query.separated(", ");
-        for hash in candidates {
-            separated.push_bind(hash);
-        }
-        separated.push_unseparated(")");
-        let count = query.build().execute(&mut **tx).await?.rows_affected();
-        // Only objects proven unreachable were deleted. Their trigger increments preserve this
-        // complete live proof, but do not advance its local certificate until COMMIT acknowledges.
-        let after_delete = frontier::locked_epochs(&mut tx).await?;
-        tx.commit().await?;
-        observed.proof = Certificates::complete(after_delete, snapshot);
-        return Ok(Some(count));
-    }
-    unreachable!("bounded validation either deletes or defers")
+                unreachable!("bounded validation either deletes or defers")
+            })
+        })
+        .await
+        .map_err(crate::TruthError::from)?
 }

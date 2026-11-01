@@ -52,8 +52,8 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
         "cancelled reservation must retain the receipt writer for the caller retry"
     );
     if operation_replay {
-        sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-            .bind(&operation).execute(pool.writer_pool()).await.unwrap();
+        (pool).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&operation)).await.unwrap();
     }
     let recover = || async {
         if operation_replay {
@@ -120,10 +120,9 @@ async fn checkpoint_after_settlement(operation_replay: bool) {
             let mut entries = checkpoint.pending_entries();
             entries.push(later.clone());
             checkpoint.set_pending_entries(entries);
-            sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+            (pool).writer().execute(sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
                 .bind(&runtime.id)
-                .bind(serde_json::to_string(&checkpoint).unwrap())
-                .execute(pool.writer_pool())
+                .bind(serde_json::to_string(&checkpoint).unwrap()))
                 .await
                 .unwrap();
             (checkpoint, later)

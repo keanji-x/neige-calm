@@ -290,191 +290,213 @@ async fn switch_owned(
     }
     // Qualification may read repository facts; keep those awaits outside the writer.
     // Even a read snapshot uses the shared immediate owner to avoid deferred-lock cycles.
-    let mut read = sqlite::begin_immediate_tx(&db).await?;
-    let mut arrivals: Vec<Vec<calm_truth::db::sqlite::event_inputs::EventInputFact>> = Vec::new();
-    // Freeze the carrier expectations with arrivals. Reading them in the final
-    // transaction would absorb ingress committed after this qualification.
-    let mut captured = Vec::new();
-    for (i, worker) in workers.iter().enumerate() {
-        let carrier = current_input_carrier_tx(&mut read, ids[i].as_str(), worker).await?;
-        let after = carrier.snapshot()["push_watermark"]
-            .as_i64()
-            .ok_or_else(|| CalmError::Internal("missing watermark".into()))?;
-        let shape = sqlite::card_execution_shape_tx(&mut read, ids[i].as_str()).await?;
-        let binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
-            .ok_or_else(|| {
-                refused(
-                    PlannerSwitchRefusal::Truth(T::BindingUnsupported),
-                    ids[i].as_str(),
-                )
-            })?;
-        let ingress = carrier_ingress_revision_tx(
-            &mut read,
-            ids[i].as_str(),
-            r.track_id.as_str(),
-            carrier.worker_session_id(),
-        )
-        .await?;
-        arrivals.push(
-            s.dispatcher
-                .carrier_quiescence_prefix_tx(&mut read, &r.track_id, after)
-                .await?,
-        );
-        captured.push((carrier, binding, ingress));
-    }
-    let baseline: i64 = sqlx::query_scalar("SELECT planner_event_baseline FROM tracks WHERE id=?1")
-        .bind(r.track_id.as_str())
-        .fetch_one(&mut **read)
-        .await?;
-    read.rollback().await?;
-    if s.dispatcher
-        .planner_switch_pending(&r.track_id, &arrivals[0], baseline)
-        .await?
-    {
-        return Err(refused(
-            PlannerSwitchRefusal::PendingObservations,
-            ids[0].as_str(),
-        ));
-    }
-    let owners: Vec<_> = (0..2)
-        .map(|i| Protected {
-            owner: CarrierReplacementOwner {
-                idle: &parks[i],
-                calls: &calls[i],
-                dispatcher: &s.dispatcher,
-                track: r.track_id.clone(),
-                arrivals: &arrivals[i],
-            },
-            error: std::sync::Mutex::new(None),
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut read = write_session.begin_immediate().await?;
+                let mut arrivals: Vec<Vec<calm_truth::db::sqlite::event_inputs::EventInputFact>> =
+                    Vec::new();
+                // Freeze the carrier expectations with arrivals. Reading them in the final
+                // transaction would absorb ingress committed after this qualification.
+                let mut captured = Vec::new();
+                for (i, worker) in workers.iter().enumerate() {
+                    let carrier =
+                        current_input_carrier_tx(&mut read, ids[i].as_str(), worker).await?;
+                    let after = carrier.snapshot()["push_watermark"]
+                        .as_i64()
+                        .ok_or_else(|| CalmError::Internal("missing watermark".into()))?;
+                    let shape = sqlite::card_execution_shape_tx(&mut read, ids[i].as_str()).await?;
+                    let binding =
+                        PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+                            .ok_or_else(|| {
+                                refused(
+                                    PlannerSwitchRefusal::Truth(T::BindingUnsupported),
+                                    ids[i].as_str(),
+                                )
+                            })?;
+                    let ingress = carrier_ingress_revision_tx(
+                        &mut read,
+                        ids[i].as_str(),
+                        r.track_id.as_str(),
+                        carrier.worker_session_id(),
+                    )
+                    .await?;
+                    arrivals.push(
+                        s.dispatcher
+                            .carrier_quiescence_prefix_tx(&mut read, &r.track_id, after)
+                            .await?,
+                    );
+                    captured.push((carrier, binding, ingress));
+                }
+                let baseline: i64 =
+                    sqlx::query_scalar("SELECT planner_event_baseline FROM tracks WHERE id=?1")
+                        .bind(r.track_id.as_str())
+                        .fetch_one(&mut **read)
+                        .await?;
+                read.rollback().await?;
+                if s.dispatcher
+                    .planner_switch_pending(&r.track_id, &arrivals[0], baseline)
+                    .await?
+                {
+                    return Err(refused(
+                        PlannerSwitchRefusal::PendingObservations,
+                        ids[0].as_str(),
+                    ));
+                }
+                let owners: Vec<_> = (0..2)
+                    .map(|i| Protected {
+                        owner: CarrierReplacementOwner {
+                            idle: &parks[i],
+                            calls: &calls[i],
+                            dispatcher: &s.dispatcher,
+                            track: r.track_id.clone(),
+                            arrivals: &arrivals[i],
+                        },
+                        error: std::sync::Mutex::new(None),
+                    })
+                    .collect();
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("planner-switch-before-commit", ids[0].as_str())
+                    .await;
+                let mut tx = write_session.begin_immediate().await?;
+                let outcome = async {
+                    let principal = human.current_principal()?;
+                    let area = crate::track_access::require_detail_access_tx(
+                        &mut tx,
+                        r.track_id.as_str(),
+                        &principal,
+                    )
+                    .await?;
+                    let mut expected = Vec::new();
+                    for (i, (carrier, binding, ingress)) in captured.into_iter().enumerate() {
+                        expected.push(ExpectedCarrier {
+                            card_id: ids[i].to_string(),
+                            track_id: r.track_id.to_string(),
+                            worker_session_id: carrier.worker_session_id().into(),
+                            original_snapshot: carrier.original_snapshot().into(),
+                            execution: RuntimeExecutionFence::from_carrier(&carrier),
+                            accepted_prefix: carrier.snapshot()["push_watermark"]
+                                .as_i64()
+                                .ok_or_else(|| CalmError::Internal("missing watermark".into()))?,
+                            binding,
+                            ingress,
+                            owner: &owners[i],
+                            revision: CallerRevision::Unversioned,
+                        });
+                        // Both open-ask checks precede the first credential revocation.
+                        owners[i]
+                            .owner
+                            .recheck_typed_tx(&mut tx, &carrier)
+                            .await
+                            .map_err(|e| owner_error(e, ids[i].as_str()))?;
+                    }
+                    let target = expected.pop().expect("target");
+                    let old = expected.pop().expect("Planner");
+                    let mut receipt = truth::switch_planner_tx(
+                        &mut tx,
+                        truth::ExpectedPlanner {
+                            track_id: r.track_id.as_str(),
+                            planner_card_id: ids[0].as_str(),
+                            target_card_id: ids[1].as_str(),
+                            revision: r.expected_revision,
+                            user_id: &principal.user_id,
+                        },
+                        (old, target),
+                    )
+                    .await
+                    .map_err(PlannerSwitchError::from)?;
+                    // This payload write is itself fenced ingress: perform it only after CAS,
+                    // and refresh the incoming event before publishing the committed pair.
+                    let incoming = crate::planner_permission_mode::inherit_for_switch_tx(
+                        &mut tx,
+                        ids[0].as_str(),
+                        ids[1].as_str(),
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        crate::planner_permission_mode::InheritanceError::Malformed(error) => {
+                            tracing::warn!(%error, "outgoing Planner permission mode unreadable");
+                            refused(
+                                PlannerSwitchRefusal::Truth(T::BindingUnsupported),
+                                ids[0].as_str(),
+                            )
+                        }
+                        crate::planner_permission_mode::InheritanceError::Storage(error) => {
+                            error.into()
+                        }
+                    })?;
+                    for event in &mut receipt.events {
+                        if let crate::event::Event::CardUpdated(card) = event
+                            && card.id.as_str() == ids[1].as_str()
+                        {
+                            *card = incoming.clone();
+                        }
+                    }
+                    let scope = crate::event::EventScope::Track {
+                        track: r.track_id.clone(),
+                        area,
+                    };
+                    let event_ids = sqlite::append_decision_events_in_tx(
+                        &mut tx,
+                        &ActorId::User,
+                        &scope,
+                        None,
+                        &receipt.events,
+                    )
+                    .await?;
+                    Ok::<_, PlannerSwitchError>((receipt, scope, event_ids))
+                }
+                .await;
+                let (receipt, scope, event_ids) = match outcome {
+                    Ok(value) => value,
+                    Err(e) => {
+                        tx.rollback().await?;
+                        return Err(owners
+                            .iter()
+                            .find_map(|o| o.error.lock().expect("owner verdict").take())
+                            .unwrap_or(e));
+                    }
+                };
+                tx.commit().await?;
+                // No await between SQL commit and synchronous pair publication.
+                #[allow(deprecated)]
+                // The role-change owner publishes the shared cache after commit.
+                s.harness.publish_pair(
+                    [
+                        (&receipt.demoted, &slots[0]),
+                        (&receipt.promoted, &slots[1]),
+                    ],
+                    s.write.role_cache(),
+                )?;
+                for (event, id) in receipt.events.iter().zip(event_ids) {
+                    s.events.emit_envelope(crate::event::BroadcastEnvelope {
+                        id,
+                        event_version: crate::event::SYNC_EVENT_VERSION,
+                        actor: ActorId::User,
+                        scope: scope.clone(),
+                        event: event.clone(),
+                    });
+                }
+                drop(drive);
+                drop(parks);
+                for (replacement, slot) in
+                    [&receipt.demoted, &receipt.promoted].into_iter().zip(slots)
+                {
+                    if let Err(error) = crate::harness::HarnessRegistry::cleanup_replacement(
+                        replacement,
+                        slot,
+                        Some(&s.shared_codex_appserver),
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "committed Planner switch cleanup failed");
+                    }
+                }
+                Ok(receipt)
+            })
         })
-        .collect();
-    #[cfg(feature = "fixtures")]
-    crate::test_seams::pause_point("planner-switch-before-commit", ids[0].as_str()).await;
-    let mut tx = sqlite::begin_immediate_tx(&db).await?;
-    let outcome = async {
-        let principal = human.current_principal()?;
-        let area =
-            crate::track_access::require_detail_access_tx(&mut tx, r.track_id.as_str(), &principal)
-                .await?;
-        let mut expected = Vec::new();
-        for (i, (carrier, binding, ingress)) in captured.into_iter().enumerate() {
-            expected.push(ExpectedCarrier {
-                card_id: ids[i].to_string(),
-                track_id: r.track_id.to_string(),
-                worker_session_id: carrier.worker_session_id().into(),
-                original_snapshot: carrier.original_snapshot().into(),
-                execution: RuntimeExecutionFence::from_carrier(&carrier),
-                accepted_prefix: carrier.snapshot()["push_watermark"]
-                    .as_i64()
-                    .ok_or_else(|| CalmError::Internal("missing watermark".into()))?,
-                binding,
-                ingress,
-                owner: &owners[i],
-                revision: CallerRevision::Unversioned,
-            });
-            // Both open-ask checks precede the first credential revocation.
-            owners[i]
-                .owner
-                .recheck_typed_tx(&mut tx, &carrier)
-                .await
-                .map_err(|e| owner_error(e, ids[i].as_str()))?;
-        }
-        let target = expected.pop().expect("target");
-        let old = expected.pop().expect("Planner");
-        let mut receipt = truth::switch_planner_tx(
-            &mut tx,
-            truth::ExpectedPlanner {
-                track_id: r.track_id.as_str(),
-                planner_card_id: ids[0].as_str(),
-                target_card_id: ids[1].as_str(),
-                revision: r.expected_revision,
-                user_id: &principal.user_id,
-            },
-            (old, target),
-        )
         .await
-        .map_err(PlannerSwitchError::from)?;
-        // This payload write is itself fenced ingress: perform it only after CAS,
-        // and refresh the incoming event before publishing the committed pair.
-        let incoming = crate::planner_permission_mode::inherit_for_switch_tx(
-            &mut tx,
-            ids[0].as_str(),
-            ids[1].as_str(),
-        )
-        .await
-        .map_err(|error| match error {
-            crate::planner_permission_mode::InheritanceError::Malformed(error) => {
-                tracing::warn!(%error, "outgoing Planner permission mode unreadable");
-                refused(
-                    PlannerSwitchRefusal::Truth(T::BindingUnsupported),
-                    ids[0].as_str(),
-                )
-            }
-            crate::planner_permission_mode::InheritanceError::Storage(error) => error.into(),
-        })?;
-        for event in &mut receipt.events {
-            if let crate::event::Event::CardUpdated(card) = event
-                && card.id.as_str() == ids[1].as_str()
-            {
-                *card = incoming.clone();
-            }
-        }
-        let scope = crate::event::EventScope::Track {
-            track: r.track_id.clone(),
-            area,
-        };
-        let event_ids = sqlite::append_decision_events_in_tx(
-            &mut tx,
-            &ActorId::User,
-            &scope,
-            None,
-            &receipt.events,
-        )
-        .await?;
-        Ok::<_, PlannerSwitchError>((receipt, scope, event_ids))
-    }
-    .await;
-    let (receipt, scope, event_ids) = match outcome {
-        Ok(value) => value,
-        Err(e) => {
-            tx.rollback().await?;
-            return Err(owners
-                .iter()
-                .find_map(|o| o.error.lock().expect("owner verdict").take())
-                .unwrap_or(e));
-        }
-    };
-    tx.commit().await?;
-    // No await between SQL commit and synchronous pair publication.
-    #[allow(deprecated)] // The role-change owner publishes the shared cache after commit.
-    s.harness.publish_pair(
-        [
-            (&receipt.demoted, &slots[0]),
-            (&receipt.promoted, &slots[1]),
-        ],
-        s.write.role_cache(),
-    )?;
-    for (event, id) in receipt.events.iter().zip(event_ids) {
-        s.events.emit_envelope(crate::event::BroadcastEnvelope {
-            id,
-            event_version: crate::event::SYNC_EVENT_VERSION,
-            actor: ActorId::User,
-            scope: scope.clone(),
-            event: event.clone(),
-        });
-    }
-    drop(drive);
-    drop(parks);
-    for (replacement, slot) in [&receipt.demoted, &receipt.promoted].into_iter().zip(slots) {
-        if let Err(error) = crate::harness::HarnessRegistry::cleanup_replacement(
-            replacement,
-            slot,
-            Some(&s.shared_codex_appserver),
-        )
-        .await
-        {
-            tracing::warn!(%error, "committed Planner switch cleanup failed");
-        }
-    }
-    Ok(receipt)
+        .map_err(calm_truth::TruthError::from)?
 }

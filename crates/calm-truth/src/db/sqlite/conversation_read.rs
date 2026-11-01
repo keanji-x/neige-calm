@@ -13,174 +13,178 @@ pub(super) async fn current_frame(
     // The snapshot and immutable identity/plan joins must share one observation.
     // Use the existing writer admission owner so a parked read cannot hold a
     // shared-cache R lock across a waiting writer (#930).
-    let mut tx = super::begin_immediate_tx(db).await?;
-    let row = sqlx::query(
-        "SELECT c.session_id, c.track_id, w.track_id AS runtime_track, w.card_id AS runtime_card, w.state, w.handle_state_json,
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let row = sqlx::query(
+            "SELECT c.session_id, c.track_id, w.track_id AS runtime_track, w.card_id AS runtime_card, w.state, w.handle_state_json,
                 EXISTS(SELECT 1 FROM conversation_presentations WHERE card_id=c.id) AS has_presentations
          FROM cards c LEFT JOIN worker_sessions w ON w.id=c.session_id WHERE c.id=?1",
-    ).bind(card).fetch_optional(&mut **tx).await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
-    let worker_session_id: Option<String> = row.try_get("session_id")?;
-    if worker_session_id.is_some()
-        && (row.try_get::<Option<String>, _>("runtime_card")?.as_deref() != Some(card)
-            || row.try_get::<Option<String>, _>("runtime_track")? != Some(row.try_get("track_id")?))
-    {
-        return Err(CalmError::Conflict(
-            "current conversation carrier is missing or mismatched",
-        ));
-    }
-    let raw: Option<String> = row.try_get("handle_state_json")?;
-    let runtime = worker_session_id
-        .map(|id| -> Result<_> {
-            Ok(crate::db::CurrentConversationRuntime {
-                id,
-                state: calm_types::worker::WorkerSessionState::try_from(
-                    row.try_get::<String, _>("state")?,
-                )
-                .map_err(CalmError::Internal)?,
+        ).bind(card).fetch_optional(&mut **tx).await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
+        let worker_session_id: Option<String> = row.try_get("session_id")?;
+        if worker_session_id.is_some()
+            && (row.try_get::<Option<String>, _>("runtime_card")?.as_deref() != Some(card)
+                || row.try_get::<Option<String>, _>("runtime_track")? != Some(row.try_get("track_id")?))
+        {
+            return Err(CalmError::Conflict(
+                "current conversation carrier is missing or mismatched",
+            ));
+        }
+        let raw: Option<String> = row.try_get("handle_state_json")?;
+        let runtime = worker_session_id
+            .map(|id| -> Result<_> {
+                Ok(crate::db::CurrentConversationRuntime {
+                    id,
+                    state: calm_types::worker::WorkerSessionState::try_from(
+                        row.try_get::<String, _>("state")?,
+                    )
+                    .map_err(CalmError::Internal)?,
+                })
             })
-        })
-        .transpose()?;
-    let snapshot: Option<serde_json::Value> =
-        raw.as_deref().map(serde_json::from_str).transpose()?;
-    let canonical = snapshot
-        .as_ref()
-        .filter(|value| value.get("canonical_inputs").is_some())
-        .map(|value| {
-            serde_json::from_value::<calm_types::harness::snapshot::CanonicalHarnessSnapshot>(
-                value.clone(),
-            )
-        })
-        .transpose()?;
-    let active_input = match canonical.as_ref() {
-        Some(frame) => {
-            let carrier = runtime
-                .as_ref()
-                .ok_or(CalmError::Conflict("canonical frame lacks its carrier"))?;
-            let ids = frame.canonical_inputs.referenced_submissions();
-            let mut identities = Vec::with_capacity(ids.len());
-            for id in ids {
-                let identity = super::conversation::submission_identity_tx(&mut tx, &id).await?;
-                if identity.card_id != card {
-                    return Err(CalmError::Conflict(
-                        "submission belongs to another conversation",
+            .transpose()?;
+        let snapshot: Option<serde_json::Value> =
+            raw.as_deref().map(serde_json::from_str).transpose()?;
+        let canonical = snapshot
+            .as_ref()
+            .filter(|value| value.get("canonical_inputs").is_some())
+            .map(|value| {
+                serde_json::from_value::<calm_types::harness::snapshot::CanonicalHarnessSnapshot>(
+                    value.clone(),
+                )
+            })
+            .transpose()?;
+        let active_input = match canonical.as_ref() {
+            Some(frame) => {
+                let carrier = runtime
+                    .as_ref()
+                    .ok_or(CalmError::Conflict("canonical frame lacks its carrier"))?;
+                let ids = frame.canonical_inputs.referenced_submissions();
+                let mut identities = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let identity = super::conversation::submission_identity_tx(&mut tx, &id).await?;
+                    if identity.card_id != card {
+                        return Err(CalmError::Conflict(
+                            "submission belongs to another conversation",
+                        ));
+                    }
+                    // Decode and validate the original immutable plan through its sole owner.
+                    super::conversation::submission_plan_tx(&mut tx, &id).await?;
+                    identities.push((id, identity.logical_turn_id, identity.ordinal));
+                }
+                let needs_retry_policy = identities.iter().any(|(id, _, _)| {
+                    frame.canonical_inputs.attempt(id).is_some_and(|attempt| {
+                        !frame.canonical_inputs.is_human_resolved(&attempt.attempt)
+                            && matches!(
+                                attempt.delivery,
+                                calm_types::conversation::InputDeliveryFact::Unknown
+                                    | calm_types::conversation::InputDeliveryFact::CrossingUnknown
+                            )
+                    })
+                });
+                let current = if needs_retry_policy
+                    && (carrier.state.is_active_authority()
+                        || carrier.state == calm_types::worker::WorkerSessionState::Failed)
+                {
+                    Some(
+                        super::conversation::current_input_fact_carrier_tx(&mut tx, card, &carrier.id)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
+                let mut availability = Vec::with_capacity(identities.len());
+                for (id, _, _) in &identities {
+                    let reason = match frame.canonical_inputs.attempt(id) {
+                        None => Some(ConversationActionUnavailableReason::NotHeld),
+                        Some(attempt) if frame.canonical_inputs.is_human_resolved(&attempt.attempt) => {
+                            Some(ConversationActionUnavailableReason::AlreadyResolved)
+                        }
+                        Some(attempt) => match attempt.delivery {
+                            calm_types::conversation::InputDeliveryFact::CrossingUnknown
+                            | calm_types::conversation::InputDeliveryFact::Unknown => match &current {
+                                Some(current) => {
+                                    super::conversation::retry_availability_tx(&mut tx, current, id)
+                                        .await?
+                                        .err()
+                                        .map(retry_reason)
+                                }
+                                None => Some(ConversationActionUnavailableReason::UnsupportedBinding),
+                            },
+                            calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
+                            | calm_types::conversation::InputDeliveryFact::Accepted { .. } => {
+                                Some(ConversationActionUnavailableReason::NotHeld)
+                            }
+                        },
+                    };
+                    availability.push((
+                        id.clone(),
+                        match reason {
+                            Some(reason) => ConversationActionAvailability::Unavailable { reason },
+                            None => ConversationActionAvailability::Available,
+                        },
                     ));
                 }
-                // Decode and validate the original immutable plan through its sole owner.
-                super::conversation::submission_plan_tx(&mut tx, &id).await?;
-                identities.push((id, identity.logical_turn_id, identity.ordinal));
-            }
-            let needs_retry_policy = identities.iter().any(|(id, _, _)| {
-                frame.canonical_inputs.attempt(id).is_some_and(|attempt| {
-                    !frame.canonical_inputs.is_human_resolved(&attempt.attempt)
-                        && matches!(
-                            attempt.delivery,
-                            calm_types::conversation::InputDeliveryFact::Unknown
-                                | calm_types::conversation::InputDeliveryFact::CrossingUnknown
-                        )
-                })
-            });
-            let current = if needs_retry_policy
-                && (carrier.state.is_active_authority()
-                    || carrier.state == calm_types::worker::WorkerSessionState::Failed)
-            {
-                Some(
-                    super::conversation::current_input_fact_carrier_tx(&mut tx, card, &carrier.id)
-                        .await?,
+                ConversationActiveInput::from_checkpoint(
+                    &frame.canonical_inputs,
+                    &carrier.id,
+                    &identities,
+                    |id| {
+                        availability
+                            .iter()
+                            .find(|(stored, _)| stored == id)
+                            .map(|(_, action)| action.clone())
+                            .ok_or("submission lacks its checked retry availability")
+                    },
                 )
-            } else {
-                None
-            };
-            let mut availability = Vec::with_capacity(identities.len());
-            for (id, _, _) in &identities {
-                let reason = match frame.canonical_inputs.attempt(id) {
-                    None => Some(ConversationActionUnavailableReason::NotHeld),
-                    Some(attempt) if frame.canonical_inputs.is_human_resolved(&attempt.attempt) => {
-                        Some(ConversationActionUnavailableReason::AlreadyResolved)
+                .map_err(CalmError::Conflict)?
+            }
+            None => None,
+        };
+        let terminal_outcome = match (runtime.as_ref(), canonical.as_ref()) {
+            (Some(runtime), Some(frame)) => {
+                match (
+                    frame.header.last_thread_id.as_deref(),
+                    frame.header.last_turn_id.as_deref(),
+                ) {
+                    (Some(thread), Some(turn)) => {
+                        super::terminal_outcome::exact(
+                            &mut tx,
+                            &runtime.id,
+                            card,
+                            row.try_get("track_id")?,
+                            thread,
+                            turn,
+                        )
+                        .await?
                     }
-                    Some(attempt) => match attempt.delivery {
-                        calm_types::conversation::InputDeliveryFact::CrossingUnknown
-                        | calm_types::conversation::InputDeliveryFact::Unknown => match &current {
-                            Some(current) => {
-                                super::conversation::retry_availability_tx(&mut tx, current, id)
-                                    .await?
-                                    .err()
-                                    .map(retry_reason)
-                            }
-                            None => Some(ConversationActionUnavailableReason::UnsupportedBinding),
-                        },
-                        calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
-                        | calm_types::conversation::InputDeliveryFact::Accepted { .. } => {
-                            Some(ConversationActionUnavailableReason::NotHeld)
-                        }
-                    },
-                };
-                availability.push((
-                    id.clone(),
-                    match reason {
-                        Some(reason) => ConversationActionAvailability::Unavailable { reason },
-                        None => ConversationActionAvailability::Available,
-                    },
-                ));
-            }
-            ConversationActiveInput::from_checkpoint(
-                &frame.canonical_inputs,
-                &carrier.id,
-                &identities,
-                |id| {
-                    availability
-                        .iter()
-                        .find(|(stored, _)| stored == id)
-                        .map(|(_, action)| action.clone())
-                        .ok_or("submission lacks its checked retry availability")
-                },
-            )
-            .map_err(CalmError::Conflict)?
-        }
-        None => None,
-    };
-    let terminal_outcome = match (runtime.as_ref(), canonical.as_ref()) {
-        (Some(runtime), Some(frame)) => {
-            match (
-                frame.header.last_thread_id.as_deref(),
-                frame.header.last_turn_id.as_deref(),
-            ) {
-                (Some(thread), Some(turn)) => {
-                    super::terminal_outcome::exact(
-                        &mut tx,
-                        &runtime.id,
-                        card,
-                        row.try_get("track_id")?,
-                        thread,
-                        turn,
-                    )
-                    .await?
+                    _ => None,
                 }
-                _ => None,
             }
-        }
-        _ => None,
-    };
-    let pending_humans = match canonical.as_ref() {
-        Some(frame) => {
-            super::conversation::pending_human_messages_tx(
-                &mut tx,
-                card,
-                &frame.canonical_inputs.pending,
-            )
-            .await?
-        }
-        None => vec![],
-    };
-    tx.commit().await?;
-    Ok(crate::db::ConversationReadFrame {
-        pending_humans,
-        terminal_outcome,
-        runtime,
-        snapshot,
-        active_input,
-        has_presentations: row.try_get("has_presentations")?,
-    })
+            _ => None,
+        };
+        let pending_humans = match canonical.as_ref() {
+            Some(frame) => {
+                super::conversation::pending_human_messages_tx(
+                    &mut tx,
+                    card,
+                    &frame.canonical_inputs.pending,
+                )
+                .await?
+            }
+            None => vec![],
+        };
+        tx.commit().await?;
+        Ok(crate::db::ConversationReadFrame {
+            pending_humans,
+            terminal_outcome,
+            runtime,
+            snapshot,
+            active_input,
+            has_presentations: row.try_get("has_presentations")?,
+        })
+
+    })).await.map_err(crate::TruthError::from)?
 }
 
 pub(super) async fn page(

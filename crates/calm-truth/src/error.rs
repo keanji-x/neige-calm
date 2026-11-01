@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TruthError {
+    #[error(transparent)]
+    NestedWrite(#[from] crate::db::sqlite::NestedWrite),
+
     #[error("{0}")]
     CarrierReplacementRefused(crate::db::sqlite::conversation::ReplacementRefusal),
 

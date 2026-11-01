@@ -148,63 +148,73 @@ async fn assistant_provider_codex_failed_carrier_send_preserves_thread_and_queue
     snapshot.set_pending_entries(vec![entry.clone()]);
     snapshot.phase = HarnessPhaseTag::Wedged;
     snapshot.wedged_reason = Some("system_error".into());
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::session_bind_attribution_tx(
-        &mut tx,
-        &runtime.id,
-        calm_server::session_projection_repo::ThreadAttribution {
-            worker_session_id: runtime.id.clone(),
-            provider: calm_server::session_projection_repo::AgentProvider::Codex,
-            thread_id: runtime.thread_id.clone(),
-            session_id: None,
-            active_turn_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Failed)
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::session_bind_attribution_tx(
+                    &mut tx,
+                    &runtime.id,
+                    calm_server::session_projection_repo::ThreadAttribution {
+                        worker_session_id: runtime.id.clone(),
+                        provider: calm_server::session_projection_repo::AgentProvider::Codex,
+                        thread_id: runtime.thread_id.clone(),
+                        session_id: None,
+                        active_turn_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+                session_set_status_tx(&mut tx, &runtime.id, WorkerSessionState::Failed)
+                    .await
+                    .unwrap();
+                session_set_handle_state_of_any_runtime_tx(
+                    &mut tx,
+                    &runtime.id,
+                    Some(serde_json::to_value(&snapshot).unwrap()),
+                    calm_server::model::now_ms(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                b.state.shared_codex_appserver.fail_turn_start_for_test();
+                let (status, response) = b
+                    .request(
+                        "POST",
+                        &format!("/api/cards/{card}/planner/input"),
+                        Some("recover-carrier"),
+                        Some(json!({"text":"continue"})),
+                    )
+                    .await;
+                assert_eq!(status, StatusCode::OK, "{response}");
+                assert_eq!(response["worker_session_id"], runtime.id);
+                let recovered = b
+                    .repo
+                    .session_projection_active_for_card(&card)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(recovered.thread_id, runtime.thread_id);
+                let snapshot = calm_server::harness::HarnessSnapshot::from_value_strict(
+                    recovered.handle_state_json.unwrap(),
+                );
+                assert!(snapshot.pending_entries().contains(&entry));
+                let count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id=?1")
+                        .bind(&card)
+                        .fetch_one(b.repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    count, 1,
+                    "failed carrier recovery must not replace identity"
+                );
+            })
+        })
         .await
-        .unwrap();
-    session_set_handle_state_of_any_runtime_tx(
-        &mut tx,
-        &runtime.id,
-        Some(serde_json::to_value(&snapshot).unwrap()),
-        calm_server::model::now_ms(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    b.state.shared_codex_appserver.fail_turn_start_for_test();
-    let (status, response) = b
-        .request(
-            "POST",
-            &format!("/api/cards/{card}/planner/input"),
-            Some("recover-carrier"),
-            Some(json!({"text":"continue"})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["worker_session_id"], runtime.id);
-    let recovered = b
-        .repo
-        .session_projection_active_for_card(&card)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(recovered.thread_id, runtime.thread_id);
-    let snapshot = calm_server::harness::HarnessSnapshot::from_value_strict(
-        recovered.handle_state_json.unwrap(),
-    );
-    assert!(snapshot.pending_entries().contains(&entry));
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id=?1")
-        .bind(&card)
-        .fetch_one(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        count, 1,
-        "failed carrier recovery must not replace identity"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -235,11 +245,10 @@ async fn assistant_provider_current_row_mismatch_refuses_catalog_model_and_reset
         .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
     let card = row["id"].as_str().unwrap();
-    sqlx::query(
+    (b.repo.db()).writer().execute(sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.assistant_provider','claude') WHERE id=?1",
     )
-    .bind(card)
-    .execute(b.repo.pool())
+    .bind(card))
     .await
     .unwrap();
     for (method, uri, body) in [
@@ -286,57 +295,61 @@ async fn assistant_provider_catalog_get_put_follow_registered_backend_admission(
     let (_, registrations) = b
         .request("GET", "/api/agent-providers/managed", None, None)
         .await;
-    for registration in registrations.as_array().unwrap() {
-        let provider = registration["availability"]["provider"].clone();
-        let mut tx = b.repo.pool().begin().await.unwrap();
-        let card = card_create_with_id_tx(
-            &mut tx,
-            calm_server::model::new_id(),
-            calm_server::model::NewCard {
-                track_id: track.clone().into(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({"harness_profile":"assistant","assistant_provider":provider}),
-            },
-            CardRole::Assistant,
-            false,
-            &b.card_role_cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let (status, catalog) = b
-            .request(
-                "GET",
-                &format!("/api/models?card_id={}", card.id),
-                None,
-                None,
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for registration in registrations.as_array().unwrap() {
+            let provider = registration["availability"]["provider"].clone();
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let card = card_create_with_id_tx(
+                &mut tx,
+                calm_server::model::new_id(),
+                calm_server::model::NewCard {
+                    track_id: track.clone().into(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: json!({"harness_profile":"assistant","assistant_provider":provider}),
+                },
+                CardRole::Assistant,
+                false,
+                &b.card_role_cache,
             )
-            .await;
-        assert_eq!(status, StatusCode::OK, "{provider}: {catalog}");
-        let (status, result) = b
-            .request(
-                "PUT",
-                &format!("/api/cards/{}/planner/model", card.id),
-                None,
-                Some(json!({"model":null,"reasoning_effort":null})),
-            )
-            .await;
-        if registration["capabilities"]["requires_ready_availability"] == false {
-            assert_eq!(
-                status,
-                StatusCode::OK,
-                "default does not need a catalog: {provider}: {result}"
-            );
-            assert_eq!(result["model"], Value::Null);
-        } else {
-            assert!(
-                !status.is_success(),
-                "unconfigured backend must not fall through to Codex: {provider}: {result}"
-            );
-            let stored = b.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-            assert!(stored.payload.get("model").is_none());
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let (status, catalog) = b
+                .request(
+                    "GET",
+                    &format!("/api/models?card_id={}", card.id),
+                    None,
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{provider}: {catalog}");
+            let (status, result) = b
+                .request(
+                    "PUT",
+                    &format!("/api/cards/{}/planner/model", card.id),
+                    None,
+                    Some(json!({"model":null,"reasoning_effort":null})),
+                )
+                .await;
+            if registration["capabilities"]["requires_ready_availability"] == false {
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "default does not need a catalog: {provider}: {result}"
+                );
+                assert_eq!(result["model"], Value::Null);
+            } else {
+                assert!(
+                    !status.is_success(),
+                    "unconfigured backend must not fall through to Codex: {provider}: {result}"
+                );
+                let stored = b.repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+                assert!(stored.payload.get("model").is_none());
+            }
         }
-    }
+
+    })).await.expect("independent write operation")
 }

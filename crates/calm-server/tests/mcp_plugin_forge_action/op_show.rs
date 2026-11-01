@@ -222,9 +222,14 @@ async fn op_show_refuses_undecodable_out_of_scope_rows_like_an_absent_id() {
     let non_forge = insert_operation(&fx, "terminal-create", &fx.track_id).await;
     for op_id in [&foreign, &non_forge] {
         // Valid JSON, so the table's CHECKs pass, that no longer decodes as a `TxOutput`.
-        sqlx::query("UPDATE operations SET tx_output_json = '\"undecodable\"' WHERE id = ?1")
-            .bind(op_id)
-            .execute(fx.repo.pool())
+        (fx.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET tx_output_json = '\"undecodable\"' WHERE id = ?1",
+                )
+                .bind(op_id),
+            )
             .await
             .expect("corrupt the stored operation");
     }
@@ -431,16 +436,19 @@ async fn op_show_output_inline_and_virtual_continuation_are_track_scoped() {
                 .as_str()
                 .unwrap();
             std::fs::remove_file(artifact).unwrap();
-            sqlx::query(
-                "UPDATE operations SET tx_output_json = json_remove(
+            (fx.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET tx_output_json = json_remove(
                     json_set(tx_output_json, '$.result.event.head_sha', ?2), '$.result.stdout')
                  WHERE id = ?1",
-            )
-            .bind(&id)
-            .bind("界".repeat(20000))
-            .execute(fx.repo.pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(&id)
+                    .bind("界".repeat(20000)),
+                )
+                .await
+                .unwrap();
             let missing = op_show(&fx, 9, &id).await;
             assert_eq!(
                 missing["result"]["structuredContent"]["result"]["output_unavailable"],

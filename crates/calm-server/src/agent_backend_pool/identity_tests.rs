@@ -625,8 +625,9 @@ async fn agent_backend_single_shared_database_skips_registry_access() {
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
     // Removing the registry makes both reads and writes fail if startup touches it.
-    sqlx::query("DROP TABLE agent_backend_registry")
-        .execute(concrete.pool())
+    (concrete.db())
+        .writer()
+        .execute(sqlx::query("DROP TABLE agent_backend_registry"))
         .await
         .unwrap();
     for explicit in [false, true] {

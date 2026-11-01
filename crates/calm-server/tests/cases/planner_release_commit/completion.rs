@@ -42,8 +42,9 @@ async fn release_commit_watchdog_commits_the_unfinished_result() {
         .unwrap();
     // This is Stop's production entry point, which bypasses command admission.
     assert!(boot.harness.interrupt("user stop".into()).await.is_err());
-    sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-        .execute(boot.repo.db().writer_pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
         .await
         .unwrap();
     boot.harness.expire_interrupt_deadline_for_test().await;

@@ -2,8 +2,8 @@
 use super::*;
 
 async fn spawn_started(fx: &Fx, id: &str) {
-    sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
-        .bind(id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
+        .bind(id)).await.unwrap();
 }
 async fn errors(fx: &Fx) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM retention_errors")
@@ -23,13 +23,13 @@ async fn c2b_malformed_record_is_retained_with_backoff() {
             }
             let bad = json!({"version":1,"execution_id":false});
             rewrite(&fx, &before.id, &bad).await;
-            sqlx::query("CREATE TABLE retention_errors (message TEXT)")
-                .execute(&fx.pool())
+            (fx.db())
+                .writer()
+                .execute(sqlx::query("CREATE TABLE retention_errors (message TEXT)"))
                 .await
                 .unwrap();
-            sqlx::query("CREATE TRIGGER count_retention AFTER UPDATE OF last_error ON operations WHEN NEW.last_error IS \
-         NOT NULL BEGIN INSERT INTO retention_errors VALUES (NEW.last_error); END")
-                .execute(&fx.pool()).await.unwrap();
+            (fx.db()).writer().execute(sqlx::query("CREATE TRIGGER count_retention AFTER UPDATE OF last_error ON operations WHEN NEW.last_error IS \
+         NOT NULL BEGIN INSERT INTO retention_errors VALUES (NEW.last_error); END")).await.unwrap();
             if recovering {
                 boot(&fx).await;
             } else if parked {
@@ -92,8 +92,8 @@ async fn c2b_recorded_op_never_enters_compensation() {
         spawn_started(&fx, &before.id).await;
         if plan_error {
             // FrozenRun decoding fails in spawn_side_effect and then plan_compensation.
-            sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.task_id',json('false')) WHERE id=?")
-                .bind(&before.id).execute(&fx.pool()).await.unwrap();
+            (fx.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.task_id',json('false')) WHERE id=?")
+                .bind(&before.id)).await.unwrap();
         } else {
             // FrozenRun remains valid: spawn's owned-record decoder alone fails;
             // plan_compensation succeeds and set_compensating must retain the row.
@@ -148,14 +148,15 @@ async fn c2b_park_write_failure_retains_owned_execution() {
             json!([{"name":"unexpected","cmd":format!("touch '{}'",marker.display())}]),
         )
         .await;
-        sqlx::query(
-            "CREATE TRIGGER reject_gate_park BEFORE UPDATE OF phase ON operations WHEN \
+        (fx.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER reject_gate_park BEFORE UPDATE OF phase ON operations WHEN \
          NEW.kind='task-gate-run' AND NEW.phase='parked' BEGIN SELECT RAISE(ABORT,'injected park \
          failure'); END",
-        )
-        .execute(&fx.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         if recovering {
             calm_server::test_seams::admit_gate_run_for_test(
                 &fx.db(),
@@ -185,8 +186,9 @@ async fn c2b_park_write_failure_retains_owned_execution() {
         );
         assert_eq!(execution_count(&fx, &before.id).await, 1);
         assert!(!marker.exists());
-        sqlx::query("DROP TRIGGER reject_gate_park")
-            .execute(&fx.pool())
+        (fx.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER reject_gate_park"))
             .await
             .unwrap();
         expire(&fx, &before.id).await;
@@ -214,34 +216,38 @@ async fn c2b_owned_park_requires_decodable_record() {
         assert_eq!(before.phase.tag(), PhaseTag::Parked);
         assert!(before.lease_owner.is_none());
         assert!(before.lease_until_ms.is_none());
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
-            .await
-            .unwrap();
-        let changed = sqlx::query(
-            "UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL, \
+        let write_db = (fx.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate()
+                .await
+                .unwrap();
+            let changed = sqlx::query(
+                "UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL, \
              tx_output_json=json_set(tx_output_json,'$.data.gate_execution',json(?)) \
              WHERE id=? AND phase='parked' AND lease_owner IS NULL AND lease_until_ms IS NULL",
-        )
-        .bind(value.to_string())
-        .bind(&before.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        assert_eq!(changed.rows_affected(), 1);
-        tx.commit().await.unwrap();
-        drop(drive);
-        fx.runtime.drive().await.unwrap();
-        let after = op(&fx, &a.task.id).await;
-        assert_eq!(after.phase.tag(), PhaseTag::SpawnStarted);
-        assert!(
-            after
-                .last_error
-                .as_deref()
-                .unwrap()
-                .contains("owned execution retained")
-        );
-        assert_eq!(execution_count(&fx, &before.id).await, 1);
-        assert!(after.parked_at_ms.is_none());
-        assert_eq!(record(&after), value);
+            )
+            .bind(value.to_string())
+            .bind(&before.id)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+            assert_eq!(changed.rows_affected(), 1);
+            tx.commit().await.unwrap();
+            drop(drive);
+            fx.runtime.drive().await.unwrap();
+            let after = op(&fx, &a.task.id).await;
+            assert_eq!(after.phase.tag(), PhaseTag::SpawnStarted);
+            assert!(
+                after
+                    .last_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("owned execution retained")
+            );
+            assert_eq!(execution_count(&fx, &before.id).await, 1);
+            assert!(after.parked_at_ms.is_none());
+            assert_eq!(record(&after), value);
+
+    })).await.expect("independent write operation")
     }
 }

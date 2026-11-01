@@ -237,25 +237,34 @@ async fn boot() -> Boot {
 }
 
 async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        crate::support::planner::session_init(
-            "planner-session",
-            planner_card_id,
-            Some("planner-thread".into()),
-            WorkerSessionState::Running,
-            now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
-        .bind(track_id)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    crate::support::planner::session_init(
+                        "planner-session",
+                        planner_card_id,
+                        Some("planner-thread".into()),
+                        WorkerSessionState::Running,
+                        now_ms(),
+                    ),
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
+                    .bind(track_id)
+                    .execute(&mut **tx)
+                    .await
+                    .expect("mark planner session as track root");
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .expect("mark planner session as track root");
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 /// Spawns a dispatcher with a live `McpServer` wired in (`mcp_server = Some`), the production wiring;

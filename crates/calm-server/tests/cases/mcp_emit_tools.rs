@@ -109,9 +109,12 @@ async fn consumer_summary_authenticated_completion_preserves_entire_result() {
 async fn task_completed_from_claude_worker_persists_claude_session_actor() {
     let b = boot_with_role(CardRole::Worker).await;
     let pool = b.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
-        .bind(&b.session_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
+                .bind(&b.session_id),
+        )
         .await
         .expect("flip test session provider to claude");
     let mut rx = b.events.subscribe_filtered();

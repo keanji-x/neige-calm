@@ -85,13 +85,14 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('task.context_frozen', '{"task_id":"w:old","refs":[]}', 'kernel', 0, 1)"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert historical freeze");
+        ))
+        .await
+        .expect("insert historical freeze");
 
     let rows = repo.events_since(0, 10).await.expect("events_since");
     assert_eq!(
@@ -118,8 +119,10 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'harness.transcript.cleared',
              '{"card_id":"card-old","worker_session_id":"rt-old","track_id":"track-old"}',
@@ -127,10 +130,9 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
              0,
              1
            )"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert historical transcript reset");
+        ))
+        .await
+        .expect("insert historical transcript reset");
 
     let rows = repo.events_since(0, 10).await.expect("events_since");
     assert_eq!(
@@ -163,8 +165,10 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
         .await
         .expect("open sqlite repo");
     let before = seed_area_updates(&repo, 1).await;
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'workflow.registered',
              '{"pluginId":"gitforge","workflowId":"issue-development"}',
@@ -172,10 +176,9 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
              0,
              9
            )"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert retired workflow.registered");
+        ))
+        .await
+        .expect("insert retired workflow.registered");
     let after = seed_area_updates(&repo, 1).await;
 
     let rows = repo
@@ -202,13 +205,19 @@ async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
         .expect("open sqlite repo");
     let seeded = seed_area_updates(&repo, 4).await;
     // Unknown kind seeded LAST so the `max_id` assertion proves the probe sees past what `events_since` surfaces.
-    let unknown_id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    let unknown_id: i64 = {
+        let query = sqlx::query_scalar(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
            RETURNING id"#,
-    )
-    .fetch_one(repo.pool())
-    .await
+        );
+        (repo.db())
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_one(&mut **connection).await })
+            })
+            .await
+    }
     .expect("insert unknown-kind row");
 
     let filtered = repo.events_since(0, 100).await.expect("events_since");
@@ -263,23 +272,27 @@ async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
         "root_cause": "historical", "idempotency_key": "review.round:retired-track:impl:5b:760:1"
     }).to_string();
     let actor = serde_json::to_string(&ActorId::AiPlanner("historical-planner".into())).unwrap();
-    let retired: i64 = sqlx::query_scalar(
-        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+    let retired: i64 = {
+        let query = sqlx::query_scalar(
+            "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
          VALUES('review.round',?,?,0,'track','retired-track') RETURNING id",
-    )
-    .bind(&payload)
-    .bind(&actor)
-    .fetch_one(repo.pool())
-    .await
+        )
+        .bind(&payload)
+        .bind(&actor);
+        (repo.db())
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_one(&mut **connection).await })
+            })
+            .await
+    }
     .unwrap();
-    let live: i64 = sqlx::query_scalar(
+    let live: i64 = { let query = sqlx::query_scalar(
         "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
          VALUES('ask.requested',?,?,0,'track','retired-track') RETURNING id",
     )
     .bind(r#"{"track_id":"retired-track","questions":[{"title":"Continue?","options":[]}],"delivery":"wake"}"#)
-    .bind(&actor)
-    .fetch_one(repo.pool())
-    .await
+    .bind(&actor); (repo.db()).writer().autocommit(move |connection| Box::pin(async move { query.fetch_one(&mut **connection).await })).await }
     .unwrap();
     assert!(
         Event::from_kind_and_payload("review.round", serde_json::from_str(&payload).unwrap())
@@ -334,15 +347,21 @@ async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
             r#"{"track_id":"track","decision":"deny","message":"Hold"}"#,
         ),
     ] {
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+        let id: i64 = {
+            let query = sqlx::query_scalar(
+                "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
              VALUES(?,?,?,0,'track','track') RETURNING id",
-        )
-        .bind(kind)
-        .bind(payload)
-        .bind(&actor)
-        .fetch_one(repo.pool())
-        .await
+            )
+            .bind(kind)
+            .bind(payload)
+            .bind(&actor);
+            (repo.db())
+                .writer()
+                .autocommit(move |connection| {
+                    Box::pin(async move { query.fetch_one(&mut **connection).await })
+                })
+                .await
+        }
         .unwrap();
         historical.push((id, kind, payload));
     }
@@ -357,15 +376,21 @@ async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
         delivery: calm_types::event::AskDelivery::Wake,
         source_item_id: None,
     };
-    let live: i64 = sqlx::query_scalar(
-        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+    let live: i64 = {
+        let query = sqlx::query_scalar(
+            "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
          VALUES(?,?,?,0,'track','track') RETURNING id",
-    )
-    .bind(request.kind_tag())
-    .bind(request.payload_value().to_string())
-    .bind(&actor)
-    .fetch_one(repo.pool())
-    .await
+        )
+        .bind(request.kind_tag())
+        .bind(request.payload_value().to_string())
+        .bind(&actor);
+        (repo.db())
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_one(&mut **connection).await })
+            })
+            .await
+    }
     .unwrap();
 
     assert!(repo.events_since(0, 3).await.unwrap().is_empty());

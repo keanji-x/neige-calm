@@ -53,40 +53,49 @@ async fn archive_assignment_rolls_back_and_cascades_with_its_card() {
     let b = boot().await;
     let track = b.create_track("Archive transaction").await;
     let card = assistant(&b, &track, "codex").await;
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    assert!(
-        conversation_archive_set_tx(&mut tx, &card, true)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    assert!(
-        b.state
-            .repo
-            .conversation_archived_at(&card)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        archive(&b, &track, &card, true).await.0,
-        StatusCode::NO_CONTENT
-    );
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    sqlx::query("DELETE FROM cards WHERE id=?")
-        .bind(&card)
-        .execute(&mut *tx)
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    conversation_archive_set_tx(&mut tx, &card, true)
+                        .await
+                        .unwrap()
+                );
+                tx.rollback().await.unwrap();
+                assert!(
+                    b.state
+                        .repo
+                        .conversation_archived_at(&card)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(
+                    archive(&b, &track, &card, true).await.0,
+                    StatusCode::NO_CONTENT
+                );
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("DELETE FROM cards WHERE id=?")
+                    .bind(&card)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert!(
+                    b.state
+                        .repo
+                        .conversation_archived_at(&card)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(
-        b.state
-            .repo
-            .conversation_archived_at(&card)
-            .await
-            .unwrap()
-            .is_none()
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -99,13 +108,14 @@ async fn archive_route_rolls_back_metadata_card_and_event_on_write_failure() {
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER refuse_archive_update BEFORE UPDATE ON cards
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_archive_update BEFORE UPDATE ON cards
          BEGIN SELECT RAISE(ABORT,'archive fixture write refusal'); END",
-    )
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let (status, body) = archive(&b, &track, &card, true).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     assert!(

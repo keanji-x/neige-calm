@@ -110,94 +110,98 @@ impl Fixture {
             .preflight_environment(&intent.metadata.program)
             .await
             .unwrap();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        let _ticket = engine.admit(&mut tx, intent.clone()).await.unwrap();
-        tx.commit().await.unwrap();
-        assert!(matches!(
-            self.adapter.prepare(&intent).await.unwrap(),
-            Fact::Journal {
-                state: ExecutionState::Prepared,
-                ..
-            }
-        ));
-        self.clean_persistence(&intent, false).await;
-        let fact = self.adapter.launch(&intent.consume()).await.unwrap();
-        let Fact::Journal {
-            receipt: Some(receipt),
-            state: ExecutionState::Spawned,
-            ..
-        } = fact
-        else {
-            panic!("missing spawn receipt")
-        };
-        let output = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let generation = self.adapter.generation().await.unwrap();
-                let reply = self
-                    .adapter
-                    .control(ExecutionControl {
-                        capability: ExecutionCapability {
-                            identity: receipt.identity.clone(),
-                            slot_version: receipt.slot_version,
-                            purpose: ExecutionControlPurpose::Observe,
-                            token: intent.secrets.tokens.observe.clone(),
-                        },
-                        action: ProcessAction::Observe { from_cursor: None },
-                    })
-                    .await
-                    .unwrap();
-                if let ExecutionReply::Observation { output, .. } = reply
-                    && output.iter().filter(|b| **b == b'\n').count() == 4
-                {
-                    break String::from_utf8(output).unwrap();
+        let write_db = (self.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let _ticket = engine.admit(&mut tx, intent.clone()).await.unwrap();
+            tx.commit().await.unwrap();
+            assert!(matches!(
+                self.adapter.prepare(&intent).await.unwrap(),
+                Fact::Journal {
+                    state: ExecutionState::Prepared,
+                    ..
                 }
-                generation.changed().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-        self.clean_persistence(&intent, false).await;
-        self.adapter
-            .control(ExecutionControl {
-                capability: ExecutionCapability {
-                    identity: receipt.identity.clone(),
-                    slot_version: receipt.slot_version,
-                    purpose: ExecutionControlPurpose::Interactive,
-                    token: intent.secrets.tokens.interactive.clone(),
-                },
-                action: ProcessAction::WriteStdin {
-                    bytes: b"done\n".to_vec(),
-                },
+            ));
+            self.clean_persistence(&intent, false).await;
+            let fact = self.adapter.launch(&intent.consume()).await.unwrap();
+            let Fact::Journal {
+                receipt: Some(receipt),
+                state: ExecutionState::Spawned,
+                ..
+            } = fact
+            else {
+                panic!("missing spawn receipt")
+            };
+            let output = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let generation = self.adapter.generation().await.unwrap();
+                    let reply = self
+                        .adapter
+                        .control(ExecutionControl {
+                            capability: ExecutionCapability {
+                                identity: receipt.identity.clone(),
+                                slot_version: receipt.slot_version,
+                                purpose: ExecutionControlPurpose::Observe,
+                                token: intent.secrets.tokens.observe.clone(),
+                            },
+                            action: ProcessAction::Observe { from_cursor: None },
+                        })
+                        .await
+                        .unwrap();
+                    if let ExecutionReply::Observation { output, .. } = reply
+                        && output.iter().filter(|b| **b == b'\n').count() == 4
+                    {
+                        break String::from_utf8(output).unwrap();
+                    }
+                    generation.changed().await.unwrap();
+                }
             })
             .await
             .unwrap();
-        let fact = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let generation = self.adapter.generation().await.unwrap();
-                let fact = self.adapter.inspect(&intent.metadata.id).await.unwrap();
-                if matches!(&fact, Fact::Journal { state, output: OutputEnd::Complete { .. }, .. } if state.permits_handoff()) { break fact; }
-                generation.changed().await.unwrap();
-            }
-        }).await.unwrap();
-        let Fact::Journal { state, .. } = fact else {
-            unreachable!()
-        };
-        self.store.spawned(&intent.metadata.id).await.unwrap();
-        self.store
-            .settle(&intent.metadata.id, &Settlement::Journal(state))
-            .await
-            .unwrap();
-        self.clean_persistence(&intent, false).await;
-        assert!(matches!(
+            self.clean_persistence(&intent, false).await;
             self.adapter
-                .retire(&intent.metadata.id, &intent.secrets.tokens.lifecycle)
+                .control(ExecutionControl {
+                    capability: ExecutionCapability {
+                        identity: receipt.identity.clone(),
+                        slot_version: receipt.slot_version,
+                        purpose: ExecutionControlPurpose::Interactive,
+                        token: intent.secrets.tokens.interactive.clone(),
+                    },
+                    action: ProcessAction::WriteStdin {
+                        bytes: b"done\n".to_vec(),
+                    },
+                })
                 .await
-                .unwrap(),
-            Fact::Retired(_)
-        ));
-        self.store.finish(&intent.metadata.id).await.unwrap();
-        self.clean_persistence(&intent, true).await;
-        output
+                .unwrap();
+            let fact = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let generation = self.adapter.generation().await.unwrap();
+                    let fact = self.adapter.inspect(&intent.metadata.id).await.unwrap();
+                    if matches!(&fact, Fact::Journal { state, output: OutputEnd::Complete { .. }, .. } if state.permits_handoff()) { break fact; }
+                    generation.changed().await.unwrap();
+                }
+            }).await.unwrap();
+            let Fact::Journal { state, .. } = fact else {
+                unreachable!()
+            };
+            self.store.spawned(&intent.metadata.id).await.unwrap();
+            self.store
+                .settle(&intent.metadata.id, &Settlement::Journal(state))
+                .await
+                .unwrap();
+            self.clean_persistence(&intent, false).await;
+            assert!(matches!(
+                self.adapter
+                    .retire(&intent.metadata.id, &intent.secrets.tokens.lifecycle)
+                    .await
+                    .unwrap(),
+                Fact::Retired(_)
+            ));
+            self.store.finish(&intent.metadata.id).await.unwrap();
+            self.clean_persistence(&intent, true).await;
+            output
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -294,36 +298,46 @@ async fn w_owned_secret_proxy_refused_before_prepare_and_admit() {
             Err(ExecError::Refused(_))
         ));
         let engine = Engine::new(store.clone(), adapter.clone());
-        let mut tx = repo.pool().begin().await.unwrap();
-        assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
-        tx.rollback().await.unwrap();
-        assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
-        assert!(
-            !supervisor
-                ._root
-                .path()
-                .join("journal")
-                .join(format!("{}.execution", intent.metadata.id.as_str()))
-                .exists()
-        );
-        intent
-            .metadata
-            .program
-            .environment
-            .push(("https_proxy".into(), "http://public.proxy:8080".into()));
-        adapter
-            .preflight_environment(&intent.metadata.program)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
+                    tx.rollback().await.unwrap();
+                    assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
+                    assert!(
+                        !supervisor
+                            ._root
+                            .path()
+                            .join("journal")
+                            .join(format!("{}.execution", intent.metadata.id.as_str()))
+                            .exists()
+                    );
+                    intent
+                        .metadata
+                        .program
+                        .environment
+                        .push(("https_proxy".into(), "http://public.proxy:8080".into()));
+                    adapter
+                        .preflight_environment(&intent.metadata.program)
+                        .await
+                        .unwrap();
+                    intent.metadata.program.environment.clear();
+                    // Exclude discards all ambient proxies; the supervisor-only secret cannot slip through.
+                    intent.metadata.program.ambient_environment =
+                        AmbientEnvironment::SupervisorAllowed {
+                            proxy_policy: AmbientProxyPolicy::Exclude,
+                        };
+                    adapter
+                        .preflight_environment(&intent.metadata.program)
+                        .await
+                        .unwrap();
+                })
+            })
             .await
-            .unwrap();
-        intent.metadata.program.environment.clear();
-        // Exclude discards all ambient proxies; the supervisor-only secret cannot slip through.
-        intent.metadata.program.ambient_environment = AmbientEnvironment::SupervisorAllowed {
-            proxy_policy: AmbientProxyPolicy::Exclude,
-        };
-        adapter
-            .preflight_environment(&intent.metadata.program)
-            .await
-            .unwrap();
+            .expect("independent write operation")
     }
     let f = Fixture::new("http://proxy.example:8080").await;
     for key in proxy::PROXY_KEYS {
@@ -344,10 +358,19 @@ async fn w_owned_secret_proxy_refused_before_prepare_and_admit() {
             Err(ExecError::Refused(_))
         ));
         let engine = Engine::new(f.store.clone(), f.adapter.clone());
-        let mut tx = f.repo.pool().begin().await.unwrap();
-        assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
-        tx.rollback().await.unwrap();
-        assert!(f.store.load(&intent.metadata.id).await.unwrap().is_none());
+        let write_db = (f.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
+                    tx.rollback().await.unwrap();
+                    assert!(f.store.load(&intent.metadata.id).await.unwrap().is_none());
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -440,24 +463,33 @@ async fn w_owned_unsupported_peer_refused_before_intent() {
     let mut intent = execution::test_support::intent(root.path().canonicalize().unwrap());
     intent.metadata.program.ambient_environment = allowed();
     let engine = Engine::new(store.clone(), adapter.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(matches!(
-        adapter
-            .preflight_environment(&intent.metadata.program)
-            .await,
-        Err(ExecError::Refused(_))
-    ));
-    assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
-    tokio::time::timeout(std::time::Duration::from_secs(5), unsupported.recv())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(matches!(
+                    adapter
+                        .preflight_environment(&intent.metadata.program)
+                        .await,
+                    Err(ExecError::Refused(_))
+                ));
+                assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
+                tokio::time::timeout(std::time::Duration::from_secs(5), unsupported.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
+                intent.metadata.program.ambient_environment = AmbientEnvironment::None;
+                adapter
+                    .preflight_environment(&intent.metadata.program)
+                    .await
+                    .unwrap();
+                peer.abort();
+            })
+        })
         .await
-        .unwrap()
-        .unwrap();
-    tx.rollback().await.unwrap();
-    assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
-    intent.metadata.program.ambient_environment = AmbientEnvironment::None;
-    adapter
-        .preflight_environment(&intent.metadata.program)
-        .await
-        .unwrap();
-    peer.abort();
+        .expect("independent write operation")
 }

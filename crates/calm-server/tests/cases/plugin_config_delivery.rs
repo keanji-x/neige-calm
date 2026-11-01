@@ -180,8 +180,9 @@ async fn an_operator_value_overrides_the_default_at_the_plugin() {
 async fn an_unreadable_config_store_refuses_the_spawn_and_says_so() {
     let fx = boot("test.cfg.unreadable", schema_with_default(), json!({})).await;
 
-    sqlx::query("DROP TABLE plugins")
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TABLE plugins"))
         .await
         .expect("drop the plugins table out from under the host");
 

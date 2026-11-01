@@ -333,21 +333,23 @@ async fn u8b_canonical_receipt_abort_rolls_back_resources() {
         let mut request = borrowed(&a, provider, &path, "default");
         request["admin"] = json!(true);
         request["first_message"] = json!(FIRST_BODY);
-        sqlx::query(concat!(
-            "CREATE TRIGGER fail_u8b BEFORE INSERT ON conversation_human_track_creations ",
-            "BEGIN SELECT RAISE(ABORT,'receipt fault'); END"
-        ))
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(concat!(
+                "CREATE TRIGGER fail_u8b BEFORE INSERT ON conversation_human_track_creations ",
+                "BEGIN SELECT RAISE(ABORT,'receipt fault'); END"
+            )))
+            .await
+            .unwrap();
         let before = counts(&fixture).await;
         assert_eq!(
             create(&app, &cookie, "first", request.clone()).await.0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(counts(&fixture).await, before);
-        sqlx::query("DROP TRIGGER fail_u8b")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_u8b"))
             .await
             .unwrap();
         let created = post(&app, &cookie, "/api/tracks", "first", request).await;
@@ -417,9 +419,9 @@ async fn u8b_canonical_authority_races_roll_back() {
                     } else {
                         "DELETE FROM area_members WHERE area_id=?1"
                     };
-                    sqlx::query(sql)
-                        .bind(id.as_str().unwrap())
-                        .execute(fixture.repo.pool())
+                    (fixture.repo.db())
+                        .writer()
+                        .execute(sqlx::query(sql).bind(id.as_str().unwrap()))
                         .await
                         .unwrap();
                 }

@@ -2438,26 +2438,39 @@ async fn child_track_config_mcp_declaration_reaches_claim_and_operation_payload(
     .unwrap();
     let task_id = format!("{}:configured-child", boot.track_id);
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    calm_server::db::sqlite::task_claim_pending_tx(
+                        &mut tx,
+                        &task_id,
+                        1,
+                        &[],
+                        false
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                let task = calm_server::db::sqlite::task_get_tx(&mut tx, &task_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let payload = calm_server::scheduler::build_child_track_payload(&task).unwrap();
+                assert_eq!(payload["child_track"], config);
+                let typed: calm_server::operation::child_track_adapter::ChildTrackOperationPayload =
+                    serde_json::from_value(payload).unwrap();
+                assert_eq!(
+                    serde_json::to_value(typed.child_track.unwrap()).unwrap(),
+                    config
+                );
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
-            .await
-            .unwrap(),
-        1
-    );
-    let task = calm_server::db::sqlite::task_get_tx(&mut tx, &task_id)
-        .await
-        .unwrap()
-        .unwrap();
-    tx.commit().await.unwrap();
-    let payload = calm_server::scheduler::build_child_track_payload(&task).unwrap();
-    assert_eq!(payload["child_track"], config);
-    let typed: calm_server::operation::child_track_adapter::ChildTrackOperationPayload =
-        serde_json::from_value(payload).unwrap();
-    assert_eq!(
-        serde_json::to_value(typed.child_track.unwrap()).unwrap(),
-        config
-    );
+        .expect("independent write operation")
 }

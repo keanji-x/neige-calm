@@ -375,7 +375,7 @@ mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
-    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx, session_start_runtime_tx};
+    use crate::db::sqlite::{SqlxRepo, session_start_runtime_tx};
     use crate::model::{CardRole, NewArea, NewCard, NewTrack};
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
@@ -543,87 +543,102 @@ mod tests {
 
         let worktree =
             crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.expect("begin tx");
-        let plan = prepare_worker_lease_as_tx(
-            &mut tx,
-            track.id.as_str(),
-            crate::model::TaskAccess::ReadWrite,
-            &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-        )
-        .await
-        .expect("prepare the worker lease");
-        let (lease, _event) = acquire_workspace_lease_tx(
-            &mut tx,
-            worker_card.id.as_str(),
-            track.id.as_str(),
-            "op-worker-report-preserve",
-            &plan,
-        )
-        .await
-        .expect("acquire lease");
-        tx.commit().await.expect("commit lease");
-        assert_eq!(plan.path, worktree);
-        std::fs::write(plan.path.join("worker-output.txt"), "worker commit\n")
-            .expect("write worker output");
-        run_git(&plan.path, ["add", "worker-output.txt"]);
-        run_git(&plan.path, ["commit", "-m", "worker output"]);
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.expect("begin tx");
+                    let plan = prepare_worker_lease_as_tx(
+                        &mut tx,
+                        track.id.as_str(),
+                        crate::model::TaskAccess::ReadWrite,
+                        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+                    )
+                    .await
+                    .expect("prepare the worker lease");
+                    let (lease, _event) = acquire_workspace_lease_tx(
+                        &mut tx,
+                        worker_card.id.as_str(),
+                        track.id.as_str(),
+                        "op-worker-report-preserve",
+                        &plan,
+                    )
+                    .await
+                    .expect("acquire lease");
+                    tx.commit().await.expect("commit lease");
+                    assert_eq!(plan.path, worktree);
+                    std::fs::write(plan.path.join("worker-output.txt"), "worker commit\n")
+                        .expect("write worker output");
+                    run_git(&plan.path, ["add", "worker-output.txt"]);
+                    run_git(&plan.path, ["commit", "-m", "worker output"]);
 
-        let card_role_cache = CardRoleCache::new();
-        card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, track.id.clone());
-        let track_area_cache = TrackAreaCache::new();
-        repo.seed_track_area_cache(&track_area_cache)
+                    let card_role_cache = CardRoleCache::new();
+                    card_role_cache.insert(
+                        worker_card.id.clone(),
+                        CardRole::Worker,
+                        track.id.clone(),
+                    );
+                    let track_area_cache = TrackAreaCache::new();
+                    repo.seed_track_area_cache(&track_area_cache)
+                        .await
+                        .expect("seed track area cache");
+                    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+                    let sink = CardDecisionSink {
+                        repo: route_repo,
+                        events: EventBus::new(),
+                        write: WriteContext::new(card_role_cache, track_area_cache),
+                        sqlite_db: repo.sqlite_db(),
+                    };
+                    let identity = ToolCallIdentity {
+                        card_id: worker_card.id.as_str().to_string(),
+                        role: CardRole::Worker,
+                        provider: crate::session_projection_repo::AgentProvider::Codex,
+                        session_id: session_id.as_str().to_string(),
+                        track_id: Some(track.id.as_str().to_string()),
+                        area_id: area.id.as_str().to_string(),
+                        thread_id: "worker-thread".to_string(),
+                    };
+
+                    sink.commit_worker_task_report(
+                        &identity,
+                        WorkerTaskReport::Completed {
+                            attempt_id: "worker-report-preserve".into(),
+                            result: Value::Null,
+                            artifacts: Vec::new(),
+                            commit_message: Some(CommitMessage::parse("worker output").unwrap()),
+                        },
+                    )
+                    .await
+                    .expect("commit worker report");
+
+                    let state: String = sqlx::query_scalar(
+                        "SELECT state FROM workspace_leases WHERE lease_id = ?1",
+                    )
+                    .bind(&lease.lease_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .expect("lease state");
+                    assert_eq!(state, "released");
+                    assert!(
+                        plan.path.is_dir(),
+                        "DecisionSink task completion preserves the track worktree"
+                    );
+                    assert!(
+                        git_ref_exists(repo_root.path(), &format!("refs/heads/{}", plan.branch)),
+                        "DecisionSink task completion preserves the track branch"
+                    );
+                    let removed_events: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'",
+                    )
+                    .fetch_one(repo.pool())
+                    .await
+                    .expect("removed event count");
+                    assert_eq!(removed_events, 0);
+                })
+            })
             .await
-            .expect("seed track area cache");
-        let route_repo: Arc<dyn RouteRepo> = repo.clone();
-        let sink = CardDecisionSink {
-            repo: route_repo,
-            events: EventBus::new(),
-            write: WriteContext::new(card_role_cache, track_area_cache),
-            sqlite_db: repo.sqlite_db(),
-        };
-        let identity = ToolCallIdentity {
-            card_id: worker_card.id.as_str().to_string(),
-            role: CardRole::Worker,
-            provider: crate::session_projection_repo::AgentProvider::Codex,
-            session_id: session_id.as_str().to_string(),
-            track_id: Some(track.id.as_str().to_string()),
-            area_id: area.id.as_str().to_string(),
-            thread_id: "worker-thread".to_string(),
-        };
-
-        sink.commit_worker_task_report(
-            &identity,
-            WorkerTaskReport::Completed {
-                attempt_id: "worker-report-preserve".into(),
-                result: Value::Null,
-                artifacts: Vec::new(),
-                commit_message: Some(CommitMessage::parse("worker output").unwrap()),
-            },
-        )
-        .await
-        .expect("commit worker report");
-
-        let state: String =
-            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
-                .bind(&lease.lease_id)
-                .fetch_one(repo.pool())
-                .await
-                .expect("lease state");
-        assert_eq!(state, "released");
-        assert!(
-            plan.path.is_dir(),
-            "DecisionSink task completion preserves the track worktree"
-        );
-        assert!(
-            git_ref_exists(repo_root.path(), &format!("refs/heads/{}", plan.branch)),
-            "DecisionSink task completion preserves the track branch"
-        );
-        let removed_events: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'worktree.removed'")
-                .fetch_one(repo.pool())
-                .await
-                .expect("removed event count");
-        assert_eq!(removed_events, 0);
+            .expect("independent write operation")
     }
 
     /// An identity whose `session_id` has no `worker_sessions` row is a denial. Pins the fail-closed shape: `Forbidden`, one warning, and the report row and event log both untouched.
@@ -684,9 +699,12 @@ mod tests {
         let root_session_id = WorkerSessionId::from("root-session");
         seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
         // The recorder gate reads `cards.role` in-tx; `card_create` persists `worker` regardless of kind.
-        sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-            .bind(planner_card.id.as_str())
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+                    .bind(planner_card.id.as_str()),
+            )
             .await
             .expect("persist planner card role");
 
@@ -823,9 +841,12 @@ mod tests {
         let root_session_id = WorkerSessionId::from("root-session");
         seed_track_root_session(repo.as_ref(), &track.id, &planner_card.id, &root_session_id).await;
         // The recorder gate reads `cards.role` in-tx; `card_create` persists `worker` regardless of kind.
-        sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-            .bind(planner_card.id.as_str())
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+                    .bind(planner_card.id.as_str()),
+            )
             .await
             .expect("persist planner card role");
 

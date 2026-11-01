@@ -432,14 +432,20 @@ async fn real_recompute_error_is_not_success() {
     let edit = rig.report(&rig.bus).await;
     let running = Running::new(owner);
     entered(&pause).await;
-    sqlx::query("ALTER TABLE overlays RENAME TO unavailable_overlays")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE overlays RENAME TO unavailable_overlays",
+        ))
         .await
         .unwrap();
     pause.release.notify_one();
     let result = completed(&mut rx, &edit).await;
-    sqlx::query("ALTER TABLE unavailable_overlays RENAME TO overlays")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE unavailable_overlays RENAME TO overlays",
+        ))
         .await
         .unwrap();
     assert!(

@@ -235,41 +235,50 @@ mod tests {
         }
 
         async fn area(&self, id: &str, kind: &str) {
-            sqlx::query(
-                "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
+            (self.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
                  VALUES(?1,?1,'#abc',1,?2,1,1)",
-            )
-            .bind(id)
-            .bind(kind)
-            .execute(self.repo.pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(id)
+                    .bind(kind),
+                )
+                .await
+                .unwrap();
         }
 
         async fn track(&self, id: &str, area_id: &str) {
-            sqlx::query(
-                "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
+            (self.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
                  VALUES(?1,?2,?1,1,1,1)",
-            )
-            .bind(id)
-            .bind(area_id)
-            .execute(self.repo.pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(id)
+                    .bind(area_id),
+                )
+                .await
+                .unwrap();
         }
 
         /// A raw event row at a chosen `at`; these cases need millisecond control over `at` that no production emitter offers.
         async fn event(&self, kind: &str, track_id: &str, at: i64) {
-            sqlx::query(
-                "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+            (self.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
                  VALUES(?1,'{}','user',?2,'track',?3)",
-            )
-            .bind(kind)
-            .bind(at)
-            .bind(track_id)
-            .execute(self.repo.pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(kind)
+                    .bind(at)
+                    .bind(track_id),
+                )
+                .await
+                .unwrap();
         }
 
         async fn window(&self, start: i64, end: i64) -> WorkspaceActivityWindow {

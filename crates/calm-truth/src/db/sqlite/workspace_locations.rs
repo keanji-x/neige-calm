@@ -162,16 +162,14 @@ mod tests {
     ) -> Result<Vec<OwnedWorkspaceLocation>> {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         if let Some(intent) = intent {
-            sqlx::query("INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired,settled_at_ms,settlement_json) VALUES (?,'track','reclaim',?,'{}','run',?,?)")
+            (repo.db()).writer().execute(sqlx::query("INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired,settled_at_ms,settlement_json) VALUES (?,'track','reclaim',?,'{}','run',?,?)")
                 .bind(execution_id)
                 .bind(intent.to_string())
                 .bind(settled.then_some(1_i64))
-                .bind(settled.then_some("{}"))
-                .execute(repo.pool()).await.unwrap();
+                .bind(settled.then_some("{}"))).await.unwrap();
         }
-        sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('op','op','workspace-reclaim','hash','track','{}',?,?,'pending',1,1)")
-            .bind(payload.to_string()).bind(output.map(|value| value.to_string()))
-            .execute(repo.pool()).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('op','op','workspace-reclaim','hash','track','{}',?,?,'pending',1,1)")
+            .bind(payload.to_string()).bind(output.map(|value| value.to_string()))).await.unwrap();
         owned_workspace_locations(&mut repo.pool().acquire().await.unwrap()).await
     }
 

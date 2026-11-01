@@ -293,10 +293,13 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
     let worker_card = insert_session(&repo, worker.clone()).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), Some(worker_card.id.as_str())).await;
     worker.spawn_op_id = Some(op_id);
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id = ?1 WHERE id = ?2")
-        .bind(worker.spawn_op_id.as_deref())
-        .bind(worker.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id = ?1 WHERE id = ?2")
+                .bind(worker.spawn_op_id.as_deref())
+                .bind(worker.id.as_str()),
+        )
         .await
         .expect("stamp session spawn op");
 

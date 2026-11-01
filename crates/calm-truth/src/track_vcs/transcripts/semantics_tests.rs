@@ -40,9 +40,9 @@ async fn transcript_refresh_repairs_missing_blob_even_when_parent_entry_hash_mat
     let old = tree_at(fx.repo.pool(), &first).await.unwrap().unwrap();
     let path = format!("cards/{}/events.json", fx.card.id);
     let hash = &old.entries[&path].blob_hash;
-    sqlx::query("DELETE FROM track_vcs_objects WHERE hash = ?1")
-        .bind(hash)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM track_vcs_objects WHERE hash = ?1").bind(hash))
         .await
         .unwrap();
     let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
@@ -62,9 +62,12 @@ async fn transcript_refresh_repairs_missing_blob_even_when_parent_entry_hash_mat
 #[tokio::test]
 async fn transcript_refresh_no_head_full_snapshot_uses_only_prepared_hooks() {
     let fx = Fixture::new().await;
-    sqlx::query("DELETE FROM track_vcs_refs WHERE track_id = ?1")
-        .bind(fx.track.id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM track_vcs_refs WHERE track_id = ?1")
+                .bind(fx.track.id.as_str()),
+        )
         .await
         .unwrap();
     let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
@@ -101,46 +104,55 @@ async fn transcript_refresh_legacy_full_snapshot_uses_only_prepared_hooks() {
     manifest
         .entries
         .insert(format!("cards/{}/meta.json", fx.card.id), meta);
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, manifest.entries, now_ms())
-        .await
-        .unwrap();
-    let legacy = commit_tree_at_tx(
-        &mut tx,
-        &fx.track.id,
-        &tree,
-        CommitTreeMeta {
-            parent_hash: Some(&parent),
-            author: None,
-            event_id: None,
-            message: "legacy fixture",
-            manifest_schema_version: MANIFEST_SCHEMA_VERSION,
-            created_at: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
-    let commit = finish(task).await.unwrap();
-    let manifest = tree_at(fx.repo.pool(), &commit).await.unwrap().unwrap();
-    assert!(!super::super::types::has_legacy_card_lens_paths(&manifest));
-    assert_eq!(
-        commit_record(fx.repo.pool(), &commit)
-            .await
-            .unwrap()
-            .unwrap()
-            .parent_hash,
-        Some(legacy)
-    );
-    assert_eq!(counts.reads(), 1);
-    for name in ["events.json", "conversation.md"] {
-        assert!(
-            fx.text(&commit, &fx.card.id, name)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, manifest.entries, now_ms())
+                    .await
+                    .unwrap();
+                let legacy = commit_tree_at_tx(
+                    &mut tx,
+                    &fx.track.id,
+                    &tree,
+                    CommitTreeMeta {
+                        parent_hash: Some(&parent),
+                        author: None,
+                        event_id: None,
+                        message: "legacy fixture",
+                        manifest_schema_version: MANIFEST_SCHEMA_VERSION,
+                        created_at: now_ms(),
+                    },
+                )
                 .await
-                .contains("retained transcript writer probe")
-        );
-    }
+                .unwrap();
+                tx.commit().await.unwrap();
+                let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
+                let commit = finish(task).await.unwrap();
+                let manifest = tree_at(fx.repo.pool(), &commit).await.unwrap().unwrap();
+                assert!(!super::super::types::has_legacy_card_lens_paths(&manifest));
+                assert_eq!(
+                    commit_record(fx.repo.pool(), &commit)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .parent_hash,
+                    Some(legacy)
+                );
+                assert_eq!(counts.reads(), 1);
+                for name in ["events.json", "conversation.md"] {
+                    assert!(
+                        fx.text(&commit, &fx.card.id, name)
+                            .await
+                            .contains("retained transcript writer probe")
+                    );
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -180,24 +192,33 @@ async fn transcript_refresh_both_providers_keep_order_and_existing_projection_by
     let codex = fx.hook("codex projection probe").await;
     let commit = fx.refresh().await;
     // Compare the existing authoritative live owner rather than hand-copying either renderer.
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let events = hook_events_for_card_tx(&mut tx, &fx.track.id, &fx.card.id)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let events = hook_events_for_card_tx(&mut tx, &fx.track.id, &fx.card.id)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                let expected = hook_events_json(&events).unwrap();
+                assert_eq!(
+                    fx.text(&commit, &fx.card.id, "events.json")
+                        .await
+                        .as_bytes(),
+                    expected.bytes
+                );
+                assert_eq!(
+                    fx.text(&commit, &fx.card.id, "conversation.md").await,
+                    conversation_markdown(&fx.card.id, &events)
+                );
+                let ids: Vec<_> = events.iter().map(|event| event.event_id).collect();
+                assert_eq!(&ids[ids.len() - 2..], &[claude, codex]);
+            })
+        })
         .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    let expected = hook_events_json(&events).unwrap();
-    assert_eq!(
-        fx.text(&commit, &fx.card.id, "events.json")
-            .await
-            .as_bytes(),
-        expected.bytes
-    );
-    assert_eq!(
-        fx.text(&commit, &fx.card.id, "conversation.md").await,
-        conversation_markdown(&fx.card.id, &events)
-    );
-    let ids: Vec<_> = events.iter().map(|event| event.event_id).collect();
-    assert_eq!(&ids[ids.len() - 2..], &[claude, codex]);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -208,8 +229,9 @@ async fn transcript_refresh_publication_failure_rolls_back_objects_commit_and_re
         .fetch_one(fx.repo.pool())
         .await
         .unwrap();
-    sqlx::query(include_str!("reject_refresh.sql"))
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(include_str!("reject_refresh.sql")))
         .await
         .unwrap();
     let (counts, task) = start(fx.repo.db().clone(), fx.track.id.clone(), vec![]);
@@ -234,12 +256,21 @@ async fn transcript_refresh_missing_prepared_input_fails_instead_of_rendering_li
     let fx = Fixture::new().await;
     let prepared = PreparedHooks::new();
     let mut entries = BTreeMap::new();
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let error = HookInputs::Prepared(&prepared)
-        .put_card(&mut tx, &mut entries, &fx.track.id, &fx.card.id, now_ms())
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = HookInputs::Prepared(&prepared)
+                    .put_card(&mut tx, &mut entries, &fx.track.id, &fx.card.id, now_ms())
+                    .await
+                    .unwrap_err();
+                tx.rollback().await.unwrap();
+                assert!(error.to_string().contains("missing prepared transcript"));
+                assert!(entries.is_empty());
+            })
+        })
         .await
-        .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert!(error.to_string().contains("missing prepared transcript"));
-    assert!(entries.is_empty());
+        .expect("independent write operation")
 }

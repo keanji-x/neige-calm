@@ -276,8 +276,7 @@ async fn receipt_failure_rolls_back_card_carrier_and_input() {
     let (state, app, cookie) = fixture.application().await;
     let track = track(&app, &cookie).await;
     let card = crate::conversation_keys::derive_track_conversation_keys(&track, "rollback").card_id;
-    sqlx::query("CREATE TRIGGER reject_assistant_receipt BEFORE INSERT ON conversation_assistant_creations BEGIN SELECT RAISE(ABORT,'fixture receipt rejection'); END")
-        .execute(fixture.repo.pool()).await.unwrap();
+    (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER reject_assistant_receipt BEFORE INSERT ON conversation_assistant_creations BEGIN SELECT RAISE(ABORT,'fixture receipt rejection'); END")).await.unwrap();
     let uri = format!("/api/tracks/{track}/conversations");
     let request = |cookie: Option<&str>| {
         let mut request = Request::builder()
@@ -308,8 +307,9 @@ async fn receipt_failure_rolls_back_card_carrier_and_input() {
     );
     assert!(fixture.repo.card_get(&card).await.unwrap().is_none());
     assert_eq!(fixture.counts(&card).await, (0, 0, 0, 0, 0));
-    sqlx::query("DROP TRIGGER reject_assistant_receipt")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_assistant_receipt"))
         .await
         .unwrap();
     let created = post(
@@ -326,7 +326,11 @@ async fn receipt_failure_rolls_back_card_carrier_and_input() {
         "DELETE FROM conversation_assistant_creations",
     ] {
         assert!(
-            sqlx::query(sql).execute(fixture.repo.pool()).await.is_err(),
+            (fixture.repo.db())
+                .writer()
+                .execute(sqlx::query(sql))
+                .await
+                .is_err(),
             "original receipt is immutable: {sql}"
         );
     }
@@ -375,37 +379,45 @@ async fn followup_binds_attachment_before_canonical_acceptance() {
     let message =
         calm_types::conversation::ConversationMessageId::parse(sent["entry_id"].as_str().unwrap())
             .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let revision = crate::db::sqlite::conversation::revision_tx(
+                    &mut tx,
+                    &calm_types::conversation::MessageRevisionRef {
+                        message_id: message,
+                        revision: std::num::NonZeroU32::new(1).unwrap(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.rollback().await.unwrap();
+                let calm_types::conversation::PrivateHistoryPayload::Present { value } =
+                    revision.payload
+                else {
+                    panic!("accepted image payload")
+                };
+                assert_eq!(value.bound_attachments.len(), 1);
+                assert!(std::path::Path::new(&value.bound_attachments[0].path).is_file());
+                assert!(value.bound_attachments[0].path.contains("/bound/"));
+                let replay = post(
+                    &app,
+                    &cookie,
+                    &format!("/api/cards/{card}/planner/input"),
+                    "image-input",
+                    json!({"text":"See this image","attachments":[upload["attachmentId"]]}),
+                )
+                .await;
+                assert_eq!(replay, sent);
+                assert_eq!(fixture.counts(card).await, (2, 2, 1, 0, 0));
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    let revision = crate::db::sqlite::conversation::revision_tx(
-        &mut tx,
-        &calm_types::conversation::MessageRevisionRef {
-            message_id: message,
-            revision: std::num::NonZeroU32::new(1).unwrap(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    let calm_types::conversation::PrivateHistoryPayload::Present { value } = revision.payload
-    else {
-        panic!("accepted image payload")
-    };
-    assert_eq!(value.bound_attachments.len(), 1);
-    assert!(std::path::Path::new(&value.bound_attachments[0].path).is_file());
-    assert!(value.bound_attachments[0].path.contains("/bound/"));
-    let replay = post(
-        &app,
-        &cookie,
-        &format!("/api/cards/{card}/planner/input"),
-        "image-input",
-        json!({"text":"See this image","attachments":[upload["attachmentId"]]}),
-    )
-    .await;
-    assert_eq!(replay, sent);
-    assert_eq!(fixture.counts(card).await, (2, 2, 1, 0, 0));
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -682,83 +694,87 @@ async fn archived_assistant_refuses_retry_without_changing_history() {
     held.header.wedged_reason = None;
     held.canonical_inputs.active = None;
     assert!(held.idle_for_lifecycle());
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    assert!(
-        crate::db::sqlite::session_set_handle_state_tx(
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        assert!(
+            crate::db::sqlite::session_set_handle_state_tx(
+                &mut tx,
+                &worker,
+                Some(serde_json::to_value(&held).unwrap()),
+            )
+            .await
+            .unwrap()
+        );
+        crate::db::sqlite::session_set_harness_observation_runtime_tx(
             &mut tx,
             &worker,
-            Some(serde_json::to_value(&held).unwrap()),
-        )
-        .await
-        .unwrap()
-    );
-    crate::db::sqlite::session_set_harness_observation_runtime_tx(
-        &mut tx,
-        &worker,
-        calm_types::worker::WorkerSessionState::Idle,
-        held.header.last_thread_id.as_deref(),
-        None,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let attempt = &held.canonical_inputs.attempts[0];
-    let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
-    let archive = app
-        .clone()
-        .oneshot(
-            Request::patch(format!("/api/tracks/{track}/conversations/{card}/archive"))
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"archived":true}).to_string()))
-                .unwrap(),
+            calm_types::worker::WorkerSessionState::Idle,
+            held.header.last_thread_id.as_deref(),
+            None,
         )
         .await
         .unwrap();
-    let archive_status = archive.status();
-    let archive_body = archive.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(archive_status, StatusCode::NO_CONTENT, "{archive_body:?}");
-    let before = carrier(&fixture, card).await;
-    let counts = fixture.counts(card).await;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::post(format!("/api/cards/{card}/conversation/input/retry"))
-                .header(header::COOKIE, &cookie)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("Idempotency-Key", "archived-retry")
-                .body(Body::from(args.to_string()))
-                .unwrap(),
+        tx.commit().await.unwrap();
+        let attempt = &held.canonical_inputs.attempts[0];
+        let args = json!({"carrier_id":worker,"submission_id":attempt.attempt.submission_id,"attempt_id":attempt.attempt.attempt_id,"revision":attempt.revision.to_string()});
+        let archive = app
+            .clone()
+            .oneshot(
+                Request::patch(format!("/api/tracks/{track}/conversations/{card}/archive"))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"archived":true}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let archive_status = archive.status();
+        let archive_body = archive.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(archive_status, StatusCode::NO_CONTENT, "{archive_body:?}");
+        let before = carrier(&fixture, card).await;
+        let counts = fixture.counts(card).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/cards/{card}/conversation/input/retry"))
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("Idempotency-Key", "archived-retry")
+                    .body(Body::from(args.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let error: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let denied = (status, error);
+        assert_eq!(denied.0, StatusCode::CONFLICT, "{denied:?}");
+        assert!(
+            denied
+                .1
+                .to_string()
+                .contains("This conversation is archived. Restore it before continuing.")
+        );
+        assert_eq!(carrier(&fixture, card).await, before);
+        assert_eq!(fixture.counts(card).await, counts);
+        let relations: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM conversation_input_retry_relations WHERE card_id=?1",
         )
+        .bind(card)
+        .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    let status = response.status();
-    let error: Value =
-        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let denied = (status, error);
-    assert_eq!(denied.0, StatusCode::CONFLICT, "{denied:?}");
-    assert!(
-        denied
-            .1
-            .to_string()
-            .contains("This conversation is archived. Restore it before continuing.")
-    );
-    assert_eq!(carrier(&fixture, card).await, before);
-    assert_eq!(fixture.counts(card).await, counts);
-    let relations: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM conversation_input_retry_relations WHERE card_id=?1",
-    )
-    .bind(card)
-    .fetch_one(fixture.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(relations, 0);
-    let replay = post(&app, &cookie, &create_uri, "archive-retry-create", body).await;
-    assert_eq!(replay["initialInput"], created["initialInput"]);
-    drop(client);
-    fixture.shutdown_process(&state).await;
+        assert_eq!(relations, 0);
+        let replay = post(&app, &cookie, &create_uri, "archive-retry-create", body).await;
+        assert_eq!(replay["initialInput"], created["initialInput"]);
+        drop(client);
+        fixture.shutdown_process(&state).await;
+
+    })).await.expect("independent write operation")
 }
 
 pub(super) fn assert_initial_carrier(receipt: &Value, worker: &str) {

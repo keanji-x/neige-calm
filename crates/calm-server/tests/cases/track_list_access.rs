@@ -5,7 +5,7 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use calm_server::auth::{OWNER_USER_ID, SESSION_COOKIE, SessionAuthority, SessionIdentity};
-use calm_server::db::sqlite::{area_membership, begin_immediate_tx};
+use calm_server::db::sqlite::area_membership;
 use calm_server::model::{NewArea, NewTrack};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -14,7 +14,6 @@ use tower::ServiceExt;
 struct Fixture {
     app: axum::Router,
     state: calm_server::state::AppState,
-    pool: sqlx::SqlitePool,
     auth: calm_server::auth::AuthState,
     area: String,
     other: String,
@@ -27,44 +26,57 @@ impl Fixture {
         let state = fresh_state().await;
         let repo = state.raw_repo();
         let db = repo.sqlite_db().unwrap();
-        let mut tx = begin_immediate_tx(&db).await.unwrap();
-        area_membership::application_user_register(&mut tx, "alice", "Owner")
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let mut areas = Vec::new();
-        for user in [OWNER_USER_ID, "alice"] {
-            areas.push(
-                repo.area_create(
-                    user,
-                    NewArea {
-                        name: user.into(),
-                        color: "#123456".into(),
-                        sort: None,
-                    },
-                )
-                .await
-                .unwrap()
-                .id
-                .to_string(),
-            );
+        let write_db = (db).clone();
+        {
+            {
+                let write_db = (write_db).clone();
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            area_membership::application_user_register(&mut tx, "alice", "Owner")
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
+            let mut areas = Vec::new();
+            for user in [OWNER_USER_ID, "alice"] {
+                areas.push(
+                    repo.area_create(
+                        user,
+                        NewArea {
+                            name: user.into(),
+                            color: "#123456".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .id
+                    .to_string(),
+                );
+            }
+            let auth = live_auth_state("owner", "fixture-password");
+            let owner = cookie(&auth, OWNER_USER_ID);
+            let alice = cookie(&auth, "alice");
+            let mut f = Self {
+                app: app(state.clone(), auth.clone()),
+                state,
+                auth,
+                area: areas[0].clone(),
+                other: areas[1].clone(),
+                track: String::new(),
+                owner,
+                alice,
+            };
+            f.track = f.track_in(&f.area).await;
+            f
         }
-        let auth = live_auth_state("owner", "fixture-password");
-        let owner = cookie(&auth, OWNER_USER_ID);
-        let alice = cookie(&auth, "alice");
-        let mut f = Self {
-            app: app(state.clone(), auth.clone()),
-            state,
-            pool: db.read_pool().clone(),
-            auth,
-            area: areas[0].clone(),
-            other: areas[1].clone(),
-            track: String::new(),
-            owner,
-            alice,
-        };
-        f.track = f.track_in(&f.area).await;
-        f
     }
     async fn track_in(&self, area: &str) -> String {
         self.state
@@ -97,9 +109,9 @@ impl Fixture {
         } else {
             "DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'"
         };
-        sqlx::query(sql)
-            .bind(&self.area)
-            .execute(&self.pool)
+        (self.state.raw_repo().sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query(sql).bind(&self.area))
             .await
             .unwrap();
     }
@@ -212,9 +224,12 @@ async fn session_registration_and_missing_scope() {
 #[tokio::test]
 async fn invisible_malformed_track_is_not_decoded() {
     let f = Fixture::new().await;
-    sqlx::query("UPDATE tracks SET template_input='malformed-private{' WHERE id=?1")
-        .bind(&f.track)
-        .execute(&f.pool)
+    (f.state.raw_repo().sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET template_input='malformed-private{' WHERE id=?1")
+                .bind(&f.track),
+        )
         .await
         .unwrap();
     let (status, body) = get(&f.app, "/api/tracks", Some(&f.alice)).await;
@@ -291,12 +306,15 @@ async fn global_window_order_and_area_sort_remain_distinct() {
         (&c, 5, None, 20),
         (&d, 10, Some(12), 10),
     ] {
-        sqlx::query("UPDATE tracks SET created_at=?2, closed_at=?3, sort=?4 WHERE id=?1")
-            .bind(id)
-            .bind(created)
-            .bind(closed)
-            .bind(sort)
-            .execute(&f.pool)
+        (f.state.raw_repo().sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET created_at=?2, closed_at=?3, sort=?4 WHERE id=?1")
+                    .bind(id)
+                    .bind(created)
+                    .bind(closed)
+                    .bind(sort),
+            )
             .await
             .unwrap();
     }
@@ -390,10 +408,13 @@ async fn publication_rechecks_moved_track_even_between_authorized_areas() {
         let f = Fixture::new().await;
         f.member(true).await;
         let parked = park(&f, path(&f, kind)).await;
-        sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
-            .bind(&f.track)
-            .bind(&f.other)
-            .execute(&f.pool)
+        (f.state.raw_repo().sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                    .bind(&f.track)
+                    .bind(&f.other),
+            )
             .await
             .unwrap();
         finish(parked, StatusCode::FORBIDDEN).await;

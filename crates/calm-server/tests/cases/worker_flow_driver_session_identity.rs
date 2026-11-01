@@ -66,164 +66,173 @@ async fn terminal_identity(
         .await
         .unwrap();
     let old_stop = driver.task_stop_tokens_for_test().await.pop().unwrap();
-    let replacement = {
-        let mut tx = repo.pool().begin().await.unwrap();
-        let init = WorkerSessionInit {
-            id: format!("replacement-{card}"),
-            card_id: card.into(),
-            kind: seed.runtime.kind.clone(),
-            agent_provider: seed.runtime.agent_provider.clone(),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: seed.runtime.thread_id.clone(),
-            session_id: seed.runtime.session_id.clone(),
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        };
-        let runtime = if status == WorkerSessionState::Superseded {
-            session_supersede_and_start_tx(&mut tx, &seed.runtime.id, init)
-                .await
-                .unwrap()
-        } else {
-            session_set_status_tx(&mut tx, &seed.runtime.id, status)
-                .await
-                .unwrap();
-            session_start_runtime_tx(&mut tx, init).await.unwrap()
-        };
-        tx.commit().await.unwrap();
-        runtime
-    };
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStarted {
-            worker_session_id: replacement.id.clone(),
-            card_id: card.into(),
-            kind: replacement.kind.clone(),
-            agent_provider: replacement.agent_provider.clone(),
-            status: replacement.status,
-        },
-    );
-    tokio::time::timeout(wf::LIVENESS_BUDGET, old_stop.cancelled())
-        .await
-        .unwrap();
-    idle.release.notify_one();
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        driver.events_handled_for_test() == 1
-    })
-    .await;
-    assert!(old_stop.is_cancelled());
-    assert_eq!(driver.tasks_alive_for_test().await, 1);
-    let replacement_stop = driver.task_stop_tokens_for_test().await.pop().unwrap();
-    // Event completion is the barrier: append only after the stale event has been handled.
-    events.emit(
-        ActorId::Kernel,
-        if superseded_event {
-            Event::WorkerSessionSuperseded {
-                old_worker_session_id: seed.runtime.id.clone(),
-                new_worker_session_id: replacement.id.clone(),
-                card_id: card.into(),
-            }
-        } else {
-            Event::WorkerSessionStatusChanged {
-                worker_session_id: seed.runtime.id.clone(),
-                card_id: card.into(),
-                old_status: WorkerSessionState::Running,
-                new_status: status,
-            }
-        },
-    );
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        driver.events_handled_for_test() == 2
-    })
-    .await;
-    wf::append_rollout(
-        &path,
-        &[if claude {
-            wf::claude_user_string("after-stale", "replacement capture continues")
-        } else {
-            wf::user_message("after-stale", "replacement capture continues")
-        }],
-    );
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        replacement_stop.is_cancelled()
-            || wf::cat_conversation(&repo, &seed.card)
-                .await
-                .contains("replacement capture continues")
-    })
-    .await;
-    assert!(
-        wf::cat_conversation(&repo, &seed.card)
-            .await
-            .contains("replacement capture continues"),
-        "stale event must preserve actual replacement transcript capture"
-    );
-    assert!(
-        !replacement_stop.is_cancelled(),
-        "stale event must preserve task identity"
-    );
-    let rows = repo
-        .worker_flow_item_list_by_card(card, 0, 100, false)
-        .await
-        .unwrap();
-    let captured = rows
-        .iter()
-        .find(|r| r.payload.contains("replacement capture continues"))
-        .unwrap();
-    assert_eq!(
-        captured.worker_session_id.as_deref(),
-        Some(replacement.id.as_str())
-    );
-    assert_eq!(
-        captured.captured_session_id.as_deref(),
-        Some(replacement.id.as_str())
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let replacement = {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let init = WorkerSessionInit {
+                        id: format!("replacement-{card}"),
+                        card_id: card.into(),
+                        kind: seed.runtime.kind.clone(),
+                        agent_provider: seed.runtime.agent_provider.clone(),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: seed.runtime.thread_id.clone(),
+                        session_id: seed.runtime.session_id.clone(),
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    };
+                    let runtime = if status == WorkerSessionState::Superseded {
+                        session_supersede_and_start_tx(&mut tx, &seed.runtime.id, init)
+                            .await
+                            .unwrap()
+                    } else {
+                        session_set_status_tx(&mut tx, &seed.runtime.id, status)
+                            .await
+                            .unwrap();
+                        session_start_runtime_tx(&mut tx, init).await.unwrap()
+                    };
+                    tx.commit().await.unwrap();
+                    runtime
+                };
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStarted {
+                        worker_session_id: replacement.id.clone(),
+                        card_id: card.into(),
+                        kind: replacement.kind.clone(),
+                        agent_provider: replacement.agent_provider.clone(),
+                        status: replacement.status,
+                    },
+                );
+                tokio::time::timeout(wf::LIVENESS_BUDGET, old_stop.cancelled())
+                    .await
+                    .unwrap();
+                idle.release.notify_one();
+                wf::wait_until(wf::LIVENESS_BUDGET, || async {
+                    driver.events_handled_for_test() == 1
+                })
+                .await;
+                assert!(old_stop.is_cancelled());
+                assert_eq!(driver.tasks_alive_for_test().await, 1);
+                let replacement_stop = driver.task_stop_tokens_for_test().await.pop().unwrap();
+                // Event completion is the barrier: append only after the stale event has been handled.
+                events.emit(
+                    ActorId::Kernel,
+                    if superseded_event {
+                        Event::WorkerSessionSuperseded {
+                            old_worker_session_id: seed.runtime.id.clone(),
+                            new_worker_session_id: replacement.id.clone(),
+                            card_id: card.into(),
+                        }
+                    } else {
+                        Event::WorkerSessionStatusChanged {
+                            worker_session_id: seed.runtime.id.clone(),
+                            card_id: card.into(),
+                            old_status: WorkerSessionState::Running,
+                            new_status: status,
+                        }
+                    },
+                );
+                wf::wait_until(wf::LIVENESS_BUDGET, || async {
+                    driver.events_handled_for_test() == 2
+                })
+                .await;
+                wf::append_rollout(
+                    &path,
+                    &[if claude {
+                        wf::claude_user_string("after-stale", "replacement capture continues")
+                    } else {
+                        wf::user_message("after-stale", "replacement capture continues")
+                    }],
+                );
+                wf::wait_until(wf::LIVENESS_BUDGET, || async {
+                    replacement_stop.is_cancelled()
+                        || wf::cat_conversation(&repo, &seed.card)
+                            .await
+                            .contains("replacement capture continues")
+                })
+                .await;
+                assert!(
+                    wf::cat_conversation(&repo, &seed.card)
+                        .await
+                        .contains("replacement capture continues"),
+                    "stale event must preserve actual replacement transcript capture"
+                );
+                assert!(
+                    !replacement_stop.is_cancelled(),
+                    "stale event must preserve task identity"
+                );
+                let rows = repo
+                    .worker_flow_item_list_by_card(card, 0, 100, false)
+                    .await
+                    .unwrap();
+                let captured = rows
+                    .iter()
+                    .find(|r| r.payload.contains("replacement capture continues"))
+                    .unwrap();
+                assert_eq!(
+                    captured.worker_session_id.as_deref(),
+                    Some(replacement.id.as_str())
+                );
+                assert_eq!(
+                    captured.captured_session_id.as_deref(),
+                    Some(replacement.id.as_str())
+                );
 
-    // Pause an actual committed capture before acknowledgement; current-session cancellation
-    // must await the owned source, not merely remove the task from the map.
-    let committed = install(card, 3, CapturePoint::Committed);
-    wf::append_rollout(
-        &path,
-        &[if claude {
-            wf::claude_user_string("settle", "capture settled")
-        } else {
-            wf::user_message("settle", "capture settled")
-        }],
-    );
-    tokio::time::timeout(wf::LIVENESS_BUDGET, committed.entered.notified())
+                // Pause an actual committed capture before acknowledgement; current-session cancellation
+                // must await the owned source, not merely remove the task from the map.
+                let committed = install(card, 3, CapturePoint::Committed);
+                wf::append_rollout(
+                    &path,
+                    &[if claude {
+                        wf::claude_user_string("settle", "capture settled")
+                    } else {
+                        wf::user_message("settle", "capture settled")
+                    }],
+                );
+                tokio::time::timeout(wf::LIVENESS_BUDGET, committed.entered.notified())
+                    .await
+                    .unwrap();
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStatusChanged {
+                        worker_session_id: replacement.id.clone(),
+                        card_id: card.into(),
+                        old_status: WorkerSessionState::Running,
+                        new_status: status,
+                    },
+                );
+                wf::wait_until(wf::LIVENESS_BUDGET, || async {
+                    replacement_stop.is_cancelled()
+                })
+                .await;
+                assert_eq!(
+                    driver.events_handled_for_test(),
+                    2,
+                    "terminal handling awaits capture settlement"
+                );
+                committed.release.notify_one();
+                wf::wait_until(wf::LIVENESS_BUDGET, || async {
+                    driver.events_handled_for_test() == 3
+                })
+                .await;
+                assert!(driver.task_stop_tokens_for_test().await.is_empty());
+                assert_eq!(driver.tasks_alive_for_test().await, 0);
+                assert!(
+                    wf::cat_conversation(&repo, &seed.card)
+                        .await
+                        .contains("capture settled")
+                );
+            })
+        })
         .await
-        .unwrap();
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStatusChanged {
-            worker_session_id: replacement.id.clone(),
-            card_id: card.into(),
-            old_status: WorkerSessionState::Running,
-            new_status: status,
-        },
-    );
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        replacement_stop.is_cancelled()
-    })
-    .await;
-    assert_eq!(
-        driver.events_handled_for_test(),
-        2,
-        "terminal handling awaits capture settlement"
-    );
-    committed.release.notify_one();
-    wf::wait_until(wf::LIVENESS_BUDGET, || async {
-        driver.events_handled_for_test() == 3
-    })
-    .await;
-    assert!(driver.task_stop_tokens_for_test().await.is_empty());
-    assert_eq!(driver.tasks_alive_for_test().await, 0);
-    assert!(
-        wf::cat_conversation(&repo, &seed.card)
-            .await
-            .contains("capture settled")
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]

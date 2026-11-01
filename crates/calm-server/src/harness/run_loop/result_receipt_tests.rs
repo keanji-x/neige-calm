@@ -179,18 +179,27 @@ async fn completed_result_receipt_reaches_planner_turn() {
 }
 
 async fn record(fx: &Fixture, event: &Event) -> i64 {
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    let id = crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::KernelDispatcher,
-        &harness_event_scope(&fx.harness.inner, event.kind_tag()),
-        None,
-        event,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    id
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let id = crate::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &ActorId::KernelDispatcher,
+                    &harness_event_scope(&fx.harness.inner, event.kind_tag()),
+                    None,
+                    event,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn enqueue_event(fx: &Fixture, event: Event) -> i64 {

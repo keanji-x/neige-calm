@@ -8,7 +8,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::event::BroadcastEnvelope;
 use crate::model::new_id;
@@ -145,21 +144,30 @@ pub(super) async fn commit_tx_only(
         )
         .await;
     }
-    let mut tx = begin_immediate_tx(pool).await?;
-    match commit_in_tx(&mut tx, adapter, key, payload).await {
-        Ok(commit @ KeyedCommit::Committed { .. }) => {
-            tx.commit().await?;
-            Ok(commit)
-        }
-        Ok(replay @ KeyedCommit::Replay(_)) => {
-            tx.rollback().await?;
-            Ok(replay)
-        }
-        Err(error) => {
-            let _ = tx.rollback().await;
-            Err(error)
-        }
-    }
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                match commit_in_tx(&mut tx, adapter, key, payload).await {
+                    Ok(commit @ KeyedCommit::Committed { .. }) => {
+                        tx.commit().await?;
+                        Ok(commit)
+                    }
+                    Ok(replay @ KeyedCommit::Replay(_)) => {
+                        tx.rollback().await?;
+                        Ok(replay)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn commit_in_tx(

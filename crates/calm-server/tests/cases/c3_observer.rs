@@ -58,16 +58,21 @@ async fn c3_observer_repeated_sweeps_stay_bounded() {
     let boot = TestBoot::new().await;
     let id = c3_running_probe(&boot, "bounded-observer").await;
     let claim = pause_before_claim(&id).await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     for _ in 0..8 {
         // Force a successful sweep claim rather than a skipped leased row.
-        sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-            .bind(&id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?",
+                )
+                .bind(&id),
+            )
             .await
             .unwrap();
         boot.runtime.sweep_parked().await.unwrap();
@@ -93,9 +98,9 @@ async fn c3_observer_repeated_sweeps_stay_bounded() {
 async fn c3_observer_yield_restart_has_no_lost_wakeup() {
     let boot = TestBoot::new().await;
     let (id, _, observer) = c3_held(&boot, "observer-exit-race").await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     let exit = PausePoint::default();
@@ -145,17 +150,22 @@ async fn c3_observer_unknown_executions_stay_bounded() {
         };
         let claim = pause_before_claim(&id).await;
         boot._execution.restart().await;
-        sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-            .bind(&id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
             .await
             .unwrap();
         let plan = boot.runtime.recover_on_boot().await.unwrap();
         boot.runtime.apply_recovery(plan).await.unwrap();
         for _ in 0..8 {
-            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-                .bind(&id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?",
+                    )
+                    .bind(&id),
+                )
                 .await
                 .unwrap();
             boot.runtime.sweep_parked().await.unwrap();

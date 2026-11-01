@@ -53,8 +53,9 @@ async fn admit(rig: &RegisteredRig) -> (owner::Claim, owner::DriverGuard) {
         .unwrap()
 }
 async fn audit(rig: &RegisteredRig) {
-    sqlx::query("CREATE TABLE w_authority (value TEXT)")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("CREATE TABLE w_authority (value TEXT)"))
         .await
         .unwrap();
 }
@@ -262,14 +263,15 @@ async fn w_release_runs_caller_authority_in_release_tx() {
     audit(&rig).await;
     let (claim, _guard) = admit(&rig).await;
     // Failure after authorization must roll back its write too, proving shared transaction.
-    sqlx::query(concat!(
-        "CREATE TRIGGER w_fail_release BEFORE UPDATE OF provider_execution_json ",
-        "ON worker_sessions WHEN NEW.provider_execution_json LIKE '%Releasing%' ",
-        "BEGIN SELECT RAISE(ABORT, 'test release rollback'); END",
-    ))
-    .execute(rig.repo.pool())
-    .await
-    .unwrap();
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER w_fail_release BEFORE UPDATE OF provider_execution_json ",
+            "ON worker_sessions WHEN NEW.provider_execution_json LIKE '%Releasing%' ",
+            "BEGIN SELECT RAISE(ABORT, 'test release rollback'); END",
+        )))
+        .await
+        .unwrap();
     let authority = Authority {
         calls: 0.into(),
         refuse: false,
@@ -293,8 +295,9 @@ async fn w_release_runs_caller_authority_in_release_tx() {
         .await
         .unwrap();
     assert_eq!(count, 0, "authority write rolls back with release CAS");
-    sqlx::query("DROP TRIGGER w_fail_release")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER w_fail_release"))
         .await
         .unwrap();
     owner::release::send(
@@ -505,17 +508,19 @@ async fn w_admission_intent_failure_rolls_back_all() {
     assert!(matches!(attempt(true).await, Err(CalmError::Conflict(_))));
     assert_nothing_admitted(&rig).await;
     // A failure after driver registration and the session claim rolls back too.
-    sqlx::query(concat!(
-        "CREATE TRIGGER w_fail_intent BEFORE INSERT ON workspace_executions ",
-        "BEGIN SELECT RAISE(ABORT, 'test intent rollback'); END",
-    ))
-    .execute(rig.repo.pool())
-    .await
-    .unwrap();
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER w_fail_intent BEFORE INSERT ON workspace_executions ",
+            "BEGIN SELECT RAISE(ABORT, 'test intent rollback'); END",
+        )))
+        .await
+        .unwrap();
     assert!(attempt(false).await.is_err());
     assert_nothing_admitted(&rig).await;
-    sqlx::query("DROP TRIGGER w_fail_intent")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER w_fail_intent"))
         .await
         .unwrap();
     // Control: the same admission commits once nothing fails.

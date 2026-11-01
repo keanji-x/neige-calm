@@ -89,10 +89,13 @@ async fn non_admin_close_of_other_track_is_refused() {
     let (_, planner) = boot.user_track_admin("ordinary", false).await;
     let (target, _) = boot.user_track_admin("target", false).await;
     // Persisted provenance with no grant: authority is independent of ownership.
-    sqlx::query("UPDATE tracks SET creator_track_id=?1, creator_key='owned' WHERE id=?2")
-        .bind(&planner.identity.track_id)
-        .bind(&target)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET creator_track_id=?1, creator_key='owned' WHERE id=?2")
+                .bind(&planner.identity.track_id)
+                .bind(&target),
+        )
         .await
         .unwrap();
     let events = boot
@@ -135,10 +138,9 @@ async fn admin_close_refuses_running_work_listing_keys() {
     let (_, planner) = boot.user_track("admin").await;
     let target = boot.added(&planner, "busy").await;
     for status in ["dispatched", "running", "verifying"] {
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
+        (boot.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
             VALUES(?,?,?,'codex','work','{}',?,1,1)")
-            .bind(status).bind(&target).bind(format!("work-{status}")).bind(status)
-            .execute(boot.repo.pool()).await.unwrap();
+            .bind(status).bind(&target).bind(format!("work-{status}")).bind(status)).await.unwrap();
     }
     let before = boot
         .count("SELECT COUNT(*) FROM events WHERE kind='track.updated'")
@@ -154,9 +156,9 @@ async fn admin_close_refuses_running_work_listing_keys() {
         ]})
     );
     unchanged(&boot, &target, before).await;
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?")
-        .bind(&target)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?").bind(&target))
         .await
         .unwrap();
     close(&boot, &planner, &target).await.unwrap();
@@ -189,9 +191,12 @@ async fn admin_close_other_from_a_superseded_session_is_refused() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("admin").await;
     let target = boot.added(&planner, "stale").await;
-    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
-        .bind(&planner.identity.session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+                .bind(&planner.identity.session_id),
+        )
         .await
         .unwrap();
     let before = boot
@@ -224,14 +229,13 @@ async fn admin_area_ls_rows_carry_creator_track_id() {
 }
 
 async fn forge_in_flight(boot: &Boot, target: &str) {
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, target_id, \
         target_json, payload_json, phase, created_at_ms, updated_at_ms) \
         VALUES ('forge', 'forge', ?1, 'h', 'track', ?2, '{}', '{}', 'spawn_started', 1, 1)",
     )
     .bind(calm_server::operation::forge_action_adapter::FORGE_ACTION_KIND)
-    .bind(target)
-    .execute(boot.repo.pool())
+    .bind(target))
     .await
     .unwrap();
 }

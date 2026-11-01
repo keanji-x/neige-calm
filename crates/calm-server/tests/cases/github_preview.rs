@@ -146,7 +146,7 @@ async fn github_preview_production_route_reads_issue_and_pr_with_fixed_gh_argume
 #[tokio::test]
 async fn github_preview_area_owner_cannot_use_operator_credentials() {
     use calm_server::auth::{SESSION_COOKIE, SessionAuthority, SessionIdentity};
-    use calm_server::db::sqlite::{area_membership, begin_immediate_tx};
+    use calm_server::db::sqlite::area_membership;
     use calm_server::model::NewArea;
     let _guard = crate::support::forge_env::FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
@@ -156,47 +156,61 @@ async fn github_preview_area_owner_cannot_use_operator_credentials() {
     let state = fresh_state().await;
     let repo = state.raw_repo();
     let pool = repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    area_membership::application_user_register(&mut tx, "alice", "Owner")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    repo.area_create(
-        "alice",
-        NewArea {
-            name: "Alice's Area".into(),
-            color: "#123456".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let auth = live_auth_state("owner", "fixture-password");
-    let token = auth.sessions.create(
-        SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-        },
-        SessionAuthority::PasswordLogin,
-    );
-    let protected = app(state, auth);
-    let response = protected
-        .oneshot(
-            Request::get("/api/github/preview?owner=o&repo=r&kind=issue&number=1")
-                .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
-                .header("x-calm-actor", "user")
-                .header("x-calm-user-id", calm_server::auth::OWNER_USER_ID)
-                .body(Body::empty())
-                .unwrap(),
+    let write_db = (pool).clone();
+    {
+        {
+            let write_db = (write_db).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        area_membership::application_user_register(&mut tx, "alice", "Owner")
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        repo.area_create(
+            "alice",
+            NewArea {
+                name: "Alice's Area".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
         )
         .await
         .unwrap();
-    assert_eq!(
-        (response.status(), cli.calls().len()),
-        (StatusCode::FORBIDDEN, 0),
-        "Area ownership and owner-looking labels cannot use the operator's gh identity"
-    );
+        let auth = live_auth_state("owner", "fixture-password");
+        let token = auth.sessions.create(
+            SessionIdentity {
+                user_id: "alice".into(),
+                display_name: "Owner".into(),
+                role: "owner".into(),
+            },
+            SessionAuthority::PasswordLogin,
+        );
+        let protected = app(state, auth);
+        let response = protected
+            .oneshot(
+                Request::get("/api/github/preview?owner=o&repo=r&kind=issue&number=1")
+                    .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+                    .header("x-calm-actor", "user")
+                    .header("x-calm-user-id", calm_server::auth::OWNER_USER_ID)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.status(), cli.calls().len()),
+            (StatusCode::FORBIDDEN, 0),
+            "Area ownership and owner-looking labels cannot use the operator's gh identity"
+        );
+    }
 }
 
 #[cfg(unix)]

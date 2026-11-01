@@ -3,70 +3,93 @@ use super::*;
 
 impl Fixture {
     pub(super) async fn keep_unknown(&self, submission: &InputSubmissionId, key: &str) {
-        let mut tx = begin_immediate_tx(self.owner.repo.db()).await.unwrap();
-        let carrier = current_input_fact_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
+        let write_db = (self.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier = current_input_fact_carrier_tx(
+                        &mut tx,
+                        &self.owner.card,
+                        &self.owner.worker,
+                    )
+                    .await
+                    .unwrap();
+                    let attempt = carrier.checkpoint().attempt(submission).unwrap();
+                    let request = KeepConversationInputRequest {
+                        carrier_id: self.owner.worker.clone(),
+                        submission_id: submission.as_str().into(),
+                        attempt_id: attempt.attempt.attempt_id.as_str().into(),
+                        revision: attempt.revision.to_string(),
+                    };
+                    tx.commit().await.unwrap();
+                    crate::conversation_inputs::resolution::keep(
+                        self.owner.repo.as_ref(),
+                        self.registry.clone(),
+                        self.source.clone(),
+                        self.owner.card.clone(),
+                        key.into(),
+                        request,
+                    )
+                    .await
+                    .unwrap();
+                })
+            })
             .await
-            .unwrap();
-        let attempt = carrier.checkpoint().attempt(submission).unwrap();
-        let request = KeepConversationInputRequest {
-            carrier_id: self.owner.worker.clone(),
-            submission_id: submission.as_str().into(),
-            attempt_id: attempt.attempt.attempt_id.as_str().into(),
-            revision: attempt.revision.to_string(),
-        };
-        tx.commit().await.unwrap();
-        crate::conversation_inputs::resolution::keep(
-            self.owner.repo.as_ref(),
-            self.registry.clone(),
-            self.source.clone(),
-            self.owner.card.clone(),
-            key.into(),
-            request,
-        )
-        .await
-        .unwrap();
+            .expect("independent write operation")
     }
     pub(super) async fn claim_successor(&self) -> InputSubmissionId {
-        let mut tx = begin_immediate_tx(self.owner.repo.db()).await.unwrap();
-        let mut carrier = current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
-            .await
-            .unwrap();
-        let accepted = crate::conversation_inputs::accept_human_tx(
-            &mut tx,
-            &self.source.current_principal().unwrap(),
-            &mut carrier,
-            HumanPayload {
-                text: "fresh successor".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("Human");
-        };
-        let claimed = crate::conversation_inputs::claim_initial_tx(
-            &mut tx,
-            &self.source,
-            &mut carrier,
-            SubmissionRenderPlan::V1 {
-                segments: vec![SubmissionRenderSegment::Input {
-                    input_position: 0,
-                    input: SubmissionRenderInput::Human {
-                        message,
-                        author: FrozenHumanAttribution {
-                            registered_user_id: calm_types::organization::LEGACY_OWNER_USER_ID
-                                .into(),
-                            display_name: "Owner".into(),
+        let write_db = (self.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let mut carrier =
+                        current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
+                            .await
+                            .unwrap();
+                    let accepted = crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &self.source.current_principal().unwrap(),
+                        &mut carrier,
+                        HumanPayload {
+                            text: "fresh successor".into(),
+                            bound_attachments: vec![],
                         },
-                    },
-                }],
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        claimed.submission_id
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("Human");
+                    };
+                    let claimed = crate::conversation_inputs::claim_initial_tx(
+                        &mut tx,
+                        &self.source,
+                        &mut carrier,
+                        SubmissionRenderPlan::V1 {
+                            segments: vec![SubmissionRenderSegment::Input {
+                                input_position: 0,
+                                input: SubmissionRenderInput::Human {
+                                    message,
+                                    author: FrozenHumanAttribution {
+                                        registered_user_id:
+                                            calm_types::organization::LEGACY_OWNER_USER_ID.into(),
+                                        display_name: "Owner".into(),
+                                    },
+                                },
+                            }],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    claimed.submission_id
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
     pub(super) async fn dispatch_submission(
         &self,
@@ -270,7 +293,7 @@ pub(super) async fn unsupported_load_and_registration_drift_refuse_without_new(
         let successor = fx.claim_successor().await;
         std::fs::write(fx.dir.path().join("scenario"), scenario).unwrap();
         if scenario == "registration-drift" {
-            sqlx::query("UPDATE acp_managed_sessions SET registration_digest='different' WHERE worker_session_id=?1").bind(&fx.owner.worker).execute(fx.owner.repo.pool()).await.unwrap();
+            (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE acp_managed_sessions SET registration_digest='different' WHERE worker_session_id=?1").bind(&fx.owner.worker)).await.unwrap();
         }
         let report = fx.dispatch_submission(&successor).await;
         assert!(matches!(
@@ -326,13 +349,16 @@ async fn canonical_acp_cleanup_commit_reopens_atomically_and_sql_guards_unknown(
         "created_at_ms=0",
     ] {
         assert!(
-            sqlx::query(&format!(
-                "UPDATE acp_submissions SET {set} WHERE client_id=?1"
-            ))
-            .bind(fx.submission.as_str())
-            .execute(fx.owner.repo.pool())
-            .await
-            .is_err(),
+            (fx.owner.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(&format!(
+                        "UPDATE acp_submissions SET {set} WHERE client_id=?1"
+                    ))
+                    .bind(fx.submission.as_str())
+                )
+                .await
+                .is_err(),
             "{set}"
         );
     }
@@ -378,27 +404,38 @@ async fn canonical_acp_cleanup_commit_reopens_atomically_and_sql_guards_unknown(
     fx.backend = backend;
     fx.session = session;
     fx.backend.recover_retained().await.unwrap();
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                assert!(carrier.checkpoint().active.is_none());
+                assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::Idle);
+                tx.commit().await.unwrap();
+                assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
+                std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
+                let successor = fx.claim_successor().await;
+                fx.dispatch_submission(&successor).await;
+                fx.wait_idle().await;
+                assert_eq!(fx.prompts(), 2);
+                let evidence_after: String = sqlx::query_scalar(
+                    "SELECT kept_cleanup_json FROM acp_submissions WHERE client_id=?1",
+                )
+                .bind(fx.submission.as_str())
+                .fetch_one(fx.owner.repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(evidence, evidence_after);
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert!(carrier.checkpoint().active.is_none());
-    assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::Idle);
-    tx.commit().await.unwrap();
-    assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
-    std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
-    let successor = fx.claim_successor().await;
-    fx.dispatch_submission(&successor).await;
-    fx.wait_idle().await;
-    assert_eq!(fx.prompts(), 2);
-    let evidence_after: String =
-        sqlx::query_scalar("SELECT kept_cleanup_json FROM acp_submissions WHERE client_id=?1")
-            .bind(fx.submission.as_str())
-            .fetch_one(fx.owner.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(evidence, evidence_after);
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -431,53 +468,71 @@ async fn canonical_acp_keep_retires_only_its_exact_stop_intent() {
         fx.wait_idle().await;
         fx.keep_unknown(&fx.submission, "keep-stopped").await;
         let before = fx.receipt_bytes(&fx.submission).await;
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier =
+                        current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    let fence = RuntimeExecutionFence::from_carrier(&carrier);
+                    let mut header = fence.header().clone();
+                    header["phase"] =
+                        serde_json::to_value(HarnessPhaseTag::IssuingInterrupt).unwrap();
+                    header["last_turn_id"] = serde_json::json!(before.0);
+                    let intent = HarnessInterruptionIntent::Control(
+                        HarnessControlIntent::UserStopV1(HarnessStopRequest {
+                            session_id: fx.owner.worker.clone(),
+                            card_id: fx.owner.card.clone(),
+                            track_id: fx.owner.track.clone(),
+                            thread_id: fx.owner.thread.clone(),
+                            turn_id: if exact {
+                                before.0.clone()
+                            } else {
+                                uuid::Uuid::new_v4().to_string()
+                            },
+                            requested_at_ms: crate::model::now_ms(),
+                        }),
+                    );
+                    header["interruption_intent"] = serde_json::to_value(&intent).unwrap();
+                    persist_runtime_frame_tx(
+                        &mut tx,
+                        &fx.owner.card,
+                        &fx.owner.worker,
+                        &fence,
+                        header,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        fx.backend.settle_kept_execution().await.unwrap().is_some(),
+                        exact
+                    );
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let carrier =
+                        current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    assert_eq!(carrier.checkpoint().active.is_none(), exact);
+                    if exact {
+                        assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::Idle);
+                        assert!(carrier.snapshot()["interruption_intent"].is_null());
+                    } else {
+                        assert_eq!(
+                            carrier.snapshot()["interruption_intent"],
+                            serde_json::to_value(&intent).unwrap()
+                        );
+                    }
+                    tx.commit().await.unwrap();
+                    assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
+                    fx.session.shutdown().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        let fence = RuntimeExecutionFence::from_carrier(&carrier);
-        let mut header = fence.header().clone();
-        header["phase"] = serde_json::to_value(HarnessPhaseTag::IssuingInterrupt).unwrap();
-        header["last_turn_id"] = serde_json::json!(before.0);
-        let intent = HarnessInterruptionIntent::Control(HarnessControlIntent::UserStopV1(
-            HarnessStopRequest {
-                session_id: fx.owner.worker.clone(),
-                card_id: fx.owner.card.clone(),
-                track_id: fx.owner.track.clone(),
-                thread_id: fx.owner.thread.clone(),
-                turn_id: if exact {
-                    before.0.clone()
-                } else {
-                    uuid::Uuid::new_v4().to_string()
-                },
-                requested_at_ms: crate::model::now_ms(),
-            },
-        ));
-        header["interruption_intent"] = serde_json::to_value(&intent).unwrap();
-        persist_runtime_frame_tx(&mut tx, &fx.owner.card, &fx.owner.worker, &fence, header)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            fx.backend.settle_kept_execution().await.unwrap().is_some(),
-            exact
-        );
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-            .await
-            .unwrap();
-        assert_eq!(carrier.checkpoint().active.is_none(), exact);
-        if exact {
-            assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::Idle);
-            assert!(carrier.snapshot()["interruption_intent"].is_null());
-        } else {
-            assert_eq!(
-                carrier.snapshot()["interruption_intent"],
-                serde_json::to_value(&intent).unwrap()
-            );
-        }
-        tx.commit().await.unwrap();
-        assert_eq!(before, fx.receipt_bytes(&fx.submission).await);
-        fx.session.shutdown().await.unwrap();
+            .expect("independent write operation")
     }
 }

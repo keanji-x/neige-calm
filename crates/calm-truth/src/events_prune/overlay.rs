@@ -1,7 +1,7 @@
 //! Overlay retention's append-only production observation and bounded delete protocol.
 //! Dev replay resets IDs, but runs without the background pruner; this is not a reset/ABA fence.
 use super::{BATCH_YIELD, advance_watermark};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::error::{CalmError, Result};
 use crate::model::Overlay;
 use sqlx::{Executor, Sqlite, SqlitePool};
@@ -166,58 +166,62 @@ async fn flush(
     deleted: &mut u64,
     batches: &mut u64,
 ) -> Result<bool> {
-    for _ in 0..VALIDATION_ATTEMPTS {
-        observed.refresh_tail(pool.read_pool()).await?;
-        let mut witnesses = BTreeMap::new();
-        let ids: Vec<_> = candidates
-            .iter()
-            .filter_map(|candidate| {
-                let latest = observed.witness(candidate)?;
-                witnesses.insert(latest.id, latest.payload.clone());
-                Some(candidate.id)
-            })
-            .collect();
-        if ids.is_empty() {
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for _ in 0..VALIDATION_ATTEMPTS {
+            observed.refresh_tail(pool.read_pool()).await?;
+            let mut witnesses = BTreeMap::new();
+            let ids: Vec<_> = candidates
+                .iter()
+                .filter_map(|candidate| {
+                    let latest = observed.witness(candidate)?;
+                    witnesses.insert(latest.id, latest.payload.clone());
+                    Some(candidate.id)
+                })
+                .collect();
+            if ids.is_empty() {
+                return Ok(true);
+            }
+            let candidate_ids = serde_json::to_string(&ids)?;
+            let witness_ids = serde_json::to_string(&witnesses.keys().copied().collect::<Vec<_>>())?;
+            #[cfg(test)]
+            super::writer_tests::at_phase(super::writer_tests::Phase::BeforeWrite).await;
+            let mut tx = write_session.begin_immediate().await?;
+            *batches += 1;
+            if frontier(&mut **tx).await? > observed.frontier {
+                tx.rollback().await?;
+                continue;
+            }
+            // Only exact relied-on latest witnesses are authority. A sibling pruner can remove
+            // them; disappearance stops safely rather than applying an old freeze decision.
+            let current: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT id, payload FROM events WHERE kind='overlay.set' AND id IN (SELECT value FROM json_each(?1))"
+            ).bind(witness_ids).fetch_all(&mut **tx).await?;
+            if current.len() != witnesses.len()
+                || current
+                    .iter()
+                    .any(|(id, payload)| witnesses.get(id) != Some(payload))
+            {
+                tx.rollback().await?;
+                tracing::info!(
+                    deleted = *deleted,
+                    "events_prune: latest overlay witness changed; deferring remaining candidates"
+                );
+                return Ok(false);
+            }
+            let ids: Vec<i64> = sqlx::query_scalar(
+                "DELETE FROM events WHERE kind='overlay.set' AND at<?1 AND id IN (SELECT value FROM json_each(?2)) RETURNING id"
+            ).bind(horizon).bind(candidate_ids).fetch_all(&mut **tx).await?;
+            advance_watermark(&mut tx, &ids).await?;
+            tx.commit().await?;
+            *deleted += ids.len() as u64;
             return Ok(true);
         }
-        let candidate_ids = serde_json::to_string(&ids)?;
-        let witness_ids = serde_json::to_string(&witnesses.keys().copied().collect::<Vec<_>>())?;
-        #[cfg(test)]
-        super::writer_tests::at_phase(super::writer_tests::Phase::BeforeWrite).await;
-        let mut tx = begin_immediate_tx(pool).await?;
-        *batches += 1;
-        if frontier(&mut **tx).await? > observed.frontier {
-            tx.rollback().await?;
-            continue;
-        }
-        // Only exact relied-on latest witnesses are authority. A sibling pruner can remove
-        // them; disappearance stops safely rather than applying an old freeze decision.
-        let current: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, payload FROM events WHERE kind='overlay.set' AND id IN (SELECT value FROM json_each(?1))"
-        ).bind(witness_ids).fetch_all(&mut **tx).await?;
-        if current.len() != witnesses.len()
-            || current
-                .iter()
-                .any(|(id, payload)| witnesses.get(id) != Some(payload))
-        {
-            tx.rollback().await?;
-            tracing::info!(
-                deleted = *deleted,
-                "events_prune: latest overlay witness changed; deferring remaining candidates"
-            );
-            return Ok(false);
-        }
-        let ids: Vec<i64> = sqlx::query_scalar(
-            "DELETE FROM events WHERE kind='overlay.set' AND at<?1 AND id IN (SELECT value FROM json_each(?2)) RETURNING id"
-        ).bind(horizon).bind(candidate_ids).fetch_all(&mut **tx).await?;
-        advance_watermark(&mut tx, &ids).await?;
-        tx.commit().await?;
-        *deleted += ids.len() as u64;
-        return Ok(true);
-    }
-    tracing::info!(
-        deleted = *deleted,
-        "events_prune: repeated overlay appends deferred remaining candidates"
-    );
-    Ok(false)
+        tracing::info!(
+            deleted = *deleted,
+            "events_prune: repeated overlay appends deferred remaining candidates"
+        );
+        Ok(false)
+
+    })).await.map_err(crate::TruthError::from)?
 }

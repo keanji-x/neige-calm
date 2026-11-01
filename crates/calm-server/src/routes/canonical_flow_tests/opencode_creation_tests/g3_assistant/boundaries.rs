@@ -30,18 +30,20 @@ async fn g3_grok_assistant_receipt_failure_rolls_back_everything() {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(facts(&fixture, &card).await, (0, 0, 0, 0, 0, 0));
-        sqlx::query(
-            "CREATE TRIGGER reject_g3_receipt BEFORE INSERT ON conversation_assistant_creations
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER reject_g3_receipt BEFORE INSERT ON conversation_assistant_creations
             BEGIN SELECT RAISE(ABORT,'G3 receipt rejection'); END",
-        )
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         let before = table_counts(&fixture).await;
         let rejected = status(&app, &cookie, &uri, key, body.clone()).await;
         // Drop before asserting so a regression cannot leave a fixture trigger behind.
-        sqlx::query("DROP TRIGGER reject_g3_receipt")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER reject_g3_receipt"))
             .await
             .unwrap();
         assert_eq!(rejected, StatusCode::INTERNAL_SERVER_ERROR);

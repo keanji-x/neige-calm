@@ -231,10 +231,13 @@ async fn insert_native_forge_action(boot: &Boot, track_id: &str, idem: &str) -> 
 
 async fn set_operation_phase(boot: &Boot, op_id: &str, phase: &str) {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query("UPDATE operations SET phase = ?1 WHERE id = ?2")
-        .bind(phase)
-        .bind(op_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET phase = ?1 WHERE id = ?2")
+                .bind(phase)
+                .bind(op_id),
+        )
         .await
         .expect("set operation phase");
 }
@@ -276,7 +279,7 @@ async fn assert_closed_worktree_clean_refuses_forge(kind: &str) {
     let boot = boot().await;
     let track = create_track(&boot, "clean-active").await;
     let db = boot.repo.sqlite_db().unwrap();
-    let pool = db.writer_pool();
+    let pool = db.read_pool();
     let sessions: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
         .fetch_all(pool)
         .await
@@ -297,9 +300,8 @@ async fn assert_closed_worktree_clean_refuses_forge(kind: &str) {
     std::fs::create_dir_all(path.join("target")).unwrap();
     let ignored = path.join("target/ignored");
     std::fs::write(&ignored, "build output").unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(&track)
-        .execute(pool)
+    db.writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(&track))
         .await
         .unwrap();
     let op = if kind != "migrated" {
@@ -326,8 +328,9 @@ async fn assert_closed_worktree_clean_refuses_forge(kind: &str) {
             .unwrap()
             .committed()
             .unwrap();
-        sqlx::query("UPDATE operations SET phase='spawn_started',spawn_artifacts_json=?2,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-            .bind(&op).bind(json!({"pid":1,"pgid":1,"start_time":1,"boot_id":"old-boot","log_path":null,"extra":{}}).to_string()).execute(pool).await.unwrap();
+        let query = sqlx::query("UPDATE operations SET phase='spawn_started',spawn_artifacts_json=?2,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+            .bind(&op).bind(json!({"pid":1,"pgid":1,"start_time":1,"boot_id":"old-boot","log_path":null,"extra":{}}).to_string());
+        db.writer().execute(query).await.unwrap();
         let _ = boot.state.operation_runtime.drive().await;
         let phase: String = sqlx::query_scalar("SELECT phase FROM operations WHERE id=?")
             .bind(&op)

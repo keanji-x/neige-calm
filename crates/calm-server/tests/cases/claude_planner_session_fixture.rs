@@ -242,17 +242,26 @@ impl RegisteredRig {
 
     /// Write the row's `active_turn_id` the way the harness snapshot does.
     pub async fn set_active_turn_id(&self, turn: Option<&str>) {
-        let mut tx = self.repo.pool().begin().await.expect("tx");
-        session_set_harness_observation_runtime_tx(
-            &mut tx,
-            &self.worker_session_id,
-            WorkerSessionState::Idle,
-            None,
-            turn,
-        )
-        .await
-        .expect("observation");
-        tx.commit().await.expect("commit");
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.expect("tx");
+                    session_set_harness_observation_runtime_tx(
+                        &mut tx,
+                        &self.worker_session_id,
+                        WorkerSessionState::Idle,
+                        None,
+                        turn,
+                    )
+                    .await
+                    .expect("observation");
+                    tx.commit().await.expect("commit");
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// The row's `active_turn_id`.
@@ -351,26 +360,30 @@ pub(super) async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
         })
         .await
         .expect("track");
-    let mut tx = repo.pool().begin().await.expect("tx");
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            // Every Planner card is created with a permission mode (#2348).
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider":"claude", "permission_mode": "never"}),
-        },
-        CardRole::Planner,
-        false,
-        &CardRoleCache::new(),
-    )
-    .await
-    .expect("card");
-    tx.commit().await.expect("commit");
-    (card.id.to_string(), track.id.to_string())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.expect("tx");
+        let card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                // Every Planner card is created with a permission mode (#2348).
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider":"claude", "permission_mode": "never"}),
+            },
+            CardRole::Planner,
+            false,
+            &CardRoleCache::new(),
+        )
+        .await
+        .expect("card");
+        tx.commit().await.expect("commit");
+        (card.id.to_string(), track.id.to_string())
+
+    })).await.expect("independent write operation")
 }
 
 /// A managed Claude Planner row, with native identity still unbound before its first spawn.
@@ -380,27 +393,36 @@ pub(super) async fn worker_session_row(
     card_id: &str,
     thread: &str,
 ) {
-    let mut tx = repo.pool().begin().await.expect("tx");
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: id.to_string(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread.into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .expect("worker session row");
-    tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.expect("tx");
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: id.to_string(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread.into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .expect("worker session row");
+                tx.commit().await.expect("commit");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Present in `/proc` and not a zombie.

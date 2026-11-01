@@ -12,7 +12,7 @@
 //! - [`staleness`]: `candidate.upstream`, how far a candidate's base is behind the Track
 //!   repository's upstream as last known (#1777), read after `plan.list`'s transaction.
 //!
-//! Every write goes through a `begin_immediate_tx` transaction the caller owns; no module here
+//! Every write goes through a `WriteSession::begin_immediate` transaction the caller owns; no module here
 //! calls `pool.begin()`.
 //!
 //! Wired in: the report transaction (`decision_sink`) inserts the delivery row, `neige_task_done`

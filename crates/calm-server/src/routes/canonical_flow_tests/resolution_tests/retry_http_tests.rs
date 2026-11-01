@@ -132,19 +132,26 @@ async fn canonical_retry_http_response_loss_replays_original_successor() {
         json!({"kind":"retry","result":first.1})
     );
     // A failed current runtime and a refused wake cannot undo a committed answer.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let removed = state.harness.remove(&worker);
+                if let Some(handle) = removed {
+                    handle.pause_issuance_for_dev();
+                }
+                assert_eq!(response(&app, &cookie, &uri, "retry", request).await, first);
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let removed = state.harness.remove(&worker);
-    if let Some(handle) = removed {
-        handle.pause_issuance_for_dev();
-    }
-    assert_eq!(response(&app, &cookie, &uri, "retry", request).await, first);
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 #[tokio::test]
 async fn canonical_retry_http_racing_keep_and_retry_resolves_once() {
@@ -190,66 +197,70 @@ async fn canonical_retry_http_erased_or_unproven_context_is_keep_only() {
         let (state, app, cookie) = fixture.application().await;
         let (track, card, worker, before, _peer) =
             held(&fixture, &state, &app, &cookie, frozen).await;
-        if frozen {
-            let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-                .await
-                .unwrap();
-            if withdrawn {
-                sqlx::query("UPDATE conversation_messages SET withdrawn_at_ms=1 WHERE card_id=?1")
+        let write_db = (fixture.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            if frozen {
+                let mut tx = write_session.begin_immediate()
+                    .await
+                    .unwrap();
+                if withdrawn {
+                    sqlx::query("UPDATE conversation_messages SET withdrawn_at_ms=1 WHERE card_id=?1")
+                        .bind(&card)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                } else {
+                    let payload = calm_types::conversation::PrivateHistoryPayload::<
+                        calm_types::conversation::HumanPayload,
+                    >::ErasedByPrivateHistoryOperation {
+                        operation_id: calm_types::conversation::PrivateHistoryOperationId::parse(
+                            &crate::model::new_id(),
+                        )
+                        .unwrap(),
+                    };
+                    sqlx::query(
+                        "UPDATE conversation_message_revisions SET payload_json=?1
+                    WHERE message_id IN (SELECT id FROM conversation_messages WHERE card_id=?2)",
+                    )
+                    .bind(serde_json::to_string(&payload).unwrap())
                     .bind(&card)
                     .execute(&mut **tx)
                     .await
                     .unwrap();
-            } else {
-                let payload = calm_types::conversation::PrivateHistoryPayload::<
-                    calm_types::conversation::HumanPayload,
-                >::ErasedByPrivateHistoryOperation {
-                    operation_id: calm_types::conversation::PrivateHistoryOperationId::parse(
-                        &crate::model::new_id(),
-                    )
-                    .unwrap(),
-                };
-                sqlx::query(
-                    "UPDATE conversation_message_revisions SET payload_json=?1
-                    WHERE message_id IN (SELECT id FROM conversation_messages WHERE card_id=?2)",
-                )
-                .bind(serde_json::to_string(&payload).unwrap())
-                .bind(&card)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
+                }
+                tx.commit().await.unwrap();
             }
-            tx.commit().await.unwrap();
-        }
-        let expected = if frozen {
-            "erased_or_withdrawn"
-        } else {
-            "invocation_not_fully_frozen"
-        };
-        let read = run(&app, &cookie, &card).await;
-        assert_eq!(
-            read["active_input"]["submissions"][0]["attempt"]["actions"]["retry"],
-            json!({"kind":"unavailable","reason":expected})
-        );
-        let uri = format!("/api/cards/{card}/conversation/input/retry");
-        assert_eq!(
-            response(&app, &cookie, &uri, "retry", args(&worker, &before))
-                .await
-                .0,
-            StatusCode::CONFLICT
-        );
-        assert_eq!(
-            fixture.carrier(&track).await.2.canonical_inputs,
-            before.canonical_inputs
-        );
-        let keep = format!("/api/cards/{card}/conversation/input/keep");
-        assert_eq!(
-            response(&app, &cookie, &keep, "keep", args(&worker, &before))
-                .await
-                .0,
-            StatusCode::OK
-        );
-        fixture.shutdown_process(&state).await;
+            let expected = if frozen {
+                "erased_or_withdrawn"
+            } else {
+                "invocation_not_fully_frozen"
+            };
+            let read = run(&app, &cookie, &card).await;
+            assert_eq!(
+                read["active_input"]["submissions"][0]["attempt"]["actions"]["retry"],
+                json!({"kind":"unavailable","reason":expected})
+            );
+            let uri = format!("/api/cards/{card}/conversation/input/retry");
+            assert_eq!(
+                response(&app, &cookie, &uri, "retry", args(&worker, &before))
+                    .await
+                    .0,
+                StatusCode::CONFLICT
+            );
+            assert_eq!(
+                fixture.carrier(&track).await.2.canonical_inputs,
+                before.canonical_inputs
+            );
+            let keep = format!("/api/cards/{card}/conversation/input/keep");
+            assert_eq!(
+                response(&app, &cookie, &keep, "keep", args(&worker, &before))
+                    .await
+                    .0,
+                StatusCode::OK
+            );
+            fixture.shutdown_process(&state).await;
+
+    })).await.expect("independent write operation")
     }
 }
 #[tokio::test]
@@ -299,10 +310,13 @@ async fn canonical_retry_http_agent_logout_and_revoked_access_have_zero_writes()
         .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
-        .bind(area)
-        .bind(&session.identity.user_id)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
+                .bind(area)
+                .bind(&session.identity.user_id),
+        )
         .await
         .unwrap();
     for key in ["retry", "fresh"] {

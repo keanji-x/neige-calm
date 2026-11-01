@@ -18,53 +18,74 @@ use crate::model::{NewArea, NewTrack, RequestTheme, TrackPatch};
 use super::area_create_tx;
 
 async fn seed_area(repo: &SqlxRepo) -> String {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "tree".into(),
-            color: "#000".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    area.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "tree".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                area.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_track(repo: &SqlxRepo, area_id: &str, title: &str) -> String {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area_id.to_string().into(),
-            title: title.into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    track.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area_id.to_string().into(),
+                        title: title.into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                track.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn link(repo: &SqlxRepo, child: &str, parent: &str) {
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(parent)
-        .bind(child)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(parent)
+                .bind(child),
+        )
         .await
         .unwrap();
 }
@@ -72,36 +93,51 @@ async fn link(repo: &SqlxRepo, child: &str, parent: &str) {
 /// Tracks minted inside one millisecond would tie-break on the random id,
 /// making the EXPECTED order unknowable to the test.
 async fn stamp_created_at(repo: &SqlxRepo, track: &str, created_at: i64) {
-    sqlx::query("UPDATE tracks SET created_at=?1 WHERE id=?2")
-        .bind(created_at)
-        .bind(track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at=?1 WHERE id=?2")
+                .bind(created_at)
+                .bind(track),
+        )
         .await
         .unwrap();
 }
 
 async fn set_ceiling(repo: &SqlxRepo, track: &str, ceiling: i64) {
-    sqlx::query("UPDATE tracks SET planner_task_ceiling=?1 WHERE id=?2")
-        .bind(ceiling)
-        .bind(track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET planner_task_ceiling=?1 WHERE id=?2")
+                .bind(ceiling)
+                .bind(track),
+        )
         .await
         .unwrap();
 }
 
 async fn set_tree_budget(repo: &SqlxRepo, root: &str, budget: i64) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_update_tx(
-        &mut tx,
-        root,
-        TrackPatch {
-            tree_task_budget: Some(Some(budget)),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_update_tx(
+                    &mut tx,
+                    root,
+                    TrackPatch {
+                        tree_task_budget: Some(Some(budget)),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn declaration(index: usize, key: &str) -> TaskDeclaration {
@@ -138,11 +174,20 @@ fn declarations(keys: &[&str]) -> Vec<TaskDeclaration> {
 async fn project(repo: &SqlxRepo, track: &str, keys: &[&str]) {
     let declarations = declarations(keys);
     let diags = vec![Vec::new(); declarations.len()];
-    let mut tx = repo.pool().begin().await.unwrap();
-    project_tasks_tx(&mut tx, track, &declarations, &diags)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                project_tasks_tx(&mut tx, track, &declarations, &diags)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn live_planner_count(repo: &SqlxRepo, root: &str) -> i64 {
@@ -151,9 +196,9 @@ async fn live_planner_count(repo: &SqlxRepo, root: &str) -> i64 {
 }
 
 async fn mark_all_tasks_as_running(repo: &SqlxRepo, track: &str) {
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1")
-        .bind(track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1").bind(track))
         .await
         .unwrap();
 }
@@ -216,69 +261,81 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
     let child = seed_track(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let error = track_update_tx(
-        &mut tx,
-        &child,
-        TrackPatch {
-            tree_task_budget: Some(Some(4)),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert!(
-        error.to_string().contains("root-only") && error.to_string().contains(&root),
-        "{error}"
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = track_update_tx(
+                    &mut tx,
+                    &child,
+                    TrackPatch {
+                        tree_task_budget: Some(Some(4)),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+                tx.rollback().await.unwrap();
+                assert!(
+                    error.to_string().contains("root-only") && error.to_string().contains(&root),
+                    "{error}"
+                );
 
-    let budget: Option<i64> = sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
-        .bind(&child)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(budget, None);
+                let budget: Option<i64> =
+                    sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
+                        .bind(&child)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(budget, None);
 
-    set_tree_budget(&repo, &root, 4).await;
-    let budget: Option<i64> = sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
-        .bind(&root)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(budget, Some(4));
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_update_tx(
-        &mut tx,
-        &root,
-        TrackPatch {
-            tree_task_budget: Some(None),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let budget: Option<i64> = sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
-        .bind(&root)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(budget, None);
+                set_tree_budget(&repo, &root, 4).await;
+                let budget: Option<i64> =
+                    sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
+                        .bind(&root)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(budget, Some(4));
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_update_tx(
+                    &mut tx,
+                    &root,
+                    TrackPatch {
+                        tree_task_budget: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let budget: Option<i64> =
+                    sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
+                        .bind(&root)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(budget, None);
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let error = track_update_tx(
-        &mut tx,
-        &root,
-        TrackPatch {
-            tree_task_budget: Some(Some(MAX_TREE_TASK_BUDGET + 1)),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert!(error.to_string().contains("between 0 and 64"), "{error}");
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = track_update_tx(
+                    &mut tx,
+                    &root,
+                    TrackPatch {
+                        tree_task_budget: Some(Some(MAX_TREE_TASK_BUDGET + 1)),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+                tx.rollback().await.unwrap();
+                assert!(error.to_string().contains("between 0 and 64"), "{error}");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -380,62 +437,75 @@ async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
     .fetch_all(repo.pool())
     .await
     .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let rowids: Vec<i64> =
-        sqlx::query_scalar("SELECT rowid FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid")
-            .bind(&first)
-            .bind(&second)
-            .bind(&root)
-            .fetch_all(&mut *tx)
-            .await
-            .unwrap();
-    let [low, middle, high]: [i64; 3] = rowids.try_into().unwrap();
-    let temporary_start: i64 = sqlx::query_scalar("SELECT max(rowid)+1 FROM tracks")
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap();
-    // Reorder only SQLite storage slots; the production-minted TEXT ids and
-    // their workspace bindings stay intact. Temporary slots avoid collisions.
-    for (offset, track) in [&first, &second, &root].into_iter().enumerate() {
-        sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
-            .bind(temporary_start + offset as i64)
-            .bind(track)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    for (track, rowid) in [(&first, high), (&second, middle), (&root, low)] {
-        sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
-            .bind(rowid)
-            .bind(track)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    tx.commit().await.unwrap();
-    let stored_order: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid")
-            .bind(&first)
-            .bind(&second)
-            .bind(&root)
-            .fetch_all(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(stored_order, [root.clone(), second.clone(), first.clone()]);
-    let bindings_after: Vec<(String, String)> = sqlx::query_as(
-        "SELECT track_id, workspace_id FROM track_workspace_bindings ORDER BY track_id",
-    )
-    .fetch_all(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(bindings_after, bindings_before);
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let rowids: Vec<i64> = sqlx::query_scalar(
+                    "SELECT rowid FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid",
+                )
+                .bind(&first)
+                .bind(&second)
+                .bind(&root)
+                .fetch_all(&mut **tx)
+                .await
+                .unwrap();
+                let [low, middle, high]: [i64; 3] = rowids.try_into().unwrap();
+                let temporary_start: i64 = sqlx::query_scalar("SELECT max(rowid)+1 FROM tracks")
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+                // Reorder only SQLite storage slots; the production-minted TEXT ids and
+                // their workspace bindings stay intact. Temporary slots avoid collisions.
+                for (offset, track) in [&first, &second, &root].into_iter().enumerate() {
+                    sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
+                        .bind(temporary_start + offset as i64)
+                        .bind(track)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                for (track, rowid) in [(&first, high), (&second, middle), (&root, low)] {
+                    sqlx::query("UPDATE tracks SET rowid=?1 WHERE id=?2")
+                        .bind(rowid)
+                        .bind(track)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                tx.commit().await.unwrap();
+                let stored_order: Vec<String> = sqlx::query_scalar(
+                    "SELECT id FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid",
+                )
+                .bind(&first)
+                .bind(&second)
+                .bind(&root)
+                .fetch_all(repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(stored_order, [root.clone(), second.clone(), first.clone()]);
+                let bindings_after: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT track_id, workspace_id FROM track_workspace_bindings ORDER BY track_id",
+                )
+                .fetch_all(repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(bindings_after, bindings_before);
 
-    // 4 = 3*1 + 1: the smallest id gets the one remainder slot.
-    for (track, index, expected_share) in [(&first, 0, 2), (&second, 1, 1), (&root, 2, 1)] {
-        let share = share_of(&repo, track).await;
-        assert_eq!(share.member_index, index);
-        assert_eq!(share.share, expected_share);
-    }
+                // 4 = 3*1 + 1: the smallest id gets the one remainder slot.
+                for (track, index, expected_share) in
+                    [(&first, 0, 2), (&second, 1, 1), (&root, 2, 1)]
+                {
+                    let share = share_of(&repo, track).await;
+                    assert_eq!(share.member_index, index);
+                    assert_eq!(share.share, expected_share);
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -510,29 +580,38 @@ async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
     let decls = declarations(&keys);
     let diags = vec![Vec::new(); decls.len()];
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let first = project_tasks_tx(&mut tx, &root, &decls, &diags)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let after_first = task_bytes(&repo).await;
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let first = project_tasks_tx(&mut tx, &root, &decls, &diags)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let after_first = task_bytes(&repo).await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let second = project_tasks_tx(&mut tx, &root, &decls, &diags)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let after_second = task_bytes(&repo).await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let second = project_tasks_tx(&mut tx, &root, &decls, &diags)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let after_second = task_bytes(&repo).await;
 
-    assert_eq!(after_first, after_second);
-    assert!(!first.changed_keys.is_empty());
-    assert!(
-        second.changed_keys.is_empty(),
-        "second projection changed {:?}",
-        second.changed_keys
-    );
-    assert!(second.kernel_events.is_empty());
-    assert_eq!(after_second.len(), 2, "share of 2 admits two of three keys");
+                assert_eq!(after_first, after_second);
+                assert!(!first.changed_keys.is_empty());
+                assert!(
+                    second.changed_keys.is_empty(),
+                    "second projection changed {:?}",
+                    second.changed_keys
+                );
+                assert!(second.kernel_events.is_empty());
+                assert_eq!(after_second.len(), 2, "share of 2 admits two of three keys");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -648,28 +727,39 @@ async fn the_diagnosed_capacity_action_increases_admission() {
         keys: &[&str],
     ) -> (i64, Vec<calm_types::report_blocks::tasks::Diagnostic>) {
         let decls = declarations(keys);
-        let mut tx = repo.pool().begin().await.unwrap();
-        let outcome = project_tasks_tx(&mut tx, track, &decls, &vec![Vec::new(); decls.len()])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let admitted: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1")
-            .bind(track)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-        let diagnostics = outcome
-            .diagnostics
-            .into_iter()
-            .flat_map(|verdict| verdict.diagnostics)
-            .filter(|diagnostic| {
-                matches!(
-                    diagnostic.code.as_str(),
-                    "planner_task_ceiling" | "tree_budget_exhausted"
-                )
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let outcome =
+                        project_tasks_tx(&mut tx, track, &decls, &vec![Vec::new(); decls.len()])
+                            .await
+                            .unwrap();
+                    tx.commit().await.unwrap();
+                    let admitted: i64 =
+                        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1")
+                            .bind(track)
+                            .fetch_one(repo.pool())
+                            .await
+                            .unwrap();
+                    let diagnostics = outcome
+                        .diagnostics
+                        .into_iter()
+                        .flat_map(|verdict| verdict.diagnostics)
+                        .filter(|diagnostic| {
+                            matches!(
+                                diagnostic.code.as_str(),
+                                "planner_task_ceiling" | "tree_budget_exhausted"
+                            )
+                        })
+                        .collect();
+                    (admitted, diagnostics)
+                })
             })
-            .collect();
-        (admitted, diagnostics)
+            .await
+            .expect("independent write operation")
     }
 
     async fn seed_block_inflight(repo: &SqlxRepo, track: &str, count: usize, prefix: &str) {
@@ -681,9 +771,9 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             .collect::<Vec<_>>();
         let refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
         project(repo, track, &refs).await;
-        sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1")
-            .bind(track)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1").bind(track))
             .await
             .unwrap();
     }
@@ -727,15 +817,23 @@ async fn the_diagnosed_capacity_action_increases_admission() {
 
                     for ceiling in 0..=5i64 {
                         checked += 1;
-                        sqlx::query("DELETE FROM tasks WHERE track_id=?1 AND status='pending'")
-                            .bind(&tracks[target_index])
-                            .execute(repo.pool())
+                        (repo.db())
+                            .writer()
+                            .execute(
+                                sqlx::query(
+                                    "DELETE FROM tasks WHERE track_id=?1 AND status='pending'",
+                                )
+                                .bind(&tracks[target_index]),
+                            )
                             .await
                             .unwrap();
-                        sqlx::query("UPDATE tracks SET tree_task_budget=?1 WHERE id=?2")
-                            .bind(budget)
-                            .bind(&root)
-                            .execute(repo.pool())
+                        (repo.db())
+                            .writer()
+                            .execute(
+                                sqlx::query("UPDATE tracks SET tree_task_budget=?1 WHERE id=?2")
+                                    .bind(budget)
+                                    .bind(&root),
+                            )
                             .await
                             .unwrap();
                         set_ceiling(&repo, &tracks[target_index], ceiling).await;
@@ -843,9 +941,9 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
         .collect::<Vec<_>>();
     let full_refs = full_keys.iter().map(String::as_str).collect::<Vec<_>>();
     project(&repo, &full, &full_refs).await;
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1")
-        .bind(&full)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1").bind(&full))
         .await
         .unwrap();
     let diagnostic = rejected_tree_diagnostic(&repo, &full).await;
@@ -931,14 +1029,17 @@ async fn a_frozen_track_with_nonzero_ceiling_occupancy_names_both_bounds() {
     set_ceiling(&repo, &root, MAX_TREE_TASK_BUDGET).await;
     set_tree_budget(&repo, &root, MAX_TREE_TASK_BUDGET).await;
     project(&repo, &root, &["live-a", "live-b", "live-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1").bind(&root))
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET tree_task_budget=2,planner_task_ceiling=1 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET tree_task_budget=2,planner_task_ceiling=1 WHERE id=?1")
+                .bind(&root),
+        )
         .await
         .unwrap();
 
@@ -1052,9 +1153,12 @@ async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() 
     let child = seed_track(&repo, &area, "child").await;
     link(&repo, &child, &root).await;
     project(&repo, &child, &["k1"]).await;
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='k1'")
-        .bind(&child)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='k1'")
+                .bind(&child),
+        )
         .await
         .unwrap();
     link(&repo, &root, &child).await;
@@ -1146,47 +1250,56 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = seed_area(&repo).await;
     let lonely = seed_track(&repo, &area, "lonely").await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_update_tx(
-        &mut tx,
-        &lonely,
-        TrackPatch {
-            planner_task_ceiling: Some(None),
-            tree_task_budget: Some(Some(1)),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_update_tx(
+                    &mut tx,
+                    &lonely,
+                    TrackPatch {
+                        planner_task_ceiling: Some(None),
+                        tree_task_budget: Some(Some(1)),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let decls = declarations(&["k1", "k2", "k3", "k4", "k5"]);
-    let mut conn = repo.pool().acquire().await.unwrap();
-    let verdicts = evaluate_schedulability(
-        &mut conn,
-        &lonely,
-        &decls,
-        &vec![Vec::new(); decls.len()],
-        false,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        verdicts
-            .iter()
-            .filter(|verdict| verdict.schedulable)
-            .count(),
-        1
-    );
-    assert!(matches!(
-        track_tree_term(&mut conn, &lonely).await.unwrap().term,
-        TrackTreeTerm::Share(TreeShare {
-            budget: 1,
-            members: 1,
-            share: 1,
-            ..
+                let decls = declarations(&["k1", "k2", "k3", "k4", "k5"]);
+                let mut conn = repo.pool().acquire().await.unwrap();
+                let verdicts = evaluate_schedulability(
+                    &mut conn,
+                    &lonely,
+                    &decls,
+                    &vec![Vec::new(); decls.len()],
+                    false,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    verdicts
+                        .iter()
+                        .filter(|verdict| verdict.schedulable)
+                        .count(),
+                    1
+                );
+                assert!(matches!(
+                    track_tree_term(&mut conn, &lonely).await.unwrap().term,
+                    TrackTreeTerm::Share(TreeShare {
+                        budget: 1,
+                        members: 1,
+                        share: 1,
+                        ..
+                    })
+                ));
+            })
         })
-    ));
+        .await
+        .expect("independent write operation")
 }
 
 /// Raw SQL builds the overage: the production tree-budget PATCH rejects this
@@ -1200,9 +1313,9 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     set_tree_budget(&repo, &root, 3).await;
     project(&repo, &root, &["in-flight-a", "in-flight-b", "in-flight-c"]).await;
     mark_all_tasks_as_running(&repo, &root).await;
-    sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1").bind(&root))
         .await
         .unwrap();
 
@@ -1240,17 +1353,23 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
             .unwrap();
     assert_eq!(new_rows, 0, "K >= B must force new-block capacity to zero");
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-a'")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-a'")
+                .bind(&root),
+        )
         .await
         .unwrap();
     project(&repo, &root, &["new-a", "new-b"]).await;
     assert_eq!(live_count().await, 2, "K == B still has zero new capacity");
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-b'")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-b'")
+                .bind(&root),
+        )
         .await
         .unwrap();
     project(&repo, &root, &["new-a", "new-b"]).await;
@@ -1260,9 +1379,12 @@ async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
         "one terminated in-flight row restores one slot"
     );
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-c'")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='in-flight-c'")
+                .bind(&root),
+        )
         .await
         .unwrap();
     project(&repo, &root, &["new-a", "new-b"]).await;
@@ -1345,15 +1467,18 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     )
     .await;
     project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id IN (?1,?2)")
-        .bind(&root)
-        .bind(&child)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running' WHERE track_id IN (?1,?2)")
+                .bind(&root)
+                .bind(&child),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET tree_task_budget=8 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET tree_task_budget=8 WHERE id=?1").bind(&root))
         .await
         .unwrap();
 
@@ -1468,9 +1593,9 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     drop(conn);
     set_ceiling(&repo, &child, 8).await;
 
-    sqlx::query("UPDATE tracks SET tree_task_budget=4 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET tree_task_budget=4 WHERE id=?1").bind(&root))
         .await
         .unwrap();
     let mut conn = repo.pool().acquire().await.unwrap();
@@ -1515,9 +1640,9 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
         "the diagnosed sibling-freeze minimum must increase admission"
     );
     drop(conn);
-    sqlx::query("UPDATE tracks SET tree_task_budget=8 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET tree_task_budget=8 WHERE id=?1").bind(&root))
         .await
         .unwrap();
 
@@ -1541,9 +1666,12 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     );
     drop(conn);
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='root-a'")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1 AND key='root-a'")
+                .bind(&root),
+        )
         .await
         .unwrap();
     project(&repo, &child, &["new-a", "new-b"]).await;
@@ -1592,15 +1720,18 @@ async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     )
     .await;
     project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id IN (?1,?2)")
-        .bind(&root)
-        .bind(&child)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running' WHERE track_id IN (?1,?2)")
+                .bind(&root)
+                .bind(&child),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET tree_task_budget=4 WHERE id=?1")
-        .bind(&root)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET tree_task_budget=4 WHERE id=?1").bind(&root))
         .await
         .unwrap();
 
@@ -1644,56 +1775,65 @@ async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
     let lonely = seed_track(&repo, &area, "lonely").await;
     set_ceiling(&repo, &lonely, 40).await;
     set_tree_budget(&repo, &lonely, 40).await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_update_tx(
-        &mut tx,
-        &lonely,
-        TrackPatch {
-            tree_task_budget: Some(None),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_update_tx(
+                    &mut tx,
+                    &lonely,
+                    TrackPatch {
+                        tree_task_budget: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let keys = (0..40)
-        .map(|index| format!("k{index:02}"))
-        .collect::<Vec<_>>();
-    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
-    let decls = declarations(&key_refs);
-    let mut conn = repo.pool().acquire().await.unwrap();
-    let verdicts = evaluate_schedulability(
-        &mut conn,
-        &lonely,
-        &decls,
-        &vec![Vec::new(); decls.len()],
-        false,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        verdicts
-            .iter()
-            .filter(|verdict| verdict.schedulable)
-            .count(),
-        32
-    );
-    assert!(verdicts[32..].iter().all(|verdict| {
-        verdict
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
-    }));
-    assert!(matches!(
-        track_tree_term(&mut conn, &lonely).await.unwrap().term,
-        TrackTreeTerm::Share(TreeShare {
-            budget: 32,
-            members: 1,
-            share: 32,
-            ..
+                let keys = (0..40)
+                    .map(|index| format!("k{index:02}"))
+                    .collect::<Vec<_>>();
+                let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+                let decls = declarations(&key_refs);
+                let mut conn = repo.pool().acquire().await.unwrap();
+                let verdicts = evaluate_schedulability(
+                    &mut conn,
+                    &lonely,
+                    &decls,
+                    &vec![Vec::new(); decls.len()],
+                    false,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    verdicts
+                        .iter()
+                        .filter(|verdict| verdict.schedulable)
+                        .count(),
+                    32
+                );
+                assert!(verdicts[32..].iter().all(|verdict| {
+                    verdict
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+                }));
+                assert!(matches!(
+                    track_tree_term(&mut conn, &lonely).await.unwrap().term,
+                    TrackTreeTerm::Share(TreeShare {
+                        budget: 32,
+                        members: 1,
+                        share: 32,
+                        ..
+                    })
+                ));
+            })
         })
-    ));
+        .await
+        .expect("independent write operation")
 }
 
 /// Deleting `WHERE down.depth <= ?2` from the descendant CTE hangs this test

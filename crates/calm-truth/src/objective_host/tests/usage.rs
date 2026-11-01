@@ -48,8 +48,9 @@ async fn objective_turn_usage_accumulates_and_replay_is_duplicate() {
     );
     assert_eq!(counts(&repo).await, (2, 1, 0));
     // Version mismatch is replayed without writing the old snapshot back.
-    sqlx::query("UPDATE objective_states SET state_version=999")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE objective_states SET state_version=999"))
         .await
         .unwrap();
     assert_eq!(
@@ -123,8 +124,9 @@ async fn objective_read_state_replays_sources_without_writing() {
     }
     let expected = load_state(repo.db(), &"t".into()).await.unwrap();
     let before = counts(&repo).await;
-    sqlx::query("UPDATE objective_states SET state_version=999")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE objective_states SET state_version=999"))
         .await
         .unwrap();
     assert_eq!(

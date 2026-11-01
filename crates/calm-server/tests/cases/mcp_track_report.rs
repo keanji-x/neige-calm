@@ -1107,13 +1107,12 @@ async fn track_report_edited_persisted_with_track_and_card_scope_columns() {
 #[tokio::test]
 async fn historical_task_context_advanced_payload_survives_events_since() {
     let boot = boot().await;
-    sqlx::query(
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query(
         "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_track) VALUES('task.context_advanced',?1,?2,1,12,'track',?3)",
     )
     .bind(json!({"task_id":"historical-task","verdict":"material"}).to_string())
     .bind(serde_json::to_string(&calm_server::ids::ActorId::Kernel).unwrap())
-    .bind(boot.track_id.as_str())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    .bind(boot.track_id.as_str()))
     .await
     .unwrap();
     let rows = boot.repo.events_since(0, i64::MAX).await.unwrap();

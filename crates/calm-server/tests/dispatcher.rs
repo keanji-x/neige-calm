@@ -413,16 +413,19 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
             }),
         }]),
     };
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES ('lagged-context-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
-    )
-    .bind(track_id.as_str())
-    .bind(serde_json::to_string(&report).unwrap())
-    .execute(pool.writer_pool())
-    .await
-    .expect("seed referenced report block");
+            )
+            .bind(track_id.as_str())
+            .bind(serde_json::to_string(&report).unwrap()),
+        )
+        .await
+        .expect("seed referenced report block");
 
     let task_id = format!("{}:lagged-stale", track_id.as_str());
     let now = now_ms();
@@ -513,11 +516,10 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
             .expect("production claim context");
     assert_ne!(frozen_context, "[]");
     spawned.store(0, Ordering::SeqCst);
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'changed') \
          WHERE id = 'lagged-context-report'",
-    )
-    .execute(pool.writer_pool())
+    ))
     .await
     .expect("change referenced block without emitting its event");
 

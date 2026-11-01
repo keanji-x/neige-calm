@@ -502,9 +502,14 @@ async fn backlinks_returns_source_track_and_unknown_track_is_not_found() {
         .and_then(|blocks| blocks.into_iter().next())
         .map(|block| block.id)
         .expect("persisted report has a prose block");
-    sqlx::query("UPDATE cards SET payload = json_remove(payload, '$.blocks') WHERE id = ?1")
-        .bind(updated_report.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_remove(payload, '$.blocks') WHERE id = ?1",
+            )
+            .bind(updated_report.id.as_str()),
+        )
         .await
         .unwrap();
 

@@ -434,17 +434,20 @@ async fn a_completed_failed_row_with_a_thread_and_no_transcript_starts() {
 async fn a_send_while_a_start_is_in_flight_is_503_and_starts_nothing() {
     let boot = boot(AppServer::Running).await;
     // Leased far ahead by another owner, so no driver of this server picks it up.
-    sqlx::query(
-        "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
            target_json, payload_json, phase, lease_owner, lease_until_ms, created_at_ms, \
            updated_at_ms) \
          VALUES ('in-flight', 'in-flight', 'planner-harness-start', 'h', 'track', '{}', ?1, \
            'tx_committed', 'elsewhere', 9223372036854775807, 0, 0)",
-    )
-    .bind(json!({ "spec_card_id": boot.planner_card_id }).to_string())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(json!({ "spec_card_id": boot.planner_card_id }).to_string()),
+        )
+        .await
+        .unwrap();
     assert_eq!(boot.start_ops().await, 1, "premise: one start in flight");
 
     let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "hurry", &new_id()).await;
@@ -485,16 +488,19 @@ async fn a_card_whose_only_session_is_retired_stays_dormant() {
 #[tokio::test]
 async fn a_card_with_transcript_items_but_no_session_row_stays_dormant() {
     let boot = boot(AppServer::Running).await;
-    sqlx::query(
-        "INSERT INTO harness_items \
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO harness_items \
            (worker_session_id, card_id, track_id, thread_id, method, params, created_at_ms) \
          SELECT 'gone-runtime', id, track_id, 'gone-thread', 'item/completed', '{}', 0 \
            FROM cards WHERE id = ?1",
-    )
-    .bind(&boot.planner_card_id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&boot.planner_card_id),
+        )
+        .await
+        .unwrap();
 
     let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "hello?", &new_id()).await;
 
@@ -522,27 +528,41 @@ impl Boot {
     /// A row in the shape a failed start's compensation leaves when the start had bound a thread:
     /// `failed`, completed, the thread on the row and in the snapshot.
     async fn insert_completed_failed_row_with_a_thread(&self) {
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                new_id(),
-                self.planner_card_id.clone(),
-                AgentProvider::Codex,
-                WorkerSessionState::Failed,
-                Some("thread-kept".into()),
-                json!({"last_thread_id": "thread-kept"}),
-                now_ms(),
-            ),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        sqlx::query("UPDATE worker_sessions SET completed_at_ms = 1 WHERE card_id = ?1")
-            .bind(&self.planner_card_id)
-            .execute(self.repo.pool())
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::shared_planner(
+                            new_id(),
+                            self.planner_card_id.clone(),
+                            AgentProvider::Codex,
+                            WorkerSessionState::Failed,
+                            Some("thread-kept".into()),
+                            json!({"last_thread_id": "thread-kept"}),
+                            now_ms(),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (self.repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query(
+                                "UPDATE worker_sessions SET completed_at_ms = 1 WHERE card_id = ?1",
+                            )
+                            .bind(&self.planner_card_id),
+                        )
+                        .await
+                        .unwrap();
+                })
+            })
             .await
-            .unwrap();
+            .expect("independent write operation")
     }
 
     /// Retire the card's runtime the way a superseding writer leaves it: the row stays, as
@@ -557,9 +577,12 @@ impl Boot {
         if let Some(harness) = self.state.harness.remove(&runtime.id) {
             harness.shutdown().await.unwrap();
         }
-        sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
-            .bind(&runtime.id)
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
+                    .bind(&runtime.id),
+            )
             .await
             .unwrap();
         assert_eq!(self.session_rows().await, 1, "premise: the row is kept");
@@ -576,10 +599,9 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
     use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
     for provider in AgentProvider::ALL {
         let boot = boot(AppServer::Down).await;
-        sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
+        (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
             .bind(&boot.planner_card_id)
-            .bind(serde_json::to_string(&provider).unwrap())
-            .execute(boot.repo.pool()).await.unwrap();
+            .bind(serde_json::to_string(&provider).unwrap())).await.unwrap();
         let card = boot
             .repo
             .card_get(&boot.planner_card_id)
@@ -661,18 +683,20 @@ async fn ready_parity_start_operation_and_send_for_every_provider() {
 async fn ready_dormancy_precedes_backend_unavailability_for_every_provider() {
     for provider in AgentProvider::ALL {
         let boot = boot(AppServer::Down).await;
-        sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
-            .bind(&boot.planner_card_id).bind(serde_json::to_string(&provider).unwrap())
-            .execute(boot.repo.pool()).await.unwrap();
-        sqlx::query(
-            "INSERT INTO harness_items \
+        (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload, '$.planner_provider', json(?2)) WHERE id=?1")
+            .bind(&boot.planner_card_id).bind(serde_json::to_string(&provider).unwrap())).await.unwrap();
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO harness_items \
             (worker_session_id, card_id, track_id, thread_id, method, params, created_at_ms) \
             SELECT 'gone', id, track_id, 'kept', 'item/completed', '{}', 0 FROM cards WHERE id=?1",
-        )
-        .bind(&boot.planner_card_id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(&boot.planner_card_id),
+            )
+            .await
+            .unwrap();
         let (status, body) = post_input(
             boot.app.clone(),
             &boot.input_uri(),

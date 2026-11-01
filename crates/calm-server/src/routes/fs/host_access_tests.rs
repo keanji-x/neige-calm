@@ -2,7 +2,7 @@
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SESSION_COOKIE, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
-use crate::db::sqlite::{area_membership, begin_immediate_tx};
+use crate::db::sqlite::area_membership;
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -126,56 +126,65 @@ impl HostFiles {
 async fn area_owner_cannot_read_host_files_or_git() {
     let files = HostFiles::new();
     let (_temp, repo, state) = crate::daily_planner::tests::fixture().await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    area_membership::application_user_register(&mut tx, "alice", "Owner")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                area_membership::application_user_register(&mut tx, "alice", "Owner")
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let area = repo
+                    .area_create(
+                        "alice",
+                        NewArea {
+                            name: "Alice's Area".into(),
+                            color: "#000".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                repo.track_create(NewTrack {
+                    area_id: area.id,
+                    title: "Alice's workspace".into(),
+                    sort: None,
+                    cwd: files.0.path().to_string_lossy().into_owned(),
+                    template_id: None,
+                    plugin_scope: None,
+                    template_input: None,
+                    attach_folder: false,
+                    theme: RequestTheme::default_dark(),
+                })
+                .await
+                .unwrap();
+                let auth = auth(false);
+                let token = auth.sessions.create(
+                    SessionIdentity {
+                        user_id: "alice".into(),
+                        display_name: "Owner".into(),
+                        role: "owner".into(),
+                    },
+                    SessionAuthority::PasswordLogin,
+                );
+                let app = super::router()
+                    .layer(axum::middleware::from_fn_with_state(
+                        auth,
+                        crate::auth::require_session,
+                    ))
+                    .with_state(state);
+                for uri in files.requests(false) {
+                    let response = get(&app, &uri, Some(&token)).await;
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+                    let body = response.into_body().collect().await.unwrap().to_bytes();
+                    assert!(!String::from_utf8_lossy(&body).contains("host fixture content"));
+                }
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let area = repo
-        .area_create(
-            "alice",
-            NewArea {
-                name: "Alice's Area".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-    repo.track_create(NewTrack {
-        area_id: area.id,
-        title: "Alice's workspace".into(),
-        sort: None,
-        cwd: files.0.path().to_string_lossy().into_owned(),
-        template_id: None,
-        plugin_scope: None,
-        template_input: None,
-        attach_folder: false,
-        theme: RequestTheme::default_dark(),
-    })
-    .await
-    .unwrap();
-    let auth = auth(false);
-    let token = auth.sessions.create(
-        SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-        },
-        SessionAuthority::PasswordLogin,
-    );
-    let app = super::router()
-        .layer(axum::middleware::from_fn_with_state(
-            auth,
-            crate::auth::require_session,
-        ))
-        .with_state(state);
-    for uri in files.requests(false) {
-        let response = get(&app, &uri, Some(&token)).await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(!String::from_utf8_lossy(&body).contains("host fixture content"));
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test]

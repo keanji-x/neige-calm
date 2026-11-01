@@ -23,7 +23,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    SqlxRepo, card_with_codex_create_tx, session_bind_attribution_tx,
     session_projection_active_for_card_tx, session_start_runtime_tx,
     session_supersede_and_start_tx,
 };
@@ -102,142 +102,171 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
     let card_id = calm_server::model::new_id();
 
     // Mint Planner card + token directly via `card_with_codex_create_tx`, bypassing the route layer.
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &calm_server::model::new_id(),
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        // Planner cards are kernel-owned in production; `false` mirrors the prod track-create path.
-        false,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint planner card");
-    tx.commit().await.unwrap();
-    let raw_token = mcp_token.expect("Planner card must mint a token");
-    let thread_id = format!("thread-{card_id}");
-    let session_id = seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_card, _term, mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &calm_server::model::new_id(),
+                    None,
+                    track.id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    // Planner cards are kernel-owned in production; `false` mirrors the prod track-create path.
+                    false,
+                    &card_role_cache,
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("mint planner card");
+                tx.commit().await.unwrap();
+                let raw_token = mcp_token.expect("Planner card must mint a token");
+                let thread_id = format!("thread-{card_id}");
+                let session_id =
+                    seed_runtime_thread(&sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
-    let events = EventBus::new();
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    let server = McpServer::spawn(
-        repo.clone(),
-        events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
-        socket_path.clone(),
-        PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
-        registry,
-        None,
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        std::env::temp_dir().join("neige-test-gate-logs"),
-    )
-    .await
-    .expect("spawn McpServer");
+                let events = EventBus::new();
+                let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+                repo.seed_track_area_cache(&track_area_cache).await.unwrap();
+                let server = McpServer::spawn(
+                    repo.clone(),
+                    events.clone(),
+                    calm_server::state::WriteContext::new(card_role_cache, track_area_cache),
+                    socket_path.clone(),
+                    PathBuf::from("/nonexistent-shim-bin"), // not used in handshake tests
+                    registry,
+                    None,
+                    std::sync::Arc::new(tokio::sync::OnceCell::new()),
+                    std::sync::Arc::new(tokio::sync::OnceCell::new()),
+                    std::env::temp_dir().join("neige-test-gate-logs"),
+                )
+                .await
+                .expect("spawn McpServer");
 
-    Boot {
-        server,
-        sqlx_repo,
-        repo,
-        events,
-        card_id,
-        area_id: area.id.to_string(),
-        track_id: track.id.to_string(),
-        session_id,
-        thread_id,
-        raw_token,
-        socket_path,
-        _tmp: tmp,
-    }
+                Boot {
+                    server,
+                    sqlx_repo,
+                    repo,
+                    events,
+                    card_id,
+                    area_id: area.id.to_string(),
+                    track_id: track.id.to_string(),
+                    session_id,
+                    thread_id,
+                    raw_token,
+                    socket_path,
+                    _tmp: tmp,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime_id = if let Some(runtime) =
+                    session_projection_active_for_card_tx(&mut tx, card_id)
+                        .await
+                        .unwrap()
+                {
+                    let runtime_id = runtime.id.clone();
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime_id,
+                        ThreadAttribution {
+                            worker_session_id: runtime_id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    runtime_id
+                } else {
+                    let runtime = session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    runtime.id
+                };
+                tx.commit().await.unwrap();
+                runtime_id
+            })
+        })
         .await
-        .unwrap()
-    {
-        let runtime_id = runtime.id.clone();
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime_id,
-            ThreadAttribution {
-                worker_session_id: runtime_id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .unwrap();
-        runtime_id
-    } else {
-        let runtime = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        runtime.id
-    };
-    tx.commit().await.unwrap();
-    runtime_id
+        .expect("independent write operation")
 }
 
 async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let existing = session_projection_active_for_card_tx(&mut tx, card_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let existing = session_projection_active_for_card_tx(&mut tx, card_id)
+                    .await
+                    .unwrap()
+                    .expect("active runtime before supersede");
+                let runtime = session_supersede_and_start_tx(
+                    &mut tx,
+                    &existing.id,
+                    WorkerSessionInit {
+                        id: calm_server::model::new_id(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime.id
+            })
+        })
         .await
-        .unwrap()
-        .expect("active runtime before supersede");
-    let runtime = session_supersede_and_start_tx(
-        &mut tx,
-        &existing.id,
-        WorkerSessionInit {
-            id: calm_server::model::new_id(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime.id
+        .expect("independent write operation")
 }
 
 /// Connect to the kernel-side socket; a buffered reader paired with the write half.
@@ -419,10 +448,13 @@ async fn corrupt_worker_session_hash_rejects_initialize() {
         "boot should populate both MCP hash rows before the rollback check"
     );
 
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash = ?1 WHERE id = ?2")
-        .bind("ignored-session-hash")
-        .bind(&runtime_id)
-        .execute(b.sqlx_repo.pool())
+    (b.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash = ?1 WHERE id = ?2")
+                .bind("ignored-session-hash")
+                .bind(&runtime_id),
+        )
         .await
         .unwrap();
 
@@ -440,10 +472,13 @@ async fn corrupt_worker_session_hash_rejects_initialize() {
 async fn inactive_worker_session_hashes_reject_initialize() {
     for state in ["failed", "superseded", "exited"] {
         let b = boot().await;
-        sqlx::query("UPDATE worker_sessions SET state = ?1 WHERE id = ?2")
-            .bind(state)
-            .bind(&b.session_id)
-            .execute(b.sqlx_repo.pool())
+        (b.sqlx_repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state = ?1 WHERE id = ?2")
+                    .bind(state)
+                    .bind(&b.session_id),
+            )
             .await
             .unwrap();
 
@@ -732,99 +767,108 @@ async fn unbound_planner_task_reports_reject_binding_and_worker_payloads_without
         )
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(b.sqlx_repo.db()).await.unwrap();
-    let session_id = calm_server::model::new_id();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &b.session_id,
-        crate::support::planner::session_init(
-            &session_id,
-            &b.card_id,
-            Some(b.thread_id.clone()),
-            WorkerSessionState::Running,
-            now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-    let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    calm_truth::db::sqlite::card_mcp_token_set_tx(&mut tx, &b.card_id, &hash)
-        .await
-        .unwrap();
-    calm_truth::db::sqlite::session_mcp_token_set_tx(&mut tx, &session_id, &hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let (mut rd, mut wr) = connect(&b.socket_path).await;
-    send_frame(&mut wr, initialize_frame(1, token.as_str())).await;
-    let init_resp = recv_frame(&mut rd).await;
-    assert!(init_resp.get("error").is_none(), "{init_resp:#?}");
-    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-        .fetch_one(b.sqlx_repo.pool())
-        .await
-        .unwrap();
+    let write_db = (b.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let session_id = calm_server::model::new_id();
+                            session_supersede_and_start_tx(
+                                &mut tx,
+                                &b.session_id,
+                                crate::support::planner::session_init(
+                                    &session_id,
+                                    &b.card_id,
+                                    Some(b.thread_id.clone()),
+                                    WorkerSessionState::Running,
+                                    now_ms(),
+                                ),
+                            )
+                            .await
+                            .unwrap();
+                            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+                            let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+                            calm_truth::db::sqlite::card_mcp_token_set_tx(&mut tx, &b.card_id, &hash)
+                                .await
+                                .unwrap();
+                            calm_truth::db::sqlite::session_mcp_token_set_tx(&mut tx, &session_id, &hash)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            let (mut rd, mut wr) = connect(&b.socket_path).await;
+                            send_frame(&mut wr, initialize_frame(1, token.as_str())).await;
+                            let init_resp = recv_frame(&mut rd).await;
+                            assert!(init_resp.get("error").is_none(), "{init_resp:#?}");
+                            let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+                                .fetch_one(b.sqlx_repo.pool())
+                                .await
+                                .unwrap();
 
-    // Planner tools are listed, but only the active bound child can report an assignment.
-    // Worker-owned result fields are rejected independently, before binding admission.
-    for (index, (tool, args, code)) in [
-        (
-            "neige_task_done",
-            json!({"attempt_id": "unbound-assignment"}),
-            RpcError::CONFLICT,
-        ),
-        (
-            "neige_task_fail",
-            json!({"attempt_id": "unbound-assignment", "reason": "blocked"}),
-            RpcError::CONFLICT,
-        ),
-        (
-            "neige_task_done",
-            json!({"attempt_id": "unbound-assignment", "result": "ok"}),
-            RpcError::INVALID_PARAMS,
-        ),
-        (
-            "neige_task_done",
-            json!({"attempt_id": "unbound-assignment", "artifacts": []}),
-            RpcError::INVALID_PARAMS,
-        ),
-        (
-            "neige_task_done",
-            json!({"attempt_id": "unbound-assignment", "commit_message": "test: forged"}),
-            RpcError::INVALID_PARAMS,
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        send_frame(
-            &mut wr,
-            tools_call_frame(index as i64 + 12, tool, &b.thread_id, args),
-        )
-        .await;
-        let response = recv_frame(&mut rd).await;
-        assert_eq!(response["error"]["code"], json!(code), "{response:#?}");
-        assert!(
-            b.repo
-                .track_get(&b.track_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .closed_at
-                .is_none()
-        );
-        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-            .fetch_one(b.sqlx_repo.pool())
-            .await
-            .unwrap();
-        assert_eq!(after, before, "rejected {tool} must emit no events");
-        let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
-            .fetch_one(b.sqlx_repo.pool())
-            .await
-            .unwrap();
-        assert_eq!(tasks, 0, "rejected {tool} must not create an assignment");
-    }
-    let _ = (&b.server, &b.repo);
+                            // Planner tools are listed, but only the active bound child can report an assignment.
+                            // Worker-owned result fields are rejected independently, before binding admission.
+                            for (index, (tool, args, code)) in [
+                    (
+                        "neige_task_done",
+                        json!({"attempt_id": "unbound-assignment"}),
+                        RpcError::CONFLICT,
+                    ),
+                    (
+                        "neige_task_fail",
+                        json!({"attempt_id": "unbound-assignment", "reason": "blocked"}),
+                        RpcError::CONFLICT,
+                    ),
+                    (
+                        "neige_task_done",
+                        json!({"attempt_id": "unbound-assignment", "result": "ok"}),
+                        RpcError::INVALID_PARAMS,
+                    ),
+                    (
+                        "neige_task_done",
+                        json!({"attempt_id": "unbound-assignment", "artifacts": []}),
+                        RpcError::INVALID_PARAMS,
+                    ),
+                    (
+                        "neige_task_done",
+                        json!({"attempt_id": "unbound-assignment", "commit_message": "test: forged"}),
+                        RpcError::INVALID_PARAMS,
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    send_frame(
+                        &mut wr,
+                        tools_call_frame(index as i64 + 12, tool, &b.thread_id, args),
+                    )
+                    .await;
+                    let response = recv_frame(&mut rd).await;
+                    assert_eq!(response["error"]["code"], json!(code), "{response:#?}");
+                    assert!(
+                        b.repo
+                            .track_get(&b.track_id)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .closed_at
+                            .is_none()
+                    );
+                    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+                        .fetch_one(b.sqlx_repo.pool())
+                        .await
+                        .unwrap();
+                    assert_eq!(after, before, "rejected {tool} must emit no events");
+                    let tasks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+                        .fetch_one(b.sqlx_repo.pool())
+                        .await
+                        .unwrap();
+                    assert_eq!(tasks, 0, "rejected {tool} must not create an assignment");
+                }
+                            let _ = (&b.server, &b.repo);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

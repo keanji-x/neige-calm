@@ -162,28 +162,31 @@ async fn a_create_that_failed_after_its_commit_is_final_under_its_key() {
 /// sink does, recording `from_phase` as the phase it stopped at.
 async fn stamp_stuck(boot: &super::Boot, key: &str, from_phase: &str) {
     let pool = boot.repo.sqlite_db().expect("sqlite repo");
-    let updated = sqlx::query(
-        "UPDATE operations \
+    let updated = (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations \
          SET phase = 'stuck', \
              last_error = 'operation drive failed: injected', \
              phase_detail_json = ?1, \
              lease_owner = NULL, \
              lease_until_ms = NULL \
          WHERE idempotency_key = ?2",
-    )
-    .bind(
-        json!({
-            "reason": "operation drive failed: injected",
-            "since": 1,
-            "from_phase": from_phase,
-        })
-        .to_string(),
-    )
-    .bind(key)
-    .execute(pool.writer_pool())
-    .await
-    .unwrap()
-    .rows_affected();
+            )
+            .bind(
+                json!({
+                    "reason": "operation drive failed: injected",
+                    "since": 1,
+                    "from_phase": from_phase,
+                })
+                .to_string(),
+            )
+            .bind(key),
+        )
+        .await
+        .unwrap()
+        .rows_affected();
     assert_eq!(updated, 1, "premise: the create's own operation went stuck");
 }
 
@@ -340,40 +343,44 @@ async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_ge
                 .unwrap();
         let mut old: Value = serde_json::from_str(&original).unwrap();
         old["result"]["payload"] = Value::Null;
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
-            .bind(old.to_string())
-            .bind(key)
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let before:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
-        let (status, moved) = placement(&boot, id, json!({"in_workbench":false})).await;
-        assert_eq!(status, StatusCode::OK, "{moved}");
-        let (status, replayed) =
-            post_with_idempotency(boot.app.clone(), uri, request, Some(key)).await;
-        assert_eq!(status, StatusCode::CREATED, "{replayed}");
-        assert_eq!(replayed["id"], first["id"]);
-        assert_eq!(
-            replayed["payload"]["terminal_presentation"],
-            json!({"source":"manual","in_workbench":false})
-        );
-        assert_eq!(operations_under(&boot, key).await, 1);
-        let after:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
-        assert_eq!(
-            after, before,
-            "live response refresh must not rewrite the immutable receipt or request"
-        );
-        let (status, _) = placement(&boot, id, json!({"in_workbench":true,"source":"agent"})).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        let current = boot.repo.card_get(id).await.unwrap().unwrap();
-        assert_eq!(
-            current.payload["terminal_presentation"],
-            json!({"source":"manual","in_workbench":false})
-        );
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async  {
+            let mut tx = write_session.begin_immediate()
+                .await
+                .unwrap();
+            sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
+                .bind(old.to_string())
+                .bind(key)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            let before:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
+            let (status, moved) = placement(&boot, id, json!({"in_workbench":false})).await;
+            assert_eq!(status, StatusCode::OK, "{moved}");
+            let (status, replayed) =
+                post_with_idempotency(boot.app.clone(), uri, request, Some(key)).await;
+            assert_eq!(status, StatusCode::CREATED, "{replayed}");
+            assert_eq!(replayed["id"], first["id"]);
+            assert_eq!(
+                replayed["payload"]["terminal_presentation"],
+                json!({"source":"manual","in_workbench":false})
+            );
+            assert_eq!(operations_under(&boot, key).await, 1);
+            let after:(String,String,String)=sqlx::query_as("SELECT payload_json,payload_hash,tx_output_json FROM operations WHERE idempotency_key=?1").bind(key).fetch_one(pool.read_pool()).await.unwrap();
+            assert_eq!(
+                after, before,
+                "live response refresh must not rewrite the immutable receipt or request"
+            );
+            let (status, _) = placement(&boot, id, json!({"in_workbench":true,"source":"agent"})).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+            let current = boot.repo.card_get(id).await.unwrap().unwrap();
+            assert_eq!(
+                current.payload["terminal_presentation"],
+                json!({"source":"manual","in_workbench":false})
+            );
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -445,16 +452,27 @@ async fn terminal_presentation_replay_refuses_a_card_retargeted_out_of_terminal(
             json!({}),
         ] {
             // Both post-upgrade sticky metadata and an old retargeted card with no new metadata.
-            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
-                .bind(payload.to_string())
-                .bind(card["id"].as_str().unwrap())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
+            {
+                let write_db = pool.clone();
+                let card = &card;
+                let payload = &payload;
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
+                                .bind(payload.to_string())
+                                .bind(card["id"].as_str().unwrap())
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
             let (status, replay) = post_with_idempotency(
                 boot.app.clone(),
                 uri.clone(),

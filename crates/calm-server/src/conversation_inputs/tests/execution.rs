@@ -57,16 +57,26 @@ async fn first_plan(
 }
 
 async fn claim(fx: &Fixture, source: &HumanInputSource) -> Result<ClaimedSubmission> {
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime).await?;
-    let plan = first_plan(&mut tx, &carrier).await;
-    let result = claim_initial_tx(&mut tx, source, &mut carrier, plan).await;
-    if result.is_ok() {
-        tx.commit().await.unwrap();
-    } else {
-        tx.rollback().await.unwrap();
-    }
-    result
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime).await?;
+                let plan = first_plan(&mut tx, &carrier).await;
+                let result = claim_initial_tx(&mut tx, source, &mut carrier, plan).await;
+                if result.is_ok() {
+                    tx.commit().await.unwrap();
+                } else {
+                    tx.rollback().await.unwrap();
+                }
+                result
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn accept_owner(fx: &Fixture) -> (String, HumanInputSource) {
@@ -78,23 +88,34 @@ async fn accept_owner(fx: &Fixture) -> (String, HumanInputSource) {
 
 async fn transfer_area_to_alice(fx: &Fixture) {
     fx.register("alice").await;
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+                                .await
+                                .unwrap();
+                            sqlx::query(
+                                "UPDATE area_members SET role='member' WHERE area_id=?1 AND role='owner'",
+                            )
+                            .bind(area.id.as_str())
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','owner',0)",
+                )
+                .bind(area.id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1 AND role='owner'")
-        .bind(area.id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','owner',0)",
-    )
-    .bind(area.id.as_str())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -133,35 +154,49 @@ async fn human_source_cannot_authorize_a_machine_observation() {
         active: None,
         attempts: vec![],
     };
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
+                    .await
+                    .unwrap();
+                let mut snapshot = carrier.snapshot().clone();
+                snapshot["canonical_inputs"] = serde_json::to_value(checkpoint).unwrap();
+                assert!(
+                    crate::db::sqlite::session_set_handle_state_tx(
+                        &mut tx,
+                        &fx.input.runtime,
+                        Some(snapshot)
+                    )
+                    .await
+                    .unwrap()
+                );
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
+                        .await
+                        .unwrap();
+                let plan = SubmissionRenderPlan::V1 {
+                    segments: vec![SubmissionRenderSegment::Input {
+                        input_position: 0,
+                        input: SubmissionRenderInput::System {
+                            observation_id: id,
+                            payload: PrivateHistoryPayload::Present { value: observation },
+                        },
+                    }],
+                };
+                assert!(
+                    claim_initial_tx(&mut tx, &source, &mut carrier, plan)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let mut snapshot = carrier.snapshot().clone();
-    snapshot["canonical_inputs"] = serde_json::to_value(checkpoint).unwrap();
-    assert!(
-        crate::db::sqlite::session_set_handle_state_tx(&mut tx, &fx.input.runtime, Some(snapshot))
-            .await
-            .unwrap()
-    );
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
-        .await
-        .unwrap();
-    let plan = SubmissionRenderPlan::V1 {
-        segments: vec![SubmissionRenderSegment::Input {
-            input_position: 0,
-            input: SubmissionRenderInput::System {
-                observation_id: id,
-                payload: PrivateHistoryPayload::Present { value: observation },
-            },
-        }],
-    };
-    assert!(
-        claim_initial_tx(&mut tx, &source, &mut carrier, plan)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -169,16 +204,20 @@ async fn real_owner_source_claims_initial_in_the_actual_scope() {
     let fx = Fixture::new(false).await;
     let (_, source) = accept_owner(&fx).await;
     let initial = claim(&fx, &source).await.unwrap();
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let identity = submission_identity_tx(&mut tx, &initial.submission_id)
-        .await
-        .unwrap();
-    assert!(
-        matches!(identity.execution, ConversationExecutionProvenance::LegacySingleUserDeployment {
-        ref deployment_owner_user_id, ..
-    } if deployment_owner_user_id == LEGACY_OWNER_USER_ID)
-    );
-    tx.commit().await.unwrap();
+    let write_db = (fx.input.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let identity = submission_identity_tx(&mut tx, &initial.submission_id)
+            .await
+            .unwrap();
+        assert!(
+            matches!(identity.execution, ConversationExecutionProvenance::LegacySingleUserDeployment {
+            ref deployment_owner_user_id, ..
+        } if deployment_owner_user_id == LEGACY_OWNER_USER_ID)
+        );
+        tx.commit().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -208,34 +247,52 @@ async fn current_session_revocation_holds_accepted_work_before_claim() {
     let (token, source) = accept_owner(&fx).await;
     fx.auth.sessions.remove(&token).unwrap();
     assert!(claim(&fx, &source).await.is_err());
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
+                    .await
+                    .unwrap();
+                assert_eq!(carrier.checkpoint().pending.len(), 1);
+                assert!(carrier.checkpoint().active.is_none());
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(carrier.checkpoint().pending.len(), 1);
-    assert!(carrier.checkpoint().active.is_none());
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn operator_source_cannot_claim_another_humans_input_even_in_owned_private_area() {
     let fx = Fixture::new(false).await;
     fx.register("alice").await;
-    let mut tx = begin_immediate_tx(fx.input.repo.db()).await.unwrap();
-    let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+    let write_db = (fx.input.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
+                                .await
+                                .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+                )
+                .bind(area.id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let alice = fx.session("alice", "owner");
+                            assert_eq!(fx.send(Some(&alice)).await.status(), StatusCode::OK);
+                            let owner = fx.session(LEGACY_OWNER_USER_ID, "owner");
+                            assert!(claim(&fx, &source(&fx.auth, &owner).await).await.is_err());
+                            assert!(claim(&fx, &source(&fx.auth, &alice).await).await.is_err());
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area.id.as_str())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let alice = fx.session("alice", "owner");
-    assert_eq!(fx.send(Some(&alice)).await.status(), StatusCode::OK);
-    let owner = fx.session(LEGACY_OWNER_USER_ID, "owner");
-    assert!(claim(&fx, &source(&fx.auth, &owner).await).await.is_err());
-    assert!(claim(&fx, &source(&fx.auth, &alice).await).await.is_err());
+        .expect("independent write operation")
 }

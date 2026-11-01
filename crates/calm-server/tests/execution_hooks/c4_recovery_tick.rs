@@ -34,11 +34,20 @@ async fn admit(f: &Fixture, script: &str) -> (ExecutionId, Terminal) {
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = vec!["-c".into(), script.into()];
     let id = intent.metadata.id.clone();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-    tx.commit().await.unwrap();
-    f.engine.drive(ticket.committed());
-    (id, terminal)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                tx.commit().await.unwrap();
+                f.engine.drive(ticket.committed());
+                (id, terminal)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 async fn settled(f: &Fixture, id: &ExecutionId) -> bool {
     sqlx::query_scalar(
@@ -99,10 +108,19 @@ async fn c4_recovery_tick_retries_after_pending_read_error() {
     intent.metadata.program.program = "/bin/true".into();
     let id = intent.metadata.id.clone();
     faults.arm("pending");
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _lost = f.engine.admit(&mut tx, intent).await.unwrap();
-    tx.commit().await.unwrap();
-    wait(|| async { faults.failures.load(SeqCst) == 1 }).await;
-    wait(|| settled(&f, &id)).await;
-    assert!(faults.pending_calls.load(SeqCst) >= 3);
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let _lost = f.engine.admit(&mut tx, intent).await.unwrap();
+                tx.commit().await.unwrap();
+                wait(|| async { faults.failures.load(SeqCst) == 1 }).await;
+                wait(|| settled(&f, &id)).await;
+                assert!(faults.pending_calls.load(SeqCst) >= 3);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

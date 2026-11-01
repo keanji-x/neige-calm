@@ -21,9 +21,8 @@ pub(super) async fn tool(
 
 pub(super) async fn incoming(flow: &Flow, from: &str, hop: i64) -> String {
     let id = crate::model::new_id();
-    sqlx::query("INSERT INTO mails(id,from_track_id,to_track_id,summary,text,hop,sent_at) VALUES(?1,?2,?3,'incoming','body',?4,?5)")
-        .bind(&id).bind(from).bind(&flow.track).bind(hop).bind(crate::model::now_ms())
-        .execute(flow.fixture.repo.pool()).await.unwrap();
+    (flow.fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO mails(id,from_track_id,to_track_id,summary,text,hop,sent_at) VALUES(?1,?2,?3,'incoming','body',?4,?5)")
+        .bind(&id).bind(from).bind(&flow.track).bind(hop).bind(crate::model::now_ms())).await.unwrap();
     id
 }
 
@@ -39,56 +38,60 @@ async fn u9_canonical_creator_real_turn_facts() {
     let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
         .await
         .unwrap();
-    let mut tx = flow.fixture.repo.pool().begin().await.unwrap();
-    let facts = crate::harness::turn_input::latest(&mut tx, &flow.card, &flow.worker)
-        .await
-        .unwrap();
-    let time: i64 = sqlx::query_scalar(
-        "SELECT t.created_at_ms FROM conversation_turns t \
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let facts = crate::harness::turn_input::latest(&mut tx, &flow.card, &flow.worker)
+            .await
+            .unwrap();
+        let time: i64 = sqlx::query_scalar(
+            "SELECT t.created_at_ms FROM conversation_turns t \
          JOIN conversation_input_submissions s ON s.id=t.initial_submission_id \
          WHERE t.card_id=?1",
-    )
-    .bind(&flow.card)
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    // Exercise ordinary mail::send via the real MCP router, before asserting the accessor.
-    let sent = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":recipient["id"],"summary":"hello","text":"ordinary canonical mail"}),
-    )
-    .await;
-    assert!(
-        sent.is_ok() && cat["next_hop"] == "1/6" && cat["refused"] == false,
-        "ordinary mail::send/cat: send={sent:?}; cat={cat:?}"
-    );
-    flow.end(TURN).await;
-    flow.fixture
-        .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
+        )
+        .bind(&flow.card)
+        .fetch_one(&mut **tx)
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        // Exercise ordinary mail::send via the real MCP router, before asserting the accessor.
+        let sent = tool(
+            &flow,
+            "neige_mail_send",
+            json!({"track_id":recipient["id"],"summary":"hello","text":"ordinary canonical mail"}),
+        )
         .await;
-    flow.close().await;
-    let sent = sent.unwrap();
-    let (body, wake): (String,String) = sqlx::query_as("SELECT m.text,e.payload FROM mails m JOIN events e ON json_extract(e.payload,'$.key')=m.id \
+        assert!(
+            sent.is_ok() && cat["next_hop"] == "1/6" && cat["refused"] == false,
+            "ordinary mail::send/cat: send={sent:?}; cat={cat:?}"
+        );
+        flow.end(TURN).await;
+        flow.fixture
+            .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
+            .await;
+        flow.close().await;
+        let sent = sent.unwrap();
+        let (body, wake): (String,String) = sqlx::query_as("SELECT m.text,e.payload FROM mails m JOIN events e ON json_extract(e.payload,'$.key')=m.id \
             WHERE m.id=?1 AND e.kind='track.wake_requested'")
-        .bind(sent["mail_id"].as_str().unwrap()).fetch_one(flow.fixture.repo.pool()).await.unwrap();
-    assert_eq!(body, "ordinary canonical mail");
-    let wake: Value = serde_json::from_str(&wake).unwrap();
-    assert_eq!(
-        wake["text"],
-        crate::mail::wake_line(&flow.track, "", "hello", sent["mail_id"].as_str().unwrap())
-    );
-    assert_eq!(sent["hop"], "1/6");
-    assert_eq!(cat["next_hop"], "1/6");
-    assert_eq!(cat["refused"], false);
-    assert_eq!(
-        facts.unwrap(),
-        crate::harness::turn_input::TurnInput {
-            created_at_ms: time,
-            has_user_segment: true
-        }
-    );
+            .bind(sent["mail_id"].as_str().unwrap()).fetch_one(flow.fixture.repo.pool()).await.unwrap();
+        assert_eq!(body, "ordinary canonical mail");
+        let wake: Value = serde_json::from_str(&wake).unwrap();
+        assert_eq!(
+            wake["text"],
+            crate::mail::wake_line(&flow.track, "", "hello", sent["mail_id"].as_str().unwrap())
+        );
+        assert_eq!(sent["hop"], "1/6");
+        assert_eq!(cat["next_hop"], "1/6");
+        assert_eq!(cat["refused"], false);
+        assert_eq!(
+            facts.unwrap(),
+            crate::harness::turn_input::TurnInput {
+                created_at_ms: time,
+                has_user_segment: true
+            }
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[cfg(test)]
@@ -110,140 +113,149 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
     flow.accept(&call, "system-mail-turn").await;
     let (_, _, frame) = flow.fixture.carrier(&flow.track).await;
     let active = frame.canonical_inputs.active.unwrap();
-    let mut tx = flow.fixture.repo.pool().begin().await.unwrap();
-    let time: i64 = sqlx::query_scalar(
-        "SELECT created_at_ms FROM conversation_turns WHERE id=?1 AND card_id=?2",
-    )
-    .bind(active.logical_turn_id.as_str())
-    .bind(&flow.card)
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap();
-    assert_eq!(
-        crate::harness::turn_input::latest(&mut tx, &flow.card, &flow.worker)
-            .await
-            .unwrap(),
-        Some(crate::harness::turn_input::TurnInput {
-            created_at_ms: time,
-            has_user_segment: false
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let time: i64 = sqlx::query_scalar(
+                    "SELECT created_at_ms FROM conversation_turns WHERE id=?1 AND card_id=?2",
+                )
+                .bind(active.logical_turn_id.as_str())
+                .bind(&flow.card)
+                .fetch_one(&mut **tx)
+                .await
+                .unwrap();
+                assert_eq!(
+                    crate::harness::turn_input::latest(&mut tx, &flow.card, &flow.worker)
+                        .await
+                        .unwrap(),
+                    Some(crate::harness::turn_input::TurnInput {
+                        created_at_ms: time,
+                        has_user_segment: false
+                    })
+                );
+                tx.rollback().await.unwrap();
+                // A released historical projection is a trap, never canonical Human evidence.
+                flow.fixture
+                    .repo
+                    .fixture_transcript_insert(
+                        &flow.worker,
+                        &flow.card,
+                        &flow.track,
+                        THREAD,
+                        Some("old-projected-turn"),
+                        None,
+                        Some("userMessage"),
+                        "item/completed",
+                        "{}",
+                        Some(r#"[{"presentation":"user","text":"old Human projection"}]"#),
+                    )
+                    .await
+                    .unwrap();
+                let first = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"track_id":other,"summary":"new turn","text":"old reads do not carry"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(first["hop"], "1/6");
+                let mail = incoming(&flow, other, 3).await;
+                let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
+                    .await
+                    .unwrap();
+                assert_eq!(cat["next_hop"], "4/6");
+                assert_eq!(cat["refused"], false);
+                let stamp: i64 = sqlx::query_scalar("SELECT read_at FROM mails WHERE id=?1")
+                    .bind(&mail)
+                    .fetch_one(flow.fixture.repo.pool())
+                    .await
+                    .unwrap();
+                tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT read_at FROM mails WHERE id=?1")
+                        .bind(&mail)
+                        .fetch_one(flow.fixture.repo.pool())
+                        .await
+                        .unwrap(),
+                    stamp
+                );
+                let sent = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"track_id":other,"summary":"system","text":"hop four"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(sent["hop"], "4/6");
+                let limit = incoming(&flow, other, 6).await;
+                let refused = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"mail_id":limit,"summary":"reply","text":"seventh"}),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
+                let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":limit}))
+                    .await
+                    .unwrap();
+                assert_eq!(cat["next_hop"], Value::Null);
+                assert_eq!(cat["refused"], true);
+                let refused = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"track_id":other,"summary":"send","text":"seventh"}),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
+                flow.report("Second real System turn").await;
+                flow.end("system-mail-turn").await;
+                let call = flow.next().await.unwrap();
+                flow.accept(&call, "system-mail-turn-two").await;
+                let sent = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"track_id":other,"summary":"isolated","text":"new turn"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(sent["hop"], "1/6");
+                flow.end("system-mail-turn-two").await;
+                flow.fixture
+                    .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
+                    .await;
+                // Same current session, but no active execution: missing-turn cat still stamps reads.
+                let missing = incoming(&flow, other, 3).await;
+                let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":missing}))
+                    .await
+                    .unwrap();
+                assert_eq!(cat["next_hop"], Value::Null);
+                assert_eq!(cat["refused"], false);
+                assert!(
+                    sqlx::query_scalar::<_, Option<i64>>("SELECT read_at FROM mails WHERE id=?1")
+                        .bind(&missing)
+                        .fetch_one(flow.fixture.repo.pool())
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+                let refused = tool(
+                    &flow,
+                    "neige_mail_send",
+                    json!({"track_id":other,"summary":"missing","text":"no active turn"}),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(refused.data.unwrap()["refusal"], "turn_unrecorded");
+                flow.close().await;
+            })
         })
-    );
-    tx.rollback().await.unwrap();
-    // A released historical projection is a trap, never canonical Human evidence.
-    flow.fixture
-        .repo
-        .fixture_transcript_insert(
-            &flow.worker,
-            &flow.card,
-            &flow.track,
-            THREAD,
-            Some("old-projected-turn"),
-            None,
-            Some("userMessage"),
-            "item/completed",
-            "{}",
-            Some(r#"[{"presentation":"user","text":"old Human projection"}]"#),
-        )
         .await
-        .unwrap();
-    let first = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":other,"summary":"new turn","text":"old reads do not carry"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(first["hop"], "1/6");
-    let mail = incoming(&flow, other, 3).await;
-    let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
-        .await
-        .unwrap();
-    assert_eq!(cat["next_hop"], "4/6");
-    assert_eq!(cat["refused"], false);
-    let stamp: i64 = sqlx::query_scalar("SELECT read_at FROM mails WHERE id=?1")
-        .bind(&mail)
-        .fetch_one(flow.fixture.repo.pool())
-        .await
-        .unwrap();
-    tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
-        .await
-        .unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT read_at FROM mails WHERE id=?1")
-            .bind(&mail)
-            .fetch_one(flow.fixture.repo.pool())
-            .await
-            .unwrap(),
-        stamp
-    );
-    let sent = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":other,"summary":"system","text":"hop four"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(sent["hop"], "4/6");
-    let limit = incoming(&flow, other, 6).await;
-    let refused = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"mail_id":limit,"summary":"reply","text":"seventh"}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
-    let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":limit}))
-        .await
-        .unwrap();
-    assert_eq!(cat["next_hop"], Value::Null);
-    assert_eq!(cat["refused"], true);
-    let refused = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":other,"summary":"send","text":"seventh"}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
-    flow.report("Second real System turn").await;
-    flow.end("system-mail-turn").await;
-    let call = flow.next().await.unwrap();
-    flow.accept(&call, "system-mail-turn-two").await;
-    let sent = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":other,"summary":"isolated","text":"new turn"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(sent["hop"], "1/6");
-    flow.end("system-mail-turn-two").await;
-    flow.fixture
-        .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
-        .await;
-    // Same current session, but no active execution: missing-turn cat still stamps reads.
-    let missing = incoming(&flow, other, 3).await;
-    let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":missing}))
-        .await
-        .unwrap();
-    assert_eq!(cat["next_hop"], Value::Null);
-    assert_eq!(cat["refused"], false);
-    assert!(
-        sqlx::query_scalar::<_, Option<i64>>("SELECT read_at FROM mails WHERE id=?1")
-            .bind(&missing)
-            .fetch_one(flow.fixture.repo.pool())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    let refused = tool(
-        &flow,
-        "neige_mail_send",
-        json!({"track_id":other,"summary":"missing","text":"no active turn"}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(refused.data.unwrap()["refusal"], "turn_unrecorded");
-    flow.close().await;
+        .expect("independent write operation")
 }

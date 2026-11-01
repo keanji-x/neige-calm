@@ -1,5 +1,5 @@
 use super::gc_writer_tests::{Fixture, Phase, finish, start};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::model::now_ms;
 use crate::track_vcs;
 use std::time::Duration;
@@ -36,51 +36,60 @@ async fn object_sweep_restored_ancestor_without_head_change_preserves_objects() 
             .await
             .unwrap();
     let child = f.publish(&f.tree, Some(&ancestor)).await;
-    sqlx::query("DELETE FROM track_vcs_commits WHERE hash=?1")
-        .bind(&ancestor)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM track_vcs_commits WHERE hash=?1").bind(&ancestor))
         .await
         .unwrap();
     let orphan = f.orphan("independent garbage").await;
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let restored = commit_tree_at_tx(
-        &mut tx,
-        &f.track,
-        &ancestor_tree,
-        CommitTreeMeta {
-            parent_hash: None,
-            author: None,
-            event_id: None,
-            message: "published",
-            manifest_schema_version: 1,
-            created_at: ancestor_created,
-        },
-    )
-    .await
-    .unwrap();
-    // The owner restored the identical ancestor; retain the very same HEAD throughout the race.
-    sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
-        .bind(&child)
-        .bind(f.track.as_str())
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let restored = commit_tree_at_tx(
+                    &mut tx,
+                    &f.track,
+                    &ancestor_tree,
+                    CommitTreeMeta {
+                        parent_hash: None,
+                        author: None,
+                        event_id: None,
+                        message: "published",
+                        manifest_schema_version: 1,
+                        created_at: ancestor_created,
+                    },
+                )
+                .await
+                .unwrap();
+                // The owner restored the identical ancestor; retain the very same HEAD throughout the race.
+                sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
+                    .bind(&child)
+                    .bind(f.track.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                pause.release();
+                let deleted = finish(sweep).await.unwrap();
+                assert_eq!(restored, ancestor);
+                assert_eq!(
+                    track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
+                    Some(child)
+                );
+                assert_eq!(deleted, 1);
+                assert!(f.exists(&ancestor_tree.tree_hash).await);
+                for entry in ancestor_tree.manifest.entries.values() {
+                    assert!(f.exists(&entry.blob_hash).await);
+                }
+                assert!(!f.exists(&orphan).await);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    pause.release();
-    let deleted = finish(sweep).await.unwrap();
-    assert_eq!(restored, ancestor);
-    assert_eq!(
-        track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
-        Some(child)
-    );
-    assert_eq!(deleted, 1);
-    assert!(f.exists(&ancestor_tree.tree_hash).await);
-    for entry in ancestor_tree.manifest.entries.values() {
-        assert!(f.exists(&entry.blob_hash).await);
-    }
-    assert!(!f.exists(&orphan).await);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -89,15 +98,21 @@ async fn object_sweep_missing_and_wrong_kind_reachable_trees_fail_closed() {
         let f = Fixture::new().await;
         let orphan = f.orphan("must retain on corrupt roots").await;
         if wrong_kind {
-            sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
-                .bind(&f.tree.tree_hash)
-                .execute(f.repo.pool())
+            (f.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
+                        .bind(&f.tree.tree_hash),
+                )
                 .await
                 .unwrap();
         } else {
-            sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?1")
-                .bind(&f.tree.tree_hash)
-                .execute(f.repo.pool())
+            (f.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?1")
+                        .bind(&f.tree.tree_hash),
+                )
                 .await
                 .unwrap();
         }
@@ -121,10 +136,13 @@ async fn object_sweep_cached_tree_removed_by_other_sweep_still_requires_presence
         .await
         .unwrap();
     let old_tree_removed = !f.exists(&f.tree.tree_hash).await;
-    sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
-        .bind(&f.commit)
-        .bind(f.track.as_str())
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
+                .bind(&f.commit)
+                .bind(f.track.as_str()),
+        )
         .await
         .unwrap();
     let orphan = f.orphan("garbage after the other sweep").await;
@@ -141,10 +159,13 @@ async fn object_sweep_rechecks_candidate_grace_before_delete() {
     let orphan = f.orphan("refreshed creation stamp").await;
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
-        .bind(now_ms())
-        .bind(&orphan)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
+                .bind(now_ms())
+                .bind(&orphan),
+        )
         .await
         .unwrap();
     pause.release();
@@ -155,19 +176,30 @@ async fn object_sweep_rechecks_candidate_grace_before_delete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn object_sweep_without_candidates_never_waits_for_writer() {
     let f = Fixture::new().await;
-    let tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let pool = f.repo.db().clone();
-    let mut sweep =
-        tokio::spawn(async move { track_vcs::sweep_unreferenced_objects_once(&pool).await });
-    let completed = tokio::time::timeout(Duration::from_secs(1), &mut sweep).await;
-    tx.rollback().await.unwrap();
-    if completed.is_err() {
-        sweep.await.unwrap().unwrap();
-    }
-    assert!(
-        matches!(completed, Ok(Ok(Ok(0)))),
-        "no-delete sweep acquired writer: {completed:?}"
-    );
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let tx = write_session.begin_immediate().await.unwrap();
+                let pool = f.repo.db().clone();
+                let mut sweep =
+                    tokio::spawn(
+                        async move { track_vcs::sweep_unreferenced_objects_once(&pool).await },
+                    );
+                let completed = tokio::time::timeout(Duration::from_secs(1), &mut sweep).await;
+                tx.rollback().await.unwrap();
+                if completed.is_err() {
+                    sweep.await.unwrap().unwrap();
+                }
+                assert!(
+                    matches!(completed, Ok(Ok(Ok(0)))),
+                    "no-delete sweep acquired writer: {completed:?}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -223,9 +255,15 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
         pause.entered().await;
         let pool = f.repo.db().clone();
         let mut writer = tokio::spawn(async move {
-            let tx = begin_immediate_tx(&pool).await?;
-            tx.rollback().await?;
-            Ok::<_, crate::error::CalmError>(())
+            pool.writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let tx = write_session.begin_immediate().await?;
+                        tx.rollback().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await?
         });
         let released = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         pause.release();
@@ -312,22 +350,34 @@ async fn object_sweep_frontier_compressed_tree_budget_stays_outside_writer() {
     pause.release();
     pause.entered().await;
     let db = f.repo.db().clone();
-    let mut writer = tokio::spawn(async move {
-        let tx = begin_immediate_tx(&db).await?;
-        tx.rollback().await?;
-        Ok::<_, crate::error::CalmError>(())
-    });
-    let released = tokio::time::timeout(std::time::Duration::from_secs(1), &mut writer).await;
-    pause.release();
-    assert_eq!(finish(sweep).await.unwrap(), 1);
-    if released.is_err() {
-        writer.await.unwrap().unwrap();
+
+    {
+        let mut writer = tokio::spawn(async move {
+            let write_db = (db).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let tx = write_session_1.begin_immediate().await?;
+                        tx.rollback().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let released = tokio::time::timeout(std::time::Duration::from_secs(1), &mut writer).await;
+        pause.release();
+        assert_eq!(finish(sweep).await.unwrap(), 1);
+        if released.is_err() {
+            writer.await.unwrap().unwrap();
+        }
+        assert!(
+            matches!(released, Ok(Ok(Ok(())))),
+            "frontier decoded work retained writer: {released:?}"
+        );
+        assert!(!f.exists(&orphan).await);
     }
-    assert!(
-        matches!(released, Ok(Ok(Ok(())))),
-        "frontier decoded work retained writer: {released:?}"
-    );
-    assert!(!f.exists(&orphan).await);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -349,9 +399,12 @@ async fn object_sweep_later_failure_preserves_earlier_committed_batches() {
             .fetch_one(f.repo.pool())
             .await
             .unwrap();
-    sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
-        .bind(&f.tree.tree_hash)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET kind='blob' WHERE hash=?1")
+                .bind(&f.tree.tree_hash),
+        )
         .await
         .unwrap();
     pause.release();
@@ -389,15 +442,18 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
     let head = f.publish(&f.tree, Some(&middle)).await;
     // Deliberately seed a finite cyclic topology to pin corruption-safe traversal. The
     // original root and HEAD now have identical (parent, tree) state but distinct commit IDs.
-    sqlx::query("UPDATE track_vcs_commits SET parent_hash=?1 WHERE hash=?2")
-        .bind(&middle)
-        .bind(&f.commit)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_commits SET parent_hash=?1 WHERE hash=?2")
+                .bind(&middle)
+                .bind(&f.commit),
+        )
         .await
         .unwrap();
-    sqlx::query("DELETE FROM track_vcs_commits WHERE hash=?1")
-        .bind(&ancestor)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM track_vcs_commits WHERE hash=?1").bind(&ancestor))
         .await
         .unwrap();
     for tree in [&f.tree, &ancestor_tree, &middle_tree] {
@@ -406,43 +462,52 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
     let orphan = f.orphan("independent cyclic graph garbage").await;
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let restored = commit_tree_at_tx(
-        &mut tx,
-        &f.track,
-        &ancestor_tree,
-        CommitTreeMeta {
-            parent_hash: Some(&f.commit),
-            author: None,
-            event_id: None,
-            message: "published",
-            manifest_schema_version: 1,
-            created_at: created,
-        },
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
-        .bind(&head)
-        .bind(f.track.as_str())
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let restored = commit_tree_at_tx(
+                    &mut tx,
+                    &f.track,
+                    &ancestor_tree,
+                    CommitTreeMeta {
+                        parent_hash: Some(&f.commit),
+                        author: None,
+                        event_id: None,
+                        message: "published",
+                        manifest_schema_version: 1,
+                        created_at: created,
+                    },
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
+                    .bind(&head)
+                    .bind(f.track.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                pause.release();
+                assert_eq!(finish(sweep).await.unwrap(), 1);
+                assert_eq!(restored, ancestor);
+                assert_eq!(
+                    track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
+                    Some(head)
+                );
+                for tree in [&f.tree, &ancestor_tree, &middle_tree] {
+                    assert!(f.exists(&tree.tree_hash).await);
+                    for entry in tree.manifest.entries.values() {
+                        assert!(f.exists(&entry.blob_hash).await);
+                    }
+                }
+                assert!(!f.exists(&orphan).await);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    pause.release();
-    assert_eq!(finish(sweep).await.unwrap(), 1);
-    assert_eq!(restored, ancestor);
-    assert_eq!(
-        track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
-        Some(head)
-    );
-    for tree in [&f.tree, &ancestor_tree, &middle_tree] {
-        assert!(f.exists(&tree.tree_hash).await);
-        for entry in tree.manifest.entries.values() {
-            assert!(f.exists(&entry.blob_hash).await);
-        }
-    }
-    assert!(!f.exists(&orphan).await);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -454,77 +519,86 @@ async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let f = Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let mut entries = BTreeMap::new();
-    for n in 0..1024 {
-        let text = format!("retained sparse-GC document {n}");
-        let hash = put_blob(&mut tx, "blob", text.as_bytes()).await.unwrap();
-        entries.insert(
-            format!("documents/{n}.md"),
-            ManifestEntry {
-                blob_hash: hash,
-                byte_len: text.len() as u64,
-                content_type: "text/markdown".into(),
-            },
-        );
-    }
-    let live = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut entries = BTreeMap::new();
+                for n in 0..1024 {
+                    let text = format!("retained sparse-GC document {n}");
+                    let hash = put_blob(&mut tx, "blob", text.as_bytes()).await.unwrap();
+                    entries.insert(
+                        format!("documents/{n}.md"),
+                        ManifestEntry {
+                            blob_hash: hash,
+                            byte_len: text.len() as u64,
+                            content_type: "text/markdown".into(),
+                        },
+                    );
+                }
+                let live = crate::track_vcs::store::store_tree(&mut tx, 1, entries, now_ms())
+                    .await
+                    .unwrap();
+                commit_tree(
+                    &mut tx,
+                    &f.track,
+                    None,
+                    &live,
+                    None,
+                    "sparse orphan fixture",
+                    1,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let mut orphans = BTreeSet::new();
+                for n in 0..16 {
+                    orphans.insert(f.orphan(&format!("scattered old orphan {n}")).await);
+                }
+                let hashes: Vec<String> =
+                    sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
+                        .fetch_all(f.repo.pool())
+                        .await
+                        .unwrap();
+                // Prove this fixture exercises sparse candidates across multiple current 256-row index
+                // pages. The performance assertion below counts actual production validation attempts.
+                let pages: BTreeSet<_> = hashes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hash)| orphans.contains(*hash))
+                    .map(|(rank, _)| rank / 256)
+                    .collect();
+                assert!(
+                    pages.len() >= 3,
+                    "orphans must be scattered across multiple live-object pages"
+                );
+                let counter = Arc::new(AtomicUsize::new(0));
+                let deleted = DELETE_VALIDATIONS
+                    .scope(
+                        counter.clone(),
+                        track_vcs::sweep_unreferenced_objects_once(f.repo.db()),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(deleted, 16);
+                assert_eq!(
+                    counter.load(Ordering::SeqCst),
+                    1,
+                    "a sparse candidate batch must not revalidate ancestry once per index page"
+                );
+                assert!(f.exists(&live.tree_hash).await);
+                for entry in live.manifest.entries.values() {
+                    assert!(f.exists(&entry.blob_hash).await);
+                }
+                for orphan in orphans {
+                    assert!(!f.exists(&orphan).await);
+                }
+            })
+        })
         .await
-        .unwrap();
-    commit_tree(
-        &mut tx,
-        &f.track,
-        None,
-        &live,
-        None,
-        "sparse orphan fixture",
-        1,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let mut orphans = BTreeSet::new();
-    for n in 0..16 {
-        orphans.insert(f.orphan(&format!("scattered old orphan {n}")).await);
-    }
-    let hashes: Vec<String> =
-        sqlx::query_scalar("SELECT hash FROM track_vcs_objects ORDER BY hash")
-            .fetch_all(f.repo.pool())
-            .await
-            .unwrap();
-    // Prove this fixture exercises sparse candidates across multiple current 256-row index
-    // pages. The performance assertion below counts actual production validation attempts.
-    let pages: BTreeSet<_> = hashes
-        .iter()
-        .enumerate()
-        .filter(|(_, hash)| orphans.contains(*hash))
-        .map(|(rank, _)| rank / 256)
-        .collect();
-    assert!(
-        pages.len() >= 3,
-        "orphans must be scattered across multiple live-object pages"
-    );
-    let counter = Arc::new(AtomicUsize::new(0));
-    let deleted = DELETE_VALIDATIONS
-        .scope(
-            counter.clone(),
-            track_vcs::sweep_unreferenced_objects_once(f.repo.db()),
-        )
-        .await
-        .unwrap();
-    assert_eq!(deleted, 16);
-    assert_eq!(
-        counter.load(Ordering::SeqCst),
-        1,
-        "a sparse candidate batch must not revalidate ancestry once per index page"
-    );
-    assert!(f.exists(&live.tree_hash).await);
-    for entry in live.manifest.entries.values() {
-        assert!(f.exists(&entry.blob_hash).await);
-    }
-    for orphan in orphans {
-        assert!(!f.exists(&orphan).await);
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test]

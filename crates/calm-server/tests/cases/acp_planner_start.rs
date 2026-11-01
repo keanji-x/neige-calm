@@ -95,10 +95,13 @@ async fn acp_two_owner_decoy_is_untouched_by_bound_start_interrupt_and_shutdown(
         snapshot.projection_client_id = Some(calm_server::harness::queue::QueueEntryId::from_wire(
             "shared-key".into(),
         ));
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-            .bind(&runtime.id)
-            .bind(serde_json::to_string(&snapshot).unwrap())
-            .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+        (stack.repo().sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                    .bind(&runtime.id)
+                    .bind(serde_json::to_string(&snapshot).unwrap()),
+            )
             .await
             .unwrap();
     }

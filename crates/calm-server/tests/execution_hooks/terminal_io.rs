@@ -305,57 +305,66 @@ async fn renderer_drained_waits_for_output_eof_and_feeds_tail_before_exit() {
     let entry = f.state.terminal_renderer.get(&term.id).unwrap();
     assert!(!entry.observable(), "cold attach has no geometry history");
     let mut events = entry.subscribe();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
-    tx.commit().await.unwrap();
-    f.engine.drive(ticket.committed());
-    f.engine.wait_settled(&id).await.unwrap();
-    assert!(matches!(
-        f.engine.output(&id, None).await.unwrap(),
-        ExecutionReply::Observation {
-            state: ExecutionState::Drained { .. },
-            output_end: OutputEnd::Open,
-            ..
-        }
-    ));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(150), async {
-            loop {
-                if matches!(
-                    events.recv().await.unwrap(),
-                    DaemonMsg::TerminalExited { .. }
-                ) {
-                    break;
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
+                tx.commit().await.unwrap();
+                f.engine.drive(ticket.committed());
+                f.engine.wait_settled(&id).await.unwrap();
+                assert!(matches!(
+                    f.engine.output(&id, None).await.unwrap(),
+                    ExecutionReply::Observation {
+                        state: ExecutionState::Drained { .. },
+                        output_end: OutputEnd::Open,
+                        ..
+                    }
+                ));
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(150), async {
+                        loop {
+                            if matches!(
+                                events.recv().await.unwrap(),
+                                DaemonMsg::TerminalExited { .. }
+                            ) {
+                                break;
+                            }
+                        }
+                    })
+                    .await
+                    .is_err(),
+                    "Drained must not overtake output EOF"
+                );
+                stdout.write_all(b"late-tail").unwrap();
+                drop(stdout);
+                wait(|| async { entry.exit.lock().unwrap().is_some() }).await;
+                let exit = entry.exit.lock().unwrap().clone().unwrap();
+                {
+                    let plane = entry.handle.render_plane.lock().unwrap();
+                    assert_eq!(plane.transcript().snapshot(), b"readylate-tail");
+                    assert_eq!(
+                        exit.pty_seq,
+                        plane.pty_seq(),
+                        "exit cursor includes the final output"
+                    );
                 }
-            }
+                assert!(
+                    f.repo
+                        .terminal_get(&term.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .pty_output
+                        .is_empty()
+                );
+                server.abort();
+            })
         })
         .await
-        .is_err(),
-        "Drained must not overtake output EOF"
-    );
-    stdout.write_all(b"late-tail").unwrap();
-    drop(stdout);
-    wait(|| async { entry.exit.lock().unwrap().is_some() }).await;
-    let exit = entry.exit.lock().unwrap().clone().unwrap();
-    {
-        let plane = entry.handle.render_plane.lock().unwrap();
-        assert_eq!(plane.transcript().snapshot(), b"readylate-tail");
-        assert_eq!(
-            exit.pty_seq,
-            plane.pty_seq(),
-            "exit cursor includes the final output"
-        );
-    }
-    assert!(
-        f.repo
-            .terminal_get(&term.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .pty_output
-            .is_empty()
-    );
-    server.abort();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -431,15 +440,18 @@ async fn settled_worker_stopped_typed_survives_orphan_tick_and_mcp_reads_tail() 
             .fetch_one(f.repo.pool())
             .await
             .unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&f.track)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&f.track),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?")
-        .bind(&term.id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?").bind(&term.id))
         .await
         .unwrap();
     calm_server::terminal_sweeper::end_settled_worker_session(
@@ -470,78 +482,87 @@ async fn settled_worker_stopped_typed_survives_orphan_tick_and_mcp_reads_tail() 
         "OutputLog remains the only byte owner"
     );
     let (caller, caller_term) = f.terminal().await;
-    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
-        .bind(caller.id.as_str())
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET role='planner' WHERE id=?").bind(caller.id.as_str()))
         .await
         .unwrap();
     let caller_session = new_id();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: caller_session.clone(),
-            card_id: caller.id.to_string(),
-            kind: WorkerSessionKind::Terminal,
-            agent_provider: None,
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(caller_term.id),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let entry = f.state.terminal_renderer.get(&term.id).unwrap();
-    assert!(
-        Arc::ptr_eq(&original_entry, &entry),
-        "settled-worker stop retains the lifecycle owner until Retired"
-    );
-    wait(|| async { entry.exit.lock().unwrap().is_some() }).await;
-    assert!(
-        entry.observable(),
-        "settled-worker retains its final screen"
-    );
-    f.state.terminal_renderer.drop_entry(&term.id).await;
-    assert!(
-        Arc::ptr_eq(&entry, &f.state.terminal_renderer.get(&term.id).unwrap()),
-        "generic stop/drop cannot detach a typed execution before Retired"
-    );
-    f.state.terminal_renderer.forget_entry_for_test(&term.id);
-    let interaction = calm_server::terminal_interaction::TerminalInteraction::new(
-        f.repo.clone(),
-        f.state.terminal_renderer.clone(),
-        calm_server::provider_registry::WorkerProviderRegistry::from_entries([]),
-    );
-    let identity = calm_server::mcp_server::registry::ToolCallIdentity {
-        card_id: caller.id.to_string(),
-        role: CardRole::Planner,
-        provider: calm_types::runtime::AgentProvider::Codex,
-        session_id: caller_session,
-        track_id: Some(f.track.clone()),
-        area_id: f.area.clone(),
-        thread_id: "card-bound".into(),
-    };
-    let view = interaction
-        .observe(
-            &identity,
-            &calm_server::terminal_interaction::Target::Terminal(term.id.clone()),
-            0,
-            Default::default(),
-        )
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: caller_session.clone(),
+                        card_id: caller.id.to_string(),
+                        kind: WorkerSessionKind::Terminal,
+                        agent_provider: None,
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(caller_term.id),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let entry = f.state.terminal_renderer.get(&term.id).unwrap();
+                assert!(
+                    Arc::ptr_eq(&original_entry, &entry),
+                    "settled-worker stop retains the lifecycle owner until Retired"
+                );
+                wait(|| async { entry.exit.lock().unwrap().is_some() }).await;
+                assert!(
+                    entry.observable(),
+                    "settled-worker retains its final screen"
+                );
+                f.state.terminal_renderer.drop_entry(&term.id).await;
+                assert!(
+                    Arc::ptr_eq(&entry, &f.state.terminal_renderer.get(&term.id).unwrap()),
+                    "generic stop/drop cannot detach a typed execution before Retired"
+                );
+                f.state.terminal_renderer.forget_entry_for_test(&term.id);
+                let interaction = calm_server::terminal_interaction::TerminalInteraction::new(
+                    f.repo.clone(),
+                    f.state.terminal_renderer.clone(),
+                    calm_server::provider_registry::WorkerProviderRegistry::from_entries([]),
+                );
+                let identity = calm_server::mcp_server::registry::ToolCallIdentity {
+                    card_id: caller.id.to_string(),
+                    role: CardRole::Planner,
+                    provider: calm_types::runtime::AgentProvider::Codex,
+                    session_id: caller_session,
+                    track_id: Some(f.track.clone()),
+                    area_id: f.area.clone(),
+                    thread_id: "card-bound".into(),
+                };
+                let view = interaction
+                    .observe(
+                        &identity,
+                        &calm_server::terminal_interaction::Target::Terminal(term.id.clone()),
+                        0,
+                        Default::default(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(view["source"], "persisted_exit");
+                assert_eq!(view["pty_output"].as_str().unwrap().len(), 8192);
+                assert!(view["pty_output"].as_str().unwrap().ends_with("END"));
+                assert_eq!(view["pty_output_truncated"], true);
+                assert_eq!(view["controllable"], false);
+                assert_eq!(f.desired(&id).await, "stop");
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(view["source"], "persisted_exit");
-    assert_eq!(view["pty_output"].as_str().unwrap().len(), 8192);
-    assert!(view["pty_output"].as_str().unwrap().ends_with("END"));
-    assert_eq!(view["pty_output_truncated"], true);
-    assert_eq!(view["controllable"], false);
-    assert_eq!(f.desired(&id).await, "stop");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -573,43 +594,52 @@ async fn delete_rollback_retains_renderer_and_recover_retires_committed_delete()
             == b"retained-screen"
     })
     .await;
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
-    assert_eq!(deleted.retire, Some(id.clone()));
-    tx.rollback().await.unwrap();
-    assert_eq!(f.desired(&id).await, "run");
-    assert!(Arc::ptr_eq(
-        &entry,
-        &f.state.terminal_renderer.get(&term.id).unwrap()
-    ));
-    assert_eq!(
-        entry
-            .handle
-            .render_plane
-            .lock()
-            .unwrap()
-            .transcript()
-            .snapshot(),
-        b"retained-screen"
-    );
-    assert!(entry.exit.lock().unwrap().is_none());
-    // Commit the authoritative deletion but lose its ticket, as a crash at commit would.
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
-    tx.commit().await.unwrap();
-    assert!(f.repo.terminal_get(&term.id).await.unwrap().is_none());
-    assert_eq!(f.engine.recover().await.scheduled, 1);
-    f.retired(&id).await;
-    wait(|| async { f.state.terminal_renderer.get(&term.id).is_none() }).await;
-    wait(|| async { entry.tasks_finished_for_test() }).await;
-    assert!(
-        matches!(
-            f.engine.output(&id, None).await.unwrap(),
-            ExecutionReply::Retired(_)
-        ),
-        "retired execution exposes its tombstone, never output bytes"
-    );
-    server.abort();
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
+                assert_eq!(deleted.retire, Some(id.clone()));
+                tx.rollback().await.unwrap();
+                assert_eq!(f.desired(&id).await, "run");
+                assert!(Arc::ptr_eq(
+                    &entry,
+                    &f.state.terminal_renderer.get(&term.id).unwrap()
+                ));
+                assert_eq!(
+                    entry
+                        .handle
+                        .render_plane
+                        .lock()
+                        .unwrap()
+                        .transcript()
+                        .snapshot(),
+                    b"retained-screen"
+                );
+                assert!(entry.exit.lock().unwrap().is_none());
+                // Commit the authoritative deletion but lose its ticket, as a crash at commit would.
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let _deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
+                tx.commit().await.unwrap();
+                assert!(f.repo.terminal_get(&term.id).await.unwrap().is_none());
+                assert_eq!(f.engine.recover().await.scheduled, 1);
+                f.retired(&id).await;
+                wait(|| async { f.state.terminal_renderer.get(&term.id).is_none() }).await;
+                wait(|| async { entry.tasks_finished_for_test() }).await;
+                assert!(
+                    matches!(
+                        f.engine.output(&id, None).await.unwrap(),
+                        ExecutionReply::Retired(_)
+                    ),
+                    "retired execution exposes its tombstone, never output bytes"
+                );
+                server.abort();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

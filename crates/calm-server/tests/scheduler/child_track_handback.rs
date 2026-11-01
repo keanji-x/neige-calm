@@ -17,10 +17,13 @@ async fn child_track_met_result_uses_kernel_report_and_latest_candidate() {
     let mut doc = calm_server::track_report_doc::ReportDoc::from_payload(&payload);
     doc.increment_doc_rev().unwrap();
     doc.increment_doc_rev().unwrap();
-    sqlx::query("UPDATE cards SET body_crdt=?1 WHERE id=?2")
-        .bind(doc.to_bytes())
-        .bind(report.id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET body_crdt=?1 WHERE id=?2")
+                .bind(doc.to_bytes())
+                .bind(report.id.as_str()),
+        )
         .await
         .unwrap();
     let expected = crate::support::child_track::seed_candidates(

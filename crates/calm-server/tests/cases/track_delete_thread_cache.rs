@@ -362,13 +362,15 @@ async fn a_late_thread_started_during_a_track_delete_leaves_no_mapping() {
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    let updated =
-        sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
-            .bind(late_thread)
-            .bind(&session_id)
-            .execute(b.repo.pool())
-            .await
-            .unwrap();
+    let updated = (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
+                .bind(late_thread)
+                .bind(&session_id),
+        )
+        .await
+        .unwrap();
     assert_eq!(updated.rows_affected(), 1);
 
     let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
@@ -510,22 +512,25 @@ async fn a_daemon_reconnect_would_not_resume_a_deleted_cards_thread() {
 /// One terminal for `card_id`, alive: `PendingThreadStartRegistry::is_terminal_alive` drops the front entry otherwise.
 async fn insert_live_terminal(b: &Boot, card_id: &str, terminal_id: &str) {
     let theme = calm_server::routes::theme::RequestTheme::default_dark();
-    sqlx::query(
-        r#"INSERT INTO terminals
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO terminals
                (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
            VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
-    )
-    .bind(terminal_id)
-    .bind(card_id)
-    .bind("bash")
-    .bind("/workspace")
-    .bind("{}")
-    .bind(theme.fg_arg())
-    .bind(theme.bg_arg())
-    .bind(0_i64)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(terminal_id)
+            .bind(card_id)
+            .bind("bash")
+            .bind("/workspace")
+            .bind("{}")
+            .bind(theme.fg_arg())
+            .bind(theme.bg_arg())
+            .bind(0_i64),
+        )
+        .await
+        .unwrap();
 }
 
 /// The Card of `track_id` that owns a live worker session — the only Card the pending registry can bind.
@@ -680,13 +685,15 @@ async fn seal_bait_thread(b: &Boot, track_id: &str, thread_id: &str) {
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
-    let updated =
-        sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
-            .bind(thread_id)
-            .bind(&session_id)
-            .execute(b.repo.pool())
-            .await
-            .unwrap();
+    let updated = (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider='codex', thread_id=?1 WHERE id=?2")
+                .bind(thread_id)
+                .bind(&session_id),
+        )
+        .await
+        .unwrap();
     assert_eq!(updated.rows_affected(), 1);
 }
 

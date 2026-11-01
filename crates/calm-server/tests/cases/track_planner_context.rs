@@ -1,7 +1,7 @@
 //! The production context projector, durable sessions and task lifecycle.
 use super::track_activity_fixture::{Fx, fx};
 use calm_server::{
-    db::sqlite::{begin_immediate_tx, session_set_handle_state_tx},
+    db::sqlite::session_set_handle_state_tx,
     harness::HarnessSnapshot,
     model::CardRole,
     session_projection_repo::{WorkerSessionKind, WorkerSessionState},
@@ -29,13 +29,26 @@ async fn payload(fx: &Fx, track: &str) -> Value {
 }
 
 async fn persist(fx: &Fx, value: Value) {
-    let mut tx = begin_immediate_tx(fx.db()).await.unwrap();
-    assert!(
-        session_set_handle_state_tx(&mut tx, &"context-session".to_string(), Some(value))
-            .await
-            .unwrap()
-    );
-    tx.commit().await.unwrap();
+    let write_db = (fx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    session_set_handle_state_tx(
+                        &mut tx,
+                        &"context-session".to_string(),
+                        Some(value)
+                    )
+                    .await
+                    .unwrap()
+                );
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn reading() -> Value {

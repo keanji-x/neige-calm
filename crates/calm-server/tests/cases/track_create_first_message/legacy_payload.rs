@@ -73,106 +73,110 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
         activations.is_empty(),
         "the driver fence must hold activation before persistence"
     );
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
-        &mut tx,
-        &b.area_id,
-        "idem-digest",
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
-        planner_card_id: card,
-        ..
-    } = &original.acknowledgement;
-    tx.commit().await.unwrap();
-    let activated = calm_server::test_seams::PausePoint::default();
-    calm_server::test_seams::install_pause_for_test(
-        "canonical-human-wake-finished",
-        card,
-        activated.clone(),
-    );
-    drop(start_guard);
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        activated.entered.notified(),
-    )
-    .await
-    .expect("canonical activation must finish");
-    activated.release.notify_one();
-    let (after, activations) = start_payloads(&b).await;
-    assert_eq!(
-        after, payloads,
-        "accepted Human body must not add or change V1 start bytes"
-    );
-    assert_eq!(
-        activations.len(),
-        1,
-        "the real wake must persist its own activation"
-    );
-    assert_eq!(&activations[0].card_id, card);
-    assert_eq!(
-        activations[0].worker_session_id,
-        b.active_runtime_of_card(card).await
-    );
-    assert_eq!(original.source_user_id, LEGACY_OWNER_USER_ID);
-    assert_eq!(original.create_request_sha256.len(), 64);
-    let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
-        track_id,
-        planner_card_id,
-        first_message,
-        ..
-    } = &original.acknowledgement;
-    assert_eq!(track_id, body["id"].as_str().unwrap());
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    let author =
-        calm_server::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
-    assert_eq!(author.card_id, *planner_card_id);
-    assert_eq!(
-        author.author,
-        calm_types::conversation::MessageAuthor::AuthenticatedHuman {
-            registered_user_id: LEGACY_OWNER_USER_ID.into(),
-        }
-    );
-    let revision = calm_server::db::sqlite::conversation::revision_tx(&mut tx, first_message)
+        let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+            &mut tx,
+            &b.area_id,
+            "idem-digest",
+        )
         .await
+        .unwrap()
         .unwrap();
-    assert!(
-        matches!(revision.payload, calm_types::conversation::PrivateHistoryPayload::Present { value } if value.text == "ship the thing")
-    );
-    tx.commit().await.unwrap();
-    let (status, replay) = b
-        .create_track(Some("idem-digest"), Some("ship the thing"))
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{replay}");
-    assert_eq!(replay["id"], body["id"]);
-    let (replayed, _) = start_payloads(&b).await;
-    assert_eq!(
-        replayed, payloads,
-        "Human replay must also leave V1 bytes unchanged"
-    );
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+        let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+            planner_card_id: card,
+            ..
+        } = &original.acknowledgement;
+        tx.commit().await.unwrap();
+        let activated = calm_server::test_seams::PausePoint::default();
+        calm_server::test_seams::install_pause_for_test(
+            "canonical-human-wake-finished",
+            card,
+            activated.clone(),
+        );
+        drop(start_guard);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            activated.entered.notified(),
+        )
         .await
+        .expect("canonical activation must finish");
+        activated.release.notify_one();
+        let (after, activations) = start_payloads(&b).await;
+        assert_eq!(
+            after, payloads,
+            "accepted Human body must not add or change V1 start bytes"
+        );
+        assert_eq!(
+            activations.len(),
+            1,
+            "the real wake must persist its own activation"
+        );
+        assert_eq!(&activations[0].card_id, card);
+        assert_eq!(
+            activations[0].worker_session_id,
+            b.active_runtime_of_card(card).await
+        );
+        assert_eq!(original.source_user_id, LEGACY_OWNER_USER_ID);
+        assert_eq!(original.create_request_sha256.len(), 64);
+        let calm_server::db::sqlite::conversation::HumanTrackCreationAck::V1 {
+            track_id,
+            planner_card_id,
+            first_message,
+            ..
+        } = &original.acknowledgement;
+        assert_eq!(track_id, body["id"].as_str().unwrap());
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        let author =
+            calm_server::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
+                .await
+                .unwrap();
+        assert_eq!(author.card_id, *planner_card_id);
+        assert_eq!(
+            author.author,
+            calm_types::conversation::MessageAuthor::AuthenticatedHuman {
+                registered_user_id: LEGACY_OWNER_USER_ID.into(),
+            }
+        );
+        let revision = calm_server::db::sqlite::conversation::revision_tx(&mut tx, first_message)
+            .await
+            .unwrap();
+        assert!(
+            matches!(revision.payload, calm_types::conversation::PrivateHistoryPayload::Present { value } if value.text == "ship the thing")
+        );
+        tx.commit().await.unwrap();
+        let (status, replay) = b
+            .create_track(Some("idem-digest"), Some("ship the thing"))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{replay}");
+        assert_eq!(replay["id"], body["id"]);
+        let (replayed, _) = start_payloads(&b).await;
+        assert_eq!(
+            replayed, payloads,
+            "Human replay must also leave V1 bytes unchanged"
+        );
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
+            &mut tx,
+            &b.area_id,
+            "idem-digest",
+        )
+        .await
+        .unwrap()
         .unwrap();
-    let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
-        &mut tx,
-        &b.area_id,
-        "idem-digest",
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        retained, original,
-        "the original fingerprints and ACK survive replay"
-    );
-    tx.commit().await.unwrap();
-    b.shutdown_harnesses().await;
+        assert_eq!(
+            retained, original,
+            "the original fingerprints and ACK survive replay"
+        );
+        tx.commit().await.unwrap();
+        b.shutdown_harnesses().await;
+
+    })).await.expect("independent write operation")
 }

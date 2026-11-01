@@ -21,28 +21,38 @@ pub(super) async fn ensure_planner_card(repo: &SqlxRepo, track_id: &str) {
     if exists {
         return;
     }
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            title: None,
-            track_id: track_id.into(),
-            kind: "codex".into(),
-            sort: None,
-            payload: planner_harness_card_payload(
-                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-                None,
-                crate::session_projection_repo::AgentProvider::Codex,
-            ),
-        },
-        CardRole::Planner,
-        false,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        title: None,
+                        track_id: track_id.into(),
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: planner_harness_card_payload(
+                            &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                .unwrap(),
+                            None,
+                            crate::session_projection_repo::AgentProvider::Codex,
+                        ),
+                    },
+                    CardRole::Planner,
+                    false,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn planner_provider_of(repo: &SqlxRepo, track_id: &str) -> Value {
@@ -62,15 +72,18 @@ async fn a_child_planner_inherits_its_parent_planners_provider() {
     for provider in ["claude", "codex"] {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
-        sqlx::query(
-            "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) \
              WHERE track_id=?2 AND role='planner'",
-        )
-        .bind(provider)
-        .bind(&parent)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(provider)
+                .bind(&parent),
+            )
+            .await
+            .unwrap();
         let task = seed_task(&repo, &parent, false).await;
         let child = create_child_from_task(&repo, &parent, &task.id).await;
         assert_eq!(planner_provider_of(&repo, &child).await, provider);
@@ -81,14 +94,17 @@ async fn a_child_planner_inherits_its_parent_planners_provider() {
 async fn a_parent_planner_without_a_provider_refuses_the_child() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let parent = seed_parent(&repo, false).await;
-    sqlx::query(
-        "UPDATE cards SET payload=json_remove(payload,'$.planner_provider') \
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_remove(payload,'$.planner_provider') \
          WHERE track_id=?1 AND role='planner'",
-    )
-    .bind(&parent)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&parent),
+        )
+        .await
+        .unwrap();
     let task = seed_task(&repo, &parent, false).await;
     let input = serde_json::to_value(payload(&task)).unwrap();
     let adapter = ChildTrackAdapter::new(
@@ -101,15 +117,19 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
         std::path::PathBuf::from("/unused-objective-checkouts"),
         workspace_runtime::sweep::TeardownTargets::default(),
     );
-    let mut tx = repo.pool().begin().await.unwrap();
-    let error = adapter
-        .prepare_tx(&mut tx, &input, &operation(input.clone()))
-        .await
-        .expect_err("no provider to inherit");
-    assert!(
-        matches!(&error, CalmError::Conflict(message) if message.contains("planner_provider")),
-        "{error:?}"
-    );
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .expect_err("no provider to inherit");
+        assert!(
+            matches!(&error, CalmError::Conflict(message) if message.contains("planner_provider")),
+            "{error:?}"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -117,16 +137,19 @@ async fn child_track_config_inherits_permission_and_selection() {
     for mode in ["ask", "full"] {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
-        sqlx::query(
-            "UPDATE cards SET payload=json_set(payload, \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload, \
              '$.permission_mode',?1,'$.model','parent-model','$.reasoning_effort','high') \
              WHERE track_id=?2 AND role='planner'",
-        )
-        .bind(mode)
-        .bind(&parent)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(mode)
+                .bind(&parent),
+            )
+            .await
+            .unwrap();
         let task = seed_task(&repo, &parent, false).await;
         let child = create_child_from_task(&repo, &parent, &task.id).await;
         let stored: String =
@@ -250,10 +273,13 @@ async fn child_attached_admission_refuses_live_core_worktree_redirect_without_ch
     assert!(!owned.as_path().starts_with(test_workspace_root()));
     let parent = parent_with_plan(&repo, source.path(), TrackWorkspacePlan::AttachedFromCwd).await;
     let owner = parent_with_plan(&repo, owned.as_path(), TrackWorkspacePlan::AttachedFromCwd).await;
-    sqlx::query("UPDATE tracks SET workspace_worktree_path=?1 WHERE id=?2")
-        .bind(owned.as_path().to_str().unwrap())
-        .bind(owner.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET workspace_worktree_path=?1 WHERE id=?2")
+                .bind(owned.as_path().to_str().unwrap())
+                .bind(owner.id.as_str()),
+        )
         .await
         .unwrap();
     git(
@@ -342,41 +368,50 @@ async fn parent_with_plan(
     cwd: &std::path::Path,
     plan: TrackWorkspacePlan,
 ) -> crate::model::Track {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = crate::db::sqlite::area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        crate::model::NewArea {
-            name: "parent".into(),
-            color: "#000".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let parent = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "parent".into(),
-            sort: None,
-            cwd: cwd.to_str().unwrap().into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &plan,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    ensure_planner_card(repo, parent.id.as_str()).await;
-    parent
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = crate::db::sqlite::area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    crate::model::NewArea {
+                        name: "parent".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let parent = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "parent".into(),
+                        sort: None,
+                        cwd: cwd.to_str().unwrap().into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &plan,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                ensure_planner_card(repo, parent.id.as_str()).await;
+                parent
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Only inject a filesystem obstacle at the declared destination. Every lifecycle method
@@ -555,16 +590,19 @@ async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
         let parent_cwd = std::path::PathBuf::from(parent.workspace.agent_cwd());
         let frozen_head = git(&parent_cwd, &["rev-parse", "HEAD"]);
         let parent = parent.id.to_string();
-        sqlx::query(
-            "UPDATE cards SET payload=json_set(payload, \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload, \
             '$.permission_mode','full','$.planner_provider','claude','$.model',null, \
             '$.model_ever_set',json('true'),'$.reasoning_effort','high', \
             '$.reasoning_effort_ever_set',json('true')) WHERE track_id=?1 AND role='planner'",
-        )
-        .bind(&parent)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(&parent),
+            )
+            .await
+            .unwrap();
         let mut expected = stored_planner(&repo, &parent).await;
         if declared {
             expected["model"] = json!("sonnet");
@@ -597,16 +635,19 @@ async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
         let worktree = output.data["cwd"].as_str().unwrap().to_owned();
         assert_ne!(worktree, parent_cwd.to_str().unwrap());
         // Change every parent choice, and its committed HEAD, while the child waits.
-        sqlx::query(
-            "UPDATE cards SET payload=json_set(payload,'$.permission_mode','never', \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE cards SET payload=json_set(payload,'$.permission_mode','never', \
             '$.planner_provider','codex','$.model','changed','$.reasoning_effort','low', \
             '$.model_ever_set',json('false'),'$.reasoning_effort_ever_set',json('false')) \
             WHERE track_id=?1 AND role='planner'",
-        )
-        .bind(&parent)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(&parent),
+            )
+            .await
+            .unwrap();
         git(
             &parent_cwd,
             &[
@@ -661,17 +702,26 @@ async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
         assert_eq!(children, 1);
         // The actual worker lease preparation reads the child's stored workspace and task.
         let worker = seed_task(&repo, &child, false).await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        let plan = crate::operation::workspace_lease::worker::prepare_worker_lease_tx(
-            &mut tx,
-            &child,
-            &worker.id,
-            &test_workspace_root(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(plan.path.to_str().unwrap(), worktree);
-        tx.rollback().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let plan = crate::operation::workspace_lease::worker::prepare_worker_lease_tx(
+                        &mut tx,
+                        &child,
+                        &worker.id,
+                        &test_workspace_root(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(plan.path.to_str().unwrap(), worktree);
+                    tx.rollback().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 

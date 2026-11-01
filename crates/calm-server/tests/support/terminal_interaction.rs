@@ -111,186 +111,190 @@ impl Harness {
         let roles = CardRoleCache::new();
         let areas = TrackAreaCache::new();
         repo.seed_track_area_cache(&areas).await.unwrap();
-        let mut tx = sql.pool().begin().await.unwrap();
-        let (card_id, session_id) = (new_id(), new_id());
-        card_create_with_id_tx(
-            &mut tx,
-            card_id.clone(),
-            calm_server::model::NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: json!({"planner_provider":"codex"}),
-            },
-            CardRole::Planner,
-            false,
-            &roles,
-        )
-        .await
-        .unwrap();
-        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-        card_mcp_token_set_tx(
-            &mut tx,
-            &card_id,
-            &calm_server::mcp_server::auth::hash_token(token.as_str()),
-        )
-        .await
-        .unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
-                session_id.clone(),
+        let write_db = (sql.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let (card_id, session_id) = (new_id(), new_id());
+            card_create_with_id_tx(
+                &mut tx,
                 card_id.clone(),
-                calm_server::session_projection_repo::AgentProvider::Codex,
-                calm_server::session_projection_repo::WorkerSessionState::Starting,
-                None,
-                json!({}),
-                calm_server::model::now_ms(),
-            ),
-        )
-        .await
-        .unwrap();
-        calm_truth::db::sqlite::terminal_create_tx(
-            &mut tx,
-            calm_server::model::NewTerminal {
-                card_id: card_id.clone().into(),
-                program: "codex".into(),
-                cwd: root.path().display().to_string(),
-                env: json!({}),
-                theme: calm_server::routes::theme::RequestTheme::default_dark(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let supervisor = InProcessProcSupervisor::start().await.unwrap();
-        let events = EventBus::new();
-        let write = WriteContext::new(roles.clone(), areas.clone());
-        // A real loopback ingest endpoint and a bridge stand-in so a terminal's generated hook command reaches `/internal/claude/hook`.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let bridge = root.path().join("fake-bridge.sh");
-        // Same env contract (NEIGE_HOOK_URL) and per-invocation `neige_hook_occurrence` stamp as the real bridge; POSTs stdin as the hook body.
-        std::fs::write(&bridge, FAKE_BRIDGE).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bridge, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let mut codex = CodexClient::new_stub();
-        codex.bridge_bin = bridge.clone();
-        codex.ingest_url = base_url.clone();
-        let plugin = Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            PathBuf::new(),
-            root.path().join("plugins"),
-            vec![],
-            EventBus::new(),
-            write.clone(),
-        ));
-        let state = AppState::from_parts(
-            repo.clone(),
-            events.clone(),
-            Arc::new(DaemonClient {
-                data_dir: root.path().join("terminals"),
-                proc_supervisor_sock: Some(supervisor.sock().to_owned()),
-            }),
-            plugin,
-            Arc::new(codex),
-            Some(roles),
-            Some(areas),
-        );
-        let mut boot_auth = None;
-        let state =
-            if booted {
-                use clap::Parser;
-                let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
-                cfg.db_url = url;
-                cfg.data_dir = Some(root.path().join("data"));
-                cfg.workspace_root = Some(root.path().join("workspaces"));
-                cfg.plugins_dir = Some(root.path().join("plugins"));
-                cfg.plugins_data_dir = Some(root.path().join("plugins-data"));
-                cfg.proc_supervisor_sock = Some(supervisor.sock().to_owned());
-                cfg.auth_username = Some("fixture-owner".into());
-                cfg.auth_password = Some("fixture-password".into());
-                cfg.codex_bin = root.path().join("no-real-codex").display().to_string();
-                cfg.claude_bin = root.path().join("no-real-claude").display().to_string();
-                cfg.codex_bridge_bin = Some(bridge.clone());
-                cfg.codex_ingest_url = Some(base_url.clone());
-                let (booted, auth) = Box::pin(AppState::boot(&cfg)).await.unwrap().into_parts();
-                boot_auth = Some(auth);
-                let native_repo = <calm_server::state::WorkerState as axum::extract::FromRef<
-                    AppState,
-                >>::from_ref(&booted)
-                .repo;
-                booted.with_shared_codex_appserver(
-                    SharedCodexAppServer::new_fake_running_with_pending(native_repo, None),
-                )
-            } else if fake_codex {
-                state.with_shared_codex_appserver(
-                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
-                )
-            } else {
-                state
-            };
-        let app = match boot_auth {
-            Some(auth) => calm_server::routes::application_router(state.clone(), auth),
-            None => calm_server::routes::router()
-                .layer(axum::middleware::from_fn(
-                    calm_server::actor::actor_middleware,
-                ))
-                .with_state(state.clone()),
-        };
-        let served = app.clone();
-        let http = tokio::spawn(async move {
-            axum::serve(listener, served).await.unwrap();
-        });
-        let operations = Arc::new(tokio::sync::OnceCell::new());
-        operations
-            .set(state.operation_runtime.clone())
-            .ok()
+                calm_server::model::NewCard {
+                    track_id: track.id.clone(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: json!({"planner_provider":"codex"}),
+                },
+                CardRole::Planner,
+                false,
+                &roles,
+            )
+            .await
             .unwrap();
-        let socket = root.path().join("mcp.sock");
-        let server = McpServer::spawn(
-            repo.clone(),
-            events,
-            write,
-            socket.clone(),
-            PathBuf::from("unused-shim"),
-            build_default_registry(),
-            None,
-            Arc::new(tokio::sync::OnceCell::new()),
-            operations,
-            root.path().join("gates"),
-        )
-        .await
-        .unwrap();
-        server
-            .terminal_interaction
-            .set(Arc::new(TerminalInteraction::new(
+            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+            card_mcp_token_set_tx(
+                &mut tx,
+                &card_id,
+                &calm_server::mcp_server::auth::hash_token(token.as_str()),
+            )
+            .await
+            .unwrap();
+            session_start_runtime_tx(
+                &mut tx,
+                calm_server::session_projection_repo::WorkerSessionInit::shared_planner(
+                    session_id.clone(),
+                    card_id.clone(),
+                    calm_server::session_projection_repo::AgentProvider::Codex,
+                    calm_server::session_projection_repo::WorkerSessionState::Starting,
+                    None,
+                    json!({}),
+                    calm_server::model::now_ms(),
+                ),
+            )
+            .await
+            .unwrap();
+            calm_truth::db::sqlite::terminal_create_tx(
+                &mut tx,
+                calm_server::model::NewTerminal {
+                    card_id: card_id.clone().into(),
+                    program: "codex".into(),
+                    cwd: root.path().display().to_string(),
+                    env: json!({}),
+                    theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                },
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let supervisor = InProcessProcSupervisor::start().await.unwrap();
+            let events = EventBus::new();
+            let write = WriteContext::new(roles.clone(), areas.clone());
+            // A real loopback ingest endpoint and a bridge stand-in so a terminal's generated hook command reaches `/internal/claude/hook`.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let bridge = root.path().join("fake-bridge.sh");
+            // Same env contract (NEIGE_HOOK_URL) and per-invocation `neige_hook_occurrence` stamp as the real bridge; POSTs stdin as the hook body.
+            std::fs::write(&bridge, FAKE_BRIDGE).unwrap();
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&bridge, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let mut codex = CodexClient::new_stub();
+            codex.bridge_bin = bridge.clone();
+            codex.ingest_url = base_url.clone();
+            let plugin = Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
                 repo.clone(),
-                state.terminal_renderer.clone(),
-                state.dispatcher.provider_registry(),
-            )))
-            .ok()
+                PathBuf::new(),
+                root.path().join("plugins"),
+                vec![],
+                EventBus::new(),
+                write.clone(),
+            ));
+            let state = AppState::from_parts(
+                repo.clone(),
+                events.clone(),
+                Arc::new(DaemonClient {
+                    data_dir: root.path().join("terminals"),
+                    proc_supervisor_sock: Some(supervisor.sock().to_owned()),
+                }),
+                plugin,
+                Arc::new(codex),
+                Some(roles),
+                Some(areas),
+            );
+            let mut boot_auth = None;
+            let state =
+                if booted {
+                    use clap::Parser;
+                    let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+                    cfg.db_url = url;
+                    cfg.data_dir = Some(root.path().join("data"));
+                    cfg.workspace_root = Some(root.path().join("workspaces"));
+                    cfg.plugins_dir = Some(root.path().join("plugins"));
+                    cfg.plugins_data_dir = Some(root.path().join("plugins-data"));
+                    cfg.proc_supervisor_sock = Some(supervisor.sock().to_owned());
+                    cfg.auth_username = Some("fixture-owner".into());
+                    cfg.auth_password = Some("fixture-password".into());
+                    cfg.codex_bin = root.path().join("no-real-codex").display().to_string();
+                    cfg.claude_bin = root.path().join("no-real-claude").display().to_string();
+                    cfg.codex_bridge_bin = Some(bridge.clone());
+                    cfg.codex_ingest_url = Some(base_url.clone());
+                    let (booted, auth) = Box::pin(AppState::boot(&cfg)).await.unwrap().into_parts();
+                    boot_auth = Some(auth);
+                    let native_repo = <calm_server::state::WorkerState as axum::extract::FromRef<
+                        AppState,
+                    >>::from_ref(&booted)
+                    .repo;
+                    booted.with_shared_codex_appserver(
+                        SharedCodexAppServer::new_fake_running_with_pending(native_repo, None),
+                    )
+                } else if fake_codex {
+                    state.with_shared_codex_appserver(
+                        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+                    )
+                } else {
+                    state
+                };
+            let app = match boot_auth {
+                Some(auth) => calm_server::routes::application_router(state.clone(), auth),
+                None => calm_server::routes::router()
+                    .layer(axum::middleware::from_fn(
+                        calm_server::actor::actor_middleware,
+                    ))
+                    .with_state(state.clone()),
+            };
+            let served = app.clone();
+            let http = tokio::spawn(async move {
+                axum::serve(listener, served).await.unwrap();
+            });
+            let operations = Arc::new(tokio::sync::OnceCell::new());
+            operations
+                .set(state.operation_runtime.clone())
+                .ok()
+                .unwrap();
+            let socket = root.path().join("mcp.sock");
+            let server = McpServer::spawn(
+                repo.clone(),
+                events,
+                write,
+                socket.clone(),
+                PathBuf::from("unused-shim"),
+                build_default_registry(),
+                None,
+                Arc::new(tokio::sync::OnceCell::new()),
+                operations,
+                root.path().join("gates"),
+            )
+            .await
             .unwrap();
-        Self {
-            sql,
-            state,
-            server,
-            supervisor,
-            root,
-            socket,
-            token: token.into_inner(),
-            track: track.id.to_string(),
-            session_id,
-            area_id: area.id.to_string(),
-            app,
-            base_url,
-            bridge,
-            http,
-        }
+            server
+                .terminal_interaction
+                .set(Arc::new(TerminalInteraction::new(
+                    repo.clone(),
+                    state.terminal_renderer.clone(),
+                    state.dispatcher.provider_registry(),
+                )))
+                .ok()
+                .unwrap();
+            Self {
+                sql,
+                state,
+                server,
+                supervisor,
+                root,
+                socket,
+                token: token.into_inner(),
+                track: track.id.to_string(),
+                session_id,
+                area_id: area.id.to_string(),
+                app,
+                base_url,
+                bridge,
+                http,
+            }
+
+    })).await.expect("independent write operation")
     }
     /// POST a hook body for `card_id` through the production ingest route.
     pub async fn post_claude_hook(&self, card_id: &str, body: &Value) -> axum::http::StatusCode {

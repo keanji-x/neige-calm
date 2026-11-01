@@ -145,13 +145,14 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
     }
 
     // The append failure path: the event insert aborts, so the row must roll back with it.
-    sqlx::query(
-        "CREATE TRIGGER mail_wake_append_fails BEFORE INSERT ON events \
+    (w.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER mail_wake_append_fails BEFORE INSERT ON events \
          WHEN NEW.kind = 'track.wake_requested' BEGIN SELECT RAISE(ABORT, 'append failed'); END",
-    )
-    .execute(w.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let error = w
         .send(
             r,
@@ -457,25 +458,29 @@ async fn mail_send_refusals_follow_the_table() {
             calm_server::session_projection_repo::AgentProvider::Codex,
         )
         .await;
-    let pool = w.repo.pool();
-    sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
-        .bind(now_ms())
-        .bind(closed.as_str())
-        .execute(pool)
+    (w.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
+                .bind(now_ms())
+                .bind(closed.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(chat.as_str())
-        .execute(pool)
+    (w.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+                .bind(chat.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query(
+    (w.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO managed_track_identities (owner, identity, track_id, report_read_scope, \
          report_time_zone, tool_policy, kernel_controls_lifecycle) \
          VALUES ('test', 'daily', ?1, 'area', 'UTC', 'reports', 1)",
     )
-    .bind(daily.track_id.as_str())
-    .execute(pool)
+    .bind(daily.track_id.as_str()))
     .await
     .unwrap();
     let not_mine = w.seed_mail(&n.track_id, &closed, 1).await;
@@ -653,9 +658,12 @@ async fn mail_send_from_a_superseded_session_is_refused() {
     let (r, n) = (w.p(0), w.p(1));
     w.user_turn(r, "ask N").await;
     let incoming = w.seed_mail(&n.track_id, &r.track_id, 1).await;
-    sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
-        .bind(&r.session_id)
-        .execute(w.repo.pool())
+    (w.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
+                .bind(&r.session_id),
+        )
         .await
         .unwrap();
     let ctx = w.app_context();

@@ -98,21 +98,23 @@ pub async fn changes(
             "continuation requires through_event_id".into(),
         ));
     }
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let through = match query.through_event_id {
-        Some(id) if id >= 0 => id,
-        Some(_) => {
-            return Err(CalmError::BadRequest(
-                "through_event_id cannot be negative".into(),
-            ));
-        }
-        None => {
-            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id),0) FROM events")
-                .fetch_one(&mut **tx)
-                .await?
-        }
-    };
-    let mut rows: Vec<ChangeRow> = sqlx::query_as(r#"
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await?;
+        let through = match query.through_event_id {
+            Some(id) if id >= 0 => id,
+            Some(_) => {
+                return Err(CalmError::BadRequest(
+                    "through_event_id cannot be negative".into(),
+                ));
+            }
+            None => {
+                sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id),0) FROM events")
+                    .fetch_one(&mut **tx)
+                    .await?
+            }
+        };
+        let mut rows: Vec<ChangeRow> = sqlx::query_as(r#"
         WITH edits AS (
             SELECT e.scope_track AS track_id,MIN(e.id) AS first_event_id,MAX(e.id) AS last_event_id,COUNT(*) AS edit_count
             FROM events e JOIN tracks t ON t.id=e.scope_track JOIN areas a ON a.id=t.area_id
@@ -126,56 +128,58 @@ pub async fn changes(
         JOIN events first ON first.id=edits.first_event_id JOIN events last ON last.id=edits.last_event_id
         WHERE (?4 IS NULL OR t.id>?4) ORDER BY t.id LIMIT ?5
     "#).bind(start).bind(end).bind(through).bind(&query.cursor)
-        .bind((PAGE_SIZE+1) as i64).fetch_all(&mut **tx).await?;
-    tx.commit().await?;
-    let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].track_id.clone());
-    rows.truncate(PAGE_SIZE);
-    let changes = rows
-        .into_iter()
-        .map(|row| {
-            let first: ReportEdit =
-                serde_json::from_value(calm_truth::event_storage::decode_payload(
-                    "track.report_edited",
-                    &row.first_payload,
-                )?)?;
-            let last: ReportEdit =
-                serde_json::from_value(calm_truth::event_storage::decode_payload(
-                    "track.report_edited",
-                    &row.last_payload,
-                )?)?;
-            if first.track_id != row.track_id || last.track_id != row.track_id {
-                return Err(CalmError::Internal(
-                    "report edit scope disagrees with its Track".into(),
-                ));
-            }
-            let (patch, patch_truncated) = crate::track_vcs::unified_patch(
-                "report.md",
-                &first.body_before,
-                &last.body_after,
-                PATCH_LINES,
-            );
-            Ok(ReportChange {
-                track_id: row.track_id,
-                track_title: row.track_title,
-                area_id: row.area_id,
-                area_name: row.area_name,
-                edit_count: row.edit_count,
-                first_event_id: row.first_event_id,
-                last_event_id: row.last_event_id,
-                summary_before: first.summary_before,
-                summary_after: last.summary_after,
-                patch,
-                patch_truncated,
+            .bind((PAGE_SIZE+1) as i64).fetch_all(&mut **tx).await?;
+        tx.commit().await?;
+        let next_cursor = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].track_id.clone());
+        rows.truncate(PAGE_SIZE);
+        let changes = rows
+            .into_iter()
+            .map(|row| {
+                let first: ReportEdit =
+                    serde_json::from_value(calm_truth::event_storage::decode_payload(
+                        "track.report_edited",
+                        &row.first_payload,
+                    )?)?;
+                let last: ReportEdit =
+                    serde_json::from_value(calm_truth::event_storage::decode_payload(
+                        "track.report_edited",
+                        &row.last_payload,
+                    )?)?;
+                if first.track_id != row.track_id || last.track_id != row.track_id {
+                    return Err(CalmError::Internal(
+                        "report edit scope disagrees with its Track".into(),
+                    ));
+                }
+                let (patch, patch_truncated) = crate::track_vcs::unified_patch(
+                    "report.md",
+                    &first.body_before,
+                    &last.body_after,
+                    PATCH_LINES,
+                );
+                Ok(ReportChange {
+                    track_id: row.track_id,
+                    track_title: row.track_title,
+                    area_id: row.area_id,
+                    area_name: row.area_name,
+                    edit_count: row.edit_count,
+                    first_event_id: row.first_event_id,
+                    last_event_id: row.last_event_id,
+                    summary_before: first.summary_before,
+                    summary_after: last.summary_after,
+                    patch,
+                    patch_truncated,
+                })
             })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ReportChangesPage {
+            date: query.date.clone(),
+            timezone: zone.name().into(),
+            through_event_id: through,
+            changes,
+            next_cursor,
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(ReportChangesPage {
-        date: query.date.clone(),
-        timezone: zone.name().into(),
-        through_event_id: through,
-        changes,
-        next_cursor,
-    })
+
+    })).await.map_err(calm_truth::TruthError::from)?
 }
 
 pub async fn edits(

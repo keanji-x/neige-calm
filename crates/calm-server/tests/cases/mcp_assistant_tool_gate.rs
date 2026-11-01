@@ -355,75 +355,84 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
 /// ([`SEEDED_DOC_REV`], not the legacy `0`) and the body carries a live task fence.
 async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
     let report_card_id = calm_server::model::new_id();
-    let mut tx = boot
-        .sqlx
-        .pool()
-        .begin()
-        .await
-        .expect("begin report card tx");
-    let report_card = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        report_card_id.clone(),
-        calm_server::model::NewCard {
-            track_id: boot.track_id.clone(),
-            title: None,
-            kind: "track-report".into(),
-            sort: Some(-1.0),
-            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
-                .unwrap(),
-        },
-        calm_server::model::CardRole::ReportCard,
-        false,
-        &boot.card_role_cache,
-    )
-    .await
-    .expect("mint track-report card");
-    tx.commit().await.expect("commit report card tx");
+    let write_db = (boot.sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin report card tx");
+                let report_card = calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    report_card_id.clone(),
+                    calm_server::model::NewCard {
+                        track_id: boot.track_id.clone(),
+                        title: None,
+                        kind: "track-report".into(),
+                        sort: Some(-1.0),
+                        payload: serde_json::to_value(
+                            calm_server::track_report::TrackReportPayload::initial(),
+                        )
+                        .unwrap(),
+                    },
+                    calm_server::model::CardRole::ReportCard,
+                    false,
+                    &boot.card_role_cache,
+                )
+                .await
+                .expect("mint track-report card");
+                tx.commit().await.expect("commit report card tx");
 
-    let track = boot
-        .repo
-        .track_get(boot.track_id.as_str())
+                let track = boot
+                    .repo
+                    .track_get(boot.track_id.as_str())
+                    .await
+                    .unwrap()
+                    .expect("home track exists");
+                let write = calm_server::state::WriteContext::new(
+                    boot.card_role_cache.clone(),
+                    boot.track_area_cache.clone(),
+                );
+                let body = format!(
+                    "# Goal\n\nship it\n\n{}",
+                    calm_types::report_blocks::render_fence(
+                        calm_types::report_blocks::KIND_TASK,
+                        &json!({
+                            "key": "build",
+                            "kind": "codex",
+                            "goal": "build it",
+                            "ready": true,
+                            "declared_by": "spec"
+                        }),
+                    )
+                );
+                let mut card = report_card;
+                for (doc_rev, summary) in [(0u64, "seed"), (1u64, "seeded")] {
+                    let current: calm_server::track_report::TrackReportPayload =
+                        serde_json::from_value(card.payload.clone()).expect("report payload");
+                    card = calm_server::track_report::persist_report(
+                        boot.sqlx.as_ref(),
+                        &boot.events,
+                        &write,
+                        calm_server::ids::ActorId::Kernel,
+                        calm_server::event::EditAuthor::Planner,
+                        track.clone(),
+                        card,
+                        current,
+                        calm_server::track_report::TrackReportPayload::new(summary, &body),
+                        doc_rev,
+                        None,
+                    )
+                    .await
+                    .expect("persist seeded report body");
+                }
+                report_card_id
+            })
+        })
         .await
-        .unwrap()
-        .expect("home track exists");
-    let write = calm_server::state::WriteContext::new(
-        boot.card_role_cache.clone(),
-        boot.track_area_cache.clone(),
-    );
-    let body = format!(
-        "# Goal\n\nship it\n\n{}",
-        calm_types::report_blocks::render_fence(
-            calm_types::report_blocks::KIND_TASK,
-            &json!({
-                "key": "build",
-                "kind": "codex",
-                "goal": "build it",
-                "ready": true,
-                "declared_by": "spec"
-            }),
-        )
-    );
-    let mut card = report_card;
-    for (doc_rev, summary) in [(0u64, "seed"), (1u64, "seeded")] {
-        let current: calm_server::track_report::TrackReportPayload =
-            serde_json::from_value(card.payload.clone()).expect("report payload");
-        card = calm_server::track_report::persist_report(
-            boot.sqlx.as_ref(),
-            &boot.events,
-            &write,
-            calm_server::ids::ActorId::Kernel,
-            calm_server::event::EditAuthor::Planner,
-            track.clone(),
-            card,
-            current,
-            calm_server::track_report::TrackReportPayload::new(summary, &body),
-            doc_rev,
-            None,
-        )
-        .await
-        .expect("persist seeded report body");
-    }
-    report_card_id
+        .expect("independent write operation")
 }
 
 /// Two persists, each incrementing the CRDT root's `doc_rev`: the legacy branch returns `0` and

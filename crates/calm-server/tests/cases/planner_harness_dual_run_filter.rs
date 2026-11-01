@@ -67,80 +67,90 @@ async fn harness_drops_foreign_thread_notifications() {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_b.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_b.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_b.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let events = EventBus::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id,
-        track_id: card.track_id,
-        card_id: card.id,
-        thread_id: Some(thread_b.clone()),
-        repo,
-        events,
-        card_role_cache: CardRoleCache::new(),
-        track_area_cache: TrackAreaCache::new(),
+                let events = EventBus::new();
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        card.id.as_ref(),
+                        card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id,
+                    track_id: card.track_id,
+                    card_id: card.id,
+                    thread_id: Some(thread_b.clone()),
+                    repo,
+                    events,
+                    card_role_cache: CardRoleCache::new(),
+                    track_area_cache: TrackAreaCache::new(),
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig::default(),
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+                    registry: calm_server::harness::HarnessRegistry::new(),
+                    config: HarnessConfig::default(),
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
 
-    daemon.emit_notification_for_test(Notification::TurnStarted {
-        thread_id: "thread-legacy-a".into(),
-        turn: json!({ "id": "foreign-turn" }),
-    });
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(matches!(harness.state_for_test().await, HarnessState::Idle));
+                daemon.emit_notification_for_test(Notification::TurnStarted {
+                    thread_id: "thread-legacy-a".into(),
+                    turn: json!({ "id": "foreign-turn" }),
+                });
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                assert!(matches!(harness.state_for_test().await, HarnessState::Idle));
 
-    daemon.emit_notification_for_test(Notification::TurnStarted {
-        thread_id: thread_b,
-        turn: json!({ "id": "own-turn" }),
-    });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if matches!(
-            harness.state_for_test().await,
-            HarnessState::TurnRunning { .. }
-        ) {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    harness.shutdown().await.unwrap();
+                daemon.emit_notification_for_test(Notification::TurnStarted {
+                    thread_id: thread_b,
+                    turn: json!({ "id": "own-turn" }),
+                });
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    if matches!(
+                        harness.state_for_test().await,
+                        HarnessState::TurnRunning { .. }
+                    ) {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                harness.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -174,172 +184,184 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    // A Report edit names the Report card, never the Planner carrier.
-    let report = repo
-        .card_create(NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "track-report".into(),
-            sort: None,
-            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
-                .unwrap(),
+                // A Report edit names the Report card, never the Planner carrier.
+                let report = repo
+                    .card_create(NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "track-report".into(),
+                        sort: None,
+                        payload: serde_json::to_value(
+                            calm_server::track_report::TrackReportPayload::initial(),
+                        )
+                        .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+
+                crate::support::report_writes::announce_report(
+                    repo.as_ref(),
+                    &EventBus::new(),
+                    &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                    report.clone(),
+                )
+                .await;
+
+                let thread_id = "thread-harness-route".to_string();
+                let worker_session_id = new_id();
+                let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+                snapshot.phase = HarnessPhaseTag::Idle;
+                snapshot.last_thread_id = Some(thread_id.clone());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+
+                let events = EventBus::new();
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+                let registry = HarnessRegistry::new();
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        card.id.as_ref(),
+                        track.id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: track.id.clone(),
+                    card_id: card.id.clone(),
+                    thread_id: Some(thread_id),
+                    repo: repo_dyn.clone(),
+                    events: events.clone(),
+                    card_role_cache: CardRoleCache::new(),
+                    track_area_cache: TrackAreaCache::new(),
+
+                    registry: registry.clone(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::from_secs(60),
+                        debounce_max_wait: Duration::from_secs(60),
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                registry.insert(worker_session_id.clone(), harness.clone());
+                let codex = Arc::new(CodexClient::new_stub());
+                let _dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
+                    repo_dyn.clone(),
+                    events.clone(),
+                    WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                    codex,
+                    Arc::new(DaemonClient {
+                        data_dir: std::env::temp_dir().join("neige-harness-route-dispatcher"),
+                        proc_supervisor_sock: None,
+                    }),
+                    TerminalRendererRegistry::new_with_repo(route_repo),
+                    None,
+                    registry.clone(),
+                    daemon,
+                    // Attached fixtures: materialization on lease is a no-op.
+                    std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+                    4,
+                );
+
+                repo.log_pure_event(
+                    ActorId::User,
+                    EventScope::Track {
+                        track: track.id.clone(),
+                        area: area.id,
+                    },
+                    None,
+                    &events,
+                    &role_cache,
+                    &track_area_cache,
+                    Event::TrackReportEdited {
+                        track_id: track.id.clone(),
+                        card_id: report.id.clone(),
+                        author: EditAuthor::User,
+                        author_plugin_id: None,
+                        edit_id: "edit-harness-route".into(),
+                        summary_before: String::new(),
+                        summary_after: "summary".into(),
+                        body_before: String::new(),
+                        body_after: "body after".into(),
+                        agent_message: None,
+                    },
+                )
+                .await
+                .unwrap();
+
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let snapshot = harness.snapshot().await.unwrap();
+                    if snapshot.pending_observations().iter().any(|obs| {
+                        matches!(
+                            obs,
+                            Observation::ReportEdited { body, .. } if body == "body after"
+                        )
+                    }) {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for harness report edit; snapshot={snapshot:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                harness.shutdown().await.unwrap();
+            })
         })
         .await
-        .unwrap();
-
-    crate::support::report_writes::announce_report(
-        repo.as_ref(),
-        &EventBus::new(),
-        &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        report.clone(),
-    )
-    .await;
-
-    let thread_id = "thread-harness-route".to_string();
-    let worker_session_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let events = EventBus::new();
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let registry = HarnessRegistry::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            track.id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: track.id.clone(),
-        card_id: card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo_dyn.clone(),
-        events: events.clone(),
-        card_role_cache: CardRoleCache::new(),
-        track_area_cache: TrackAreaCache::new(),
-
-        registry: registry.clone(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    registry.insert(worker_session_id.clone(), harness.clone());
-    let codex = Arc::new(CodexClient::new_stub());
-    let _dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
-        repo_dyn.clone(),
-        events.clone(),
-        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        codex,
-        Arc::new(DaemonClient {
-            data_dir: std::env::temp_dir().join("neige-harness-route-dispatcher"),
-            proc_supervisor_sock: None,
-        }),
-        TerminalRendererRegistry::new_with_repo(route_repo),
-        None,
-        registry.clone(),
-        daemon,
-        // Attached fixtures: materialization on lease is a no-op.
-        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-        4,
-    );
-
-    repo.log_pure_event(
-        ActorId::User,
-        EventScope::Track {
-            track: track.id.clone(),
-            area: area.id,
-        },
-        None,
-        &events,
-        &role_cache,
-        &track_area_cache,
-        Event::TrackReportEdited {
-            track_id: track.id.clone(),
-            card_id: report.id.clone(),
-            author: EditAuthor::User,
-            author_plugin_id: None,
-            edit_id: "edit-harness-route".into(),
-            summary_before: String::new(),
-            summary_after: "summary".into(),
-            body_before: String::new(),
-            body_after: "body after".into(),
-            agent_message: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let snapshot = harness.snapshot().await.unwrap();
-        if snapshot.pending_observations().iter().any(|obs| {
-            matches!(
-                obs,
-                Observation::ReportEdited { body, .. } if body == "body after"
-            )
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for harness report edit; snapshot={snapshot:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -373,174 +395,186 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    // A Report edit names the Report card, never the Planner carrier.
-    let report = repo
-        .card_create(NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "track-report".into(),
-            sort: None,
-            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
-                .unwrap(),
+                // A Report edit names the Report card, never the Planner carrier.
+                let report = repo
+                    .card_create(NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "track-report".into(),
+                        sort: None,
+                        payload: serde_json::to_value(
+                            calm_server::track_report::TrackReportPayload::initial(),
+                        )
+                        .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+
+                crate::support::report_writes::announce_report(
+                    repo.as_ref(),
+                    &EventBus::new(),
+                    &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                    report.clone(),
+                )
+                .await;
+
+                let thread_id = "thread-harness-full".to_string();
+                let worker_session_id = new_id();
+                let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+                snapshot.phase = HarnessPhaseTag::Idle;
+                snapshot.last_thread_id = Some(thread_id.clone());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+
+                let events = EventBus::new();
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+                let registry = HarnessRegistry::new();
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
+                let (harness, mut observations) = PlannerHarness::run_unstarted_for_test(
+                    PlannerHarnessParams {
+                        track_delete_locks: Default::default(),
+                        backend: calm_server::harness::backend::PlannerBackend::codex(
+                            daemon.clone(),
+                            card.id.as_ref(),
+                            track.id.as_ref(),
+                            worker_session_id.as_ref(),
+                        )
+                        .unwrap(),
+                        worker_session_id: worker_session_id.clone(),
+                        track_id: track.id.clone(),
+                        card_id: card.id.clone(),
+                        thread_id: Some(thread_id),
+                        repo: repo_dyn.clone(),
+                        events: events.clone(),
+                        card_role_cache: CardRoleCache::new(),
+                        track_area_cache: TrackAreaCache::new(),
+
+                        registry: registry.clone(),
+                        config: HarnessConfig::default(),
+                        snapshot: (snapshot)
+                            .try_into()
+                            .expect("historical fixture snapshot contract"),
+                    },
+                    1,
+                );
+                harness
+                    .observe(Observation::TrackGoal {
+                        text: "queue filler".into(),
+                    })
+                    .unwrap();
+                registry.insert(worker_session_id, harness.clone());
+                let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
+                    repo_dyn.clone(),
+                    events,
+                    WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                    Arc::new(CodexClient::new_stub()),
+                    Arc::new(DaemonClient {
+                        data_dir: std::env::temp_dir().join("neige-harness-full-dispatcher"),
+                        proc_supervisor_sock: None,
+                    }),
+                    TerminalRendererRegistry::new_with_repo(route_repo),
+                    None,
+                    registry,
+                    daemon,
+                    // Attached fixtures: materialization on lease is a no-op.
+                    std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+                    4,
+                );
+
+                let event = Event::TrackReportEdited {
+                    track_id: track.id.clone(),
+                    card_id: report.id.clone(),
+                    author: EditAuthor::User,
+                    author_plugin_id: None,
+                    edit_id: "edit-harness-full".into(),
+                    summary_before: String::new(),
+                    summary_after: "summary".into(),
+                    body_before: String::new(),
+                    body_after: "body after".into(),
+                    agent_message: None,
+                };
+                let cold_bus = EventBus::new();
+                let envelope_id = repo
+                    .log_pure_event(
+                        ActorId::User,
+                        EventScope::Track {
+                            track: track.id.clone(),
+                            area: area.id,
+                        },
+                        None,
+                        &cold_bus,
+                        &role_cache,
+                        &track_area_cache,
+                        event.clone(),
+                    )
+                    .await
+                    .unwrap();
+
+                dispatcher
+                    .catch_up_push(track.id.clone(), event.clone(), envelope_id)
+                    .await;
+                assert_eq!(
+                    dispatcher.push_cursor_for_test(&card.id),
+                    0,
+                    "full live harness queue must not advance the push cursor before retry"
+                );
+                assert!(matches!(
+                    observations.recv().await.unwrap().entry.observation(),
+                    Observation::TrackGoal { .. }
+                ));
+
+                dispatcher
+                    .catch_up_push(track.id.clone(), event, envelope_id)
+                    .await;
+                assert_eq!(dispatcher.push_cursor_for_test(&card.id), envelope_id);
+                harness.shutdown().await.unwrap();
+            })
         })
         .await
-        .unwrap();
-
-    crate::support::report_writes::announce_report(
-        repo.as_ref(),
-        &EventBus::new(),
-        &WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        report.clone(),
-    )
-    .await;
-
-    let thread_id = "thread-harness-full".to_string();
-    let worker_session_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let events = EventBus::new();
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let registry = HarnessRegistry::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
-    let (harness, mut observations) = PlannerHarness::run_unstarted_for_test(
-        PlannerHarnessParams {
-            track_delete_locks: Default::default(),
-            backend: calm_server::harness::backend::PlannerBackend::codex(
-                daemon.clone(),
-                card.id.as_ref(),
-                track.id.as_ref(),
-                worker_session_id.as_ref(),
-            )
-            .unwrap(),
-            worker_session_id: worker_session_id.clone(),
-            track_id: track.id.clone(),
-            card_id: card.id.clone(),
-            thread_id: Some(thread_id),
-            repo: repo_dyn.clone(),
-            events: events.clone(),
-            card_role_cache: CardRoleCache::new(),
-            track_area_cache: TrackAreaCache::new(),
-
-            registry: registry.clone(),
-            config: HarnessConfig::default(),
-            snapshot: (snapshot)
-                .try_into()
-                .expect("historical fixture snapshot contract"),
-        },
-        1,
-    );
-    harness
-        .observe(Observation::TrackGoal {
-            text: "queue filler".into(),
-        })
-        .unwrap();
-    registry.insert(worker_session_id, harness.clone());
-    let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
-        repo_dyn.clone(),
-        events,
-        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        Arc::new(CodexClient::new_stub()),
-        Arc::new(DaemonClient {
-            data_dir: std::env::temp_dir().join("neige-harness-full-dispatcher"),
-            proc_supervisor_sock: None,
-        }),
-        TerminalRendererRegistry::new_with_repo(route_repo),
-        None,
-        registry,
-        daemon,
-        // Attached fixtures: materialization on lease is a no-op.
-        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-        4,
-    );
-
-    let event = Event::TrackReportEdited {
-        track_id: track.id.clone(),
-        card_id: report.id.clone(),
-        author: EditAuthor::User,
-        author_plugin_id: None,
-        edit_id: "edit-harness-full".into(),
-        summary_before: String::new(),
-        summary_after: "summary".into(),
-        body_before: String::new(),
-        body_after: "body after".into(),
-        agent_message: None,
-    };
-    let cold_bus = EventBus::new();
-    let envelope_id = repo
-        .log_pure_event(
-            ActorId::User,
-            EventScope::Track {
-                track: track.id.clone(),
-                area: area.id,
-            },
-            None,
-            &cold_bus,
-            &role_cache,
-            &track_area_cache,
-            event.clone(),
-        )
-        .await
-        .unwrap();
-
-    dispatcher
-        .catch_up_push(track.id.clone(), event.clone(), envelope_id)
-        .await;
-    assert_eq!(
-        dispatcher.push_cursor_for_test(&card.id),
-        0,
-        "full live harness queue must not advance the push cursor before retry"
-    );
-    assert!(matches!(
-        observations.recv().await.unwrap().entry.observation(),
-        Observation::TrackGoal { .. }
-    ));
-
-    dispatcher
-        .catch_up_push(track.id.clone(), event, envelope_id)
-        .await;
-    assert_eq!(dispatcher.push_cursor_for_test(&card.id), envelope_id);
-    harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

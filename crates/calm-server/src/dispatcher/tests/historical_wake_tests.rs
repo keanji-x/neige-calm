@@ -69,248 +69,252 @@ async fn assert_historical_prefix(later: LaterObservation) {
         .unwrap();
     track_area_cache.insert(track.id.clone(), area.id.clone());
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: serde_json::json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    let worker_session_id = new_id();
-    let thread_id = "thread-delivery-wake".to_string();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(thread_id.clone());
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    // A live Planner harness in the registry the dispatcher consults; the forced `TurnRunning`
-    // phase keeps every delivered observation queued instead of issuing a turn on the stub.
-    let events = EventBus::new();
-    let registry = HarnessRegistry::new();
-    let handle = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: crate::harness::backend::PlannerBackend::codex(
-            SharedCodexAppServer::new_stub(repo.clone()),
-            planner_card.id.as_ref(),
-            track.id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: track.id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo.clone(),
-        events: events.clone(),
-        card_role_cache: role_cache.clone(),
-        track_area_cache: track_area_cache.clone(),
-
-        registry: registry.clone(),
-        config: HarnessConfig::default(),
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    handle
-        .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
-        .await
-        .unwrap();
-    let reservation = registry
-        .try_reserve(worker_session_id.clone())
-        .expect("vacant slot");
-    assert!(reservation.install(handle.clone()));
-
-    // The production `Inner` behind `handle_envelope`, minus the bus listener and the periodic
-    // loops. The scheduler's operation runtime is dropped, so its poke drives no gate.
-    let write = WriteContext::new(role_cache, track_area_cache);
-    let semaphore = Arc::new(Semaphore::new(1));
-    let scheduler = Scheduler::new(
-        repo.clone(),
-        events.clone(),
-        write.clone(),
-        std::sync::Weak::new(),
-        crate::per_card_lock::new_per_card_locks(),
-        Arc::clone(&semaphore),
-        std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
-        crate::scheduler::WorkerLiveness::DEFAULT,
-        crate::scheduler::WorkerIdleWake::new(
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
-            crate::scheduler::WORKER_IDLE_TURN_GRACE,
-            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
-        ),
-    );
-    let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
-        repo.clone(),
-        events.clone(),
-        write.clone(),
-        scheduler.context_metrics(),
-    ));
-    let inner = Arc::new(Inner {
-        planner_wake: std::sync::RwLock::new(None),
-        canonical_producer: std::sync::RwLock::new(None),
-        repo: repo.clone(),
-        write,
-        harness: registry,
-        scheduler,
-        context_monitor,
-        push_cursor: EventCursorCache::new(),
-        push_locks: DashMap::new(),
-        failure_push_hook: std::sync::Mutex::new(None),
-        semaphore,
-    });
-
-    let report = if matches!(later, LaterObservation::Report) {
-        let report = repo
-            .card_create(NewCard {
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let planner_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
                 track_id: track.id.clone(),
                 title: None,
-                kind: "track-report".into(),
+                kind: "codex".into(),
                 sort: None,
-                payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
-                    .unwrap(),
-            })
-            .await
-            .unwrap();
-        let announced = report.clone();
-        repo.write_with_event(
-            ActorId::Kernel,
-            EventScope::Card {
-                card: report.id.clone(),
-                track: track.id.clone(),
-                area: area.id.clone(),
+                payload: serde_json::json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
             },
-            None,
-            &events,
-            &inner.write,
-            Box::new(move |_| Box::pin(async move { Ok(Event::CardAdded(announced)) })),
+            CardRole::Planner,
+            false,
+            &role_cache,
         )
         .await
         .unwrap();
-        Some(report)
-    } else {
-        None
-    };
-    let scope = track_scope(&track.id, &area.id);
-    let mut envelopes = Vec::new();
-    let wake = |key: &str| Event::TrackWakeRequested {
-        track_id: track.id.clone(),
-        source: "objective".into(),
-        key: key.into(),
-        text: format!("objective notice {key}"),
-    };
-    let (b_event, b_actor) = match later {
-        LaterObservation::Wake => (wake("B"), ActorId::Kernel),
-        LaterObservation::Report => (
-            Event::TrackReportEdited {
-                track_id: track.id.clone(),
-                card_id: report.as_ref().unwrap().id.clone(),
-                author: EditAuthor::User,
-                author_plugin_id: None,
-                edit_id: "report-B".into(),
-                summary_before: String::new(),
-                summary_after: String::new(),
-                body_before: String::new(),
-                body_after: "user report B".into(),
-                agent_message: None,
+        let worker_session_id = new_id();
+        let thread_id = "thread-delivery-wake".to_string();
+        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+        snapshot.phase = HarnessPhaseTag::Idle;
+        snapshot.last_thread_id = Some(thread_id.clone());
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: planner_card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
             },
-            ActorId::User,
-        ),
-        LaterObservation::Forge => (
-            Event::ForgePrOpened {
-                track_id: track.id.clone(),
-                pr_number: 3084,
-                head_sha: "head-B".into(),
-            },
-            ActorId::Kernel,
-        ),
-    };
-    for (event, actor) in [(wake("A"), ActorId::Kernel), (b_event, b_actor)] {
-        let mut tx = repo.pool().begin().await.unwrap();
-        let id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // A live Planner harness in the registry the dispatcher consults; the forced `TurnRunning`
+        // phase keeps every delivered observation queued instead of issuing a turn on the stub.
+        let events = EventBus::new();
+        let registry = HarnessRegistry::new();
+        let handle = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: crate::harness::backend::PlannerBackend::codex(
+                SharedCodexAppServer::new_stub(repo.clone()),
+                planner_card.id.as_ref(),
+                track.id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
+            track_id: track.id.clone(),
+            card_id: planner_card.id.clone(),
+            thread_id: Some(thread_id),
+            repo: repo.clone(),
+            events: events.clone(),
+            card_role_cache: role_cache.clone(),
+            track_area_cache: track_area_cache.clone(),
+
+            registry: registry.clone(),
+            config: HarnessConfig::default(),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
+        handle
+            .force_phase_for_dev(HarnessPhaseTag::TurnRunning)
             .await
             .unwrap();
-        tx.commit().await.unwrap();
-        envelopes.push(BroadcastEnvelope {
-            id,
-            event_version: 1,
-            actor,
-            scope: scope.clone(),
-            event,
+        let reservation = registry
+            .try_reserve(worker_session_id.clone())
+            .expect("vacant slot");
+        assert!(reservation.install(handle.clone()));
+
+        // The production `Inner` behind `handle_envelope`, minus the bus listener and the periodic
+        // loops. The scheduler's operation runtime is dropped, so its poke drives no gate.
+        let write = WriteContext::new(role_cache, track_area_cache);
+        let semaphore = Arc::new(Semaphore::new(1));
+        let scheduler = Scheduler::new(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            std::sync::Weak::new(),
+            crate::per_card_lock::new_per_card_locks(),
+            Arc::clone(&semaphore),
+            std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
+            crate::scheduler::WorkerLiveness::DEFAULT,
+            crate::scheduler::WorkerIdleWake::new(
+                crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+                crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+            ),
+        );
+        let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            scheduler.context_metrics(),
+        ));
+        let inner = Arc::new(Inner {
+            planner_wake: std::sync::RwLock::new(None),
+            canonical_producer: std::sync::RwLock::new(None),
+            repo: repo.clone(),
+            write,
+            harness: registry,
+            scheduler,
+            context_monitor,
+            push_cursor: EventCursorCache::new(),
+            push_locks: DashMap::new(),
+            failure_push_hook: std::sync::Mutex::new(None),
+            semaphore,
         });
-    }
-    let b = envelopes.pop().unwrap();
-    let b_id = b.id;
-    let a = envelopes.pop().unwrap();
-    // Force the legal same-track lock acquisition order B, A via the production entry point.
-    inner.clone().handle_envelope(b.clone()).await;
-    inner.clone().handle_envelope(a).await;
-    inner.clone().handle_envelope(b).await;
-    assert_eq!(
-        handle
-            .mutate_pending_entry(
-                QueueMutation::Delete {
-                    entry_id: QueueEntryId::from_wire("barrier".into()),
-                    if_entry_rev: 1
+
+        let report = if matches!(later, LaterObservation::Report) {
+            let report = repo
+                .card_create(NewCard {
+                    track_id: track.id.clone(),
+                    title: None,
+                    kind: "track-report".into(),
+                    sort: None,
+                    payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
+                        .unwrap(),
+                })
+                .await
+                .unwrap();
+            let announced = report.clone();
+            repo.write_with_event(
+                ActorId::Kernel,
+                EventScope::Card {
+                    card: report.id.clone(),
+                    track: track.id.clone(),
+                    area: area.id.clone(),
                 },
-                ActorId::User,
+                None,
+                &events,
+                &inner.write,
+                Box::new(move |_| Box::pin(async move { Ok(Event::CardAdded(announced)) })),
             )
             .await
-            .unwrap(),
-        Err(MutationRefused::NotFound)
-    );
-    let snapshot = handle.snapshot().await.unwrap();
-    let observations = snapshot.pending_observations();
-    assert_eq!(observations.len(), 2, "wake A must precede B exactly once");
-    assert_eq!(
-        observations[0].to_turn_text(),
-        "Wake from objective (A): objective notice A"
-    );
-    match (later, &observations[1]) {
-        (LaterObservation::Wake, HarnessObservation::TrackWake { key, text, .. }) => {
-            assert_eq!(key, "B");
-            assert_eq!(text, "objective notice B");
+            .unwrap();
+            Some(report)
+        } else {
+            None
+        };
+        let scope = track_scope(&track.id, &area.id);
+        let mut envelopes = Vec::new();
+        let wake = |key: &str| Event::TrackWakeRequested {
+            track_id: track.id.clone(),
+            source: "objective".into(),
+            key: key.into(),
+            text: format!("objective notice {key}"),
+        };
+        let (b_event, b_actor) = match later {
+            LaterObservation::Wake => (wake("B"), ActorId::Kernel),
+            LaterObservation::Report => (
+                Event::TrackReportEdited {
+                    track_id: track.id.clone(),
+                    card_id: report.as_ref().unwrap().id.clone(),
+                    author: EditAuthor::User,
+                    author_plugin_id: None,
+                    edit_id: "report-B".into(),
+                    summary_before: String::new(),
+                    summary_after: String::new(),
+                    body_before: String::new(),
+                    body_after: "user report B".into(),
+                    agent_message: None,
+                },
+                ActorId::User,
+            ),
+            LaterObservation::Forge => (
+                Event::ForgePrOpened {
+                    track_id: track.id.clone(),
+                    pr_number: 3084,
+                    head_sha: "head-B".into(),
+                },
+                ActorId::Kernel,
+            ),
+        };
+        for (event, actor) in [(wake("A"), ActorId::Kernel), (b_event, b_actor)] {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            envelopes.push(BroadcastEnvelope {
+                id,
+                event_version: 1,
+                actor,
+                scope: scope.clone(),
+                event,
+            });
         }
-        (LaterObservation::Report, HarnessObservation::ReportEdited { body, author, .. }) => {
-            assert_eq!(body, "user report B");
-            assert_eq!(*author, Some(EditAuthor::User));
+        let b = envelopes.pop().unwrap();
+        let b_id = b.id;
+        let a = envelopes.pop().unwrap();
+        // Force the legal same-track lock acquisition order B, A via the production entry point.
+        inner.clone().handle_envelope(b.clone()).await;
+        inner.clone().handle_envelope(a).await;
+        inner.clone().handle_envelope(b).await;
+        assert_eq!(
+            handle
+                .mutate_pending_entry(
+                    QueueMutation::Delete {
+                        entry_id: QueueEntryId::from_wire("barrier".into()),
+                        if_entry_rev: 1
+                    },
+                    ActorId::User,
+                )
+                .await
+                .unwrap(),
+            Err(MutationRefused::NotFound)
+        );
+        let snapshot = handle.snapshot().await.unwrap();
+        let observations = snapshot.pending_observations();
+        assert_eq!(observations.len(), 2, "wake A must precede B exactly once");
+        assert_eq!(
+            observations[0].to_turn_text(),
+            "Wake from objective (A): objective notice A"
+        );
+        match (later, &observations[1]) {
+            (LaterObservation::Wake, HarnessObservation::TrackWake { key, text, .. }) => {
+                assert_eq!(key, "B");
+                assert_eq!(text, "objective notice B");
+            }
+            (LaterObservation::Report, HarnessObservation::ReportEdited { body, author, .. }) => {
+                assert_eq!(body, "user report B");
+                assert_eq!(*author, Some(EditAuthor::User));
+            }
+            (LaterObservation::Forge, HarnessObservation::ForgePrOpened { pr_number, .. }) => {
+                assert_eq!(*pr_number, 3084);
+            }
+            (_, unexpected) => panic!("unexpected second observation: {unexpected:?}"),
         }
-        (LaterObservation::Forge, HarnessObservation::ForgePrOpened { pr_number, .. }) => {
-            assert_eq!(*pr_number, 3084);
-        }
-        (_, unexpected) => panic!("unexpected second observation: {unexpected:?}"),
-    }
-    assert_eq!(snapshot.push_watermark, b_id);
-    assert_eq!(inner.push_cursor.get(&planner_card.id), b_id);
-    handle.shutdown().await.unwrap();
+        assert_eq!(snapshot.push_watermark, b_id);
+        assert_eq!(inner.push_cursor.get(&planner_card.id), b_id);
+        handle.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }

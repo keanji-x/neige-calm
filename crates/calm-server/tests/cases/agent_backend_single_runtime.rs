@@ -106,13 +106,16 @@ async fn agent_backend_single_dead_nonlegacy_dangling_historical_home_start_and_
         wait_absent(pid).await;
         let dangling = old.path().join("historical-home");
         std::os::unix::fs::symlink(old.path().join("missing"), &dangling).unwrap();
-        sqlx::query(
-            "UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'",
-        )
-        .bind(dangling.as_os_str().as_bytes())
-        .execute(repo.pool())
-        .await
-        .unwrap();
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'",
+                )
+                .bind(dangling.as_os_str().as_bytes()),
+            )
+            .await
+            .unwrap();
         let next = isolated_server(&single_cfg(&current, explicit), repo.clone()).await;
         next.start_or_takeover().await.unwrap();
         let replacement = next.status_snapshot().runtime.unwrap().pid;
@@ -120,13 +123,16 @@ async fn agent_backend_single_dead_nonlegacy_dangling_historical_home_start_and_
         // Hold the real transition lock so the watcher sees the historical row
         // on its first recovery attempt, rather than racing a test-only hook.
         let serial = next.lock_transition_serial_for_test().await;
-        sqlx::query(
-            "UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'",
-        )
-        .bind(dangling.as_os_str().as_bytes())
-        .execute(repo.pool())
-        .await
-        .unwrap();
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'",
+                )
+                .bind(dangling.as_os_str().as_bytes()),
+            )
+            .await
+            .unwrap();
         unsafe {
             libc::kill(replacement, libc::SIGKILL);
         }
@@ -178,9 +184,14 @@ async fn agent_backend_multi_nonlegacy_different_directory_and_dangling_history_
     wait_absent(pid).await;
     let dangling = old.path().join("historical-home");
     std::os::unix::fs::symlink(old.path().join("missing"), &dangling).unwrap();
-    sqlx::query("UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'")
-        .bind(dangling.as_os_str().as_bytes())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE codex_backend_daemons SET codex_home_path=? WHERE backend_id='default'",
+            )
+            .bind(dangling.as_os_str().as_bytes()),
+        )
         .await
         .unwrap();
     assert!(prepared.verify(repo.as_ref()).await.is_err());

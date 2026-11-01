@@ -68,13 +68,14 @@ async fn versioned_input_inspection_requires_confirmation_of_the_highest_restore
         .unwrap()
         .unwrap();
     // A real failed cleanup leaves the first provisional row for a late provider echo.
-    sqlx::query(concat!(
-        "CREATE TRIGGER retain_old_input BEFORE DELETE ON ",
-        "harness_items BEGIN SELECT RAISE(ABORT, 'retain old input'); END"
-    ))
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER retain_old_input BEFORE DELETE ON ",
+            "harness_items BEGIN SELECT RAISE(ABORT, 'retain old input'); END"
+        )))
+        .await
+        .unwrap();
     // Restoration and its final snapshot share the failed DELETE transaction.
     // The provisional source stays durable while the higher revision remains in memory.
     let error = complete_running(&fx).await.unwrap_err();
@@ -144,13 +145,14 @@ async fn versioned_input_inspection_does_not_certify_below_a_live_rowless_steer(
         .await
         .unwrap()
         .unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_versioned_steer BEFORE INSERT ON ",
-        "harness_items BEGIN SELECT RAISE(ABORT, 'refuse higher input row'); END"
-    ))
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_versioned_steer BEFORE INSERT ON ",
+            "harness_items BEGIN SELECT RAISE(ABORT, 'refuse higher input row'); END"
+        )))
+        .await
+        .unwrap();
     fx.harness
         .steer_pending_entry(id.clone(), revised.rev, ActorId::User)
         .await

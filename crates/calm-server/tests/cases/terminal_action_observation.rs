@@ -544,51 +544,63 @@ async fn action_readback_does_not_follow_a_replacement_worker_session() {
         json!({"type":"text","text":"printf x >> replace-after-write"}),
     )
     .await;
-    let replace_after_execution = async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !h.root.path().join("replace-after-write").exists() {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let mut tx = h.sql.pool().begin().await.unwrap();
-        session_supersede_and_start_tx(
-            &mut tx,
-            &old_id,
-            WorkerSessionInit {
-                id: next.clone(),
-                card_id: state["card_id"].as_str().unwrap().into(),
-                kind: WorkerSessionKind::Terminal,
-                agent_provider: None,
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(terminal.clone()),
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: old.spawn_op_id.clone(),
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    };
-    let (response, ()) = tokio::join!(h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"idempotency_key":"execute","action":{"type":"key","key":"Enter"},"read":true,"wait_ms":2000})), replace_after_execution);
-    let result = receipt(&response);
-    assert_eq!(result["outcome"], "written");
-    assert_eq!(result["observation"]["status"], "unavailable");
-    assert!(result["observation"]["state"].is_null());
-    let resolved = h
-        .ok("neige_terminal_show", json!({"terminal_id":terminal}))
-        .await;
-    assert_eq!(resolved["worker_session_id"], next);
-    assert_eq!(
-        std::fs::read(h.root.path().join("replace-after-write")).unwrap(),
-        b"x"
-    );
-    h.stop(&terminal).await;
+
+    {
+        let replace_after_execution = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !h.root.path().join("replace-after-write").exists() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let write_db = (h.sql.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        session_supersede_and_start_tx(
+                            &mut tx,
+                            &old_id,
+                            WorkerSessionInit {
+                                id: next.clone(),
+                                card_id: state["card_id"].as_str().unwrap().into(),
+                                kind: WorkerSessionKind::Terminal,
+                                agent_provider: None,
+                                status: WorkerSessionState::Running,
+                                terminal_run_id: Some(terminal.clone()),
+                                thread_id: None,
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: None,
+                                spawn_op_id: old.spawn_op_id.clone(),
+                                now_ms: now_ms(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        let (response, ()) = tokio::join!(h.call("neige_terminal_input", json!({"terminal_id":terminal,"observation_id":observation(&typed)["observation_id"],"idempotency_key":"execute","action":{"type":"key","key":"Enter"},"read":true,"wait_ms":2000})), replace_after_execution);
+        let result = receipt(&response);
+        assert_eq!(result["outcome"], "written");
+        assert_eq!(result["observation"]["status"], "unavailable");
+        assert!(result["observation"]["state"].is_null());
+        let resolved = h
+            .ok("neige_terminal_show", json!({"terminal_id":terminal}))
+            .await;
+        assert_eq!(resolved["worker_session_id"], next);
+        assert_eq!(
+            std::fs::read(h.root.path().join("replace-after-write")).unwrap(),
+            b"x"
+        );
+        h.stop(&terminal).await;
+    }
 }
 
 #[tokio::test]

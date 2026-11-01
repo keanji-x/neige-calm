@@ -388,14 +388,17 @@ async fn restart_refuses_an_unknown_card_a_non_harness_card_and_an_area_chat_pla
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 
-    sqlx::query(
-        "UPDATE tracks SET purpose = 'area-chat' \
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tracks SET purpose = 'area-chat' \
            WHERE id = (SELECT track_id FROM cards WHERE id = ?1)",
-    )
-    .bind(&boot.planner_card_id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&boot.planner_card_id),
+        )
+        .await
+        .unwrap();
     let (status, body) = boot.fresh_start("restart").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
     assert_eq!(boot.start_ops().await, 1, "nothing was started");
@@ -447,9 +450,12 @@ async fn a_send_refused_as_dormant_is_accepted_once_after_a_restart() {
     let boot = ordinary_track().await;
     let retired = boot.active().await;
     boot.shutdown_session(&retired.id).await;
-    sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
-        .bind(&retired.id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
+                .bind(&retired.id),
+        )
         .await
         .unwrap();
 

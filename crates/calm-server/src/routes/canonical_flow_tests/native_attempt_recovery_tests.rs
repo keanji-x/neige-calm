@@ -30,25 +30,34 @@ async fn original_facts(
     message: &MessageRevisionRef,
     submission: &InputSubmissionId,
 ) -> OriginalFacts {
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let identity = submission_identity_tx(&mut tx, submission).await.unwrap();
-    let facts = OriginalFacts {
-        message: message_tx(&mut tx, &message.message_id).await.unwrap(),
-        revision: revision_tx(&mut tx, message).await.unwrap(),
-        plan: submission_plan_tx(&mut tx, submission).await.unwrap(),
-        turn: sqlx::query_as(
-            "SELECT initiating_runtime_id,initial_submission_id,execution_kind,created_at_ms
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let identity = submission_identity_tx(&mut tx, submission).await.unwrap();
+                            let facts = OriginalFacts {
+                    message: message_tx(&mut tx, &message.message_id).await.unwrap(),
+                    revision: revision_tx(&mut tx, message).await.unwrap(),
+                    plan: submission_plan_tx(&mut tx, submission).await.unwrap(),
+                    turn: sqlx::query_as(
+                        "SELECT initiating_runtime_id,initial_submission_id,execution_kind,created_at_ms
              FROM conversation_turns WHERE id=?1 AND card_id=?2",
-        )
-        .bind(identity.logical_turn_id.as_str())
-        .bind(&identity.card_id)
-        .fetch_one(&mut *tx)
+                    )
+                    .bind(identity.logical_turn_id.as_str())
+                    .bind(&identity.card_id)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    submission: identity,
+                };
+                            tx.rollback().await.unwrap();
+                            facts
+            })
+        })
         .await
-        .unwrap(),
-        submission: identity,
-    };
-    tx.rollback().await.unwrap();
-    facts
+        .expect("independent write operation")
 }
 
 pub(super) async fn initial_request(peer: &mut Peer) -> Value {

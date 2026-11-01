@@ -20,11 +20,20 @@ async fn real() -> Arc<Fixture> {
 }
 
 async fn fail(fx: &Fixture) {
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.runtime)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.runtime)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn state_and_inputs(fx: &Fixture) -> (WorkerSessionState, ConversationInputCheckpoint) {
@@ -34,23 +43,32 @@ async fn state_and_inputs(fx: &Fixture) -> (WorkerSessionState, ConversationInpu
         .await
         .unwrap()
         .unwrap();
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = current_input_fact_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+                    .await
+                    .unwrap();
+                let inputs = carrier.checkpoint().clone();
+                assert!(
+                    current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
+                        .await
+                        .is_err(),
+                    "recording facts cannot restore execution admission"
+                );
+                assert!(matches!(
+                    revision_tx(&mut tx, &fx.message).await.unwrap().payload,
+                    PrivateHistoryPayload::Present { .. }
+                ));
+                tx.rollback().await.unwrap();
+                (row.state, inputs)
+            })
+        })
         .await
-        .unwrap();
-    let inputs = carrier.checkpoint().clone();
-    assert!(
-        current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
-            .await
-            .is_err(),
-        "recording facts cannot restore execution admission"
-    );
-    assert!(matches!(
-        revision_tx(&mut tx, &fx.message).await.unwrap().payload,
-        PrivateHistoryPayload::Present { .. }
-    ));
-    tx.rollback().await.unwrap();
-    (row.state, inputs)
+        .expect("independent write operation")
 }
 
 #[tokio::test]

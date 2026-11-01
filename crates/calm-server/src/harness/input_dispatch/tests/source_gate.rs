@@ -80,144 +80,149 @@ async fn input_gate_case(change: u8, outbound: bool) {
         .expect("dispatch must reach the actual outbound sink wait");
     }
     eprintln!("stage: original marker committed; real native gate held");
-    if change == 1 {
-        let mut tx = begin_immediate_tx(fixture.repo.db()).await.unwrap();
-        // Model an already-persisted erasure fact; there is no canonical erase command.
-        sqlx::query(
-            "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
-        )
-        .bind(
-            serde_json::to_string(
-                &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
-                    operation_id: PrivateHistoryOperationId::parse(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .unwrap(),
-                },
+    let fixture = fixture.clone();
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        if change == 1 {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            // Model an already-persisted erasure fact; there is no canonical erase command.
+            sqlx::query(
+                "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
             )
-            .unwrap(),
-        )
-        .bind((fixture.message.message_id).as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert!(fixture.source.current_principal().is_ok());
-        eprintln!("stage: actual private body erased before releasing native gate");
-    } else if change >= 2 {
-        let mut tx = begin_immediate_tx(fixture.repo.db()).await.unwrap();
-        let area = conversation_area_tx(&mut tx, &fixture.card).await.unwrap();
-        if change != 4 {
-            crate::db::sqlite::area_membership::application_user_register(
-                &mut tx, "alice", "Alice",
+            .bind(
+                serde_json::to_string(
+                    &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
+                        operation_id: PrivateHistoryOperationId::parse(
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        )
+                        .unwrap(),
+                    },
+                )
+                .unwrap(),
             )
+            .bind((fixture.message.message_id).as_str())
+            .execute(&mut **tx)
             .await
             .unwrap();
-            if change == 3 {
-                sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)")
-                    .bind(area.id.as_str()).execute(&mut **tx).await.unwrap();
+            tx.commit().await.unwrap();
+            assert!(fixture.source.current_principal().is_ok());
+            eprintln!("stage: actual private body erased before releasing native gate");
+        } else if change >= 2 {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            let area = conversation_area_tx(&mut tx, &fixture.card).await.unwrap();
+            if change != 4 {
+                crate::db::sqlite::area_membership::application_user_register(
+                    &mut tx, "alice", "Alice",
+                )
+                .await
+                .unwrap();
+                if change == 3 {
+                    sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)")
+                        .bind(area.id.as_str()).execute(&mut **tx).await.unwrap();
+                }
+            } else {
+                sqlx::query("UPDATE areas SET kind='user' WHERE kind='system'")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
+                    .bind(area.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
             }
+            tx.commit().await.unwrap();
         } else {
-            sqlx::query("UPDATE areas SET kind='user' WHERE kind='system'")
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE areas SET kind='system' WHERE id=?1")
-                .bind(area.id.as_str())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
+            fixture.auth.sessions.remove(&fixture.session).unwrap();
+            assert!(fixture.source.current_principal().is_err());
+            eprintln!("stage: actual request issuer revoked before releasing native gate");
         }
-        tx.commit().await.unwrap();
-    } else {
-        fixture.auth.sessions.remove(&fixture.session).unwrap();
-        assert!(fixture.source.current_principal().is_err());
-        eprintln!("stage: actual request issuer revoked before releasing native gate");
-    }
-    drop(connection_gate);
-    if let Some(blocker) = blocker {
-        release.notify_one();
-        let call = request(&mut peer).await;
-        assert_eq!(
-            call["method"], "config/read",
-            "only the already admitted blocker may send"
-        );
-        send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
-        blocker.await.unwrap().unwrap();
-    }
-    let unexpected = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::select! {
-            result = &mut dispatch => {
-                let _ = result.unwrap();
-                None
-            }
-            call = request(&mut peer) => {
-                let method = call["method"].as_str().unwrap().to_owned();
-                eprintln!("stage: native method after issuer revocation: {method}");
-                assert_eq!(method, "turn/start");
-                send(&mut peer, json!({"id":call["id"],"result":{"turn":{"id":"revoked-gate-turn"}}})).await;
-                dispatch.await.unwrap().unwrap();
-                Some(method)
-            }
+        drop(connection_gate);
+        if let Some(blocker) = blocker {
+            release.notify_one();
+            let call = request(&mut peer).await;
+            assert_eq!(
+                call["method"], "config/read",
+                "only the already admitted blocker may send"
+            );
+            send(&mut peer, json!({"id":call["id"],"result":{"config":{}}})).await;
+            blocker.await.unwrap().unwrap();
         }
-    })
-    .await
-    .expect("the actual dispatch must return or expose its private effect");
-    let mut tx = begin_immediate_tx(fixture.repo.db()).await.unwrap();
-    let original = message_tx(&mut tx, &fixture.message.message_id)
+        let unexpected = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut dispatch => {
+                    let _ = result.unwrap();
+                    None
+                }
+                call = request(&mut peer) => {
+                    let method = call["method"].as_str().unwrap().to_owned();
+                    eprintln!("stage: native method after issuer revocation: {method}");
+                    assert_eq!(method, "turn/start");
+                    send(&mut peer, json!({"id":call["id"],"result":{"turn":{"id":"revoked-gate-turn"}}})).await;
+                    dispatch.await.unwrap().unwrap();
+                    Some(method)
+                }
+            }
+        })
         .await
-        .unwrap();
-    assert_eq!(original.current, fixture.message);
-    tx.rollback().await.unwrap();
-    assert_eq!(
-        unexpected, None,
-        "the native RPC owner must revalidate the live issuer and payload after waiting for its client"
-    );
-    let checkpoint = fixture.checkpoint().await;
-    assert!(checkpoint.active.is_none());
-    if change == 1 {
-        assert!(
-            checkpoint.pending.is_empty(),
-            "erased private content must never be restored to pending"
-        );
-        let mut tx = begin_immediate_tx(fixture.repo.db()).await.unwrap();
-        assert!(matches!(
-            revision_tx(&mut tx, &fixture.message)
-                .await
-                .unwrap()
-                .payload,
-            PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. }
-        ));
+        .expect("the actual dispatch must return or expose its private effect");
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let original = message_tx(&mut tx, &fixture.message.message_id)
+            .await
+            .unwrap();
+        assert_eq!(original.current, fixture.message);
         tx.rollback().await.unwrap();
-    } else {
-        assert_eq!(checkpoint.pending.len(), 1);
         assert_eq!(
-            checkpoint.pending[0].accepted_input_ref().unwrap(),
-            AcceptedInputRef::Human {
-                message: fixture.message.clone()
-            }
+            unexpected, None,
+            "the native RPC owner must revalidate the live issuer and payload after waiting for its client"
         );
-    }
-    assert!(matches!(
-        checkpoint.attempt(&fixture.submission).unwrap().delivery,
-        InputDeliveryFact::NotDispatched { .. }
-    ));
-    if outbound {
-        assert_eq!(
+        let checkpoint = fixture.checkpoint().await;
+        assert!(checkpoint.active.is_none());
+        if change == 1 {
+            assert!(
+                checkpoint.pending.is_empty(),
+                "erased private content must never be restored to pending"
+            );
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            assert!(matches!(
+                revision_tx(&mut tx, &fixture.message)
+                    .await
+                    .unwrap()
+                    .payload,
+                PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. }
+            ));
+            tx.rollback().await.unwrap();
+        } else {
+            assert_eq!(checkpoint.pending.len(), 1);
+            assert_eq!(
+                checkpoint.pending[0].accepted_input_ref().unwrap(),
+                AcceptedInputRef::Human {
+                    message: fixture.message.clone()
+                }
+            );
+        }
+        assert!(matches!(
             checkpoint.attempt(&fixture.submission).unwrap().delivery,
-            InputDeliveryFact::NotDispatched {
-                basis: "transport_before_send".into()
-            }
-        );
-        assert!(
-            checkpoint
-                .attempt(&fixture.submission)
-                .unwrap()
-                .correlation
-                .rpc_request_id
-                .is_some()
-        );
-    }
+            InputDeliveryFact::NotDispatched { .. }
+        ));
+        if outbound {
+            assert_eq!(
+                checkpoint.attempt(&fixture.submission).unwrap().delivery,
+                InputDeliveryFact::NotDispatched {
+                    basis: "transport_before_send".into()
+                }
+            );
+            assert!(
+                checkpoint
+                    .attempt(&fixture.submission)
+                    .unwrap()
+                    .correlation
+                    .rpc_request_id
+                    .is_some()
+            );
+        }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

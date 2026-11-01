@@ -13,15 +13,18 @@ async fn child_track_config_declared_selection_overrides_parent() {
     .await
     .id
     .to_string();
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload, \
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload, \
          '$.planner_provider','claude','$.model','parent-model','$.reasoning_effort','low') \
          WHERE track_id=?1 AND role='planner'",
-    )
-    .bind(&parent)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&parent),
+        )
+        .await
+        .unwrap();
     let task = seed_task(&repo, &parent, false).await;
     let mut input = serde_json::to_value(payload(&task)).unwrap();
     input["child_track"] = json!({"model":"sonnet", "reasoning_effort":"high"});
@@ -61,16 +64,19 @@ async fn child_track_config_provider_change_resets_parent_selection() {
     .await
     .id
     .to_string();
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload, \
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload, \
          '$.model','parent-model','$.reasoning_effort','high', \
          '$.model_ever_set',json('true'),'$.reasoning_effort_ever_set',json('true')) \
          WHERE track_id=?1 AND role='planner'",
-    )
-    .bind(&parent)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&parent),
+        )
+        .await
+        .unwrap();
     let task = seed_task(&repo, &parent, false).await;
     let mut input = serde_json::to_value(payload(&task)).unwrap();
     input["child_track"] = json!({"provider":"claude"});
@@ -158,14 +164,17 @@ async fn child_track_config_inherited_permission_overrides_registration() {
     use crate::acp_planner::config::{AcpPlannerConfig, AcpPlannerHost};
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let parent = seed_parent(&repo, false).await;
-    sqlx::query(concat!(
-        "UPDATE cards SET payload=json_set(payload,'$.planner_provider','opencode',",
-        "'$.permission_mode','never') WHERE track_id=?1 AND role='planner'",
-    ))
-    .bind(&parent)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE cards SET payload=json_set(payload,'$.planner_provider','opencode',",
+                "'$.permission_mode','never') WHERE track_id=?1 AND role='planner'",
+            ))
+            .bind(&parent),
+        )
+        .await
+        .unwrap();
     let task = seed_task(&repo, &parent, false).await;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("acp.json");
@@ -186,21 +195,31 @@ async fn child_track_config_inherited_permission_overrides_registration() {
         workspace_runtime::sweep::TeardownTargets::default(),
     );
     let input = serde_json::to_value(payload(&task)).unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let output = adapter
-        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let output = adapter
+                    .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let child = output.data["child_track_id"].as_str().unwrap();
+                let payload: String = sqlx::query_scalar(
+                    "SELECT payload FROM cards WHERE track_id=?1 AND role='planner'",
+                )
+                .bind(child)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&payload).unwrap()["permission_mode"],
+                    "never"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let child = output.data["child_track_id"].as_str().unwrap();
-    let payload: String =
-        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=?1 AND role='planner'")
-            .bind(child)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&payload).unwrap()["permission_mode"],
-        "never"
-    );
+        .expect("independent write operation")
 }

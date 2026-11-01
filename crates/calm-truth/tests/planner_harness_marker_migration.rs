@@ -16,14 +16,15 @@ async fn planner_switch_marker_migration_repairs_roles_without_other_changes() {
     for migration in MIGRATOR.iter().filter(|m| m.version <= 192) {
         db.apply(migration).await.unwrap();
     }
-    sqlx::raw_sql(
-        "INSERT INTO areas(id,name,color,sort,created_at,updated_at)
+    {
+        let query = sqlx::raw_sql(
+            "INSERT INTO areas(id,name,color,sort,created_at,updated_at)
         VALUES('a','a','#000',0,1,1);
         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at)
         VALUES('t','a','t',0,1,1);",
-    )
-    .execute(&mut db)
-    .await
+        );
+        sqlx::Executor::execute(&mut db, query).await
+    }
     .unwrap();
     let mut expected = Vec::new();
     for (index, (kind, role)) in [

@@ -53,27 +53,36 @@ struct Boot {
 }
 
 async fn seed_planner_root_runtime(repo: &SqlxRepo, planner_card_id: &CardId) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: PLANNER_SESSION_ID.to_string(),
-            card_id: planner_card_id.as_str().to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("planner-thread".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("seed planner root runtime");
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: PLANNER_SESSION_ID.to_string(),
+                        card_id: planner_card_id.as_str().to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some("planner-thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("seed planner root runtime");
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn boot() -> Boot {
@@ -423,19 +432,25 @@ async fn log_card_hook_event(boot: &Boot, card_id: &CardId, event: Event) -> i64
 }
 
 async fn set_event_at(boot: &Boot, event_id: i64, at: i64) {
-    sqlx::query("UPDATE events SET at = ?1 WHERE id = ?2")
-        .bind(at)
-        .bind(event_id)
-        .execute(boot.sqlx_repo.pool())
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE events SET at = ?1 WHERE id = ?2")
+                .bind(at)
+                .bind(event_id),
+        )
         .await
         .expect("set event timestamp");
 }
 
 async fn set_card_updated_at(boot: &Boot, card_id: &CardId, updated_at: i64) {
-    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
-        .bind(updated_at)
-        .bind(card_id.as_str())
-        .execute(boot.sqlx_repo.pool())
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET updated_at = ?1 WHERE id = ?2")
+                .bind(updated_at)
+                .bind(card_id.as_str()),
+        )
         .await
         .expect("set card updated_at");
 }
@@ -476,15 +491,18 @@ async fn complete_run_with_result(boot: &Boot, key: &str, result: Value) -> i64 
 
 /// A verdict names a task attempt of the caller's track; the event-only runs above have no row yet.
 async fn seed_task_attempt(boot: &Boot, key: &str) {
-    sqlx::query(concat!(
-        "INSERT OR IGNORE INTO tasks(id,track_id,key,kind,goal,context_json,status,",
-        "created_at_ms,updated_at_ms) VALUES(?1,?2,?1,'codex','goal','{}','done',1,1)"
-    ))
-    .bind(key)
-    .bind(boot.track_id.as_str())
-    .execute(boot.sqlx_repo.pool())
-    .await
-    .expect("seed the verdict's task attempt");
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "INSERT OR IGNORE INTO tasks(id,track_id,key,kind,goal,context_json,status,",
+                "created_at_ms,updated_at_ms) VALUES(?1,?2,?1,'codex','goal','{}','done',1,1)"
+            ))
+            .bind(key)
+            .bind(boot.track_id.as_str()),
+        )
+        .await
+        .expect("seed the verdict's task attempt");
 }
 
 async fn accept_run(boot: &Boot, key: &str) {
@@ -561,28 +579,37 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
 
 async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProjection {
     let runtime_id = calm_server::model::new_id();
-    let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.as_str().to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("thread-runtime-json".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("seed runtime row");
-    tx.commit().await.unwrap();
-    runtime
+    let write_db = (boot.sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.as_str().to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some("thread-runtime-json".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("seed runtime row");
+                tx.commit().await.unwrap();
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2424,8 +2451,11 @@ async fn track_history_rejects_ambiguous_commit_prefixes() {
         format!("deadbeef{}", "0".repeat(56)),
         format!("deadbeef{}", "1".repeat(56)),
     ] {
-        sqlx::query(
-            r#"INSERT INTO track_vcs_commits (
+        (boot.sqlx_repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
                    author, message, event_id, created_at
                )
@@ -2433,12 +2463,12 @@ async fn track_history_rejects_ambiguous_commit_prefixes() {
                       author, message, event_id, created_at
                FROM track_vcs_commits
                WHERE hash = ?2"#,
-        )
-        .bind(hash)
-        .bind(&head)
-        .execute(boot.sqlx_repo.pool())
-        .await
-        .expect("seed colliding commit prefix");
+                )
+                .bind(hash)
+                .bind(&head),
+            )
+            .await
+            .expect("seed colliding commit prefix");
     }
 
     let err = call_tool(

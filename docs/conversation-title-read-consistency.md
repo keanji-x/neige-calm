@@ -10,12 +10,12 @@ acceptance, not current text. Metadata projects these facts without repairing
 input or inferring lifecycle policy.
 
 Title metadata uses the repository's existing shared `SqliteDb`: the original
-`begin_immediate_tx(repo.db())` acquires its single writer lease before any
+scoped `WriteSession::begin_immediate()` acquires its single writer lease before any
 candidate SELECT. Candidate batches and runtime projections read through that
 same immediate transaction until commit. Other reads retain the read pool's
 capacity. The start owner's transfer proof uses one SELECT through
-`repo.sqlite_db().read_pool()`; it needs no writer admission. Read-pool role is
-an application contract, not SQLite `query_only` enforcement.
+`repo.sqlite_db().read_pool()`; it needs no writer admission. File readers open read-only, and every read connection enables SQLite
+`query_only`, including after connection recovery.
 
 [Typed commit continuations](../crates/calm-server/src/harness/run_loop/input_commit.rs)
 retain the actual resolved issuance or accepted steer until its responsibility completes.

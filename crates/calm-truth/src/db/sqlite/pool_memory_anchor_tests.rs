@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use sqlx::pool::PoolConnection;
 use sqlx::sqlite::SqlitePoolOptions;
 
-use super::SqlxRepo;
+use super::{SqliteDb, SqlxRepo};
 
 /// `SqliteConnection` must stay `Send + Sync` for `SqlxRepo` to hold the anchor unlocked.
 const _: fn() = || {
@@ -38,10 +38,12 @@ async fn close_all_pool_connections(pool: &SqlitePool) {
     }
 }
 
-async fn insert_marker(pool: &SqlitePool, key: &str) {
-    sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?1, 'alive', 0)")
-        .bind(key)
-        .execute(pool)
+async fn insert_marker(db: &SqliteDb, key: &str) {
+    db.writer()
+        .execute(
+            sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?1, 'alive', 0)")
+                .bind(key),
+        )
         .await
         .unwrap();
 }
@@ -64,12 +66,21 @@ async fn in_memory_db_survives_closing_every_pool_connection() {
         "in-memory repo must hold the keepalive anchor"
     );
 
-    insert_marker(pool, "926-marker").await;
+    insert_marker(db, "926-marker").await;
 
     close_all_pool_connections(pool).await;
-    close_all_pool_connections(db.writer_pool()).await;
+    db.writer()
+        .with_writer(|write_session| {
+            Box::pin(async move { write_session.retire_connection_for_test().await })
+        })
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        (db.read_pool().size(), db.writer_pool().size()),
+        (
+            db.read_pool().size(),
+            db.writer().pool_state_for_test().size
+        ),
         (0, 0),
         "both pool roles must be cold before reopening the database"
     );
@@ -99,12 +110,21 @@ async fn on_disk_db_unaffected_by_closing_every_pool_connection() {
         "on-disk repo must not hold a keepalive anchor (zero behavior change)"
     );
 
-    insert_marker(pool, "926-disk-marker").await;
+    insert_marker(db, "926-disk-marker").await;
 
     close_all_pool_connections(pool).await;
-    close_all_pool_connections(db.writer_pool()).await;
+    db.writer()
+        .with_writer(|write_session| {
+            Box::pin(async move { write_session.retire_connection_for_test().await })
+        })
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        (db.read_pool().size(), db.writer_pool().size()),
+        (
+            db.read_pool().size(),
+            db.writer().pool_state_for_test().size
+        ),
         (0, 0),
         "both pool roles must be cold before reopening the database"
     );

@@ -171,10 +171,13 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         .await
         .expect("seed codex card");
     // The persisted role is what recovery reads; the cache alone is not a Planner card.
-    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
-        .bind(role.as_db_str())
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+                .bind(role.as_db_str())
+                .bind(card.id.as_str()),
+        )
         .await
         .expect("persist seeded card role");
     boot.state
@@ -189,28 +192,37 @@ async fn seed_active_planner_runtime_row(boot: &Boot, card: &Card) -> (String, S
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("seed active planner harness runtime");
-    tx.commit().await.unwrap();
-    (runtime_id, thread_id)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("seed active planner harness runtime");
+                tx.commit().await.unwrap();
+                (runtime_id, thread_id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Seed a live planner harness (idle) registered under an active runtime row.

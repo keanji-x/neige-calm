@@ -36,7 +36,7 @@ pub async fn unmatched_provisioned_worktrees(
 mod tests {
     use super::*;
     use crate::{
-        db::sqlite::{SqlxRepo, append_decision_event_in_tx, begin_immediate_tx},
+        db::sqlite::{SqlxRepo, append_decision_event_in_tx},
         event::{Event, EventScope},
         ids::ActorId,
     };
@@ -44,62 +44,71 @@ mod tests {
     #[tokio::test]
     async fn unmatched_receipts_match_track_path_across_cards_and_keep_other_owners() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        async fn receipt(
-            tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-            track: &str,
-            card: &str,
-            path: &str,
-            removed: bool,
-        ) {
-            let event = if removed {
-                Event::WorktreeRemoved {
-                    track_id: track.into(),
-                    card_id: card.into(),
-                    path: path.into(),
-                }
-            } else {
-                Event::WorktreeProvisioned {
-                    track_id: track.into(),
-                    card_id: card.into(),
-                    path: path.into(),
-                }
-            };
-            append_decision_event_in_tx(
-                tx,
-                &ActorId::KernelDispatcher,
-                &EventScope::Card {
-                    card: card.into(),
-                    track: track.into(),
-                    area: "area".into(),
-                },
-                None,
-                &event,
-            )
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    async fn receipt(
+                        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+                        track: &str,
+                        card: &str,
+                        path: &str,
+                        removed: bool,
+                    ) {
+                        let event = if removed {
+                            Event::WorktreeRemoved {
+                                track_id: track.into(),
+                                card_id: card.into(),
+                                path: path.into(),
+                            }
+                        } else {
+                            Event::WorktreeProvisioned {
+                                track_id: track.into(),
+                                card_id: card.into(),
+                                path: path.into(),
+                            }
+                        };
+                        append_decision_event_in_tx(
+                            tx,
+                            &ActorId::KernelDispatcher,
+                            &EventScope::Card {
+                                card: card.into(),
+                                track: track.into(),
+                                area: "area".into(),
+                            },
+                            None,
+                            &event,
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    receipt(&mut tx, "owner", "a", "/extra", false).await;
+                    receipt(&mut tx, "other", "a", "/extra", false).await;
+                    receipt(&mut tx, "owner", "b", "/extra", true).await;
+                    let rows = unmatched_provisioned_worktrees(&mut tx).await.unwrap();
+                    assert_eq!(rows.len(), 1);
+                    assert_eq!(rows[0].track_id, "other");
+                    receipt(&mut tx, "owner", "c", "/extra", false).await;
+                    receipt(&mut tx, "owner", "d", "/extra", false).await;
+                    receipt(&mut tx, "owner", "c", "relative", false).await;
+                    let rows = unmatched_provisioned_worktrees(&mut tx).await.unwrap();
+                    assert_eq!(rows.len(), 3);
+                    assert_eq!(rows[1].card_id, "d");
+                    assert_eq!(rows[2].path, "relative");
+                    // No live entity join: receipts remain queryable after their owners disappear.
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        unmatched_provisioned_worktrees(&mut repo.pool().acquire().await.unwrap())
+                            .await
+                            .unwrap()
+                            .len(),
+                        3
+                    );
+                })
+            })
             .await
-            .unwrap();
-        }
-        receipt(&mut tx, "owner", "a", "/extra", false).await;
-        receipt(&mut tx, "other", "a", "/extra", false).await;
-        receipt(&mut tx, "owner", "b", "/extra", true).await;
-        let rows = unmatched_provisioned_worktrees(&mut tx).await.unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].track_id, "other");
-        receipt(&mut tx, "owner", "c", "/extra", false).await;
-        receipt(&mut tx, "owner", "d", "/extra", false).await;
-        receipt(&mut tx, "owner", "c", "relative", false).await;
-        let rows = unmatched_provisioned_worktrees(&mut tx).await.unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[1].card_id, "d");
-        assert_eq!(rows[2].path, "relative");
-        // No live entity join: receipts remain queryable after their owners disappear.
-        tx.commit().await.unwrap();
-        assert_eq!(
-            unmatched_provisioned_worktrees(&mut repo.pool().acquire().await.unwrap())
-                .await
-                .unwrap()
-                .len(),
-            3
-        );
+            .expect("independent write operation")
     }
 }

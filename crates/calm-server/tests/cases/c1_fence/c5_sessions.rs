@@ -57,72 +57,87 @@ async fn session_with_id(
         None
     };
     let id = id.to_string();
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: id.clone(),
-            card_id: card.id.to_string(),
-            kind: if provider.is_some() {
-                WorkerSessionKind::SharedPlanner
-            } else {
-                WorkerSessionKind::Terminal
-            },
-            agent_provider: provider,
-            status: WorkerSessionState::Running,
-            terminal_run_id: terminal.as_ref().map(|t| t.id.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let execution = new_id();
-    let alias = match terminal {
-        Some(t) => calm_truth::db::sqlite::workspace_execution::terminal_alias(&t.id),
-        None => format!(
-            "{}:{id}:{execution}",
-            calm_truth::db::sqlite::workspace_execution::PLANNER_ALIAS_PREFIX
-        ),
-    };
-    if engine {
-        sqlx::query(
-            "INSERT INTO workspace_executions \
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: if provider.is_some() {
+                            WorkerSessionKind::SharedPlanner
+                        } else {
+                            WorkerSessionKind::Terminal
+                        },
+                        agent_provider: provider,
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: terminal.as_ref().map(|t| t.id.clone()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let execution = new_id();
+                let alias = match terminal {
+                    Some(t) => calm_truth::db::sqlite::workspace_execution::terminal_alias(&t.id),
+                    None => format!(
+                        "{}:{id}:{execution}",
+                        calm_truth::db::sqlite::workspace_execution::PLANNER_ALIAS_PREFIX
+                    ),
+                };
+                if engine {
+                    (b.repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query(
+                                "INSERT INTO workspace_executions \
         (execution_id,track_id,alias,intent_json,secrets_json,desired) VALUES (?,?,?,?,?,'run')",
-        )
-        .bind(&execution)
-        .bind(track)
-        .bind(alias)
-        .bind(json!({"source":{"root":path}}).to_string())
-        .bind("{}")
-        .execute(b.repo.pool())
+                            )
+                            .bind(&execution)
+                            .bind(track)
+                            .bind(alias)
+                            .bind(json!({"source":{"root":path}}).to_string())
+                            .bind("{}"),
+                        )
+                        .await
+                        .unwrap();
+                }
+                (id, execution)
+            })
+        })
         .await
-        .unwrap();
-    }
-    (id, execution)
+        .expect("independent write operation")
 }
 
 async fn settle(b: &Boot, execution: &str) {
     // Retired history must still identify a typed terminal or Planner session.
-    sqlx::query(
-        "UPDATE workspace_executions SET settled_at_ms=1,settlement_json=?,\
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE workspace_executions SET settled_at_ms=1,settlement_json=?,\
         desired='retire',secrets_json=NULL WHERE execution_id=?",
-    )
-    .bind(
-        serde_json::to_string(&workspace_runtime::execution::Settlement::Journal(
-            workspace_runtime::execution::ExecutionState::Drained { status: Some(0) },
-        ))
-        .unwrap(),
-    )
-    .bind(execution)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(
+                serde_json::to_string(&workspace_runtime::execution::Settlement::Journal(
+                    workspace_runtime::execution::ExecutionState::Drained { status: Some(0) },
+                ))
+                .unwrap(),
+            )
+            .bind(execution),
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -140,10 +155,13 @@ async fn c5_session_no_silent_miss_exited_unsettled_without_renderer_defers() {
     for state in ["exited", "idle"] {
         let (b, track, path) = fixture().await;
         let (id, execution) = session(&b, &track, &path, None, true).await;
-        sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
-            .bind(state)
-            .bind(&id)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                    .bind(state)
+                    .bind(&id),
+            )
             .await
             .unwrap();
         let (count, history) = clean(b.clone()).await.unwrap();
@@ -163,10 +181,13 @@ async fn planner_stale_clean(provider: AgentProvider) {
             .unwrap();
         let (id, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
         settle(&b, &execution).await;
-        sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
-            .bind(state)
-            .bind(&id)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                    .bind(state)
+                    .bind(&id),
+            )
             .await
             .unwrap();
         assert_eq!(clean(b.clone()).await.unwrap().0, 1, "{provider:?} {state}");
@@ -191,19 +212,24 @@ async fn c5d2_acp_stale_settled_defers() {
                 .unwrap();
             let (id, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
             settle(&b, &execution).await;
-            sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
-                .bind(state)
-                .bind(&id)
-                .execute(b.repo.pool())
+            (b.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                        .bind(state)
+                        .bind(&id),
+                )
                 .await
                 .unwrap();
             let (count, history) = clean(b.clone()).await.unwrap();
             assert_eq!(count, 0, "{provider:?} {state}");
             assert!(history.is_empty());
             assert!(path.join("target/ignored").is_file());
-            sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
-                .bind(id)
-                .execute(b.repo.pool())
+            (b.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?").bind(id),
+                )
                 .await
                 .unwrap();
             assert_eq!(clean(b.clone()).await.unwrap().0, 1);
@@ -258,9 +284,9 @@ async fn c5d2_planner_failed_upgrade_sweep_with_history_defers() {
         assert!(history.is_empty());
         assert!(path.join("target/ignored").is_file());
         // A failed sweep retains unproven Claude proxies; ACP always retains its proxy.
-        sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
-            .bind(id)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?").bind(id))
             .await
             .unwrap();
         let (_, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
@@ -296,10 +322,13 @@ async fn c5d2_alias_session_boundary_defers() {
         let (session, _) =
             session_with_id(&b, &track, &path, Some(AgentProvider::Claude), false, id).await;
         for provider in ["claude", "codex"] {
-            sqlx::query("UPDATE worker_sessions SET provider=? WHERE id=?")
-                .bind(provider)
-                .bind(&session)
-                .execute(b.repo.pool())
+            (b.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET provider=? WHERE id=?")
+                        .bind(provider)
+                        .bind(&session),
+                )
                 .await
                 .unwrap();
             let (count, history) = clean(b.clone()).await.unwrap();
@@ -327,10 +356,13 @@ async fn c5d2_no_history_planner_codex_and_legacy_defer() {
         settle(&b, &execution).await;
         let (id, _) = session(&b, &track, &path, provider, false).await;
         for state in ["starting", "running", "turn_pending"] {
-            sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
-                .bind(state)
-                .bind(&id)
-                .execute(b.repo.pool())
+            (b.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                        .bind(state)
+                        .bind(&id),
+                )
                 .await
                 .unwrap();
             let (count, history) = clean(b.clone()).await.unwrap();
@@ -338,9 +370,9 @@ async fn c5d2_no_history_planner_codex_and_legacy_defer() {
             assert!(history.is_empty());
             assert!(path.join("target/ignored").is_file());
         }
-        sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
-            .bind(&id)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?").bind(&id))
             .await
             .unwrap();
         assert_eq!(clean(b.clone()).await.unwrap().0, 1);
@@ -414,14 +446,13 @@ async fn c5d2_one_weak_settlement_among_drained_history_defers() {
         // A second execution for the SAME session: one strong settlement cannot
         // hide a weaker historical proof, including retired history.
         let other = new_id();
-        sqlx::query(
+        (b.repo.db()).writer().execute(sqlx::query(
             "INSERT INTO workspace_executions \
              (execution_id,track_id,alias,intent_json,secrets_json,desired,settled_at_ms,settlement_json) \
              SELECT ?,track_id,replace(alias,execution_id,?),intent_json,NULL,'retire',1,? \
              FROM workspace_executions WHERE execution_id=?",
         )
-            .bind(&other).bind(&other).bind(proof).bind(&execution)
-            .execute(b.repo.pool()).await.unwrap();
+            .bind(&other).bind(&other).bind(proof).bind(&execution)).await.unwrap();
         let (count, history) = clean(b.clone()).await.unwrap();
         assert_eq!(count, expected);
         if expected == 0 {

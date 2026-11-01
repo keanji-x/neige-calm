@@ -128,114 +128,125 @@ pub(super) async fn observe(
 pub(super) async fn exercise_objective_usage(inner: &Arc<Inner>) {
     use calm_types::track_capability::TrackCapability;
     let db = inner.repo.sqlite_db().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await.unwrap();
-    crate::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &inner.track_id,
-        &[TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    async fn checkpoint(
-        inner: &Arc<Inner>,
-        phase: HarnessPhaseTag,
-        turn: &str,
-        count: i64,
-        invalid: bool,
-    ) {
-        let usage = Some(TokenUsage {
-            used_tokens: count,
-            total_tokens: 9000000,
-            context_window: Some(200000),
-            at_ms: 1,
-        });
-        if inner.inputs.canonical().is_some() {
-            let mut next = canonical::read_current(inner).await.unwrap();
-            next.snapshot.header.phase = phase;
-            next.snapshot.header.last_turn_id = Some(turn.into());
-            next.snapshot.header.token_usage = usage;
-            next.snapshot.header.context_usage_invalidated = invalid;
-            let card = inner.card_id.to_string();
-            let runtime = inner.worker_session_id.clone();
-            let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
-                Box::pin(async move {
-                    canonical::written(
-                        crate::db::sqlite::conversation::persist_runtime_frame_tx(
-                            tx,
-                            &card,
-                            &runtime,
-                            &next.fence,
-                            crate::harness::snapshot::canonical_runtime_header_value(
-                                &next.snapshot,
-                            )?,
-                        )
-                        .await?,
-                    )
-                })
-            })
-            .await
-            .unwrap();
-            canonical::publish(inner, next).await;
-        } else {
-            *inner.state.lock().await = match phase {
-                HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
-                    since: Instant::now(),
-                    kind: IssuingKind::TurnStart,
-                },
-                HarnessPhaseTag::TurnRunning => {
-                    HarnessState::turn_running(turn.into(), Instant::now())
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::track_capabilities::stamp_tx(
+                    &mut tx,
+                    &inner.track_id,
+                    &[TrackCapability::Objectives],
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                async fn checkpoint(
+                    inner: &Arc<Inner>,
+                    phase: HarnessPhaseTag,
+                    turn: &str,
+                    count: i64,
+                    invalid: bool,
+                ) {
+                    let usage = Some(TokenUsage {
+                        used_tokens: count,
+                        total_tokens: 9000000,
+                        context_window: Some(200000),
+                        at_ms: 1,
+                    });
+                    if inner.inputs.canonical().is_some() {
+                        let mut next = canonical::read_current(inner).await.unwrap();
+                        next.snapshot.header.phase = phase;
+                        next.snapshot.header.last_turn_id = Some(turn.into());
+                        next.snapshot.header.token_usage = usage;
+                        next.snapshot.header.context_usage_invalidated = invalid;
+                        let card = inner.card_id.to_string();
+                        let runtime = inner.worker_session_id.clone();
+                        let next = write_in_tx_typed(inner.repo.as_ref(), move |tx| {
+                            Box::pin(async move {
+                                canonical::written(
+                                    crate::db::sqlite::conversation::persist_runtime_frame_tx(
+                                        tx,
+                                        &card,
+                                        &runtime,
+                                        &next.fence,
+                                        crate::harness::snapshot::canonical_runtime_header_value(
+                                            &next.snapshot,
+                                        )?,
+                                    )
+                                    .await?,
+                                )
+                            })
+                        })
+                        .await
+                        .unwrap();
+                        canonical::publish(inner, next).await;
+                    } else {
+                        *inner.state.lock().await = match phase {
+                            HarnessPhaseTag::IssuingTurn => HarnessState::Issuing {
+                                since: Instant::now(),
+                                kind: IssuingKind::TurnStart,
+                            },
+                            HarnessPhaseTag::TurnRunning => {
+                                HarnessState::turn_running(turn.into(), Instant::now())
+                            }
+                            HarnessPhaseTag::Compacting => HarnessState::Compacting {
+                                since: Instant::now(),
+                            },
+                            _ => HarnessState::TurnCompleted {
+                                last_turn_id: turn.into(),
+                            },
+                        };
+                        *inner.last_turn_id.lock().await = Some(turn.into());
+                        *inner.token_usage.lock().await = usage;
+                        *inner.context_usage_invalidation.lock().await = invalid
+                            .then_some(compact_command::UsageInvalidation { user_turn_id: None });
+                        persist_snapshot(inner).await.unwrap();
+                    }
                 }
-                HarnessPhaseTag::Compacting => HarnessState::Compacting {
-                    since: Instant::now(),
-                },
-                _ => HarnessState::TurnCompleted {
-                    last_turn_id: turn.into(),
-                },
-            };
-            *inner.last_turn_id.lock().await = Some(turn.into());
-            *inner.token_usage.lock().await = usage;
-            *inner.context_usage_invalidation.lock().await =
-                invalid.then_some(compact_command::UsageInvalidation { user_turn_id: None });
-            persist_snapshot(inner).await.unwrap();
-        }
-    }
-    for (turn, start, end, invalid, expected) in [
-        ("direct-end", 30000, 40000, false, 10000),
-        ("normal", 40000, 50000, false, 20000),
-        ("after-compact", 50000, 20000, true, 20000),
-        ("falling", 20000, 10000, false, 20000),
-    ] {
-        checkpoint(inner, HarnessPhaseTag::IssuingTurn, turn, start, invalid).await;
-        if turn != "direct-end" {
-            checkpoint(inner, HarnessPhaseTag::TurnRunning, turn, start, invalid).await;
-        }
-        checkpoint(inner, HarnessPhaseTag::TurnCompleted, turn, end, false).await;
-        let (_, state) = calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
-            .await
-            .unwrap();
-        assert_eq!(state.usage.context_tokens, expected, "{turn}");
-    }
-    checkpoint(
-        inner,
-        HarnessPhaseTag::Compacting,
-        "maintenance",
-        10000,
-        false,
-    )
-    .await;
-    checkpoint(
-        inner,
-        HarnessPhaseTag::TurnCompleted,
-        "maintenance",
-        80000,
-        true,
-    )
-    .await;
-    let (_, state) = calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
+                for (turn, start, end, invalid, expected) in [
+                    ("direct-end", 30000, 40000, false, 10000),
+                    ("normal", 40000, 50000, false, 20000),
+                    ("after-compact", 50000, 20000, true, 20000),
+                    ("falling", 20000, 10000, false, 20000),
+                ] {
+                    checkpoint(inner, HarnessPhaseTag::IssuingTurn, turn, start, invalid).await;
+                    if turn != "direct-end" {
+                        checkpoint(inner, HarnessPhaseTag::TurnRunning, turn, start, invalid).await;
+                    }
+                    checkpoint(inner, HarnessPhaseTag::TurnCompleted, turn, end, false).await;
+                    let (_, state) =
+                        calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
+                            .await
+                            .unwrap();
+                    assert_eq!(state.usage.context_tokens, expected, "{turn}");
+                }
+                checkpoint(
+                    inner,
+                    HarnessPhaseTag::Compacting,
+                    "maintenance",
+                    10000,
+                    false,
+                )
+                .await;
+                checkpoint(
+                    inner,
+                    HarnessPhaseTag::TurnCompleted,
+                    "maintenance",
+                    80000,
+                    true,
+                )
+                .await;
+                let (_, state) =
+                    calm_truth::objective_host::read_state(db.read_pool(), &inner.track_id)
+                        .await
+                        .unwrap();
+                assert_eq!(state.usage.turns, 4, "maintenance must not report");
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(state.usage.turns, 4, "maintenance must not report");
+        .expect("independent write operation")
 }
 
 #[cfg(all(test, feature = "fixtures"))]
@@ -314,15 +325,24 @@ fn objective_completion_without_running_or_initial_reading() {
 #[cfg(all(test, feature = "fixtures"))]
 pub(super) async fn enable_objectives(inner: &Inner) {
     let db = inner.repo.sqlite_db().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await.unwrap();
-    crate::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &inner.track_id,
-        &[calm_types::track_capability::TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::track_capabilities::stamp_tx(
+                    &mut tx,
+                    &inner.track_id,
+                    &[calm_types::track_capability::TrackCapability::Objectives],
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[cfg(all(test, feature = "fixtures"))]
@@ -482,13 +502,14 @@ async fn objective_historical_usage_write_failure_retries_same_endpoint() {
     let turn = inner.last_turn_id.lock().await.clone().unwrap();
     historical_started(inner, &turn).await;
     inner.token_usage.lock().await.as_mut().unwrap().used_tokens = 50000;
-    sqlx::query(
-        "CREATE TRIGGER refuse_objective_usage BEFORE INSERT ON objective_events
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_objective_usage BEFORE INSERT ON objective_events
          WHEN NEW.kind='usage' BEGIN SELECT RAISE(ABORT, 'usage unavailable'); END",
-    )
-    .execute(f.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     on_notification(
         inner,
         &inner.live_claim.writer(),
@@ -505,8 +526,9 @@ async fn objective_historical_usage_write_failure_retries_same_endpoint() {
         .await
         .unwrap();
     assert_eq!(state.usage.turns, 0);
-    sqlx::query("DROP TRIGGER refuse_objective_usage")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_objective_usage"))
         .await
         .unwrap();
     // A later reading must not change the already observed END's delta.

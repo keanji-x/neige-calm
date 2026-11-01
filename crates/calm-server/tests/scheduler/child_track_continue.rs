@@ -161,65 +161,76 @@ async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attem
             .unwrap()
             .contains("new assignment")
     );
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    assert_eq!(
-        calm_truth::db::sqlite::task_claim_pending_tx(
-            &mut tx,
-            &format!("{child}:left"),
-            now_ms(),
-            &[],
-            false
-        )
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert_eq!(
+                    calm_truth::db::sqlite::task_claim_pending_tx(
+                        &mut tx,
+                        &format!("{child}:left"),
+                        now_ms(),
+                        &[],
+                        false
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                tx.rollback().await.unwrap();
+                (db).writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
+                            .bind(format!("{child}:left")),
+                    )
+                    .await
+                    .unwrap();
+                for tool in ["neige_task_done", "neige_task_fail"] {
+                    let mut args = json!({"attempt_id":old});
+                    if tool == "neige_task_fail" {
+                        args["reason"] = json!("stale seed");
+                    }
+                    assert!(
+                        call_tool(&boot, tool, identity.clone(), args)
+                            .await
+                            .is_err(),
+                        "{tool} must reject the old seed"
+                    );
+                    assert_eq!(
+                        boot.repo.task_get(&id).await.unwrap().unwrap().status,
+                        TaskStatus::Running
+                    );
+                    assert!(
+                        boot.repo
+                            .track_get(&child)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .closed_at
+                            .is_none()
+                    );
+                }
+                call_tool(&boot, "neige_task_done", identity, json!({"attempt_id":id}))
+                    .await
+                    .unwrap();
+                scheduler
+                    .reconcile_child_track_for_test(&child)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    boot.repo.task_get(&id).await.unwrap().unwrap().status,
+                    TaskStatus::Done
+                );
+                assert_eq!(
+                    boot.repo.task_get(&old).await.unwrap().unwrap().status,
+                    TaskStatus::Failed
+                );
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
-        .bind(format!("{child}:left"))
-        .execute(db.writer_pool())
-        .await
-        .unwrap();
-    for tool in ["neige_task_done", "neige_task_fail"] {
-        let mut args = json!({"attempt_id":old});
-        if tool == "neige_task_fail" {
-            args["reason"] = json!("stale seed");
-        }
-        assert!(
-            call_tool(&boot, tool, identity.clone(), args)
-                .await
-                .is_err(),
-            "{tool} must reject the old seed"
-        );
-        assert_eq!(
-            boot.repo.task_get(&id).await.unwrap().unwrap().status,
-            TaskStatus::Running
-        );
-        assert!(
-            boot.repo
-                .track_get(&child)
-                .await
-                .unwrap()
-                .unwrap()
-                .closed_at
-                .is_none()
-        );
-    }
-    call_tool(&boot, "neige_task_done", identity, json!({"attempt_id":id}))
-        .await
-        .unwrap();
-    scheduler
-        .reconcile_child_track_for_test(&child)
-        .await
-        .unwrap();
-    assert_eq!(
-        boot.repo.task_get(&id).await.unwrap().unwrap().status,
-        TaskStatus::Done
-    );
-    assert_eq!(
-        boot.repo.task_get(&old).await.unwrap().unwrap().status,
-        TaskStatus::Failed
-    );
+        .expect("independent write operation")
 }
 
 fn child_adapter(boot: &Boot) -> Arc<dyn ProviderAdapter> {
@@ -249,10 +260,12 @@ async fn child_track_continue_stamp_rejects_second_active_binding() {
         let boot = boot().await;
         let (old, child) = seed_child_parent(&boot, "occupied", false, None).await;
         let db = boot.repo.sqlite_db().unwrap();
-        sqlx::query("UPDATE tasks SET status=?1 WHERE id=?2")
-            .bind(status)
-            .bind(old)
-            .execute(db.writer_pool())
+        (db).writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status=?1 WHERE id=?2")
+                    .bind(status)
+                    .bind(old),
+            )
             .await
             .unwrap();
         let mut task = plan_task(&boot.track_id, "new-key", TaskKind::Codex, &[]);
@@ -260,28 +273,39 @@ async fn child_track_continue_stamp_rejects_second_active_binding() {
         task.status = TaskStatus::Dispatched;
         let id = task.id.clone();
         seed_task(&boot, task).await;
-        let mut tx = db.writer_pool().begin().await.unwrap();
-        let error = calm_truth::db::sqlite::task_bind_child_track_tx(
-            &mut tx,
-            &id,
-            boot.track_id.as_str(),
-            &child,
-            now_ms(),
-        )
-        .await
-        .expect_err("the write fence itself must refuse a second active binding");
-        assert!(matches!(
-            error,
-            calm_truth::error::TruthError::Core(calm_types::error::CoreError::Conflict(_))
-        ));
-        let bound: Option<String> =
-            sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
-                .bind(&id)
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap();
-        assert_eq!(bound, None);
-        tx.rollback().await.unwrap();
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let error = calm_truth::db::sqlite::task_bind_child_track_tx(
+                        &mut tx,
+                        &id,
+                        boot.track_id.as_str(),
+                        &child,
+                        now_ms(),
+                    )
+                    .await
+                    .expect_err("the write fence itself must refuse a second active binding");
+                    assert!(matches!(
+                        error,
+                        calm_truth::error::TruthError::Core(
+                            calm_types::error::CoreError::Conflict(_)
+                        )
+                    ));
+                    let bound: Option<String> =
+                        sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
+                            .bind(&id)
+                            .fetch_one(&mut **tx)
+                            .await
+                            .unwrap();
+                    assert_eq!(bound, None);
+                    tx.rollback().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -299,11 +323,10 @@ async fn child_track_continue_rejects_dynamic_target_changes_without_effects() {
         let boot = boot().await;
         let (old, child) = seed_child_parent(&boot, "old-key", false, None).await;
         let db = boot.repo.sqlite_db().unwrap();
-        sqlx::query(
+        (db).writer().execute(sqlx::query(
             "UPDATE tasks SET status='failed',status_detail='child-track-handed-back' WHERE id=?1",
         )
-        .bind(&old)
-        .execute(db.writer_pool())
+        .bind(&old))
         .await
         .unwrap();
         let mut task = plan_task(&boot.track_id, "fresh-key", TaskKind::Codex, &[]);
@@ -320,34 +343,41 @@ async fn child_track_continue_rejects_dynamic_target_changes_without_effects() {
                 competing.status = TaskStatus::Running;
                 let competing_id = competing.id.clone();
                 seed_task(&boot, competing).await;
-                sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
-                    .bind(&child)
-                    .bind(competing_id)
-                    .execute(db.writer_pool())
+                (db).writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                            .bind(&child)
+                            .bind(competing_id),
+                    )
                     .await
                     .unwrap();
             }
             "foreign" => {
-                sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) SELECT 'foreign-parent',\
+                (db).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) SELECT 'foreign-parent',\
                     area_id,'other parent',2,1,1 FROM tracks WHERE id=?1")
-                    .bind(boot.track_id.as_str()).execute(db.writer_pool()).await.unwrap();
-                sqlx::query("UPDATE tracks SET parent_track_id='foreign-parent' WHERE id=?1")
-                    .bind(&child)
-                    .execute(db.writer_pool())
+                    .bind(boot.track_id.as_str())).await.unwrap();
+                (db).writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE tracks SET parent_track_id='foreign-parent' WHERE id=?1",
+                        )
+                        .bind(&child),
+                    )
                     .await
                     .unwrap();
             }
             "closed" => {
-                sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
-                    .bind(&child)
-                    .execute(db.writer_pool())
+                (db).writer()
+                    .execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(&child))
                     .await
                     .unwrap();
             }
             "not-handed-back" => {
-                sqlx::query("UPDATE tasks SET status_detail='other-failure' WHERE id=?1")
-                    .bind(&old)
-                    .execute(db.writer_pool())
+                (db).writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET status_detail='other-failure' WHERE id=?1")
+                            .bind(&old),
+                    )
                     .await
                     .unwrap();
             }
@@ -360,9 +390,8 @@ async fn child_track_continue_rejects_dynamic_target_changes_without_effects() {
                 task.id = old.clone();
             }
             "event-failure" => {
-                sqlx::query("CREATE TRIGGER refuse_continue_wake BEFORE INSERT ON events WHEN \
-                    NEW.kind='track.wake_requested' BEGIN SELECT RAISE(ABORT,'wake injection'); END")
-                .execute(db.writer_pool()).await.unwrap();
+                (db).writer().execute(sqlx::query("CREATE TRIGGER refuse_continue_wake BEFORE INSERT ON events WHEN \
+                    NEW.kind='track.wake_requested' BEGIN SELECT RAISE(ABORT,'wake injection'); END")).await.unwrap();
             }
             _ => unreachable!(),
         }
@@ -382,26 +411,35 @@ async fn child_track_continue_rejects_dynamic_target_changes_without_effects() {
             .unwrap();
         let op = repo.get_operation(&op_id).await.unwrap().unwrap();
         let before = resource_counts(&boot).await;
-        let mut tx = db.writer_pool().begin().await.unwrap();
-        let error = child_adapter(&boot)
-            .prepare_tx(&mut tx, &input, &op)
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let error = child_adapter(&boot)
+                        .prepare_tx(&mut tx, &input, &op)
+                        .await
+                        .expect_err(change);
+                    if change != "event-failure" {
+                        assert!(
+                            matches!(error, calm_server::error::CalmError::Conflict(_)),
+                            "{change}: {error}"
+                        );
+                    }
+                    tx.rollback().await.unwrap();
+                    assert_eq!(resource_counts(&boot).await, before, "{change}");
+                    let bound: Option<String> =
+                        sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
+                            .bind(id)
+                            .fetch_one(db.read_pool())
+                            .await
+                            .unwrap();
+                    assert_eq!(bound, None, "{change}");
+                })
+            })
             .await
-            .expect_err(change);
-        if change != "event-failure" {
-            assert!(
-                matches!(error, calm_server::error::CalmError::Conflict(_)),
-                "{change}: {error}"
-            );
-        }
-        tx.rollback().await.unwrap();
-        assert_eq!(resource_counts(&boot).await, before, "{change}");
-        let bound: Option<String> =
-            sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id=?1")
-                .bind(id)
-                .fetch_one(db.read_pool())
-                .await
-                .unwrap();
-        assert_eq!(bound, None, "{change}");
+            .expect("independent write operation")
     }
 }
 

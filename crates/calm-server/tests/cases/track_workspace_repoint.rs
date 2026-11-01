@@ -820,40 +820,47 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
     let area = create_area(&b, "c").await;
     let repo_dir = user_repo(&b.tmp.path().join("user-project"));
     let (track, _) = managed_track(&b, &area, "w").await;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    calm_server::db::sqlite::track_workspace_write_tx(
-        &mut tx,
-        &track,
-        &calm_server::model::TrackWorkspace {
-            kind: calm_server::model::TrackWorkspaceKind::Attached,
-            path: repo_dir.display().to_string(),
-            frozen_at: None,
-            worktree: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let before = std::fs::read_to_string(repo_dir.join("README.md")).unwrap();
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::track_workspace_write_tx(
+                    &mut tx,
+                    &track,
+                    &calm_server::model::TrackWorkspace {
+                        kind: calm_server::model::TrackWorkspaceKind::Attached,
+                        path: repo_dir.display().to_string(),
+                        frozen_at: None,
+                        worktree: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let before = std::fs::read_to_string(repo_dir.join("README.md")).unwrap();
 
-    let (status, body) = repoint(&b, &track).await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "an attached workspace must be refused on `kind` alone, with no freeze \
+                let (status, body) = repoint(&b, &track).await;
+                assert_eq!(
+                    status,
+                    StatusCode::CONFLICT,
+                    "an attached workspace must be refused on `kind` alone, with no freeze \
          stamp to fall back on; body={body}"
-    );
-    assert!(trash_entries(&b.workspace_root).is_empty());
-    assert_eq!(
-        std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
-        before,
-        "the user's repository must not have been touched"
-    );
-    let (kind, path, _) = workspace_row(&b, &track).await;
-    assert_eq!(kind, "attached");
-    assert_eq!(PathBuf::from(path), repo_dir);
+                );
+                assert!(trash_entries(&b.workspace_root).is_empty());
+                assert_eq!(
+                    std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
+                    before,
+                    "the user's repository must not have been touched"
+                );
+                let (kind, path, _) = workspace_row(&b, &track).await;
+                assert_eq!(kind, "attached");
+                assert_eq!(PathBuf::from(path), repo_dir);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1278,33 +1285,45 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
     .await
     .unwrap();
 
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let target =
-        calm_server::test_seams::prepare_worker_lease_for_test(&mut tx, &track, &b.workspace_root)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    assert!(target.join(".git").is_dir());
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let target = calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    &track,
+                    &b.workspace_root,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(target.join(".git").is_dir());
 
-    // Through the dispatcher's in-transaction entry point; the codex-cards route would need a live codex app-server.
-    calm_server::test_seams::acquire_workspace_lease_for_test(
-        b.repo.db(),
-        &card,
-        &track,
-        "test-owner",
-        &target,
-    )
-    .await
-    .unwrap();
+                // Through the dispatcher's in-transaction entry point; the codex-cards route would need a live codex app-server.
+                calm_server::test_seams::acquire_workspace_lease_for_test(
+                    b.repo.db(),
+                    &card,
+                    &track,
+                    "test-owner",
+                    &target,
+                )
+                .await
+                .unwrap();
 
-    assert!(
-        workspace_row(&b, &track).await.2.is_some(),
-        "a lease row stores an absolute path and its worktree is bound to this \
+                assert!(
+                    workspace_row(&b, &track).await.2.is_some(),
+                    "a lease row stores an absolute path and its worktree is bound to this \
          repository by two absolute pointers a rename would dangle, so the first \
          lease must close the latch"
-    );
-    let (status, body) = repoint(&b, &track).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+                );
+                let (status, body) = repoint(&b, &track).await;
+                assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1331,10 +1350,13 @@ async fn a_child_track_is_frozen_at_creation_and_cannot_be_repointed() {
     .await
     .unwrap();
     let child = child.id.to_string();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(&parent)
-        .bind(&child)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(&parent)
+                .bind(&child),
+        )
         .await
         .unwrap();
 
@@ -1361,37 +1383,50 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
         "premise: the launchpad starts unfrozen (design D9 exception)"
     );
 
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let target =
-        calm_server::test_seams::prepare_worker_lease_for_test(&mut tx, &track, &b.workspace_root)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    calm_server::test_seams::acquire_workspace_lease_for_test(
-        b.repo.db(),
-        &planner_card,
-        &track,
-        "test-owner",
-        &target,
-    )
-    .await
-    .unwrap();
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let target = calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    &track,
+                    &b.workspace_root,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                calm_server::test_seams::acquire_workspace_lease_for_test(
+                    b.repo.db(),
+                    &planner_card,
+                    &track,
+                    "test-owner",
+                    &target,
+                )
+                .await
+                .unwrap();
 
-    assert_eq!(
-        workspace_row(&b, &track).await.2,
-        None,
-        "the launchpad's path is kernel-maintained and must stay re-pointable; \
+                assert_eq!(
+                    workspace_row(&b, &track).await.2,
+                    None,
+                    "the launchpad's path is kernel-maintained and must stay re-pointable; \
          a stamp here bricks `today_launchpad_ensure_tx` against the freeze latch"
-    );
+                );
 
-    let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
-    assert!(
-        status == StatusCode::OK || status == StatusCode::CREATED,
-        "the Today panel must still come up after a lease: {status} {body}"
-    );
+                let (status, body) =
+                    request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
+                assert!(
+                    status == StatusCode::OK || status == StatusCode::CREATED,
+                    "the Today panel must still come up after a lease: {status} {body}"
+                );
 
-    let (status, body) = repoint(&b, &track).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+                let (status, body) = repoint(&b, &track).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// `maybe_issue_turn` reads no durable state, so an observation enqueued before the fence committed still becomes a turn unless the live handle is shut down.

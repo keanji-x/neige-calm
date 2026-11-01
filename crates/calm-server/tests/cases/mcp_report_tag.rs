@@ -90,33 +90,42 @@ async fn side(sqlx: &SqlxRepo, cache: &CardRoleCache, area: &calm_server::ids::A
     crate::support::mcp::set_persisted_card_role(sqlx, planner.id.as_str(), CardRole::Planner)
         .await;
     // The write gate resolves a planner actor through its live session row.
-    let mut tx = sqlx.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id(&planner.id),
-            card_id: planner.id.as_str().to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(format!("thread-{}", planner.id)),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    Side {
-        track_id: track.id,
-        planner: planner.id,
-        worker: worker.id,
-        report: report.id,
-    }
+    let write_db = (sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session_id(&planner.id),
+                        card_id: planner.id.as_str().to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(format!("thread-{}", planner.id)),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                Side {
+                    track_id: track.id,
+                    planner: planner.id,
+                    worker: worker.id,
+                    report: report.id,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn boot() -> Boot {
@@ -200,9 +209,11 @@ async fn report_updated_at(boot: &Boot, side: &Side) -> i64 {
 }
 
 async fn backdate_report(boot: &Boot, side: &Side) {
-    sqlx::query("UPDATE cards SET updated_at = 1 WHERE id = ?1")
-        .bind(side.report.as_str())
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET updated_at = 1 WHERE id = ?1").bind(side.report.as_str()),
+        )
         .await
         .unwrap();
 }

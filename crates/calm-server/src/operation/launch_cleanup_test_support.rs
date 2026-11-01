@@ -150,7 +150,7 @@ pub(crate) async fn claimed_task(
     track_id: &str,
     declaration: serde_json::Value,
 ) -> crate::model::Task {
-    use crate::db::sqlite::{begin_immediate_tx, task_claim_pending_tx};
+    use crate::db::sqlite::task_claim_pending_tx;
     let pending = declared_task(
         repo.clone(),
         events.clone(),
@@ -165,12 +165,21 @@ pub(crate) async fn claimed_task(
         .await
         .unwrap();
     let pool = repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                repo.task_get(&pending.id).await.unwrap().unwrap()
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    repo.task_get(&pending.id).await.unwrap().unwrap()
+        .expect("independent write operation")
 }
 
 /// The Track's only task, declared through the user report path and left `pending`.
@@ -288,7 +297,7 @@ pub(crate) enum NegativeFault {
 /// This proxy does not reproduce the supervisor's launch policy.
 pub(crate) async fn negative_ack_proxy(
     upstream: &Path,
-    pool: sqlx::SqlitePool,
+    pool: calm_truth::db::sqlite::SqliteDb,
     fault: NegativeFault,
 ) -> AckProxy {
     let dir = calm_test_sockets::socket_dir("negative");
@@ -327,7 +336,7 @@ pub(crate) async fn negative_ack_proxy(
                         NegativeFault::PidConflict => Some("UPDATE terminals SET pid=2147483647 WHERE id=?1"),
                         _ => None,
                     };
-                    if let Some(sql) = sql { sqlx::query(sql).bind(terminal_id).execute(&pool).await.unwrap(); }
+                    if let Some(sql) = sql { pool.writer().execute(sqlx::query(sql).bind(terminal_id)).await.unwrap(); }
                     match fault {
                         NegativeFault::Disconnect => return,
                         NegativeFault::Unknown => {

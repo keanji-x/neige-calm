@@ -1,5 +1,5 @@
 //! Actual protected carrier reads and boot conversion, without runtime handles.
-use super::super::{SqlxRepo, begin_immediate_tx};
+use super::super::SqlxRepo;
 use super::tests::{body, fixture_card, plan};
 use super::transaction_tests::{provenance, runtime};
 use super::*;
@@ -13,62 +13,76 @@ use serde_json::{Value, json};
 pub(super) async fn held(repo: &SqlxRepo) -> (String, String, InputAttempt) {
     let (_, card) = fixture_card(repo).await;
     let worker = runtime(repo, &card).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+                    .await
+                    .unwrap();
+                let accepted = accept_pending_human_tx(
+                    &mut tx,
+                    &mut carrier,
+                    LEGACY_OWNER_USER_ID,
+                    body("canonical held body"),
+                )
+                .await
+                .unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human fixture")
+                };
+                let claimed = claim_initial_submission_tx(
+                    &mut tx,
+                    &mut carrier,
+                    plan(message),
+                    &provenance(),
+                )
+                .await
+                .unwrap();
+                let attempt = InputAttempt {
+                    submission_id: claimed.submission_id,
+                    attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
+                };
+                let correlation = InputCorrelationFact {
+                    provider: AgentProvider::Codex,
+                    thread_id: "thread".into(),
+                    native_session_id: None,
+                    native_turn_id: None,
+                    local_turn_id: None,
+                    rpc_request_id: None,
+                };
+                begin_input_attempt_tx(
+                    &mut tx,
+                    &mut carrier,
+                    attempt.clone(),
+                    correlation.clone(),
+                    FrozenInputInvocation {
+                        model: Some("original-model".into()),
+                        effort: Some("high".into()),
+                        permission: PlannerPermissionMode::Never,
+                    },
+                )
+                .await
+                .unwrap();
+                record_input_attempt_fact_tx(
+                    &mut tx,
+                    &mut carrier,
+                    InputAttemptFact {
+                        attempt: attempt.clone(),
+                        correlation,
+                        delivery: InputDeliveryFact::Unknown,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card, worker, attempt)
+            })
+        })
         .await
-        .unwrap();
-    let accepted = accept_pending_human_tx(
-        &mut tx,
-        &mut carrier,
-        LEGACY_OWNER_USER_ID,
-        body("canonical held body"),
-    )
-    .await
-    .unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human fixture")
-    };
-    let claimed = claim_initial_submission_tx(&mut tx, &mut carrier, plan(message), &provenance())
-        .await
-        .unwrap();
-    let attempt = InputAttempt {
-        submission_id: claimed.submission_id,
-        attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
-    };
-    let correlation = InputCorrelationFact {
-        provider: AgentProvider::Codex,
-        thread_id: "thread".into(),
-        native_session_id: None,
-        native_turn_id: None,
-        local_turn_id: None,
-        rpc_request_id: None,
-    };
-    begin_input_attempt_tx(
-        &mut tx,
-        &mut carrier,
-        attempt.clone(),
-        correlation.clone(),
-        FrozenInputInvocation {
-            model: Some("original-model".into()),
-            effort: Some("high".into()),
-            permission: PlannerPermissionMode::Never,
-        },
-    )
-    .await
-    .unwrap();
-    record_input_attempt_fact_tx(
-        &mut tx,
-        &mut carrier,
-        InputAttemptFact {
-            attempt: attempt.clone(),
-            correlation,
-            delivery: InputDeliveryFact::Unknown,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card, worker, attempt)
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -91,41 +105,65 @@ async fn canonical_held_projection_survives_failed_and_dormant_reload() {
         projected.attempt.as_ref().unwrap().attempt_id,
         attempt.attempt_id.as_str()
     );
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    super::super::session_fail_if_active_runtime_tx(&mut tx, &worker)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                super::super::session_fail_if_active_runtime_tx(&mut tx, &worker)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                drop(repo);
+                let reopened = SqlxRepo::open(&url).await.unwrap();
+                let frame = reopened.conversation_read_frame(&card).await.unwrap();
+                assert_eq!(
+                    frame.runtime.unwrap().state,
+                    calm_types::worker::WorkerSessionState::Failed
+                );
+                assert_eq!(frame.active_input.unwrap(), before);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    drop(repo);
-    let reopened = SqlxRepo::open(&url).await.unwrap();
-    let frame = reopened.conversation_read_frame(&card).await.unwrap();
-    assert_eq!(
-        frame.runtime.unwrap().state,
-        calm_types::worker::WorkerSessionState::Failed
-    );
-    assert_eq!(frame.active_input.unwrap(), before);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn runtime_frame_cannot_erase_same_phase_attempt_revision() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let (card, worker, _) = held(&repo).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
+                    .await
+                    .unwrap();
+                let stale = RuntimeExecutionFence::from_carrier(&carrier);
+                let mut next = carrier.snapshot().clone();
+                next["canonical_inputs"]["attempts"][0]["revision"] = json!(2);
+                super::super::session_set_handle_state_tx(&mut tx, &worker, Some(next))
+                    .await
+                    .unwrap();
+                assert!(
+                    persist_runtime_frame_tx(
+                        &mut tx,
+                        &card,
+                        &worker,
+                        &stale,
+                        stale.header().clone()
+                    )
+                    .await
+                    .is_err()
+                );
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let stale = RuntimeExecutionFence::from_carrier(&carrier);
-    let mut next = carrier.snapshot().clone();
-    next["canonical_inputs"]["attempts"][0]["revision"] = json!(2);
-    super::super::session_set_handle_state_tx(&mut tx, &worker, Some(next))
-        .await
-        .unwrap();
-    assert!(
-        persist_runtime_frame_tx(&mut tx, &card, &worker, &stale, stale.header().clone())
-            .await
-            .is_err()
-    );
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 fn released(mut frame: Value) -> Value {
@@ -166,11 +204,14 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
         let (card, worker, _) = held(&repo).await;
         let frame = repo.conversation_read_frame(&card).await.unwrap();
         let old = released(frame.snapshot.unwrap());
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=?1,state=?2 WHERE id=?3")
-            .bind(old.to_string())
-            .bind(state)
-            .bind(&worker)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?1,state=?2 WHERE id=?3")
+                    .bind(old.to_string())
+                    .bind(state)
+                    .bind(&worker),
+            )
             .await
             .unwrap();
         originals.push((worker, old, state));
@@ -180,19 +221,25 @@ async fn canonical_migration_open_converts_all_retained_states_and_preserves_evi
     let old_worker = runtime(&repo, &old_card).await;
     let historical =
         r#"{"schema_version":1,"mode":"harness","pending_queue":[{"text":"private legacy"}]}"#;
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(historical)
-        .bind(&old_worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(historical)
+                .bind(&old_worker),
+        )
         .await
         .unwrap();
     let (_, other_card) = fixture_card(&repo).await;
     let other_worker = runtime(&repo, &other_card).await;
     let other_format = r#"{"schema_version":2,"mode":"another_component","opaque":true}"#;
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(other_format)
-        .bind(&other_worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(other_format)
+                .bind(&other_worker),
+        )
         .await
         .unwrap();
     drop(repo);
@@ -257,10 +304,13 @@ async fn canonical_migration_refuses_malformed_and_future_atomically() {
             .snapshot
             .unwrap(),
     );
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(old.to_string())
-        .bind(&worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(old.to_string())
+                .bind(&worker),
+        )
         .await
         .unwrap();
     let (_, other) = fixture_card(&repo).await;
@@ -268,10 +318,13 @@ async fn canonical_migration_refuses_malformed_and_future_atomically() {
     for version in [3, 4, 5] {
         let mut corrupt = old.clone();
         corrupt["schema_version"] = json!(version);
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-            .bind(corrupt.to_string())
-            .bind(&corrupt_worker)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                    .bind(corrupt.to_string())
+                    .bind(&corrupt_worker),
+            )
             .await
             .unwrap();
         assert!(
@@ -294,10 +347,13 @@ async fn canonical_retry_projection_preserves_terminal_conversation_reads() {
     for state in ["exited", "superseded"] {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let (card, worker, attempt) = held(&repo).await;
-        sqlx::query("UPDATE worker_sessions SET state=?1 WHERE id=?2")
-            .bind(state)
-            .bind(&worker)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state=?1 WHERE id=?2")
+                    .bind(state)
+                    .bind(&worker),
+            )
             .await
             .unwrap();
         let read = repo.conversation_read_frame(&card).await.unwrap();

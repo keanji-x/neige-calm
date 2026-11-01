@@ -118,12 +118,12 @@ impl EventAdmission {
     pub(super) async fn qualify_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        repo: &dyn Repo,
+        repo: &observation_reads::ObservationReads<'_>,
         fact: &calm_truth::db::sqlite::event_inputs::EventInputFact,
     ) -> Result<Option<HarnessObservation>> {
         match self {
             Self::Planner(v) => {
-                qualification::qualified_observation(repo, &v.track, &fact.envelope).await
+                qualification::qualified_observation_tx(tx, repo, &v.track, &fact.envelope).await
             }
             Self::Assistant(v) => match &fact.envelope.event {
                 Event::AssistantInputRequested { card_id, text, .. } if *card_id == v.card => {

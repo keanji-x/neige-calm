@@ -486,20 +486,22 @@ async fn u9_canonical_managed_allocation_rollback() {
         // System Area ensure has its own earlier transaction; isolate allocation rollback.
         ensure_area(&route).await.unwrap();
         let before = allocation_counts(repo.pool()).await;
-        sqlx::query(&format!(
-            "CREATE TRIGGER fail_u9 BEFORE INSERT ON {table}
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(&format!(
+                "CREATE TRIGGER fail_u9 BEFORE INSERT ON {table}
             BEGIN SELECT RAISE(ABORT,'u9 allocation fault'); END"
-        ))
-        .execute(repo.pool())
-        .await
-        .unwrap();
+            )))
+            .await
+            .unwrap();
         assert!(
             reconcile(&route, at("2026-10-04T01:00:00Z")).await.is_err(),
             "{table}"
         );
         assert_eq!(allocation_counts(repo.pool()).await, before, "{table}");
-        sqlx::query("DROP TRIGGER fail_u9")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_u9"))
             .await
             .unwrap();
         reconcile(&route, at("2026-10-04T01:00:00Z")).await.unwrap();

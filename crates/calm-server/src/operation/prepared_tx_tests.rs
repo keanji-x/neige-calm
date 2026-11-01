@@ -123,10 +123,13 @@ async fn stale_preparation_is_bounded_and_wait_reclaims_pending_after_lease_expi
         3,
         "no immediate reclaim loop"
     );
-    sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
-        .bind(now_ms() - 1)
-        .bind(&id)
-        .execute(repo.sqlite_db().writer_pool())
+    (repo.sqlite_db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+                .bind(now_ms() - 1)
+                .bind(&id),
+        )
         .await
         .unwrap();
     // This exercises the actual wait -> 25ms drive -> claim_drive_batch path, without a daemon

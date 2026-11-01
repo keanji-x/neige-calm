@@ -84,36 +84,40 @@ async fn track_add_admits_an_admin_planner() {
     let (_, planner) = boot.user_track("admin").await;
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &planner.identity.session_id, &hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let path = boot._tmp.path().join("admin.sock");
-    let _server = calm_server::mcp_server::McpServer::spawn_with_context(
-        boot.ctx.clone(),
-        path.clone(),
-        PathBuf::from("/nonexistent-shim"),
-        calm_server::mcp_server::build_default_registry(),
-    )
-    .await
-    .unwrap();
-    let (mut rd, mut wr) = connect(&path).await;
-    handshake(&mut rd, &mut wr, token.as_str()).await;
-    send_frame(&mut wr, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":TOOL_TRACK_ADD,"arguments":boot.args("socket-admin")}})).await;
-    let response = recv_frame(&mut rd).await;
-    assert!(response.get("error").is_none(), "{response}");
-    assert!(
-        response["result"].get("isError").is_none_or(|v| v == false),
-        "{response}"
-    );
-    let track = boot.repo.pool();
-    let admin: Option<i64> =
-        sqlx::query_scalar("SELECT admin_granted_at FROM tracks WHERE creator_key='socket-admin'")
-            .fetch_one(track)
+    let write_db = (boot.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &planner.identity.session_id, &hash)
             .await
             .unwrap();
-    assert_eq!(admin, None);
+        tx.commit().await.unwrap();
+        let path = boot._tmp.path().join("admin.sock");
+        let _server = calm_server::mcp_server::McpServer::spawn_with_context(
+            boot.ctx.clone(),
+            path.clone(),
+            PathBuf::from("/nonexistent-shim"),
+            calm_server::mcp_server::build_default_registry(),
+        )
+        .await
+        .unwrap();
+        let (mut rd, mut wr) = connect(&path).await;
+        handshake(&mut rd, &mut wr, token.as_str()).await;
+        send_frame(&mut wr, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":TOOL_TRACK_ADD,"arguments":boot.args("socket-admin")}})).await;
+        let response = recv_frame(&mut rd).await;
+        assert!(response.get("error").is_none(), "{response}");
+        assert!(
+            response["result"].get("isError").is_none_or(|v| v == false),
+            "{response}"
+        );
+        let track = boot.repo.pool();
+        let admin: Option<i64> =
+            sqlx::query_scalar("SELECT admin_granted_at FROM tracks WHERE creator_key='socket-admin'")
+                .fetch_one(track)
+                .await
+                .unwrap();
+        assert_eq!(admin, None);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -143,10 +147,13 @@ async fn track_add_admin_eligibility_refuses_child_creator() {
     let boot = boot(16).await;
     let (parent, _) = boot.user_track("parent").await;
     let (creator, planner) = boot.user_track_admin("child", false).await;
-    sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
-        .bind(&parent)
-        .bind(&creator)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
+                .bind(&parent)
+                .bind(&creator),
+        )
         .await
         .unwrap();
     let (status, _) = send(

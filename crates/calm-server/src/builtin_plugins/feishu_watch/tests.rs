@@ -117,9 +117,11 @@ impl Fixture {
             })
             .await
             .unwrap();
-        sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
-            .bind(card.id.as_str())
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role='planner' WHERE id=?").bind(card.id.as_str()),
+            )
             .await
             .unwrap();
         self.repo.seed_card_role_cache(&self.roles).await.unwrap();
@@ -129,27 +131,38 @@ impl Fixture {
             .await
             .unwrap();
         let session = crate::model::new_id();
-        let mut tx = self.repo.pool().begin().await.unwrap();
-        crate::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            crate::session_projection_repo::WorkerSessionInit {
-                id: session.clone(),
-                card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
-                status: crate::session_projection_repo::WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(session.clone()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: crate::model::now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        {
+            let write_db = (self.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        crate::db::sqlite::session_start_runtime_tx(
+                            &mut tx,
+                            crate::session_projection_repo::WorkerSessionInit {
+                                id: session.clone(),
+                                card_id: card.id.to_string(),
+                                kind: WorkerSessionKind::SharedPlanner,
+                                agent_provider: Some(AgentProvider::Codex),
+                                status: crate::session_projection_repo::WorkerSessionState::Running,
+                                terminal_run_id: None,
+                                thread_id: Some(session.clone()),
+                                session_id: None,
+                                active_turn_id: None,
+                                handle_state_json: None,
+                                spawn_op_id: None,
+                                now_ms: crate::model::now_ms(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         ToolCallIdentity {
             card_id: card.id.to_string(),
             role: CardRole::Planner,
@@ -217,14 +230,15 @@ async fn inspection_quiet_repeated_scans_preserve_one_handoff_wake_and_restart_s
 async fn inspection_event_failure_rolls_back_inbox_and_checkpoint() {
     let (fx, _) = Fixture::configured().await;
     let a = Adapter::capture(&fx.ctx, None).await.unwrap();
-    sqlx::query(
-        "CREATE TRIGGER reject_inspection_wake BEFORE INSERT ON events \
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_inspection_wake BEFORE INSERT ON events \
         WHEN NEW.kind='track.wake_requested' \
         BEGIN SELECT RAISE(ABORT,'fixture wake failure'); END",
-    )
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(
         feature::service::poll(&a, &Empty, &a.config, 1_793_500_000_000)
             .await
@@ -232,8 +246,9 @@ async fn inspection_event_failure_rolls_back_inbox_and_checkpoint() {
     );
     assert!(a.load().await.unwrap().is_none());
     assert_eq!(fx.wakes().await, 0);
-    sqlx::query("DROP TRIGGER reject_inspection_wake")
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_inspection_wake"))
         .await
         .unwrap();
     feature::service::poll(&a, &Empty, &a.config, 1_793_500_000_000)
@@ -285,9 +300,12 @@ async fn inspection_closed_track_and_changed_config_cannot_advance() {
     let original = a.load().await.unwrap().unwrap();
     let mut next = original.clone();
     next.revision += 1;
-    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?")
-        .bind(owner.track_id.as_ref().unwrap())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?")
+                .bind(owner.track_id.as_ref().unwrap()),
+        )
         .await
         .unwrap();
     assert!(
@@ -295,9 +313,12 @@ async fn inspection_closed_track_and_changed_config_cannot_advance() {
             .await
             .is_err()
     );
-    sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?")
-        .bind(owner.track_id.as_ref().unwrap())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?")
+                .bind(owner.track_id.as_ref().unwrap()),
+        )
         .await
         .unwrap();
     let mut config = serde_json::to_value(a.config.clone()).unwrap();

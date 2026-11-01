@@ -29,7 +29,7 @@ async fn track(repo: &SqlxRepo, area: &calm_server::ids::AreaId, dir: &std::path
 
 async fn mail(repo: &SqlxRepo, from: &TrackId, to: &TrackId, reply_to: Option<&str>) -> String {
     let id = new_id();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO mails (id, from_track_id, to_track_id, reply_to, summary, text, hop, sent_at) \
          VALUES (?1, ?2, ?3, ?4, 's', 't', 1, ?5)",
     )
@@ -37,8 +37,7 @@ async fn mail(repo: &SqlxRepo, from: &TrackId, to: &TrackId, reply_to: Option<&s
     .bind(from.as_str())
     .bind(to.as_str())
     .bind(reply_to)
-    .bind(now_ms())
-    .execute(repo.pool())
+    .bind(now_ms()))
     .await
     .unwrap();
     id
@@ -69,18 +68,27 @@ async fn mails_rows_cascade_with_either_track() {
     let kept = mail(&repo, &r, &t, Some(&sent)).await;
 
     let cache = TrackAreaCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_delete_tx(&mut tx, n.as_str(), &cache).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_delete_tx(&mut tx, n.as_str(), &cache).await.unwrap();
+                tx.commit().await.unwrap();
 
-    let left: Vec<(String, Option<String>)> =
-        sqlx::query_as("SELECT id, reply_to FROM mails ORDER BY id")
-            .fetch_all(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        left,
-        vec![(kept, None)],
-        "sent {sent} and got {got} follow N"
-    );
+                let left: Vec<(String, Option<String>)> =
+                    sqlx::query_as("SELECT id, reply_to FROM mails ORDER BY id")
+                        .fetch_all(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    left,
+                    vec![(kept, None)],
+                    "sent {sent} and got {got} follow N"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

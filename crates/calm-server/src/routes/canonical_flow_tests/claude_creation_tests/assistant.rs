@@ -167,13 +167,14 @@ async fn claude_assistant_acceptance_failure_is_atomic_without_historical_fallba
         .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER refuse_assistant_acceptance BEFORE INSERT ON conversation_messages \
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_assistant_acceptance BEFORE INSERT ON conversation_messages \
         BEGIN SELECT RAISE(ABORT,'refuse acceptance'); END",
-    )
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(
         status(
             &app,
@@ -366,9 +367,9 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
         configure(&mut fixture, "hold");
         let (state, app, cookie) = fixture.application().await;
         let track = track(&app, &cookie).await;
-        sqlx::query("CREATE TRIGGER hold_assistant_marker BEFORE UPDATE OF handle_state_json ON worker_sessions \
+        (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hold_assistant_marker BEFORE UPDATE OF handle_state_json ON worker_sessions \
             WHEN json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts') > 0 \
-            BEGIN SELECT RAISE(ABORT,'hold crossing'); END").execute(fixture.repo.pool()).await.unwrap();
+            BEGIN SELECT RAISE(ABORT,'hold crossing'); END")).await.unwrap();
         let uri = format!("/api/tracks/{track}/conversations");
         let body = json!({"provider":"claude","text":FIRST_BODY,"model":"claude-fable-5-1[1m]","reasoning_effort":"high"});
         let created = post(&app, &cookie, &uri, "held", body.clone()).await;
@@ -384,8 +385,9 @@ async fn claude_assistant_restart_human_resolution_waits_for_predecessor_settlem
             release: Arc::default(),
         };
         session.fail_user_flush_for_test(pause.clone());
-        sqlx::query("DROP TRIGGER hold_assistant_marker")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER hold_assistant_marker"))
             .await
             .unwrap();
         harness.refresh_canonical_input().await.unwrap();

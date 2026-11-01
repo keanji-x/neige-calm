@@ -171,9 +171,14 @@ async fn replay_without_renderer_entry_preserves_message_record_receipt() {
     stop(&h, &f.worker).await;
     // As after a server restart until the terminal is reattached (#2499): the entry is gone while
     // the worker session still runs.
-    sqlx::query("UPDATE worker_sessions SET state='running',completed_at_ms=NULL WHERE id=?1")
-        .bind(&f.worker.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET state='running',completed_at_ms=NULL WHERE id=?1",
+            )
+            .bind(&f.worker.session),
+        )
         .await
         .unwrap();
     assert_refusal(

@@ -40,72 +40,76 @@ pub(super) async fn worker(fixture: &Fixture, state: &AppState, track: &str) -> 
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
-        .bind(&op)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1").bind(&op))
         .await
         .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    let (_, terminal, _) = crate::db::sqlite::card_with_codex_create_tx(
-        &mut tx,
-        card.clone(),
-        &session,
-        Some(&op),
-        track.into(),
-        None,
-        None,
-        fixture.root.path().display().to_string(),
-        json!({}),
-        None,
-        None,
-        None,
-        crate::model::CardRole::Worker,
-        true,
-        &state.card_role_cache,
-        crate::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    fixture
-        .repo
-        .session_projection_set_status_for_card(
-            &card,
-            crate::session_projection_repo::WorkerSessionState::Running,
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        let (_, terminal, _) = crate::db::sqlite::card_with_codex_create_tx(
+            &mut tx,
+            card.clone(),
+            &session,
+            Some(&op),
+            track.into(),
+            None,
+            None,
+            fixture.root.path().display().to_string(),
+            json!({}),
+            None,
+            None,
+            None,
+            crate::model::CardRole::Worker,
+            true,
+            &state.card_role_cache,
+            crate::routes::theme::RequestTheme::default_dark(),
         )
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'codex','test','[]','running',?4,'user',?5,?5)")
-        .bind(&task).bind(track).bind(&key).bind(card).bind(crate::model::now_ms()).execute(fixture.repo.pool()).await.unwrap();
-    let entry =
-        state
-            .terminal_renderer
-            .insert_test_entry(crate::terminal_renderer::RendererConfig {
-                terminal_id: terminal.id.clone(),
-                cols: 80,
-                rows: 24,
-                buffer_bytes: 8192,
-                terminal_fg: (220, 220, 220),
-                terminal_bg: (15, 20, 24),
-                program: "/bin/sh".into(),
-                args: vec![],
-                envs: vec![],
-                cwd: fixture.root.path().display().to_string(),
-                supervisor_sock: Default::default(),
-            });
-    let stamp = crate::model::now_ms() - 10_000;
-    entry
-        .last_output_ms
-        .store(stamp, std::sync::atomic::Ordering::SeqCst);
-    ObservedWorker {
-        task,
-        key,
-        terminal: terminal.id,
-        entry,
-        stamp,
-    }
+        tx.commit().await.unwrap();
+        fixture
+            .repo
+            .session_projection_set_status_for_card(
+                &card,
+                crate::session_projection_repo::WorkerSessionState::Running,
+            )
+            .await
+            .unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'codex','test','[]','running',?4,'user',?5,?5)")
+            .bind(&task).bind(track).bind(&key).bind(card).bind(crate::model::now_ms())).await.unwrap();
+        let entry =
+            state
+                .terminal_renderer
+                .insert_test_entry(crate::terminal_renderer::RendererConfig {
+                    terminal_id: terminal.id.clone(),
+                    cols: 80,
+                    rows: 24,
+                    buffer_bytes: 8192,
+                    terminal_fg: (220, 220, 220),
+                    terminal_bg: (15, 20, 24),
+                    program: "/bin/sh".into(),
+                    args: vec![],
+                    envs: vec![],
+                    cwd: fixture.root.path().display().to_string(),
+                    supervisor_sock: Default::default(),
+                });
+        let stamp = crate::model::now_ms() - 10_000;
+        entry
+            .last_output_ms
+            .store(stamp, std::sync::atomic::Ordering::SeqCst);
+        ObservedWorker {
+            task,
+            key,
+            terminal: terminal.id,
+            entry,
+            stamp,
+        }
+
+    })).await.expect("independent write operation")
 }
 fn detector(state: &AppState, inbox: Arc<dyn QuietWorkerInbox>) -> WorkerQuietDetector {
     WorkerQuietDetector::new(
@@ -247,30 +251,39 @@ async fn observed_episode_refuses_renderer_or_sql_changes_before_acceptance() {
                     .store(observed.stamp, std::sync::atomic::Ordering::SeqCst);
             }
             "task" => {
-                sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1")
-                    .bind(&observed.task)
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1")
+                            .bind(&observed.task),
+                    )
                     .await
                     .unwrap();
             }
             "role" => {
-                sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-                    .bind(&sealed.fact().worker_card_id)
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
+                            .bind(&sealed.fact().worker_card_id),
+                    )
                     .await
                     .unwrap();
             }
             "worker" => {
-                sqlx::query("UPDATE tasks SET worker_card_id=NULL WHERE id=?1")
-                    .bind(&observed.task)
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET worker_card_id=NULL WHERE id=?1")
+                            .bind(&observed.task),
+                    )
                     .await
                     .unwrap();
             }
             "closed" => {
-                sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
-                    .bind(&track)
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(&track))
                     .await
                     .unwrap();
             }
@@ -283,10 +296,13 @@ async fn observed_episode_refuses_renderer_or_sql_changes_before_acceptance() {
                     json!({"name":"Other area","color":"#123456"}),
                 )
                 .await;
-                sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
-                    .bind(&track)
-                    .bind(area["id"].as_str().unwrap())
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                            .bind(&track)
+                            .bind(area["id"].as_str().unwrap()),
+                    )
                     .await
                     .unwrap();
             }
@@ -375,103 +391,110 @@ async fn sql_source_owner_refuses_generic_or_mismatched_observation_facts() {
         .unwrap();
     let card = watcher_card_id(&track);
     let original = recovery::receipts(&fixture, &card).await;
-    for change in [
-        "generic",
-        "database",
-        "track",
-        "area",
-        "task",
-        "attempt",
-        "worker",
-        "session",
-        "terminal",
-        "stamp",
-        "threshold",
-        "source",
-        "actor",
-        "target",
-    ] {
-        let mut fact = sealed.fact().clone();
-        // Fresh event identity lets this exercise source qualification, not duplicate receipt rejection.
-        fact.last_output_ms -= 1;
-        match change {
-            "database" => fact.database_id = "foreign".into(),
-            "track" => fact.track_id = "foreign".into(),
-            "area" => fact.area_id = "foreign".into(),
-            "task" => fact.task_key = "foreign".into(),
-            "attempt" => fact.attempt_id = "foreign".into(),
-            "worker" => fact.worker_card_id = "foreign".into(),
-            "session" => fact.worker_session_id = "foreign".into(),
-            "terminal" => fact.terminal_id = "foreign".into(),
-            "stamp" => fact.last_output_ms = 0,
-            "threshold" => fact.quiet_after_ms = 0,
-            _ => {}
-        }
-        let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-            .await
-            .unwrap();
-        let event = crate::event::Event::AssistantInputRequested {
-            card_id: if change == "target" {
-                "foreign".into()
-            } else {
-                card.clone().into()
-            },
-            track_id: track.clone().into(),
-            original_worker: original[0].original_worker.clone(),
-            source: if change == "source" {
-                SystemAssistantSource::TodaySummary
-            } else {
-                SystemAssistantSource::WorkerWatcher
-            },
-            subject: fact.subject(),
-            version: 1,
-            text: "untrusted text".into(),
-        };
-        let actor = if change == "actor" {
-            crate::ids::ActorId::User
-        } else {
-            crate::ids::ActorId::Kernel
-        };
-        let appended = db::append_decision_event_in_tx(
-            &mut tx,
-            &actor,
-            &crate::event::EventScope::Card {
-                card: card.clone().into(),
-                track: track.clone().into(),
-                area: sealed.fact().area_id.clone().into(),
-            },
-            None,
-            &event,
-        )
-        .await;
-        if matches!(change, "actor" | "target") {
-            assert!(
-                matches!(appended, Err(calm_truth::error::TruthError::Forbidden(_))),
-                "{change}"
-            );
-            tx.rollback().await.unwrap();
-            assert_eq!(recovery::receipts(&fixture, &card).await, original);
-            continue;
-        }
-        let id = appended.unwrap();
-        let result = if change == "generic" {
-            conversation::system_assistant_accept_tx(&mut tx, &card, id).await
-        } else {
-            conversation::worker_watcher_accept_tx(&mut tx, &card, id, &fact).await
-        };
-        assert!(
-            matches!(
-                result,
-                Err(calm_truth::error::TruthError::Core(
-                    calm_types::error::CoreError::Conflict(_)
-                ))
-            ),
-            "{change}"
-        );
-        tx.rollback().await.unwrap();
-        assert_eq!(recovery::receipts(&fixture, &card).await, original);
-    }
-    shutdown(&fixture, &state).await;
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for change in [
+                    "generic",
+                    "database",
+                    "track",
+                    "area",
+                    "task",
+                    "attempt",
+                    "worker",
+                    "session",
+                    "terminal",
+                    "stamp",
+                    "threshold",
+                    "source",
+                    "actor",
+                    "target",
+                ] {
+                    let mut fact = sealed.fact().clone();
+                    // Fresh event identity lets this exercise source qualification, not duplicate receipt rejection.
+                    fact.last_output_ms -= 1;
+                    match change {
+                        "database" => fact.database_id = "foreign".into(),
+                        "track" => fact.track_id = "foreign".into(),
+                        "area" => fact.area_id = "foreign".into(),
+                        "task" => fact.task_key = "foreign".into(),
+                        "attempt" => fact.attempt_id = "foreign".into(),
+                        "worker" => fact.worker_card_id = "foreign".into(),
+                        "session" => fact.worker_session_id = "foreign".into(),
+                        "terminal" => fact.terminal_id = "foreign".into(),
+                        "stamp" => fact.last_output_ms = 0,
+                        "threshold" => fact.quiet_after_ms = 0,
+                        _ => {}
+                    }
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let event = crate::event::Event::AssistantInputRequested {
+                        card_id: if change == "target" {
+                            "foreign".into()
+                        } else {
+                            card.clone().into()
+                        },
+                        track_id: track.clone().into(),
+                        original_worker: original[0].original_worker.clone(),
+                        source: if change == "source" {
+                            SystemAssistantSource::TodaySummary
+                        } else {
+                            SystemAssistantSource::WorkerWatcher
+                        },
+                        subject: fact.subject(),
+                        version: 1,
+                        text: "untrusted text".into(),
+                    };
+                    let actor = if change == "actor" {
+                        crate::ids::ActorId::User
+                    } else {
+                        crate::ids::ActorId::Kernel
+                    };
+                    let appended = db::append_decision_event_in_tx(
+                        &mut tx,
+                        &actor,
+                        &crate::event::EventScope::Card {
+                            card: card.clone().into(),
+                            track: track.clone().into(),
+                            area: sealed.fact().area_id.clone().into(),
+                        },
+                        None,
+                        &event,
+                    )
+                    .await;
+                    if matches!(change, "actor" | "target") {
+                        assert!(
+                            matches!(appended, Err(calm_truth::error::TruthError::Forbidden(_))),
+                            "{change}"
+                        );
+                        tx.rollback().await.unwrap();
+                        assert_eq!(recovery::receipts(&fixture, &card).await, original);
+                        continue;
+                    }
+                    let id = appended.unwrap();
+                    let result = if change == "generic" {
+                        conversation::system_assistant_accept_tx(&mut tx, &card, id).await
+                    } else {
+                        conversation::worker_watcher_accept_tx(&mut tx, &card, id, &fact).await
+                    };
+                    assert!(
+                        matches!(
+                            result,
+                            Err(calm_truth::error::TruthError::Core(
+                                calm_types::error::CoreError::Conflict(_)
+                            ))
+                        ),
+                        "{change}"
+                    );
+                    tx.rollback().await.unwrap();
+                    assert_eq!(recovery::receipts(&fixture, &card).await, original);
+                }
+                shutdown(&fixture, &state).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn accept(fixture: &Fixture, state: &AppState, track: &str) -> (Value, String) {
@@ -480,10 +503,13 @@ pub(super) async fn accept(fixture: &Fixture, state: &AppState, track: &str) -> 
     let sealed = episode(state, &observed).await;
     WorkerWatcher::new(state).deliver(sealed).await.unwrap();
     // Completing the observed task must not revoke its already permanent input.
-    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-        .bind(&observed.task)
-        .bind(crate::model::now_ms())
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                .bind(&observed.task)
+                .bind(crate::model::now_ms()),
+        )
         .await
         .unwrap();
     (
@@ -573,33 +599,40 @@ async fn foreign_boot_scope_and_historical_namespace_refuse_live_episode() {
     ));
     let card = watcher_card_id(&track);
     assert!(recovery::receipts(&fixture, &card).await.is_empty());
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            crate::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    card.clone(),
+                    crate::model::NewCard {
+                        track_id: track.into(),
+                        kind: "codex".into(),
+                        title: None,
+                        sort: None,
+                        payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                    },
+                    crate::model::CardRole::Assistant,
+                    false,
+                    &state.card_role_cache,
+                )
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            assert!(matches!(
+                                WorkerWatcher::new(&state).deliver(sealed).await,
+                                Err(crate::error::CalmError::IdempotencyKeyExhausted(_))
+                            ));
+                            assert!(recovery::receipts(&fixture, &card).await.is_empty());
+                            shutdown(&fixture, &state).await;
+                            shutdown(&fixture, &other).await;
+            })
+        })
         .await
-        .unwrap();
-    crate::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        card.clone(),
-        crate::model::NewCard {
-            track_id: track.into(),
-            kind: "codex".into(),
-            title: None,
-            sort: None,
-            payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
-        },
-        crate::model::CardRole::Assistant,
-        false,
-        &state.card_role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert!(matches!(
-        WorkerWatcher::new(&state).deliver(sealed).await,
-        Err(crate::error::CalmError::IdempotencyKeyExhausted(_))
-    ));
-    assert!(recovery::receipts(&fixture, &card).await.is_empty());
-    shutdown(&fixture, &state).await;
-    shutdown(&fixture, &other).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]

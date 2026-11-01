@@ -227,67 +227,71 @@ async fn terminal_presentation_protected_replacements_and_placement_writer_prese
     let (repo, card) = fixture(CardCreationSource::Manual).await;
     let original = TerminalPresentation::from_payload(&card.payload).unwrap();
     assert!(original.in_workbench);
-    let mut tx = repo.pool().begin().await.unwrap();
-    let moved = set_workbench_tx(&mut tx, card.id.as_str(), false)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        TerminalPresentation::from_payload(&moved.payload).unwrap(),
-        TerminalPresentation {
-            source: CardCreationSource::Manual,
-            in_workbench: false
-        }
-    );
-    let updated=repo.card_update(card.id.as_str(),CardPatch{payload:Some(json!({"schemaVersion":1,"terminal_presentation":{"source":"agent","in_workbench":true}})),..Default::default()}).await.unwrap();
-    assert_eq!(
-        TerminalPresentation::from_payload(&updated.payload).unwrap(),
-        TerminalPresentation {
-            source: CardCreationSource::Manual,
-            in_workbench: false
-        }
-    );
-    let updated = repo
-        .card_update(
-            card.id.as_str(),
-            CardPatch {
-                payload: Some(json!({"schemaVersion":1})),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        TerminalPresentation::from_payload(&updated.payload)
-            .unwrap()
-            .source,
-        CardCreationSource::Manual
-    );
-    assert!(
-        !TerminalPresentation::from_payload(&updated.payload)
-            .unwrap()
-            .in_workbench
-    );
-    assert!(
-        repo.card_update(
-            card.id.as_str(),
-            CardPatch {
-                payload: Some(Value::Null),
-                ..Default::default()
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let moved = set_workbench_tx(&mut tx, card.id.as_str(), false)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            TerminalPresentation::from_payload(&moved.payload).unwrap(),
+            TerminalPresentation {
+                source: CardCreationSource::Manual,
+                in_workbench: false
             }
-        )
-        .await
-        .is_err()
-    );
-    let mut tx = repo.pool().begin().await.unwrap();
-    let restored = set_workbench_tx(&mut tx, card.id.as_str(), true)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        TerminalPresentation::from_payload(&restored.payload).unwrap(),
-        original
-    );
+        );
+        let updated=repo.card_update(card.id.as_str(),CardPatch{payload:Some(json!({"schemaVersion":1,"terminal_presentation":{"source":"agent","in_workbench":true}})),..Default::default()}).await.unwrap();
+        assert_eq!(
+            TerminalPresentation::from_payload(&updated.payload).unwrap(),
+            TerminalPresentation {
+                source: CardCreationSource::Manual,
+                in_workbench: false
+            }
+        );
+        let updated = repo
+            .card_update(
+                card.id.as_str(),
+                CardPatch {
+                    payload: Some(json!({"schemaVersion":1})),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            TerminalPresentation::from_payload(&updated.payload)
+                .unwrap()
+                .source,
+            CardCreationSource::Manual
+        );
+        assert!(
+            !TerminalPresentation::from_payload(&updated.payload)
+                .unwrap()
+                .in_workbench
+        );
+        assert!(
+            repo.card_update(
+                card.id.as_str(),
+                CardPatch {
+                    payload: Some(Value::Null),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err()
+        );
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let restored = set_workbench_tx(&mut tx, card.id.as_str(), true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            TerminalPresentation::from_payload(&restored.payload).unwrap(),
+            original
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -347,8 +351,8 @@ async fn terminal_presentation_plugin_creation_and_unknown_transition_have_expli
 #[tokio::test]
 async fn terminal_presentation_corrupt_provenance_cannot_be_erased_or_repaired() {
     let (repo, card) = fixture(CardCreationSource::Agent).await;
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.terminal_presentation',json('null')) WHERE id=?1")
-        .bind(card.id.as_str()).execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload,'$.terminal_presentation',json('null')) WHERE id=?1")
+        .bind(card.id.as_str())).await.unwrap();
     let updated = repo
         .card_update(
             card.id.as_str(),
@@ -363,36 +367,45 @@ async fn terminal_presentation_corrupt_provenance_cannot_be_erased_or_repaired()
         updated.payload.get(TERMINAL_PRESENTATION_PAYLOAD_KEY),
         Some(&Value::Null)
     );
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(
-        set_workbench_tx(&mut tx, card.id.as_str(), true)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let outgoing = repo
-        .card_update(
-            card.id.as_str(),
-            CardPatch {
-                kind: Some("codex".into()),
-                ..Default::default()
-            },
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    set_workbench_tx(&mut tx, card.id.as_str(), true)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                let outgoing = repo
+                    .card_update(
+                        card.id.as_str(),
+                        CardPatch {
+                            kind: Some("codex".into()),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    outgoing.payload.get(TERMINAL_PRESENTATION_PAYLOAD_KEY),
+                    Some(&Value::Null)
+                );
+                assert!(
+                    repo.card_update(
+                        card.id.as_str(),
+                        CardPatch {
+                            kind: Some("terminal".into()),
+                            ..Default::default()
+                        }
+                    )
+                    .await
+                    .is_err()
+                );
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        outgoing.payload.get(TERMINAL_PRESENTATION_PAYLOAD_KEY),
-        Some(&Value::Null)
-    );
-    assert!(
-        repo.card_update(
-            card.id.as_str(),
-            CardPatch {
-                kind: Some("terminal".into()),
-                ..Default::default()
-            }
-        )
-        .await
-        .is_err()
-    );
+        .expect("independent write operation")
 }

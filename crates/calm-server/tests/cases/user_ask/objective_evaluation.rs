@@ -142,14 +142,14 @@ async fn objective_evaluation_atomic_restart_after_dispatch_before_report() {
     let (boot, _) = setup().await;
     approve(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "CREATE TRIGGER crash_fact BEFORE INSERT ON objective_events \
+    (db).writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER crash_fact BEFORE INSERT ON objective_events \
          WHEN NEW.kind='check_finished' \
          BEGIN SELECT RAISE(ABORT,'crash after dispatched'); END",
-    )
-    .execute(db.read_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let _ = evaluate(&boot, REV).await;
     let statuses: Vec<String> =
         sqlx::query_scalar("SELECT status FROM objective_intents WHERE kind='run_check'")
@@ -161,8 +161,8 @@ async fn objective_evaluation_atomic_restart_after_dispatch_before_report() {
         vec!["pending"],
         "mark dispatched must roll back with the failed report"
     );
-    sqlx::query("DROP TRIGGER crash_fact")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_fact"))
         .await
         .unwrap();
     project(&boot).await;
@@ -181,14 +181,14 @@ async fn objective_evaluation_superseded_backlog_and_late_result() {
     let (boot, _) = setup().await;
     approve(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "CREATE TRIGGER crash_fact BEFORE INSERT ON objective_events \
+    (db).writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER crash_fact BEFORE INSERT ON objective_events \
          WHEN NEW.kind='check_finished' \
          BEGIN SELECT RAISE(ABORT,'hold results'); END",
-    )
-    .execute(db.read_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let _ = evaluate(&boot, REV).await;
     let old = objective_host::unsettled_intents(&db)
         .await
@@ -197,8 +197,8 @@ async fn objective_evaluation_superseded_backlog_and_late_result() {
         .find(|r| matches!(r.intent, objective::Intent::RunCheck { .. }))
         .unwrap();
     let _ = evaluate(&boot, NEXT).await;
-    sqlx::query("DROP TRIGGER crash_fact")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER crash_fact"))
         .await
         .unwrap();
     project(&boot).await;
@@ -322,14 +322,14 @@ async fn objective_evaluation_ask_answered_and_progress_projection() {
     define(&boot, Some(block), d).await;
     approve(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "CREATE TRIGGER pause_fact BEFORE INSERT ON objective_events \
+    (db).writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER pause_fact BEFORE INSERT ON objective_events \
          WHEN NEW.kind='check_finished' \
          BEGIN SELECT RAISE(ABORT,'pause'); END",
-    )
-    .execute(db.read_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     evaluate(&boot, REV).await.unwrap();
     project(&boot).await;
     let overlays = boot
@@ -345,8 +345,8 @@ async fn objective_evaluation_ask_answered_and_progress_projection() {
             .payload["cell"]["table"]["rows"][0]["evaluation"],
         "0/1"
     );
-    sqlx::query("DROP TRIGGER pause_fact")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER pause_fact"))
         .await
         .unwrap();
     project(&boot).await;
@@ -436,9 +436,8 @@ async fn objective_evaluation_settle_admission_preserves_request_ids() {
     define(&boot, Some(block), d).await;
     approve(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query("CREATE TRIGGER pause_settle BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
-            BEGIN SELECT RAISE(ABORT,'pause'); END")
-        .execute(db.read_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER pause_settle BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
+            BEGIN SELECT RAISE(ABORT,'pause'); END")).await.unwrap();
     evaluate(&boot, REV).await.unwrap();
     let n = counts(&boot).await;
     let error = settle(&boot, "discard").await.unwrap_err();
@@ -446,8 +445,8 @@ async fn objective_evaluation_settle_admission_preserves_request_ids() {
     assert!(error.message.starts_with("neige_objective_settle:"));
     assert!(error.message.contains("Running"));
     assert_eq!(counts(&boot).await, n);
-    sqlx::query("DROP TRIGGER pause_settle")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER pause_settle"))
         .await
         .unwrap();
     project(&boot).await;
@@ -492,9 +491,8 @@ async fn objective_evaluation_retry_leaves_next_round_available() {
     define(&boot, Some(block), d).await;
     approve(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query("CREATE TRIGGER pause_retry BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
-            BEGIN SELECT RAISE(ABORT,'pause'); END")
-        .execute(db.read_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER pause_retry BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
+            BEGIN SELECT RAISE(ABORT,'pause'); END")).await.unwrap();
     let first = evaluate(&boot, REV).await.unwrap();
     let n = counts(&boot).await;
     assert_eq!(
@@ -506,8 +504,8 @@ async fn objective_evaluation_retry_leaves_next_round_available() {
         n,
         "Running retry must not append Requested"
     );
-    sqlx::query("DROP TRIGGER pause_retry")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER pause_retry"))
         .await
         .unwrap();
     project(&boot).await;
@@ -544,12 +542,11 @@ async fn objective_evaluation_reads_legacy_task_verdicts_without_rewriting_sourc
         accepted(&boot, holds).await;
         let db = boot.repo.sqlite_db().unwrap();
         // Historical persisted input, before owner-declared notification existed.
-        sqlx::query(
+        (db).writer().execute(sqlx::query(
             "UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') \
             WHERE kind IN ('task.completed','task.failed') AND scope_track=?1",
         )
-        .bind(boot.track_id.as_str())
-        .execute(db.writer_pool())
+        .bind(boot.track_id.as_str()))
         .await
         .unwrap();
         let source = sqlx::query_as::<_, (i64, String, i64)>(

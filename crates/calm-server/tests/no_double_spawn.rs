@@ -1035,17 +1035,20 @@ async fn assert_active_codex_runtime_thread(boot: &Boot, card_id: &str, expected
 }
 
 async fn force_codex_runtime_thread_running(boot: &Boot, card_id: &str, thread_id: &str) {
-    sqlx::query(
-        r#"UPDATE worker_sessions
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE worker_sessions
            SET state = 'running',
                thread_id = ?1
            WHERE card_id = ?2"#,
-    )
-    .bind(thread_id)
-    .bind(card_id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(thread_id)
+            .bind(card_id),
+        )
+        .await
+        .unwrap();
 }
 
 async fn assert_projected_codex_thread(
@@ -1257,7 +1260,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
         .unwrap();
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -1278,8 +1281,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -1374,7 +1376,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -1395,8 +1397,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -1506,7 +1507,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -1527,8 +1528,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -1596,7 +1596,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -1617,8 +1617,7 @@ async fn codex_prompt_recovery_from_tx_committed_reaches_terminal_phase() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -1678,8 +1677,11 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
@@ -1687,31 +1689,36 @@ async fn codex_prompt_recovery_from_app_server_interact_reuses_existing_thread_m
            )
            VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("codex-app-interact-recovery-op")
-    .bind("codex-app-interact-recovery-key")
-    .bind("codex-app-interact-recovery-hash")
-    .bind(output.target_id.as_deref())
-    .bind(
-        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
-            .unwrap(),
-    )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(
-        serde_json::to_string(&json!({
-            "kind": "mint_and_await",
-            "thread_id": Value::Null,
-        }))
-        .unwrap(),
-    )
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op_id)
+            .bind("codex-app-interact-recovery-op")
+            .bind("codex-app-interact-recovery-key")
+            .bind("codex-app-interact-recovery-hash")
+            .bind(output.target_id.as_deref())
+            .bind(
+                serde_json::to_string(
+                    &json!({ "type": "runtime", "id": output.target_id.as_deref() }),
+                )
+                .unwrap(),
+            )
+            .bind(
+                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
+                    .unwrap(),
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(
+                serde_json::to_string(&json!({
+                    "kind": "mint_and_await",
+                    "thread_id": Value::Null,
+                }))
+                .unwrap(),
+            )
+            .bind("dead-process")
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let plan = boot
         .state
@@ -1794,8 +1801,11 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
@@ -1803,31 +1813,36 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
            )
            VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("codex-turn-started-marker-recovery-op")
-    .bind("codex-turn-started-marker-recovery-key")
-    .bind("codex-turn-started-marker-recovery-hash")
-    .bind(output.target_id.as_deref())
-    .bind(
-        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
-            .unwrap(),
-    )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(
-        serde_json::to_string(&json!({
-            "kind": "mint_and_await",
-            "thread_id": "t1",
-        }))
-        .unwrap(),
-    )
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op_id)
+            .bind("codex-turn-started-marker-recovery-op")
+            .bind("codex-turn-started-marker-recovery-key")
+            .bind("codex-turn-started-marker-recovery-hash")
+            .bind(output.target_id.as_deref())
+            .bind(
+                serde_json::to_string(
+                    &json!({ "type": "runtime", "id": output.target_id.as_deref() }),
+                )
+                .unwrap(),
+            )
+            .bind(
+                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
+                    .unwrap(),
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(
+                serde_json::to_string(&json!({
+                    "kind": "mint_and_await",
+                    "thread_id": "t1",
+                }))
+                .unwrap(),
+            )
+            .bind("dead-process")
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let plan = boot
         .state
@@ -1906,8 +1921,11 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
@@ -1915,31 +1933,36 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
            )
            VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("codex-turn-start-replay-recovery-op")
-    .bind("codex-turn-start-replay-recovery-key")
-    .bind("codex-turn-start-replay-recovery-hash")
-    .bind(output.target_id.as_deref())
-    .bind(
-        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
-            .unwrap(),
-    )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(
-        serde_json::to_string(&json!({
-            "kind": "mint_and_await",
-            "thread_id": "t1",
-        }))
-        .unwrap(),
-    )
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op_id)
+            .bind("codex-turn-start-replay-recovery-op")
+            .bind("codex-turn-start-replay-recovery-key")
+            .bind("codex-turn-start-replay-recovery-hash")
+            .bind(output.target_id.as_deref())
+            .bind(
+                serde_json::to_string(
+                    &json!({ "type": "runtime", "id": output.target_id.as_deref() }),
+                )
+                .unwrap(),
+            )
+            .bind(
+                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
+                    .unwrap(),
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(
+                serde_json::to_string(&json!({
+                    "kind": "mint_and_await",
+                    "thread_id": "t1",
+                }))
+                .unwrap(),
+            )
+            .bind("dead-process")
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let plan = boot
         .state
@@ -2026,8 +2049,11 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, phase_detail_json, lease_owner, lease_until_ms,
@@ -2035,31 +2061,36 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
            )
            VALUES (?1, ?2, 'codex-create', ?3, ?4, 'runtime', ?5, ?6, ?7, ?8,
                    'app_server_interact', ?9, ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("codex-turn-started-marker-timeout-recovery-op")
-    .bind("codex-turn-started-marker-timeout-recovery-key")
-    .bind("codex-turn-started-marker-timeout-recovery-hash")
-    .bind(output.target_id.as_deref())
-    .bind(
-        serde_json::to_string(&json!({ "type": "runtime", "id": output.target_id.as_deref() }))
-            .unwrap(),
-    )
-    .bind(serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt"))).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(
-        serde_json::to_string(&json!({
-            "kind": "mint_and_await",
-            "thread_id": "t1",
-        }))
-        .unwrap(),
-    )
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op_id)
+            .bind("codex-turn-started-marker-timeout-recovery-op")
+            .bind("codex-turn-started-marker-timeout-recovery-key")
+            .bind("codex-turn-started-marker-timeout-recovery-hash")
+            .bind(output.target_id.as_deref())
+            .bind(
+                serde_json::to_string(
+                    &json!({ "type": "runtime", "id": output.target_id.as_deref() }),
+                )
+                .unwrap(),
+            )
+            .bind(
+                serde_json::to_string(&codex_payload(&boot.track_id, Some("recover prompt")))
+                    .unwrap(),
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(
+                serde_json::to_string(&json!({
+                    "kind": "mint_and_await",
+                    "thread_id": "t1",
+                }))
+                .unwrap(),
+            )
+            .bind("dead-process")
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let plan = boot
         .state
@@ -2126,7 +2157,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
     });
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -2147,8 +2178,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -2306,7 +2336,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
 
     let op_id = new_id();
     let now = now_ms();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -2327,8 +2357,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -2392,202 +2421,204 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let payload = terminal_worker_payload(&boot.track_id, idem);
     let op = pending_operation("terminal-worker", &boot.track_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
-    mark_operation_succeeded(&boot.repo, &op.id).await;
-    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
-    boot.repo
-        .terminal_set_exit(&terminal_id, Some(0), false)
-        .await
-        .unwrap();
+    let write_db = (boot.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+        tx.commit().await.unwrap();
+        mark_operation_succeeded(&boot.repo, &op.id).await;
+        let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
+        boot.repo
+            .terminal_set_exit(&terminal_id, Some(0), false)
+            .await
+            .unwrap();
 
-    let op_id = new_id();
-    let now = now_ms();
-    let target_type = output.target_type.clone();
-    let target_id = output.target_id.clone();
-    sqlx::query(
-        r#"INSERT INTO operations (
+        let op_id = new_id();
+        let now = now_ms();
+        let target_type = output.target_type.clone();
+        let target_id = output.target_id.clone();
+        (boot.repo.db()).writer().execute(sqlx::query(
+            r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, 'terminal-worker', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'spawn_started', ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("terminal-worker-recovery-exited-op")
-    .bind(idem)
-    .bind("terminal-worker-recovery-exited-hash")
-    .bind(&target_type)
-    .bind(target_id.as_deref())
-    .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
-    .bind(serde_json::to_string(&payload).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-
-    let mut rx = boot.state.events.subscribe();
-    let plan = boot
-        .state
-        .operation_runtime
-        .recover_on_boot()
-        .await
-        .unwrap();
-    assert_eq!(plan.items.len(), 1);
-    assert!(matches!(
-        &plan.items[0],
-        RecoveryItem::Recover {
-            op_id: planned,
-            from_phase: Phase::SpawnStarted,
-            ..
-        } if planned == &op_id
-    ));
-    boot.state
-        .operation_runtime
-        .apply_recovery(plan)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        spawn_attempts.load(Ordering::SeqCst),
-        0,
-        "recorded terminal exit must suppress recovery respawn"
-    );
-    assert_terminal_worker_succeeded(&boot, &op_id).await;
-    let term = boot
-        .repo
-        .terminal_get(&terminal_id)
-        .await
-        .unwrap()
-        .expect("terminal row preserved");
-    assert_eq!(term.exit_code, Some(0));
-    assert!(!term.signal_killed);
-    assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
-    let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
-    assert_eq!(added, 1, "subscribers must see exactly one CardAdded");
-    assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
-
-    let mut boot =
-        boot_with_counted_spawn_and_workspace(Some("codex-worker-recovery-exited")).await;
-    let git_repo = boot._tmp.path().join("codex-worker-recovery-exited");
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
-    let codex_adapter = Arc::new(CodexWorkerAdapter::new(
-        route_repo.clone(),
-        boot.state.codex.clone(),
-        calm_server::agent_backend_pool::codex::CodexBackends::single(
-            SharedCodexAppServer::new_stub(boot.repo.clone()),
-        ),
-        None,
-        boot.state.card_role_cache.clone(),
-        boot.state.track_area_cache.clone(),
-        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-    ));
-    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
-    let completion = OperationCompletionBus::new();
-    let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo.clone(),
-        vec![codex_adapter.clone()],
-        boot.state.events.clone(),
-        completion.clone(),
-        SpawnCtx::new(
-            route_repo,
-            operation_repo,
-            boot.state.daemon.clone(),
-            boot.state.terminal_renderer.clone(),
-            boot.state.events.clone(),
-            completion,
         )
-        .with_location_admission(boot.state.location_admission_for_test()),
-    ));
-    boot.state = boot.state.clone().with_operation_runtime(runtime);
-
-    let idem = "codex-worker-recovery-exited";
-    seed_dispatched_task(&boot.repo, &boot.track_id, idem, "codex").await;
-    let payload = codex_worker_payload(&boot.track_id, idem);
-    let op = pending_operation("codex-worker", &boot.track_id, payload.clone());
-    insert_pending_operation_row(&boot.repo, &op).await;
-    let (output, op) = crate::support::worker_preparation::prepare(
-        boot.repo.clone(),
-        &boot.state,
-        codex_adapter.as_ref(),
-        &op,
-    )
-    .await;
-    assert!(git_repo.join(".git").is_dir());
-    mark_operation_succeeded(&boot.repo, &op.id).await;
-    let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
-    boot.repo
-        .terminal_set_exit(&terminal_id, Some(0), false)
+        .bind(&op_id)
+        .bind("terminal-worker-recovery-exited-op")
+        .bind(idem)
+        .bind("terminal-worker-recovery-exited-hash")
+        .bind(&target_type)
+        .bind(target_id.as_deref())
+        .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind("dead-process")
+        .bind(now + 60_000)
+        .bind(now))
         .await
         .unwrap();
 
-    let op_id = new_id();
-    let now = now_ms();
-    let target_type = output.target_type.clone();
-    let target_id = output.target_id.clone();
-    sqlx::query(
-        r#"INSERT INTO operations (
+        let mut rx = boot.state.events.subscribe();
+        let plan = boot
+            .state
+            .operation_runtime
+            .recover_on_boot()
+            .await
+            .unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert!(matches!(
+            &plan.items[0],
+            RecoveryItem::Recover {
+                op_id: planned,
+                from_phase: Phase::SpawnStarted,
+                ..
+            } if planned == &op_id
+        ));
+        boot.state
+            .operation_runtime
+            .apply_recovery(plan)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            spawn_attempts.load(Ordering::SeqCst),
+            0,
+            "recorded terminal exit must suppress recovery respawn"
+        );
+        assert_terminal_worker_succeeded(&boot, &op_id).await;
+        let term = boot
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .expect("terminal row preserved");
+        assert_eq!(term.exit_code, Some(0));
+        assert!(!term.signal_killed);
+        assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
+        let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
+        assert_eq!(added, 1, "subscribers must see exactly one CardAdded");
+        assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
+
+        let mut boot =
+            boot_with_counted_spawn_and_workspace(Some("codex-worker-recovery-exited")).await;
+        let git_repo = boot._tmp.path().join("codex-worker-recovery-exited");
+        let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+        let codex_adapter = Arc::new(CodexWorkerAdapter::new(
+            route_repo.clone(),
+            boot.state.codex.clone(),
+            calm_server::agent_backend_pool::codex::CodexBackends::single(
+                SharedCodexAppServer::new_stub(boot.repo.clone()),
+            ),
+            None,
+            boot.state.card_role_cache.clone(),
+            boot.state.track_area_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+        ));
+        let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
+        let completion = OperationCompletionBus::new();
+        let runtime = Arc::new(OperationRuntime::new_unchecked(
+            operation_repo.clone(),
+            vec![codex_adapter.clone()],
+            boot.state.events.clone(),
+            completion.clone(),
+            SpawnCtx::new(
+                route_repo,
+                operation_repo,
+                boot.state.daemon.clone(),
+                boot.state.terminal_renderer.clone(),
+                boot.state.events.clone(),
+                completion,
+            )
+            .with_location_admission(boot.state.location_admission_for_test()),
+        ));
+        boot.state = boot.state.clone().with_operation_runtime(runtime);
+
+        let idem = "codex-worker-recovery-exited";
+        seed_dispatched_task(&boot.repo, &boot.track_id, idem, "codex").await;
+        let payload = codex_worker_payload(&boot.track_id, idem);
+        let op = pending_operation("codex-worker", &boot.track_id, payload.clone());
+        insert_pending_operation_row(&boot.repo, &op).await;
+        let (output, op) = crate::support::worker_preparation::prepare(
+            boot.repo.clone(),
+            &boot.state,
+            codex_adapter.as_ref(),
+            &op,
+        )
+        .await;
+        assert!(git_repo.join(".git").is_dir());
+        mark_operation_succeeded(&boot.repo, &op.id).await;
+        let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
+        boot.repo
+            .terminal_set_exit(&terminal_id, Some(0), false)
+            .await
+            .unwrap();
+
+        let op_id = new_id();
+        let now = now_ms();
+        let target_type = output.target_type.clone();
+        let target_id = output.target_id.clone();
+        (boot.repo.db()).writer().execute(sqlx::query(
+            r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, 'codex-worker', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'spawn_started', ?10, ?11, ?12, ?12)"#,
-    )
-    .bind(&op_id)
-    .bind("codex-worker-recovery-exited-op")
-    .bind(idem)
-    .bind("codex-worker-recovery-exited-hash")
-    .bind(&target_type)
-    .bind(target_id.as_deref())
-    .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
-    .bind(serde_json::to_string(&payload).unwrap())
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind("dead-process")
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-
-    let mut rx = boot.state.events.subscribe();
-    let plan = boot
-        .state
-        .operation_runtime
-        .recover_on_boot()
-        .await
-        .unwrap();
-    assert_eq!(plan.items.len(), 1);
-    assert!(matches!(
-        &plan.items[0],
-        RecoveryItem::Recover {
-            op_id: planned,
-            from_phase: Phase::SpawnStarted,
-            ..
-        } if planned == &op_id
-    ));
-    boot.state
-        .operation_runtime
-        .apply_recovery(plan)
+        )
+        .bind(&op_id)
+        .bind("codex-worker-recovery-exited-op")
+        .bind(idem)
+        .bind("codex-worker-recovery-exited-hash")
+        .bind(&target_type)
+        .bind(target_id.as_deref())
+        .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(serde_json::to_string(&output).unwrap())
+        .bind("dead-process")
+        .bind(now + 60_000)
+        .bind(now))
         .await
         .unwrap();
 
-    assert_terminal_worker_succeeded(&boot, &op_id).await;
-    let term = boot
-        .repo
-        .terminal_get(&terminal_id)
-        .await
-        .unwrap()
-        .expect("codex worker terminal row preserved");
-    assert_eq!(term.exit_code, Some(0));
-    assert!(!term.signal_killed);
-    assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
-    let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
-    assert_eq!(added, 1, "codex worker recovery must emit CardAdded");
-    assert_eq!(failed, 0, "codex worker recovery must not emit TaskFailed");
+        let mut rx = boot.state.events.subscribe();
+        let plan = boot
+            .state
+            .operation_runtime
+            .recover_on_boot()
+            .await
+            .unwrap();
+        assert_eq!(plan.items.len(), 1);
+        assert!(matches!(
+            &plan.items[0],
+            RecoveryItem::Recover {
+                op_id: planned,
+                from_phase: Phase::SpawnStarted,
+                ..
+            } if planned == &op_id
+        ));
+        boot.state
+            .operation_runtime
+            .apply_recovery(plan)
+            .await
+            .unwrap();
+
+        assert_terminal_worker_succeeded(&boot, &op_id).await;
+        let term = boot
+            .repo
+            .terminal_get(&terminal_id)
+            .await
+            .unwrap()
+            .expect("codex worker terminal row preserved");
+        assert_eq!(term.exit_code, Some(0));
+        assert!(!term.signal_killed);
+        assert_eq!(event_kind_count(&boot.repo, "card.added").await, 1);
+        let (added, failed) = drain_worker_event_counts(&mut rx, idem).await;
+        assert_eq!(added, 1, "codex worker recovery must emit CardAdded");
+        assert_eq!(failed, 0, "codex worker recovery must not emit TaskFailed");
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2671,7 +2702,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     let valid_op_id = new_id();
     let now = now_ms();
 
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -2689,8 +2720,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     .bind(Option::<String>::None)
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now)
-    .execute(boot.repo.pool())
+    .bind(now))
     .await
     .unwrap();
 
@@ -2738,7 +2768,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
         "cwd": "/tmp",
         "env": {},
     });
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
@@ -2759,8 +2789,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
     .bind(serde_json::to_string(&output).unwrap())
     .bind("dead-process")
     .bind(now + 60_000)
-    .bind(now + 1)
-    .execute(boot.repo.pool())
+    .bind(now + 1))
     .await
     .unwrap();
 
@@ -2883,9 +2912,20 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.track_area_cache.clone(),
     );
     let op = pending_operation("terminal-create", &boot.track_id, payload.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
+    let output = boot
+        .repo
+        .db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
+        .await
+        .expect("independent write operation");
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
 
     let boot = boot_codex_with_counted_spawn().await;
@@ -2901,9 +2941,20 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.track_area_cache.clone(),
     );
     let op = pending_operation("codex-create", &boot.track_id, payload.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
+    let output = boot
+        .repo
+        .db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
+        .await
+        .expect("independent write operation");
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
 
     let boot = boot_claude_with_counted_spawn().await;
@@ -2916,9 +2967,20 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         boot.state.track_area_cache.clone(),
     );
     let op = pending_operation("claude-create", &boot.track_id, payload.clone());
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
+    let output = boot
+        .repo
+        .db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
+        .await
+        .expect("independent write operation");
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
 }
 
@@ -2983,20 +3045,23 @@ fn terminal_worker_payload(track_id: &str, idempotency_key: &str) -> Value {
 
 async fn seed_dispatched_task(repo: &SqlxRepo, track_id: &str, task_id: &str, kind: &str) {
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO tasks (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO tasks (
                id, track_id, key, kind, goal, context_json, depends_on_json,
                status, claim_context_json, created_at_ms, updated_at_ms
            ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
                      'dispatched', '[]', ?4, ?4)"#,
-    )
-    .bind(task_id)
-    .bind(track_id)
-    .bind(kind)
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(task_id)
+            .bind(track_id)
+            .bind(kind)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 }
 
 fn codex_worker_payload(track_id: &str, idempotency_key: &str) -> Value {
@@ -3146,43 +3211,49 @@ fn pending_operation(kind: &str, target_id: &str, payload: Value) -> Operation {
 
 async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                phase, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
-    )
-    .bind(&op.id)
-    .bind(&op.operation_key)
-    .bind(&op.kind)
-    .bind(&op.idempotency_key)
-    .bind(&op.payload_hash)
-    .bind(&op.target_type)
-    .bind(op.target_id.as_deref())
-    .bind(serde_json::to_string(&op.target).unwrap())
-    .bind(serde_json::to_string(&op.payload).unwrap())
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&op.id)
+            .bind(&op.operation_key)
+            .bind(&op.kind)
+            .bind(&op.idempotency_key)
+            .bind(&op.payload_hash)
+            .bind(&op.target_type)
+            .bind(op.target_id.as_deref())
+            .bind(serde_json::to_string(&op.target).unwrap())
+            .bind(serde_json::to_string(&op.payload).unwrap())
+            .bind(now),
+        )
+        .await
+        .unwrap();
 }
 
 async fn mark_operation_succeeded(repo: &SqlxRepo, op_id: &str) {
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
               SET phase = 'succeeded',
                   updated_at_ms = ?2,
                   completed_at_ms = ?2
             WHERE id = ?1"#,
-    )
-    .bind(op_id)
-    .bind(now)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(op_id)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 }
 
 async fn assert_minted_runtime(repo: &SqlxRepo, output: TxOutput, kind: WorkerSessionKind) {

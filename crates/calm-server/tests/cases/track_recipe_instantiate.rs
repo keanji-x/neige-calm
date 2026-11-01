@@ -850,12 +850,14 @@ async fn the_database_refuses_half_a_provenance() {
     )
     .await;
     let track_id = created["id"].as_str().unwrap().to_string();
-    let pool = boot.sqlx_repo.pool();
+
     const REFUSED_BY: &str = "CHECK constraint failed: track_recipe_origin_is_whole";
 
-    let error = sqlx::query("UPDATE tracks SET recipe_revision = NULL WHERE id = ?1")
-        .bind(&track_id)
-        .execute(pool)
+    let error = (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET recipe_revision = NULL WHERE id = ?1").bind(&track_id),
+        )
         .await
         .expect_err("a recipe id with no revision must be refused");
     assert!(
@@ -863,9 +865,9 @@ async fn the_database_refuses_half_a_provenance() {
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    let error = sqlx::query("UPDATE tracks SET recipe_id = NULL WHERE id = ?1")
-        .bind(&track_id)
-        .execute(pool)
+    let error = (boot.sqlx_repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET recipe_id = NULL WHERE id = ?1").bind(&track_id))
         .await
         .expect_err("a revision with no recipe id must be refused");
     assert!(
@@ -873,25 +875,31 @@ async fn the_database_refuses_half_a_provenance() {
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    let error = sqlx::query(
-        "INSERT INTO tracks \
+    let error = (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tracks \
            (id, area_id, title, sort, created_at, updated_at, recipe_id, recipe_revision) \
          SELECT 'half-inserted', area_id, title, sort + 1.0, created_at, updated_at, \
                 'some-recipe', NULL \
          FROM tracks WHERE id = ?1",
-    )
-    .bind(&track_id)
-    .execute(pool)
-    .await
-    .expect_err("an INSERT carrying half a provenance must be refused too");
+            )
+            .bind(&track_id),
+        )
+        .await
+        .expect_err("an INSERT carrying half a provenance must be refused too");
     assert!(
         error.to_string().contains(REFUSED_BY),
         "expected {REFUSED_BY} to be what refused it, got: {error}"
     );
 
-    sqlx::query("UPDATE tracks SET recipe_id = NULL, recipe_revision = NULL WHERE id = ?1")
-        .bind(&track_id)
-        .execute(pool)
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET recipe_id = NULL, recipe_revision = NULL WHERE id = ?1")
+                .bind(&track_id),
+        )
         .await
         .expect("clearing both at once is a state the system has a reading for");
 }

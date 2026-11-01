@@ -823,28 +823,37 @@ async fn seed_runtime_thread_with_kind(
     kind: WorkerSessionKind,
 ) -> String {
     let runtime_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.to_string(),
-            kind,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime_id
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.to_string(),
+                        kind,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime_id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn wait_for_requests(path: &Path, min_count: usize) -> Vec<Value> {
@@ -1586,43 +1595,54 @@ async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
     )
     .await;
     let old_hash = auth::hash_token("old-hot-token");
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
-        .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time)
+                    .await;
 
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
+                let daemon = server(&root, repo.clone()).await;
+                daemon.start_or_takeover().await.unwrap();
 
-    let rows = wait_for_requests(&capture, 2).await;
-    let resumes = rows
-        .iter()
-        .filter(|row| {
-            row.get("method").and_then(Value::as_str) == Some("thread/resume")
-                && row.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-hot")
+                let rows = wait_for_requests(&capture, 2).await;
+                let resumes = rows
+                    .iter()
+                    .filter(|row| {
+                        row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                            && row.pointer("/params/threadId").and_then(Value::as_str)
+                                == Some("thread-hot")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(resumes.len(), 1);
+                assert!(
+                    resumes[0].pointer("/params/config").is_none(),
+                    "hot takeover must plain-resume without config"
+                );
+                assert_eq!(
+                    card_mcp_hash(&repo, &card_id).await.as_deref(),
+                    Some(old_hash.as_str())
+                );
+                assert_eq!(
+                    session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+                    Some(old_hash.as_str())
+                );
+
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            })
         })
-        .collect::<Vec<_>>();
-    assert_eq!(resumes.len(), 1);
-    assert!(
-        resumes[0].pointer("/params/config").is_none(),
-        "hot takeover must plain-resume without config"
-    );
-    assert_eq!(
-        card_mcp_hash(&repo, &card_id).await.as_deref(),
-        Some(old_hash.as_str())
-    );
-    assert_eq!(
-        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
-        Some(old_hash.as_str())
-    );
-
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1645,82 +1665,95 @@ async fn restart_resumes_rollout_backed_threads() {
     )
     .await;
     let old_hash = auth::hash_token("old-resume-token");
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
-        .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-    let rows = wait_for_requests(&capture, 2).await;
-    let resumes = rows
-        .iter()
-        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
-        .collect::<Vec<_>>();
-    assert_eq!(resumes.len(), 1);
-    let first_resume_hash = card_mcp_hash(&repo, &card_id)
-        .await
-        .expect("initial resume remints card MCP hash");
-    assert_ne!(first_resume_hash, old_hash);
-    assert_eq!(
-        auth::hash_token(thread_resume_token(resumes[0])),
-        first_resume_hash
-    );
-    assert_eq!(
-        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
-        Some(first_resume_hash.as_str())
-    );
+                let daemon = server(&root, repo.clone()).await;
+                daemon.start_or_takeover().await.unwrap();
+                let rows = wait_for_requests(&capture, 2).await;
+                let resumes = rows
+                    .iter()
+                    .filter(|row| {
+                        row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(resumes.len(), 1);
+                let first_resume_hash = card_mcp_hash(&repo, &card_id)
+                    .await
+                    .expect("initial resume remints card MCP hash");
+                assert_ne!(first_resume_hash, old_hash);
+                assert_eq!(
+                    auth::hash_token(thread_resume_token(resumes[0])),
+                    first_resume_hash
+                );
+                assert_eq!(
+                    session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+                    Some(first_resume_hash.as_str())
+                );
 
-    let trigger_card_id = seed_card(&repo, 2).await;
-    daemon.mark_needs_respawn();
-    daemon
-        .thread_start_mint_for_card(
-            &trigger_card_id,
-            SharedThreadStartParams {
-                cwd: "/tmp".into(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: None,
-                config: ThreadConfig::NoMcp,
-            },
-        )
-        .await
-        .unwrap();
-    let rows = wait_for_requests(&capture, rows.len() + 3).await;
-    let resumes = rows
-        .iter()
-        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
-        .collect::<Vec<_>>();
-    assert_eq!(resumes.len(), 2);
-    let resumed = resumes.last().unwrap();
-    let expected_socket = root
-        .path()
-        .join("mcp/kernel.sock")
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(
-        resumed
-            .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
-            .and_then(Value::as_str),
-        Some(expected_socket.as_str())
-    );
-    let respawn_hash = card_mcp_hash(&repo, &card_id)
-        .await
-        .expect("respawn resume remints card MCP hash");
-    assert_ne!(respawn_hash, first_resume_hash);
-    assert_eq!(auth::hash_token(thread_resume_token(resumed)), respawn_hash);
-    assert_eq!(
-        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
-        Some(respawn_hash.as_str())
-    );
+                let trigger_card_id = seed_card(&repo, 2).await;
+                daemon.mark_needs_respawn();
+                daemon
+                    .thread_start_mint_for_card(
+                        &trigger_card_id,
+                        SharedThreadStartParams {
+                            cwd: "/tmp".into(),
+                            approval_policy: "never".into(),
+                            sandbox_mode: "workspace-write".into(),
+                            developer_instructions: None,
+                            config: ThreadConfig::NoMcp,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let rows = wait_for_requests(&capture, rows.len() + 3).await;
+                let resumes = rows
+                    .iter()
+                    .filter(|row| {
+                        row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(resumes.len(), 2);
+                let resumed = resumes.last().unwrap();
+                let expected_socket = root
+                    .path()
+                    .join("mcp/kernel.sock")
+                    .to_string_lossy()
+                    .into_owned();
+                assert_eq!(
+                    resumed
+                        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
+                        .and_then(Value::as_str),
+                    Some(expected_socket.as_str())
+                );
+                let respawn_hash = card_mcp_hash(&repo, &card_id)
+                    .await
+                    .expect("respawn resume remints card MCP hash");
+                assert_ne!(respawn_hash, first_resume_hash);
+                assert_eq!(auth::hash_token(thread_resume_token(resumed)), respawn_hash);
+                assert_eq!(
+                    session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+                    Some(respawn_hash.as_str())
+                );
 
-    unsafe {
-        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
-    }
+                unsafe {
+                    std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1744,78 +1777,90 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
     )
     .await;
     let old_hash = auth::hash_token("old-active-token");
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
-        .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, &runtime_id, &old_hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-    let rows = wait_for_requests(&capture, 2).await;
-    let first_hash = card_mcp_hash(&repo, &card_id)
-        .await
-        .expect("initial cold resume remints active hash");
-    assert_ne!(first_hash, old_hash);
+                let daemon = server(&root, repo.clone()).await;
+                daemon.start_or_takeover().await.unwrap();
+                let rows = wait_for_requests(&capture, 2).await;
+                let first_hash = card_mcp_hash(&repo, &card_id)
+                    .await
+                    .expect("initial cold resume remints active hash");
+                assert_ne!(first_hash, old_hash);
 
-    let stale_thread_id = daemon
-        .thread_start_mint_for_card(
-            &card_id,
-            SharedThreadStartParams {
-                cwd: "/tmp".into(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: None,
-                config: ThreadConfig::NoMcp,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(stale_thread_id, "fake-thread-0001");
-    assert_ne!(stale_thread_id, "thread-active");
-    let rows = wait_for_requests(&capture, rows.len() + 1).await;
+                let stale_thread_id = daemon
+                    .thread_start_mint_for_card(
+                        &card_id,
+                        SharedThreadStartParams {
+                            cwd: "/tmp".into(),
+                            approval_policy: "never".into(),
+                            sandbox_mode: "workspace-write".into(),
+                            developer_instructions: None,
+                            config: ThreadConfig::NoMcp,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(stale_thread_id, "fake-thread-0001");
+                assert_ne!(stale_thread_id, "thread-active");
+                let rows = wait_for_requests(&capture, rows.len() + 1).await;
 
-    daemon.mark_needs_respawn();
-    daemon.ensure_respawn_for_current_settings().await.unwrap();
-    let rows = wait_for_requests(&capture, rows.len() + 3).await;
-    let resumes = rows
-        .iter()
-        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/resume"))
-        .collect::<Vec<_>>();
-    assert_eq!(resumes.len(), 3);
-    let respawn_resumes = &resumes[1..];
-    let active_resume = respawn_resumes
-        .iter()
-        .copied()
-        .find(|row| {
-            row.pointer("/params/threadId").and_then(Value::as_str) == Some("thread-active")
+                daemon.mark_needs_respawn();
+                daemon.ensure_respawn_for_current_settings().await.unwrap();
+                let rows = wait_for_requests(&capture, rows.len() + 3).await;
+                let resumes = rows
+                    .iter()
+                    .filter(|row| {
+                        row.get("method").and_then(Value::as_str) == Some("thread/resume")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(resumes.len(), 3);
+                let respawn_resumes = &resumes[1..];
+                let active_resume = respawn_resumes
+                    .iter()
+                    .copied()
+                    .find(|row| {
+                        row.pointer("/params/threadId").and_then(Value::as_str)
+                            == Some("thread-active")
+                    })
+                    .expect("cold respawn must resume the active cached thread");
+                let stale_resume = respawn_resumes
+                    .iter()
+                    .copied()
+                    .find(|row| {
+                        row.pointer("/params/threadId").and_then(Value::as_str)
+                            == Some(stale_thread_id.as_str())
+                    })
+                    .expect("cold respawn must plain-resume the stale cached thread");
+                assert!(
+                    stale_resume.pointer("/params/config").is_none(),
+                    "stale cache entries must not receive reemitted MCP config"
+                );
+                let respawn_hash = auth::hash_token(thread_resume_token(active_resume));
+                assert_ne!(respawn_hash, first_hash);
+                assert_eq!(
+                    card_mcp_hash(&repo, &card_id).await.as_deref(),
+                    Some(respawn_hash.as_str())
+                );
+                assert_eq!(
+                    session_mcp_hash(&repo, &runtime_id).await.as_deref(),
+                    Some(respawn_hash.as_str())
+                );
+            })
         })
-        .expect("cold respawn must resume the active cached thread");
-    let stale_resume = respawn_resumes
-        .iter()
-        .copied()
-        .find(|row| {
-            row.pointer("/params/threadId").and_then(Value::as_str)
-                == Some(stale_thread_id.as_str())
-        })
-        .expect("cold respawn must plain-resume the stale cached thread");
-    assert!(
-        stale_resume.pointer("/params/config").is_none(),
-        "stale cache entries must not receive reemitted MCP config"
-    );
-    let respawn_hash = auth::hash_token(thread_resume_token(active_resume));
-    assert_ne!(respawn_hash, first_hash);
-    assert_eq!(
-        card_mcp_hash(&repo, &card_id).await.as_deref(),
-        Some(respawn_hash.as_str())
-    );
-    assert_eq!(
-        session_mcp_hash(&repo, &runtime_id).await.as_deref(),
-        Some(respawn_hash.as_str())
-    );
+        .await
+        .expect("independent write operation")
 }
 
 /// The race is held open on the real primitive: the fixture parks the first `thread/resume` of the respawn
@@ -1882,14 +1927,17 @@ async fn cold_respawn_replay_does_not_resume_a_card_deleted_mid_loop() {
     );
 
     // The delete COMMITS, then its cache cleanup runs — both while parked; the cleanup is spawned because a correct kernel makes it wait.
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
-        .bind(&victim_card)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+                .bind(&victim_card),
+        )
         .await
         .unwrap();
-    sqlx::query("DELETE FROM cards WHERE id = ?1")
-        .bind(&victim_card)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM cards WHERE id = ?1").bind(&victim_card))
         .await
         .unwrap();
     assert!(
@@ -4736,13 +4784,14 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
     .await;
     // Force the re-stamp (the sole `running` write on the adoption path)
     // to fail.
-    sqlx::query(
-        "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
          WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'forced re-stamp failure'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
     let instance_a = server(&root, repo.clone()).await;
     instance_a
@@ -4769,8 +4818,9 @@ async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
     );
 
     drop(instance_a);
-    sqlx::query("DROP TRIGGER fail_running_stamp")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_running_stamp"))
         .await
         .unwrap();
     let instance_b = server(&root, repo.clone()).await;
@@ -5006,11 +5056,10 @@ async fn forced_running_persist_error_reaps_gracefully_and_terminalizes_failed()
 
     // The `starting` INSERT passes; only the Running upsert (an UPDATE on
     // the existing row) trips the trigger.
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
          WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'forced running persist failure'); END",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .unwrap();
 

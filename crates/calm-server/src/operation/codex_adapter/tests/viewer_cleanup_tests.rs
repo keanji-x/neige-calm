@@ -196,14 +196,12 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
     if restart.is_some() {
-        sqlx::query("CREATE TRIGGER interrupt_launch BEFORE UPDATE OF phase ON operations WHEN NEW.phase IN \
-            ('spawn_succeeded','compensating','stuck') BEGIN SELECT RAISE(ABORT,'viewer ack interruption'); END")
-            .execute(harness.repo.pool()).await.unwrap();
+        (harness.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER interrupt_launch BEFORE UPDATE OF phase ON operations WHEN NEW.phase IN \
+            ('spawn_succeeded','compensating','stuck') BEGIN SELECT RAISE(ABORT,'viewer ack interruption'); END")).await.unwrap();
     }
     if restart == Some(Restart::BeforeCardAdded) {
-        sqlx::query("CREATE TRIGGER interrupt_card_added BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN SELECT \
-                RAISE(ABORT,'crash before CardAdded'); END")
-            .execute(harness.repo.pool()).await.unwrap();
+        (harness.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER interrupt_card_added BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN SELECT \
+                RAISE(ABORT,'crash before CardAdded'); END")).await.unwrap();
     }
     let submitted_key = key.clone();
     let run = tokio::spawn(async move { runtime.submit(kind, submitted_key, payload).await });
@@ -251,13 +249,15 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
         let task_before = harness.repo.task_get(&task.id).await.unwrap().unwrap();
         assert!(session.thread_id.is_some());
         assert!(session.active_turn_id.is_some());
-        sqlx::query("DROP TRIGGER interrupt_launch")
-            .execute(harness.repo.pool())
+        (harness.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER interrupt_launch"))
             .await
             .unwrap();
         if restart == Some(Restart::BeforeCardAdded) {
-            sqlx::query("DROP TRIGGER interrupt_card_added")
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER interrupt_card_added"))
                 .await
                 .unwrap();
             let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='card.added' AND json_extract(payload,'$.id')=?1")
@@ -309,11 +309,16 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
             // Recovery's CardAdded transaction repairs it before VCS projection;
             // compensation's transition also repairs it, exposing any interrupt.
             // Neither trigger copies the adapter's business/launch decision.
-            sqlx::query("CREATE TABLE projection_fault_backup AS SELECT id, handle_state_json FROM worker_sessions WHERE id=?1")
-                .bind(&session_id).execute(reboot_repo.pool()).await.unwrap();
-            sqlx::query("UPDATE worker_sessions SET handle_state_json='invalid-json' WHERE id=?1")
-                .bind(&session_id)
-                .execute(reboot_repo.pool())
+            (reboot_repo.db()).writer().execute(sqlx::query("CREATE TABLE projection_fault_backup AS SELECT id, handle_state_json FROM worker_sessions WHERE id=?1")
+                .bind(&session_id)).await.unwrap();
+            (reboot_repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE worker_sessions SET handle_state_json='invalid-json' WHERE id=?1",
+                    )
+                    .bind(&session_id),
+                )
                 .await
                 .unwrap();
             assert!(
@@ -322,15 +327,13 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
                     .await
                     .is_err()
             );
-            sqlx::query("CREATE TRIGGER repair_projection AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
+            (reboot_repo.db()).writer().execute(sqlx::query("CREATE TRIGGER repair_projection AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
                 BEGIN UPDATE worker_sessions SET handle_state_json=(SELECT handle_state_json FROM \
                 projection_fault_backup WHERE id=worker_sessions.id) WHERE id IN (SELECT id FROM \
-                projection_fault_backup); END")
-                .execute(reboot_repo.pool()).await.unwrap();
-            sqlx::query("CREATE TRIGGER repair_event_projection BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN \
+                projection_fault_backup); END")).await.unwrap();
+            (reboot_repo.db()).writer().execute(sqlx::query("CREATE TRIGGER repair_event_projection BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN \
                 UPDATE worker_sessions SET handle_state_json=(SELECT handle_state_json FROM projection_fault_backup \
-                WHERE id=worker_sessions.id) WHERE id IN (SELECT id FROM projection_fault_backup); END")
-                .execute(reboot_repo.pool()).await.unwrap();
+                WHERE id=worker_sessions.id) WHERE id IN (SELECT id FROM projection_fault_backup); END")).await.unwrap();
         }
         let mut recovered_events = events.subscribe();
         let reboot_adapter = CodexWorkerAdapter::new(

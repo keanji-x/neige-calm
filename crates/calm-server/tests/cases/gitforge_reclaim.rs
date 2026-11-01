@@ -405,15 +405,15 @@ async fn gitforge_reclaim_recovers_removed_effect_after_receipt_failure() {
     .await
     .unwrap();
     f.close().await;
-    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
-        .execute(f.b.repo.pool()).await.unwrap();
+    (f.b.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")).await.unwrap();
     f.tick(&mut HashSet::new()).await;
     assert!(
         !nested.exists(),
         "physical effect completed before injected receipt failure"
     );
-    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
-        .execute(f.b.repo.pool())
+    (f.b.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_reclaim_receipt"))
         .await
         .unwrap();
     let recovered = recover_reclaims(&f).await;
@@ -441,13 +441,13 @@ async fn gitforge_reclaim_recovers_removed_effect_after_receipt_failure() {
 #[tokio::test]
 async fn gitforge_reclaim_receipt_recovery_outlives_deleted_owner_rows() {
     let f = Fixture::new().await;
-    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
-        .execute(f.b.repo.pool()).await.unwrap();
+    (f.b.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")).await.unwrap();
     assert_eq!(f.b.delete_track(&f.track).await.0, StatusCode::NO_CONTENT);
     assert!(!f.clean.exists());
     assert!(f.b.repo.track_get(&f.track).await.unwrap().is_none());
-    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
-        .execute(f.b.repo.pool())
+    (f.b.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_reclaim_receipt"))
         .await
         .unwrap();
     let recovered = recover_reclaims(&f).await;
@@ -475,17 +475,16 @@ async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
         ids::ActorId,
     };
     use calm_truth::db::sqlite::{
-        append_decision_event_in_tx, begin_immediate_tx,
-        worktree_events::unmatched_provisioned_worktrees,
+        append_decision_event_in_tx, worktree_events::unmatched_provisioned_worktrees,
     };
     let f = Fixture::new().await;
     f.close().await;
-    sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")
-        .execute(f.b.repo.pool()).await.unwrap();
+    (f.b.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_reclaim_receipt BEFORE INSERT ON events WHEN NEW.kind='worktree.removed' BEGIN SELECT RAISE(FAIL,'receipt unavailable'); END")).await.unwrap();
     f.tick(&mut HashSet::new()).await;
     assert!(!f.clean.exists());
-    sqlx::query("DROP TRIGGER fail_reclaim_receipt")
-        .execute(f.b.repo.pool())
+    (f.b.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_reclaim_receipt"))
         .await
         .unwrap();
     run_git(
@@ -505,42 +504,46 @@ async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
             .fetch_one(f.b.repo.pool())
             .await
             .unwrap();
-    let mut tx = begin_immediate_tx(f.b.repo.db()).await.unwrap();
-    let provision = append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::KernelDispatcher,
-        &EventScope::Card {
-            card: card.clone().into(),
-            track: f.track.clone().into(),
-            area: f.b.area_id.clone().into(),
-        },
-        None,
-        &Event::WorktreeProvisioned {
-            track_id: f.track.clone().into(),
-            card_id: card.into(),
-            path: f.clean.to_str().unwrap().into(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    // Only recover the already admitted old operations. No new close snapshot is taken.
-    let recovered = recover_reclaims(&f).await;
-    recovered.sweep_parked().await.unwrap();
-    let claims = unmatched_provisioned_worktrees(&mut f.b.repo.pool().acquire().await.unwrap())
+    let write_db = (f.b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let provision = append_decision_event_in_tx(
+            &mut tx,
+            &ActorId::KernelDispatcher,
+            &EventScope::Card {
+                card: card.clone().into(),
+                track: f.track.clone().into(),
+                area: f.b.area_id.clone().into(),
+            },
+            None,
+            &Event::WorktreeProvisioned {
+                track_id: f.track.clone().into(),
+                card_id: card.into(),
+                path: f.clean.to_str().unwrap().into(),
+            },
+        )
         .await
         .unwrap();
-    assert!(claims.iter().any(|claim| claim.event_id == provision));
-    assert_eq!(
-        std::fs::read_to_string(f.clean.join("new-work")).unwrap(),
-        "new lifecycle"
-    );
-    let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND json_extract(payload,'$.path')=?")
-        .bind(f.clean.to_str().unwrap()).fetch_one(f.b.repo.pool()).await.unwrap();
-    assert_eq!(
-        receipts, 0,
-        "old success must not receipt the newer provision"
-    );
+        tx.commit().await.unwrap();
+        // Only recover the already admitted old operations. No new close snapshot is taken.
+        let recovered = recover_reclaims(&f).await;
+        recovered.sweep_parked().await.unwrap();
+        let claims = unmatched_provisioned_worktrees(&mut f.b.repo.pool().acquire().await.unwrap())
+            .await
+            .unwrap();
+        assert!(claims.iter().any(|claim| claim.event_id == provision));
+        assert_eq!(
+            std::fs::read_to_string(f.clean.join("new-work")).unwrap(),
+            "new lifecycle"
+        );
+        let receipts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='worktree.removed' AND json_extract(payload,'$.path')=?")
+            .bind(f.clean.to_str().unwrap()).fetch_one(f.b.repo.pool()).await.unwrap();
+        assert_eq!(
+            receipts, 0,
+            "old success must not receipt the newer provision"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 async fn recover_reclaims(f: &Fixture) -> Arc<calm_server::operation::OperationRuntime> {
@@ -651,11 +654,22 @@ async fn foreign_execution_retains_extra(delete: bool) {
         intent.metadata.track = TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
         let engine = f._execution.lifecycle.engine().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.b.repo.db())
-            .await
-            .unwrap();
-        let ticket = engine.admit(&mut tx, intent).await.unwrap();
-        tx.commit().await.unwrap();
+        let ticket = {
+            let write_db = (f.b.repo.db()).clone();
+            let engine = &engine;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let ticket = engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        ticket
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         engine.drive(ticket.committed());
         if delete {
             assert_foreign_occupancy(&f, &id).await;

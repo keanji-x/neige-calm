@@ -245,48 +245,57 @@ pub async fn planner(
     let thread = format!("planner-{session}");
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    session_mark_track_root_tx(&mut tx, &track_row.id, &session.clone().into())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                session_mark_track_root_tx(&mut tx, &track_row.id, &session.clone().into())
+                    .await
+                    .unwrap();
+                card_mcp_token_set_tx(&mut tx, card.id.as_str(), &hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, &session, &hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                (
+                    ToolCallIdentity {
+                        card_id: card.id.to_string(),
+                        role: CardRole::Planner,
+                        provider: AgentProvider::Codex,
+                        session_id: session,
+                        track_id: Some(track.into()),
+                        area_id: track_row.area_id.to_string(),
+                        thread_id: thread,
+                    },
+                    token.into_inner(),
+                )
+            })
+        })
         .await
-        .unwrap();
-    card_mcp_token_set_tx(&mut tx, card.id.as_str(), &hash)
-        .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, &session, &hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    (
-        ToolCallIdentity {
-            card_id: card.id.to_string(),
-            role: CardRole::Planner,
-            provider: AgentProvider::Codex,
-            session_id: session,
-            track_id: Some(track.into()),
-            area_id: track_row.area_id.to_string(),
-            thread_id: thread,
-        },
-        token.into_inner(),
-    )
+        .expect("independent write operation")
 }
 
 pub fn context(
@@ -374,20 +383,29 @@ pub async fn start(
     .unwrap();
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, &card, &hash).await.unwrap();
-    session_mcp_token_set_tx(&mut tx, &session, &hash)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, &card, &hash).await.unwrap();
+                session_mcp_token_set_tx(&mut tx, &session, &hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                Started {
+                    attempt: task.id,
+                    card,
+                    token: token.into_inner(),
+                    thread,
+                    lease,
+                    cwd: PathBuf::from(path),
+                }
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    Started {
-        attempt: task.id,
-        card,
-        token: token.into_inner(),
-        thread,
-        lease,
-        cwd: PathBuf::from(path),
-    }
+        .expect("independent write operation")
 }
 
 pub async fn complete(repo: &SqlxRepo, socket: &Path, started: &Started, message: &str) -> String {

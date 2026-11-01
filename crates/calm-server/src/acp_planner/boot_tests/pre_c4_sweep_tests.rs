@@ -97,10 +97,13 @@ async fn check_delete(provider: AgentProvider, proof: Option<bool>) {
         _ => unreachable!(),
     }
     // Re-mint a credential after boot to expose any revocation on refusal.
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
-        .bind(old_hash(&row))
-        .bind(&row.worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
+                .bind(old_hash(&row))
+                .bind(&row.worker),
+        )
         .await
         .unwrap();
     let result = delete(&state, &row).await;

@@ -111,45 +111,66 @@ async fn probe(
         .await
         .expect("create probe card");
 
-    let mut tx = repo.pool().begin().await.expect("begin probe tx");
-    let runtime =
-        session_start_runtime_tx(&mut tx, terminal_runtime_init(card.id.to_string(), from.1))
-            .await
-            .expect("insert probe runtime");
-    assert_eq!(runtime.status, from.1, "insert round-trip for {}", from.0);
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin probe tx");
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    terminal_runtime_init(card.id.to_string(), from.1),
+                )
+                .await
+                .expect("insert probe runtime");
+                assert_eq!(runtime.status, from.1, "insert round-trip for {}", from.0);
 
-    let res = match path {
-        WriterPath::SetStatus => session_set_status_tx(&mut tx, &runtime.id, to.1).await,
-        WriterPath::Complete => session_complete_tx(&mut tx, &runtime.id, to.1).await,
-    };
-    tx.commit().await.expect("commit probe tx");
+                let res = match path {
+                    WriterPath::SetStatus => {
+                        session_set_status_tx(&mut tx, &runtime.id, to.1).await
+                    }
+                    WriterPath::Complete => session_complete_tx(&mut tx, &runtime.id, to.1).await,
+                };
+                tx.commit().await.expect("commit probe tx");
 
-    match res {
-        Ok(()) => {
-            assert_eq!(
-                raw_status(repo, &runtime.id).await,
-                to.0,
-                "allowed transition {} -> {} must persist",
-                from.0,
-                to.0,
-            );
-            true
-        }
-        Err(WorkerSessionProjectionRepoError::IllegalStatusTransition { id, attempted }) => {
-            assert_eq!(id, runtime.id, "deny names the probed runtime");
-            assert_eq!(attempted, to.1, "deny names the attempted status");
-            assert_eq!(
-                raw_status(repo, &runtime.id).await,
-                from.0,
-                "denied transition {} -> {} must leave the row at {}",
-                from.0,
-                to.0,
-                from.0,
-            );
-            false
-        }
-        Err(other) => panic!("unexpected error probing {} -> {}: {other:?}", from.0, to.0),
-    }
+                match res {
+                    Ok(()) => {
+                        assert_eq!(
+                            raw_status(repo, &runtime.id).await,
+                            to.0,
+                            "allowed transition {} -> {} must persist",
+                            from.0,
+                            to.0,
+                        );
+                        true
+                    }
+                    Err(WorkerSessionProjectionRepoError::IllegalStatusTransition {
+                        id,
+                        attempted,
+                    }) => {
+                        assert_eq!(id, runtime.id, "deny names the probed runtime");
+                        assert_eq!(attempted, to.1, "deny names the attempted status");
+                        assert_eq!(
+                            raw_status(repo, &runtime.id).await,
+                            from.0,
+                            "denied transition {} -> {} must leave the row at {}",
+                            from.0,
+                            to.0,
+                            from.0,
+                        );
+                        false
+                    }
+                    Err(other) => {
+                        panic!("unexpected error probing {} -> {}: {other:?}", from.0, to.0)
+                    }
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -237,38 +258,54 @@ async fn running_codex_fixture() -> (
     let repo = fresh_repo().await;
     let track = make_track(&repo).await;
 
-    let mut tx = repo.pool().begin().await.expect("begin mint tx");
-    let (card, term, _token) = card_with_codex_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        track.id,
-        None,
-        None,
-        "/workspace".into(),
-        json!({"CODEX_HOME": "/tmp/codex-home"}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint codex card");
-    session_set_status_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Running)
-        .await
-        .expect("advance to running");
-    let runtime_id = session_projection_active_for_card_tx(&mut tx, card.id.as_ref())
-        .await
-        .expect("lookup active runtime")
-        .expect("active runtime present")
-        .id;
-    tx.commit().await.expect("commit mint tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin mint tx");
+                let (card, term, _token) = card_with_codex_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    track.id,
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({"CODEX_HOME": "/tmp/codex-home"}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("mint codex card");
+                session_set_status_for_card_tx(
+                    &mut tx,
+                    card.id.as_ref(),
+                    WorkerSessionState::Running,
+                )
+                .await
+                .expect("advance to running");
+                let runtime_id = session_projection_active_for_card_tx(&mut tx, card.id.as_ref())
+                    .await
+                    .expect("lookup active runtime")
+                    .expect("active runtime present")
+                    .id;
+                tx.commit().await.expect("commit mint tx");
 
-    (repo, card, term, runtime_id)
+                (repo, card, term, runtime_id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64, Option<i64>) {
@@ -287,50 +324,59 @@ async fn row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64, Option
 async fn terminal_absorption_exited_first_then_failed_noops() {
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
-        .await
-        .expect("first terminal writer succeeds");
-    tx.commit().await.unwrap();
-    let won = row_snapshot(&repo, &runtime_id).await;
-    assert_eq!(won.0, "exited");
-    assert!(won.2.is_some(), "first writer stamps completed_at_ms");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+                    .await
+                    .expect("first terminal writer succeeds");
+                tx.commit().await.unwrap();
+                let won = row_snapshot(&repo, &runtime_id).await;
+                assert_eq!(won.0, "exited");
+                assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
-        .await
-        .expect("second terminal writer must no-op, not error");
-    tx.commit().await.unwrap();
-    assert_eq!(
-        row_snapshot(&repo, &runtime_id).await,
-        won,
-        "second writer must not touch the row (status/updated_at/completed_at)"
-    );
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
+                    .await
+                    .expect("second terminal writer must no-op, not error");
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    row_snapshot(&repo, &runtime_id).await,
+                    won,
+                    "second writer must not touch the row (status/updated_at/completed_at)"
+                );
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
-        .await
-        .expect("third writer (for-card) must no-op, not error");
-    tx.commit().await.unwrap();
-    assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
+                    .await
+                    .expect("third writer (for-card) must no-op, not error");
+                tx.commit().await.unwrap();
+                assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
 
-    // The direct by-id path does NOT absorb.
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Failed)
+                // The direct by-id path does NOT absorb.
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let err = session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Failed)
+                    .await
+                    .expect_err("by-id second terminal write surfaces the conflict");
+                drop(tx); // roll back
+                assert!(
+                    matches!(
+                        err,
+                        WorkerSessionProjectionRepoError::IllegalStatusTransition {
+                            attempted: WorkerSessionState::Failed,
+                            ..
+                        }
+                    ),
+                    "by-id conflict is IllegalStatusTransition, got {err:?}"
+                );
+                assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
+            })
+        })
         .await
-        .expect_err("by-id second terminal write surfaces the conflict");
-    drop(tx); // roll back
-    assert!(
-        matches!(
-            err,
-            WorkerSessionProjectionRepoError::IllegalStatusTransition {
-                attempted: WorkerSessionState::Failed,
-                ..
-            }
-        ),
-        "by-id conflict is IllegalStatusTransition, got {err:?}"
-    );
-    assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -338,23 +384,32 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
     // The mirrored linearization: with sqlite's single writer lock there are exactly two commit orders.
     let (repo, card, term, runtime_id) = running_codex_fixture().await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
-        .await
-        .expect("first terminal writer succeeds");
-    tx.commit().await.unwrap();
-    let won = row_snapshot(&repo, &runtime_id).await;
-    assert_eq!(won.0, "failed");
-    assert!(won.2.is_some(), "first writer stamps completed_at_ms");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
+                    .await
+                    .expect("first terminal writer succeeds");
+                tx.commit().await.unwrap();
+                let won = row_snapshot(&repo, &runtime_id).await;
+                assert_eq!(won.0, "failed");
+                assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
+                    .await
+                    .expect("second terminal writer must no-op, not error");
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    row_snapshot(&repo, &runtime_id).await,
+                    won,
+                    "failed is absorbed; a later exited cannot overwrite it"
+                );
+            })
+        })
         .await
-        .expect("second terminal writer must no-op, not error");
-    tx.commit().await.unwrap();
-    assert_eq!(
-        row_snapshot(&repo, &runtime_id).await,
-        won,
-        "failed is absorbed; a later exited cannot overwrite it"
-    );
+        .expect("independent write operation")
 }

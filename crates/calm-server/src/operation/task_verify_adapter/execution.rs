@@ -27,9 +27,18 @@ impl TaskVerifyAdapter {
             // No killing or PID fallback: an earlier execution must have settled before
             // this consumer can acquire a new execution for the same task.
             let pool = ctx.operation_repo.sqlite_db();
-            let mut tx = begin_immediate_tx(&pool).await?;
-            require_prior_settled(&mut tx, &frozen.task_id, frozen.attempt).await?;
-            tx.commit().await?;
+            let prior_task = &frozen.task_id;
+            let prior_attempt = frozen.attempt;
+            pool.writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await?;
+                        require_prior_settled(&mut tx, prior_task, prior_attempt).await?;
+                        tx.commit().await?;
+                        Ok::<_, CalmError>(())
+                    })
+                })
+                .await??;
             super::super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
             let paths = self.paths(&frozen.task_id, frozen.attempt);
             paths.unlink_stale(&self.gate_logs_dir).await?;

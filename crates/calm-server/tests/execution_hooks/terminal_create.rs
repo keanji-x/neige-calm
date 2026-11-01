@@ -200,35 +200,44 @@ pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
         )
         .await
         .unwrap();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let (_, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        f.track.clone().into(),
-        None,
-        None,
-        "true".into(),
-        f.root.to_str().unwrap().into(),
-        json!({}),
-        CardRole::Worker,
-        true,
-        f.repo.card_role_cache(),
-        RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    let mut intent = exec::test_support::intent(f.root.clone());
-    intent.metadata.owner = OperationRef(op);
-    intent.metadata.consumer = CONSUMER.into();
-    intent.metadata.alias = ProcessAlias(sql::terminal_alias(&term.id));
-    intent.metadata.track = exec::TrackId(f.track.clone());
-    f.store.insert(&mut tx, &intent).await.unwrap();
-    tx.commit().await.unwrap();
-    (term, intent.metadata.id)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let (_, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    f.track.clone().into(),
+                    None,
+                    None,
+                    "true".into(),
+                    f.root.to_str().unwrap().into(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    f.repo.card_role_cache(),
+                    RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .unwrap();
+                let mut intent = exec::test_support::intent(f.root.clone());
+                intent.metadata.owner = OperationRef(op);
+                intent.metadata.consumer = CONSUMER.into();
+                intent.metadata.alias = ProcessAlias(sql::terminal_alias(&term.id));
+                intent.metadata.track = exec::TrackId(f.track.clone());
+                f.store.insert(&mut tx, &intent).await.unwrap();
+                tx.commit().await.unwrap();
+                (term, intent.metadata.id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 async fn session(f: &Fixture, term: &Terminal) -> (String, i64, Option<i64>) {
     sqlx::query_as("SELECT state, updated_at_ms, completed_at_ms FROM worker_sessions WHERE terminal_run_id = ?")
@@ -240,9 +249,12 @@ async fn projection_spawned_sets_running_once() {
     let (term, id) = projection(&f).await;
     f.store.spawned(&id).await.unwrap();
     assert_eq!(session(&f, &term).await.0, "running");
-    sqlx::query("UPDATE worker_sessions SET updated_at_ms = 1 WHERE terminal_run_id = ?")
-        .bind(&term.id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET updated_at_ms = 1 WHERE terminal_run_id = ?")
+                .bind(&term.id),
+        )
         .await
         .unwrap();
     f.store.spawned(&id).await.unwrap();
@@ -268,10 +280,13 @@ async fn projection_settle_writes_exit_or_signal_killed() {
     ] {
         for active in ["starting", "running", "idle", "turn_pending"] {
             let (term, id) = projection(&f).await;
-            sqlx::query("UPDATE worker_sessions SET state = ? WHERE terminal_run_id = ?")
-                .bind(active)
-                .bind(&term.id)
-                .execute(f.repo.db().writer_pool())
+            (f.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state = ? WHERE terminal_run_id = ?")
+                        .bind(active)
+                        .bind(&term.id),
+                )
                 .await
                 .unwrap();
             f.store
@@ -291,8 +306,8 @@ async fn projection_settle_writes_exit_or_signal_killed() {
 async fn settled_worker_exited_not_overwritten_by_settle() {
     let f = Fixture::new().await;
     let (term, id) = projection(&f).await;
-    sqlx::query("UPDATE worker_sessions SET state = 'exited', updated_at_ms = 1, completed_at_ms = 1 WHERE terminal_run_id = ?")
-        .bind(&term.id).execute(f.repo.db().writer_pool()).await.unwrap();
+    (f.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state = 'exited', updated_at_ms = 1, completed_at_ms = 1 WHERE terminal_run_id = ?")
+        .bind(&term.id)).await.unwrap();
     f.store.spawned(&id).await.unwrap();
     f.store
         .settle(&id, &Settlement::Journal(ExecutionState::Revoked))
@@ -313,13 +328,14 @@ async fn settled_worker_exited_not_overwritten_by_settle() {
 async fn projection_failure_rolls_back_execution_settlement() {
     let f = Fixture::new().await;
     let (term, id) = projection(&f).await;
-    sqlx::query(
-        "CREATE TRIGGER reject_terminal_projection BEFORE UPDATE ON terminals \
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_terminal_projection BEFORE UPDATE ON terminals \
         BEGIN SELECT RAISE(ABORT, 'projection refused'); END",
-    )
-    .execute(f.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(
         f.store
             .settle(&id, &Settlement::Journal(ExecutionState::Revoked))
@@ -487,41 +503,50 @@ async fn typed_replay_while_unavailable_returns_card() {
         )
     })
     .await;
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
-    tx.commit().await.unwrap();
-    f.engine.drive(ticket.committed());
-    f.engine.wait_settled(&id).await.unwrap();
-    // Remove the real command endpoint and force a failed command; the adapter then drops
-    // its existing Watch connection and reports unavailable while reconnecting.
-    std::fs::remove_file(f._socket.path().join("control.sock")).unwrap();
-    assert!(f.engine.output(&id, None).await.is_err());
-    wait(|| async { !f.engine.available() }).await;
-    let (status, replay) = keyed(&f, "outage", "exec sleep 120").await;
-    assert_eq!(status, StatusCode::CREATED, "{replay}");
-    assert_eq!(terminal(&f, &replay).await.card_id, term.card_id);
-    assert_eq!(counts(&f).await, (1, 1, 1));
-    // The adapter's generic replay entry point also skips new-admission availability checks.
-    let op = f
-        .state
-        .operation_runtime
-        .find_by_kind_and_idempotency(KIND, "outage")
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
+                tx.commit().await.unwrap();
+                f.engine.drive(ticket.committed());
+                f.engine.wait_settled(&id).await.unwrap();
+                // Remove the real command endpoint and force a failed command; the adapter then drops
+                // its existing Watch connection and reports unavailable while reconnecting.
+                std::fs::remove_file(f._socket.path().join("control.sock")).unwrap();
+                assert!(f.engine.output(&id, None).await.is_err());
+                wait(|| async { !f.engine.available() }).await;
+                let (status, replay) = keyed(&f, "outage", "exec sleep 120").await;
+                assert_eq!(status, StatusCode::CREATED, "{replay}");
+                assert_eq!(terminal(&f, &replay).await.card_id, term.card_id);
+                assert_eq!(counts(&f).await, (1, 1, 1));
+                // The adapter's generic replay entry point also skips new-admission availability checks.
+                let op = f
+                    .state
+                    .operation_runtime
+                    .find_by_kind_and_idempotency(KIND, "outage")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                f.state
+                    .operation_runtime
+                    .commit_keyed(
+                        KIND,
+                        OperationKey {
+                            operation_key: new_id(),
+                            idempotency_key: Some("outage".into()),
+                            payload_hash: op.payload_hash,
+                        },
+                        op.payload,
+                    )
+                    .await
+                    .unwrap();
+            })
+        })
         .await
-        .unwrap()
-        .unwrap();
-    f.state
-        .operation_runtime
-        .commit_keyed(
-            KIND,
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some("outage".into()),
-                payload_hash: op.payload_hash,
-            },
-            op.payload,
-        )
-        .await
-        .unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -592,9 +617,12 @@ async fn projection_survives_owner_operation_reclaim() {
     let owner: String = sqlx::query_scalar(
         "SELECT json_extract(intent_json, '$.owner') FROM workspace_executions WHERE execution_id = ?",
     ).bind(id.as_str()).fetch_one(f.repo.pool()).await.unwrap();
-    let deleted = sqlx::query("DELETE FROM operations WHERE id = ? AND idempotency_key IS NULL")
-        .bind(&owner)
-        .execute(f.repo.db().writer_pool())
+    let deleted = (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM operations WHERE id = ? AND idempotency_key IS NULL")
+                .bind(&owner),
+        )
         .await
         .unwrap();
     assert_eq!(deleted.rows_affected(), 1);

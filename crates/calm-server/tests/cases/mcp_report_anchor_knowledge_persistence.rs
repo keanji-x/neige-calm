@@ -130,8 +130,8 @@ async fn index_is_not_a_read_and_receipts_freeze_the_anchor() {
 #[tokio::test]
 async fn supersede_both_doors_roll_back_with_session_and_compensation_requires_reread() {
     use calm_server::db::sqlite::{
-        begin_immediate_tx, session_mark_superseded_runtime_tx,
-        session_restore_from_superseded_runtime_tx, session_supersede_active_tx,
+        session_mark_superseded_runtime_tx, session_restore_from_superseded_runtime_tx,
+        session_supersede_active_tx,
     };
     use calm_types::worker::WorkerSessionState;
     for tolerant in [false, true] {
@@ -143,62 +143,79 @@ async fn supersede_both_doors_roll_back_with_session_and_compensation_requires_r
         let before = report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        if tolerant {
-            session_mark_superseded_runtime_tx(&mut tx, &session)
-                .await
-                .unwrap();
-        } else {
-            session_supersede_active_tx(&mut tx, &session, 10)
-                .await
-                .unwrap();
-        }
-        assert!(
-            report_knowledge::load_tx(&mut tx, &session, b.report_card_id.as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        tx.rollback().await.unwrap();
-        assert_eq!(
-            report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
-                .await
-                .unwrap(),
-            before
-        );
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        if tolerant {
-            session_mark_superseded_runtime_tx(&mut tx, &session)
-                .await
-                .unwrap();
-        } else {
-            session_supersede_active_tx(&mut tx, &session, 20)
-                .await
-                .unwrap();
-        }
-        tx.commit().await.unwrap();
-        assert!(
-            call_tool(&b, TOOL_REPORT_READ, planner_identity(&b), json!({}))
-                .await
-                .is_err(),
-            "superseded identity cannot read to regain authority"
-        );
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        session_restore_from_superseded_runtime_tx(&mut tx, &session, WorkerSessionState::Starting)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    if tolerant {
+                        session_mark_superseded_runtime_tx(&mut tx, &session)
+                            .await
+                            .unwrap();
+                    } else {
+                        session_supersede_active_tx(&mut tx, &session, 10)
+                            .await
+                            .unwrap();
+                    }
+                    assert!(
+                        report_knowledge::load_tx(&mut tx, &session, b.report_card_id.as_str())
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                    tx.rollback().await.unwrap();
+                    assert_eq!(
+                        report_knowledge::load(
+                            b.repo.as_ref(),
+                            &session,
+                            b.report_card_id.as_str()
+                        )
+                        .await
+                        .unwrap(),
+                        before
+                    );
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    if tolerant {
+                        session_mark_superseded_runtime_tx(&mut tx, &session)
+                            .await
+                            .unwrap();
+                    } else {
+                        session_supersede_active_tx(&mut tx, &session, 20)
+                            .await
+                            .unwrap();
+                    }
+                    tx.commit().await.unwrap();
+                    assert!(
+                        call_tool(&b, TOOL_REPORT_READ, planner_identity(&b), json!({}))
+                            .await
+                            .is_err(),
+                        "superseded identity cannot read to regain authority"
+                    );
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    session_restore_from_superseded_runtime_tx(
+                        &mut tx,
+                        &session,
+                        WorkerSessionState::Starting,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nno\n"))
+                            .await
+                            .unwrap_err()
+                            .code,
+                        -32602
+                    );
+                    read_sections(&b, planner_identity(&b), &["概要"]).await;
+                    commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nyes\n"))
+                        .await
+                        .unwrap();
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nno\n"))
-                .await
-                .unwrap_err()
-                .code,
-            -32602
-        );
-        read_sections(&b, planner_identity(&b), &["概要"]).await;
-        commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nyes\n"))
-            .await
-            .unwrap();
+            .expect("independent write operation")
     }
 }
 
@@ -231,72 +248,76 @@ async fn transactional_failure_rolls_back_report_tasks_events_and_history() {
         let history_counts: (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM track_vcs_commits), (SELECT count(*) FROM track_vcs_objects)")
             .fetch_one(pool.read_pool()).await.unwrap();
         let mut receiver = b.ctx.events.subscribe();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        let trigger = match failure {
-            "ledger" => {
-                "CREATE TRIGGER reject_write BEFORE UPDATE ON report_read_ledger BEGIN SELECT RAISE(ABORT, 'ledger failure'); END"
-            }
-            "event" => {
-                "CREATE TRIGGER reject_write BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'event failure'); END"
-            }
-            _ => {
-                "CREATE TRIGGER reject_write BEFORE INSERT ON track_vcs_commits BEGIN SELECT RAISE(ABORT, 'history failure'); END"
-            }
-        };
-        sqlx::query(trigger).execute(&mut **tx).await.unwrap();
-        tx.commit().await.unwrap();
-        assert!(
-        commit(
-            &b,
-            planner_identity(&b),
-            json!({"ops":[
-                {"op":"replace","section":"概要","markdown":"# 概要\n\nrolled back\n"},
-                {"op":"upsert","kind":"task","payload":{"key":"ledger-rollback","kind":"terminal","command":"true","ready":false,"declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR}}
-            ]})
-        )
-        .await
-        .is_err()
-    );
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT head_hash FROM track_vcs_refs WHERE track_id=?"
-            )
-            .bind(b.track_id.as_str())
-            .fetch_optional(pool.read_pool())
-            .await
-            .unwrap(),
-            head
-        );
-        assert_eq!(sqlx::query_as::<_, (i64, i64)>("SELECT (SELECT count(*) FROM track_vcs_commits), (SELECT count(*) FROM track_vcs_objects)")
-            .fetch_one(pool.read_pool()).await.unwrap(), history_counts);
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-        ));
-        assert_eq!(payload(&b).await.body, before.body);
-        assert_eq!(payload(&b).await.doc_rev, before.doc_rev);
-        assert_eq!(
-            report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate()
+                    .await
+                    .unwrap();
+                let trigger = match failure {
+                    "ledger" => {
+                        "CREATE TRIGGER reject_write BEFORE UPDATE ON report_read_ledger BEGIN SELECT RAISE(ABORT, 'ledger failure'); END"
+                    }
+                    "event" => {
+                        "CREATE TRIGGER reject_write BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'event failure'); END"
+                    }
+                    _ => {
+                        "CREATE TRIGGER reject_write BEFORE INSERT ON track_vcs_commits BEGIN SELECT RAISE(ABORT, 'history failure'); END"
+                    }
+                };
+                sqlx::query(trigger).execute(&mut **tx).await.unwrap();
+                tx.commit().await.unwrap();
+                assert!(
+                commit(
+                    &b,
+                    planner_identity(&b),
+                    json!({"ops":[
+                        {"op":"replace","section":"概要","markdown":"# 概要\n\nrolled back\n"},
+                        {"op":"upsert","kind":"task","payload":{"key":"ledger-rollback","kind":"terminal","command":"true","ready":false,"declared_by":calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR}}
+                    ]})
+                )
                 .await
-                .unwrap(),
-            known
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap(),
-            event_count
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tasks")
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap(),
-            tasks
-        );
+                .is_err()
+            );
+                assert_eq!(
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT head_hash FROM track_vcs_refs WHERE track_id=?"
+                    )
+                    .bind(b.track_id.as_str())
+                    .fetch_optional(pool.read_pool())
+                    .await
+                    .unwrap(),
+                    head
+                );
+                assert_eq!(sqlx::query_as::<_, (i64, i64)>("SELECT (SELECT count(*) FROM track_vcs_commits), (SELECT count(*) FROM track_vcs_objects)")
+                    .fetch_one(pool.read_pool()).await.unwrap(), history_counts);
+                assert!(matches!(
+                    receiver.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ));
+                assert_eq!(payload(&b).await.body, before.body);
+                assert_eq!(payload(&b).await.doc_rev, before.doc_rev);
+                assert_eq!(
+                    report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
+                        .await
+                        .unwrap(),
+                    known
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM events")
+                        .fetch_one(pool.read_pool())
+                        .await
+                        .unwrap(),
+                    event_count
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tasks")
+                        .fetch_one(pool.read_pool())
+                        .await
+                        .unwrap(),
+                    tasks
+                );
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -315,46 +336,50 @@ async fn deletion_cascades_for_session_report_track_and_area() {
         read_sections(&b, who.clone(), &["概要"]).await;
         let session = who.session_id;
         let pool = b.repo.sqlite_db().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        match target {
-            "session" => {
-                sqlx::query("DELETE FROM worker_sessions WHERE id=?")
-                    .bind(&session)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            }
-            "report" => {
-                sqlx::query("DELETE FROM cards WHERE id=?")
-                    .bind(b.report_card_id.as_str())
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            }
-            // Domain deletions retain their existing required-session/root-reference ordering.
-            "track" => calm_server::db::sqlite::track_delete_tx(
-                &mut tx,
-                b.track_id.as_str(),
-                &calm_server::track_area_cache::TrackAreaCache::new(),
-            )
-            .await
-            .unwrap(),
-            _ => calm_server::db::sqlite::area_delete_tx(&mut tx, b.area_id.as_str())
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate()
+                .await
+                .unwrap();
+            match target {
+                "session" => {
+                    sqlx::query("DELETE FROM worker_sessions WHERE id=?")
+                        .bind(&session)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                "report" => {
+                    sqlx::query("DELETE FROM cards WHERE id=?")
+                        .bind(b.report_card_id.as_str())
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                }
+                // Domain deletions retain their existing required-session/root-reference ordering.
+                "track" => calm_server::db::sqlite::track_delete_tx(
+                    &mut tx,
+                    b.track_id.as_str(),
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
+                )
                 .await
                 .unwrap(),
-        }
-        assert!(
-            report_knowledge::load_tx(&mut tx, &session, b.report_card_id.as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM report_read_ledger_blocks WHERE worker_session_id=? AND report_card_id=?")
-            .bind(&session).bind(b.report_card_id.as_str()).fetch_one(&mut **tx).await.unwrap();
-        assert_eq!(count, 0, "{target}: block evidence cascades");
-        tx.commit().await.unwrap();
+                _ => calm_server::db::sqlite::area_delete_tx(&mut tx, b.area_id.as_str())
+                    .await
+                    .unwrap(),
+            }
+            assert!(
+                report_knowledge::load_tx(&mut tx, &session, b.report_card_id.as_str())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM report_read_ledger_blocks WHERE worker_session_id=? AND report_card_id=?")
+                .bind(&session).bind(b.report_card_id.as_str()).fetch_one(&mut **tx).await.unwrap();
+            assert_eq!(count, 0, "{target}: block evidence cascades");
+            tx.commit().await.unwrap();
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -445,33 +470,40 @@ async fn read_save_failure_does_not_return_success_or_replace_knowledge() {
         .await
         .unwrap();
     let pool = b.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER reject_read BEFORE INSERT ON report_read_ledger_blocks
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query(
+                    "CREATE TRIGGER reject_read BEFORE INSERT ON report_read_ledger_blocks
          BEGIN SELECT RAISE(ABORT, 'read ledger failure'); END",
-    )
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert!(
-        call_tool(
-            &b,
-            TOOL_REPORT_READ,
-            planner_identity(&b),
-            json!({"sections":["决策"]})
-        )
+                )
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(
+                    call_tool(
+                        &b,
+                        TOOL_REPORT_READ,
+                        planner_identity(&b),
+                        json!({"sections":["决策"]})
+                    )
+                    .await
+                    .is_err()
+                );
+                assert_eq!(
+                    report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
+                        .await
+                        .unwrap(),
+                    known
+                );
+            })
+        })
         .await
-        .is_err()
-    );
-    assert_eq!(
-        report_knowledge::load(b.repo.as_ref(), &session, b.report_card_id.as_str())
-            .await
-            .unwrap(),
-        known
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -480,24 +512,28 @@ async fn corrupt_history_ref_is_an_error_instead_of_never_read() {
     seed(&b, SECTIONS).await;
     read_sections(&b, planner_identity(&b), &["概要"]).await;
     let pool = b.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate()
+            .await
+            .unwrap();
+        sqlx::query("UPDATE report_read_ledger_blocks SET history_ref='{}' WHERE worker_session_id=?")
+            .bind(&planner_identity(&b).session_id)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let err = call_tool(
+            &b,
+            TOOL_REPORT_READ,
+            planner_identity(&b),
+            json!({"detail":"index"}),
+        )
         .await
-        .unwrap();
-    sqlx::query("UPDATE report_read_ledger_blocks SET history_ref='{}' WHERE worker_session_id=?")
-        .bind(&planner_identity(&b).session_id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let err = call_tool(
-        &b,
-        TOOL_REPORT_READ,
-        planner_identity(&b),
-        json!({"detail":"index"}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(err.code, -32603);
+        .unwrap_err();
+        assert_eq!(err.code, -32603);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

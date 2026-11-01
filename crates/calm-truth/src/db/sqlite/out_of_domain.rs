@@ -3,8 +3,8 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
+use super::SqlxRepo;
 use super::transcript_projection::insert_transcript_row;
-use super::{SqlxRepo, begin_immediate_tx};
 use crate::area_folder_claim::AreaFolderClaim;
 use crate::db::{
     RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate, TranscriptReceiptItem, TranscriptRow,
@@ -195,16 +195,25 @@ impl RepoOutOfDomain for SqlxRepo {
         target_id: &str,
         read_through_ms: i64,
     ) -> Result<calm_types::read_receipts::ReadReceipt> {
-        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
-        let out = super::read_receipt::read_receipt_mark_read_tx(
-            &mut tx,
-            kind,
-            target_id,
-            read_through_ms,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(out)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let out = super::read_receipt::read_receipt_mark_read_tx(
+                        &mut tx,
+                        kind,
+                        target_id,
+                        read_through_ms,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(out)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn read_receipt_mark_unread(
@@ -212,20 +221,41 @@ impl RepoOutOfDomain for SqlxRepo {
         kind: calm_types::read_receipts::ReadReceiptKind,
         target_id: &str,
     ) -> Result<calm_types::read_receipts::ReadReceipt> {
-        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
-        let out =
-            super::read_receipt::read_receipt_mark_unread_tx(&mut tx, kind, target_id).await?;
-        tx.commit().await?;
-        Ok(out)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let out =
+                        super::read_receipt::read_receipt_mark_unread_tx(&mut tx, kind, target_id)
+                            .await?;
+                    tx.commit().await?;
+                    Ok(out)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe> {
         // A deferred tx that reads then writes can lose the lock upgrade and surface
         // as SQLITE_BUSY with nothing safe to retry, so writers BEGIN IMMEDIATE.
-        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
-        let out = super::track_recipe::track_recipe_create_tx(&mut tx, &p.title, &p.body).await?;
-        tx.commit().await?;
-        Ok(out)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let out =
+                        super::track_recipe::track_recipe_create_tx(&mut tx, &p.title, &p.body)
+                            .await?;
+                    tx.commit().await?;
+                    Ok(out)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_recipe_update(
@@ -234,17 +264,26 @@ impl RepoOutOfDomain for SqlxRepo {
         p: NewTrackRecipe,
         if_revision: i64,
     ) -> Result<TrackRecipe> {
-        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
-        let out = super::track_recipe::track_recipe_update_tx(
-            &mut tx,
-            id,
-            &p.title,
-            &p.body,
-            if_revision,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(out)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let out = super::track_recipe::track_recipe_update_tx(
+                        &mut tx,
+                        id,
+                        &p.title,
+                        &p.body,
+                        if_revision,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(out)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_recipe_get(&self, id: &str) -> Result<Option<TrackRecipe>> {
@@ -281,10 +320,19 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn track_recipe_delete(&self, id: &str) -> Result<()> {
-        let mut tx = super::infra::begin_immediate_tx(&self.db).await?;
-        super::track_recipe::track_recipe_delete_tx(&mut tx, id).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    super::track_recipe::track_recipe_delete_tx(&mut tx, id).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_recipe_list(&self) -> Result<Vec<TrackRecipe>> {
@@ -333,21 +381,24 @@ impl RepoOutOfDomain for SqlxRepo {
         let env_text = serde_json::to_string(&p.env)?;
         let theme_fg = p.theme.fg_arg();
         let theme_bg = p.theme.bg_arg();
-        sqlx::query(
-            r#"INSERT INTO terminals
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO terminals
                    (id, card_id, program, cwd, env, pid, theme_fg, theme_bg, created_at)
                VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)"#,
-        )
-        .bind(&id)
-        .bind(p.card_id.as_str())
-        .bind(&p.program)
-        .bind(&p.cwd)
-        .bind(&env_text)
-        .bind(&theme_fg)
-        .bind(&theme_bg)
-        .bind(now)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(&id)
+                .bind(p.card_id.as_str())
+                .bind(&p.program)
+                .bind(&p.cwd)
+                .bind(&env_text)
+                .bind(&theme_fg)
+                .bind(&theme_bg)
+                .bind(now),
+            )
+            .await?;
         Ok(Terminal {
             id,
             card_id: p.card_id,
@@ -367,10 +418,13 @@ impl RepoOutOfDomain for SqlxRepo {
 
     async fn terminal_set_pid(&self, id: &str, pid: Option<u32>) -> Result<()> {
         let pid_i64: Option<i64> = pid.map(|p| p as i64);
-        let res = sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
-            .bind(pid_i64)
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query("UPDATE terminals SET pid = ?1 WHERE id = ?2")
+                    .bind(pid_i64)
+                    .bind(id),
+            )
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
@@ -397,13 +451,16 @@ impl RepoOutOfDomain for SqlxRepo {
         pty_output: &str,
         pty_output_truncated: bool,
     ) -> Result<()> {
-        let res = sqlx::query(super::card::TERMINAL_SET_EXIT_WITH_OUTPUT_SQL)
-            .bind(exit_code)
-            .bind(if signal_killed { 1_i64 } else { 0_i64 })
-            .bind(pty_output)
-            .bind(if pty_output_truncated { 1_i64 } else { 0_i64 })
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(super::card::TERMINAL_SET_EXIT_WITH_OUTPUT_SQL)
+                    .bind(exit_code)
+                    .bind(if signal_killed { 1_i64 } else { 0_i64 })
+                    .bind(pty_output)
+                    .bind(if pty_output_truncated { 1_i64 } else { 0_i64 })
+                    .bind(id),
+            )
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
@@ -412,13 +469,16 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn terminal_clear_exit_for_spawn(&self, id: &str) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE terminals SET pid=NULL,exit_code=NULL,signal_killed=0,pty_output='',\
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE terminals SET pid=NULL,exit_code=NULL,signal_killed=0,pty_output='',\
              pty_output_truncated=0 WHERE id=?1",
-        )
-        .bind(id)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(id),
+            )
+            .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("terminal {id}")));
         }
@@ -426,10 +486,19 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn terminal_delete(&self, id: &str) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let _deleted = super::terminal_delete_tx(&mut tx, id).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let _deleted = super::terminal_delete_tx(&mut tx, id).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn shared_daemon_runtime_set(
@@ -441,8 +510,11 @@ impl RepoOutOfDomain for SqlxRepo {
         let start_time = update
             .process_start_time
             .and_then(|v| i64::try_from(v).ok());
-        sqlx::query(
-            r#"INSERT INTO codex_backend_daemons
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO codex_backend_daemons
                    (backend_id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
                     boot_id, started_at, updated_at, restart_count, last_error,
                     daemon_env_signature, paths_are_legacy_display)
@@ -464,23 +536,23 @@ impl RepoOutOfDomain for SqlxRepo {
                        + CASE WHEN ?10 THEN 1 ELSE 0 END,
                    last_error = excluded.last_error,
                    daemon_env_signature = excluded.daemon_env_signature"#,
-        )
-        .bind(update.state.as_db_str())
-        .bind(update.pid)
-        .bind(update.pgid)
-        .bind(&update.sock_path)
-        .bind(&update.codex_home_path)
-        .bind(start_time)
-        .bind(&update.boot_id)
-        .bind(update.started_at)
-        .bind(now)
-        .bind(update.increment_restart_count)
-        .bind(&update.last_error)
-        .bind(&update.daemon_env_signature)
-        .bind(backend_id)
-        .bind(update.paths_are_legacy_display)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(update.state.as_db_str())
+                .bind(update.pid)
+                .bind(update.pgid)
+                .bind(&update.sock_path)
+                .bind(&update.codex_home_path)
+                .bind(start_time)
+                .bind(&update.boot_id)
+                .bind(update.started_at)
+                .bind(now)
+                .bind(update.increment_restart_count)
+                .bind(&update.last_error)
+                .bind(&update.daemon_env_signature)
+                .bind(backend_id)
+                .bind(update.paths_are_legacy_display),
+            )
+            .await?;
         Ok(())
     }
 
@@ -492,17 +564,20 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<()> {
         let now = now_ms();
         let last_error = error.map(|e| format!("{action}: {e}"));
-        sqlx::query(
-            r#"UPDATE codex_backend_daemons
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE codex_backend_daemons
                   SET updated_at = ?1,
                       last_error = COALESCE(?2, last_error)
                 WHERE backend_id = ?3"#,
-        )
-        .bind(now)
-        .bind(last_error)
-        .bind(backend_id)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(now)
+                .bind(last_error)
+                .bind(backend_id),
+            )
+            .await?;
         Ok(())
     }
 
@@ -544,38 +619,42 @@ impl RepoOutOfDomain for SqlxRepo {
         turn_id: &str,
         params: &str,
     ) -> Result<i64> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let mut carrier =
-            super::conversation::current_native_fact_tx(&mut tx, card_id, worker_session_id, true)
-                .await?;
-        let (connection, worker, card, current_track) = carrier.insertion_parts();
-        if current_track != track_id {
-            return Err(CalmError::Conflict(
-                "native outcome Track does not match carrier",
-            ));
-        }
-        let existing: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
-                turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
-        ).bind(worker).bind(card).bind(thread_id).bind(turn_id).fetch_optional(connection).await?;
-        let id = match existing {
-            Some(id) => id,
-            None => {
-                insert_transcript_row(
-                    &mut carrier,
-                    thread_id,
-                    Some(turn_id),
-                    None,
-                    None,
-                    "turn/completed",
-                    params,
-                    None,
-                )
-                .await?
+        let write_db = (self.db).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await?;
+            let mut carrier =
+                super::conversation::current_native_fact_tx(&mut tx, card_id, worker_session_id, true)
+                    .await?;
+            let (connection, worker, card, current_track) = carrier.insertion_parts();
+            if current_track != track_id {
+                return Err(CalmError::Conflict(
+                    "native outcome Track does not match carrier",
+                ));
             }
-        };
-        tx.commit().await?;
-        Ok(id)
+            let existing: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM harness_items WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND \
+                turn_id=?4 AND method='turn/completed' ORDER BY id DESC LIMIT 1"
+            ).bind(worker).bind(card).bind(thread_id).bind(turn_id).fetch_optional(connection).await?;
+            let id = match existing {
+                Some(id) => id,
+                None => {
+                    insert_transcript_row(
+                        &mut carrier,
+                        thread_id,
+                        Some(turn_id),
+                        None,
+                        None,
+                        "turn/completed",
+                        params,
+                        None,
+                    )
+                    .await?
+                }
+            };
+            tx.commit().await?;
+            Ok(id)
+
+    })).await.map_err(crate::TruthError::from)?
     }
 
     async fn transcript_projection_id(
@@ -604,11 +683,16 @@ impl RepoOutOfDomain for SqlxRepo {
         item_uuid: &str,
         params: &str,
     ) -> Result<Option<i64>> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
-        // subquery chooses the row: the newest projection with this key.
-        let row = sqlx::query(
-            r#"UPDATE harness_items
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
+                    // subquery chooses the row: the newest projection with this key.
+                    let row = sqlx::query(
+                        r#"UPDATE harness_items
                SET turn_id = ?3, item_uuid = ?4, params = ?5
                WHERE id = (
                    SELECT id FROM harness_items
@@ -617,23 +701,37 @@ impl RepoOutOfDomain for SqlxRepo {
                    ORDER BY id DESC LIMIT 1
                )
                RETURNING id"#,
-        )
-        .bind(card_id)
-        .bind(client_id)
-        .bind(turn_id)
-        .bind(item_uuid)
-        .bind(params)
-        .fetch_optional(&mut **tx)
-        .await?;
-        tx.commit().await?;
-        Ok(row.map(|row| row.get::<i64, _>("id")))
+                    )
+                    .bind(card_id)
+                    .bind(client_id)
+                    .bind(turn_id)
+                    .bind(item_uuid)
+                    .bind(params)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+                    tx.commit().await?;
+                    Ok(row.map(|row| row.get::<i64, _>("id")))
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let deleted = transcript_projection_delete_tx(&mut tx, card_id, client_id).await?;
-        tx.commit().await?;
-        Ok(deleted)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let deleted =
+                        transcript_projection_delete_tx(&mut tx, card_id, client_id).await?;
+                    tx.commit().await?;
+                    Ok(deleted)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn worker_flow_capture_commit(
@@ -649,8 +747,9 @@ impl RepoOutOfDomain for SqlxRepo {
         let manifest_text = serde_json::to_string(&p.manifest)?;
         let user_config_text = serde_json::to_string(&p.user_config)?;
         let now = now_ms();
-        let row = sqlx::query_as::<_, Plugin>(
-            r#"INSERT INTO plugins
+        let row = {
+            let query = sqlx::query_as::<_, Plugin>(
+                r#"INSERT INTO plugins
                    (id, version, install_path, manifest, enabled, user_config,
                     installed_at, updated_at)
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
@@ -664,26 +763,34 @@ impl RepoOutOfDomain for SqlxRepo {
                    updated_at   = excluded.updated_at
                RETURNING id, version, install_path, manifest, enabled, user_config,
                          installed_at, updated_at"#,
-        )
-        .bind(&p.id)
-        .bind(&p.version)
-        .bind(&p.install_path)
-        .bind(&manifest_text)
-        .bind(p.enabled)
-        .bind(&user_config_text)
-        .bind(now)
-        .fetch_one(self.db.writer_pool())
-        .await?;
+            )
+            .bind(&p.id)
+            .bind(&p.version)
+            .bind(&p.install_path)
+            .bind(&manifest_text)
+            .bind(p.enabled)
+            .bind(&user_config_text)
+            .bind(now);
+            (self.db)
+                .writer()
+                .autocommit(move |connection| {
+                    Box::pin(async move { query.fetch_one(&mut **connection).await })
+                })
+                .await
+        }?;
         Ok(row)
     }
 
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin> {
         let now = now_ms();
-        let res = sqlx::query(r#"UPDATE plugins SET enabled = ?1, updated_at = ?2 WHERE id = ?3"#)
-            .bind(enabled)
-            .bind(now)
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(r#"UPDATE plugins SET enabled = ?1, updated_at = ?2 WHERE id = ?3"#)
+                    .bind(enabled)
+                    .bind(now)
+                    .bind(id),
+            )
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -700,13 +807,17 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<Plugin> {
         let now = now_ms();
         let user_config_text = serde_json::to_string(&user_config)?;
-        let res =
-            sqlx::query(r#"UPDATE plugins SET user_config = ?1, updated_at = ?2 WHERE id = ?3"#)
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE plugins SET user_config = ?1, updated_at = ?2 WHERE id = ?3"#,
+                )
                 .bind(&user_config_text)
                 .bind(now)
-                .bind(id)
-                .execute(self.db.writer_pool())
-                .await?;
+                .bind(id),
+            )
+            .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
         }
@@ -722,11 +833,14 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<Plugin> {
         let now = now_ms();
         let manifest_text = serde_json::to_string(&manifest)?;
-        let res = sqlx::query(r#"UPDATE plugins SET manifest = ?1, updated_at = ?2 WHERE id = ?3"#)
-            .bind(&manifest_text)
-            .bind(now)
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(r#"UPDATE plugins SET manifest = ?1, updated_at = ?2 WHERE id = ?3"#)
+                    .bind(&manifest_text)
+                    .bind(now)
+                    .bind(id),
+            )
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -737,9 +851,9 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn plugin_delete(&self, id: &str) -> Result<()> {
-        let res = sqlx::query("DELETE FROM plugins WHERE id = ?1")
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM plugins WHERE id = ?1").bind(id))
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("plugin {id}")));
@@ -748,17 +862,17 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     async fn overlays_clear_by_plugin(&self, plugin_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM overlays WHERE plugin_id = ?1")
-            .bind(plugin_id)
-            .execute(self.db.writer_pool())
+        (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM overlays WHERE plugin_id = ?1").bind(plugin_id))
             .await?;
         Ok(())
     }
 
     async fn plugin_kv_clear(&self, plugin_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1")
-            .bind(plugin_id)
-            .execute(self.db.writer_pool())
+        (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1").bind(plugin_id))
             .await?;
         Ok(())
     }
@@ -769,25 +883,28 @@ impl RepoOutOfDomain for SqlxRepo {
         hashed_token: &str,
         expires_at: i64,
     ) -> Result<()> {
-        sqlx::query(
-            r#"INSERT INTO plugin_tokens (plugin_id, hashed_token, expires_at)
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO plugin_tokens (plugin_id, hashed_token, expires_at)
                VALUES (?1, ?2, ?3)
                ON CONFLICT(plugin_id) DO UPDATE SET
                    hashed_token = excluded.hashed_token,
                    expires_at   = excluded.expires_at"#,
-        )
-        .bind(plugin_id)
-        .bind(hashed_token)
-        .bind(expires_at)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(plugin_id)
+                .bind(hashed_token)
+                .bind(expires_at),
+            )
+            .await?;
         Ok(())
     }
 
     async fn plugin_token_delete(&self, plugin_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM plugin_tokens WHERE plugin_id = ?1")
-            .bind(plugin_id)
-            .execute(self.db.writer_pool())
+        (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM plugin_tokens WHERE plugin_id = ?1").bind(plugin_id))
             .await?;
         Ok(())
     }
@@ -800,52 +917,61 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<()> {
         let text = serde_json::to_string(value)?;
         let now = now_ms();
-        sqlx::query(
-            r#"INSERT INTO plugin_kv (plugin_id, key, value, updated_at)
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO plugin_kv (plugin_id, key, value, updated_at)
                VALUES (?1, ?2, ?3, ?4)
                ON CONFLICT(plugin_id, key) DO UPDATE SET
                    value      = excluded.value,
                    updated_at = excluded.updated_at"#,
-        )
-        .bind(plugin_id)
-        .bind(key)
-        .bind(&text)
-        .bind(now)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(plugin_id)
+                .bind(key)
+                .bind(&text)
+                .bind(now),
+            )
+            .await?;
         Ok(())
     }
 
     async fn plugin_kv_delete(&self, plugin_id: &str, key: &str) -> Result<()> {
-        sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2")
-            .bind(plugin_id)
-            .bind(key)
-            .execute(self.db.writer_pool())
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM plugin_kv WHERE plugin_id = ?1 AND key = ?2")
+                    .bind(plugin_id)
+                    .bind(key),
+            )
             .await?;
         Ok(())
     }
 
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()> {
         let now = now_ms();
-        sqlx::query(
-            r#"INSERT INTO settings (key, value, updated_at)
+        (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO settings (key, value, updated_at)
                VALUES (?1, ?2, ?3)
                ON CONFLICT(key) DO UPDATE SET
                    value      = excluded.value,
                    updated_at = excluded.updated_at"#,
-        )
-        .bind(key)
-        .bind(value)
-        .bind(now)
-        .execute(self.db.writer_pool())
-        .await?;
+                )
+                .bind(key)
+                .bind(value)
+                .bind(now),
+            )
+            .await?;
         Ok(())
     }
 
     async fn settings_delete(&self, key: &str) -> Result<()> {
-        sqlx::query("DELETE FROM settings WHERE key = ?1")
-            .bind(key)
-            .execute(self.db.writer_pool())
+        (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM settings WHERE key = ?1").bind(key))
             .await?;
         Ok(())
     }
@@ -861,13 +987,17 @@ impl RepoOutOfDomain for SqlxRepo {
         let now = now_ms();
         // Unchecked primitive: no overlap scan; UNIQUE(path) only rejects an *equal*
         // path. HTTP callers go through `area_folder_create_checked`.
-        let res =
-            sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
+        let res = (self.db)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)",
+                )
                 .bind(area_id)
                 .bind(path)
-                .bind(now)
-                .execute(self.db.writer_pool())
-                .await;
+                .bind(now),
+            )
+            .await;
         match res {
             Ok(out) => Ok(AreaFolder {
                 id: out.last_insert_rowid(),
@@ -875,10 +1005,12 @@ impl RepoOutOfDomain for SqlxRepo {
                 path: path.to_string(),
                 created_at: now,
             }),
-            Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
-                CalmError::Conflict(format!("area_folders.path already claims `{path}`")),
-            ),
-            Err(e) => Err(e.into()),
+            Err(CalmError::Db(sqlx::Error::Database(dbe))) if dbe.message().contains("UNIQUE") => {
+                Err(CalmError::Conflict(format!(
+                    "area_folders.path already claims `{path}`"
+                )))
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -897,21 +1029,32 @@ impl RepoOutOfDomain for SqlxRepo {
         // BEGIN IMMEDIATE takes the writer lock before the scan so SELECT and INSERT
         // are one atomic step (UNIQUE(path) only rejects *equal* paths). Nothing but
         // these three statements belongs inside the lock.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let existing = super::area_folders_list_all_tx(&mut tx).await?;
-        if let Some(conflict) = crate::area_folder_claim::classify_conflict(&existing, path) {
-            let _ = tx.rollback().await;
-            return Ok(AreaFolderClaim::Conflict(conflict));
-        }
-        let folder = super::area_folder_create_tx(&mut tx, area_id, path).await?;
-        tx.commit().await?;
-        Ok(AreaFolderClaim::Created(folder))
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let existing = super::area_folders_list_all_tx(&mut tx).await?;
+                    if let Some(conflict) =
+                        crate::area_folder_claim::classify_conflict(&existing, path)
+                    {
+                        let _ = tx.rollback().await;
+                        return Ok(AreaFolderClaim::Conflict(conflict));
+                    }
+                    let folder = super::area_folder_create_tx(&mut tx, area_id, path).await?;
+                    tx.commit().await?;
+                    Ok(AreaFolderClaim::Created(folder))
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn area_folder_delete(&self, id: i64) -> Result<()> {
-        let res = sqlx::query("DELETE FROM area_folders WHERE id = ?1")
-            .bind(id)
-            .execute(self.db.writer_pool())
+        let res = (self.db)
+            .writer()
+            .execute(sqlx::query("DELETE FROM area_folders WHERE id = ?1").bind(id))
             .await?;
         if res.rows_affected() == 0 {
             return Err(CalmError::NotFound(format!("area_folder {id}")));

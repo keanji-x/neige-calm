@@ -232,16 +232,19 @@ async fn terminal_error(scenario: &str) {
     let (state, app, cookie, _client, mut peer) = if scenario == "cold" {
         // Reopen the released known-END frame, whose old active-only mirror
         // writer left the ended native turn behind on its Failed row.
-        sqlx::query("UPDATE worker_sessions SET active_turn_id=?1 WHERE id=?2")
-            .bind(TURN)
-            .bind(&worker)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET active_turn_id=?1 WHERE id=?2")
+                    .bind(TURN)
+                    .bind(&worker),
+            )
             .await
             .unwrap();
         let cold = fixture.root.path().join("cold-terminal.db");
-        sqlx::query("VACUUM INTO ?1")
-            .bind(cold.to_str().unwrap())
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("VACUUM INTO ?1").bind(cold.to_str().unwrap()))
             .await
             .unwrap();
         owner_held.release.notify_one();
@@ -276,9 +279,14 @@ async fn terminal_error(scenario: &str) {
         StatusCode::CONFLICT
     );
     if scenario == "other-active-mirror" {
-        sqlx::query("UPDATE worker_sessions SET active_turn_id='different-turn' WHERE id=?1")
-            .bind(&worker)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE worker_sessions SET active_turn_id='different-turn' WHERE id=?1",
+                )
+                .bind(&worker),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -291,11 +299,10 @@ async fn terminal_error(scenario: &str) {
         return;
     }
     if scenario == "missing-durable" {
-        sqlx::query(
+        (fixture.repo.db()).writer().execute(sqlx::query(
             "DELETE FROM harness_items WHERE worker_session_id=?1 AND method='turn/completed'",
         )
-        .bind(&worker)
-        .execute(fixture.repo.pool())
+        .bind(&worker))
         .await
         .unwrap();
         assert_eq!(
@@ -369,16 +376,18 @@ async fn terminal_error(scenario: &str) {
                 _ = pause.entered.notified(), if races => {
                     match scenario {
                         "event" => {
-                            let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db()).await.unwrap();
-                            append_pending_event(&mut tx, track, area["id"].as_str().unwrap()).await;
-                            tx.commit().await.unwrap();
+                            fixture.repo.db().writer().with_writer(|write_session| Box::pin(async {
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                append_pending_event(&mut tx, track, area["id"].as_str().unwrap()).await;
+                                tx.commit().await.unwrap();
+                            })).await.unwrap();
                         }
                         "native-source" => { replacement_native = Some(connect(&state.shared_codex_appserver).await); }
                         "revoke" => { post(&app,&cookie,"/api/auth/logout","logout",json!({})).await; }
                         "backend" => { super::codex::bind_other_backend(&fixture,&worker).await; }
-                        "thread" => { sqlx::query("UPDATE worker_sessions SET thread_id='changed-thread' WHERE id=?1").bind(&worker).execute(fixture.repo.pool()).await.unwrap(); }
-                        "carrier" => { sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(&card).execute(fixture.repo.pool()).await.unwrap(); }
-                        "workspace" => { sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(track).execute(fixture.repo.pool()).await.unwrap(); }
+                        "thread" => { (fixture.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET thread_id='changed-thread' WHERE id=?1").bind(&worker)).await.unwrap(); }
+                        "carrier" => { (fixture.repo.db()).writer().execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(&card)).await.unwrap(); }
+                        "workspace" => { (fixture.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(track)).await.unwrap(); }
                         _ => unreachable!(),
                     }
                     pause.release.notify_one();

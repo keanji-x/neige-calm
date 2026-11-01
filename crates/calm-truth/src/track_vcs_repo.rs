@@ -1,5 +1,5 @@
 use crate::db::sqlite::SqliteDb;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::error::Result;
 use crate::ids::TrackId;
 use crate::track_vcs::{self, CommitHash, CommitLog, CommitRecord, FileDiff, HistoricalBlob};
@@ -121,14 +121,23 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         keep: usize,
         dry_run: bool,
     ) -> Result<u64> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        let pruned = track_vcs::prune_track_history_tx(&mut tx, track_id, keep).await?;
-        if dry_run {
-            tx.rollback().await?;
-        } else {
-            tx.commit().await?;
-        }
-        Ok(pruned)
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let pruned = track_vcs::prune_track_history_tx(&mut tx, track_id, keep).await?;
+                    if dry_run {
+                        tx.rollback().await?;
+                    } else {
+                        tx.commit().await?;
+                    }
+                    Ok(pruned)
+                })
+            })
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn sweep_unreferenced_objects(&self) -> Result<u64> {
@@ -136,9 +145,7 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
     }
 
     async fn vacuum(&self) -> Result<()> {
-        sqlx::query("VACUUM")
-            .execute(self.pool.writer_pool())
-            .await?;
+        (self.pool).writer().execute(sqlx::query("VACUUM")).await?;
         Ok(())
     }
 }

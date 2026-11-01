@@ -27,22 +27,29 @@ async fn partial_receipt_recovery_restores_native_item_order() {
         .as_str()
         .unwrap();
     snapshot.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND item_uuid=?2")
+                    .bind(&card)
+                    .bind(first)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                    .bind(&runtime.id)
+                    .bind(serde_json::to_string(&snapshot).unwrap())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND item_uuid=?2")
-        .bind(&card)
-        .bind(first)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&snapshot).unwrap())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation");
     let stack = boot(&root).await;
     let rows = stack
         .repo()

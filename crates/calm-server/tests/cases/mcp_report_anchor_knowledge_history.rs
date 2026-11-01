@@ -62,7 +62,7 @@ async fn counts(b: &crate::mcp_track_report::Boot) -> (i64, i64, i64) {
 async fn old_partial_knowledge_survives_history_prune() {
     use crate::mcp_report_sections::{commit, replace};
     use crate::mcp_track_report::assistant_identity;
-    use calm_server::db::sqlite::{begin_immediate_tx, session_mark_superseded_runtime_tx};
+    use calm_server::db::sqlite::session_mark_superseded_runtime_tx;
     use calm_truth::track_vcs as vcs;
     for release in ["overwrite", "delete", "whole"] {
         let b = boot().await;
@@ -114,106 +114,121 @@ async fn old_partial_knowledge_survives_history_prune() {
             let mut frame = calm_types::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
             frame.header.last_seen_head = Some(current.clone());
             frame.header.issued_turn_head = Some(current.clone());
-            let mut tx = begin_immediate_tx(&pool).await.unwrap();
-            sqlx::query("UPDATE worker_sessions SET handle_state_json=? WHERE track_id=?")
-                .bind(serde_json::to_string(&frame).unwrap())
+            let write_db = (pool).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        sqlx::query(
+                            "UPDATE worker_sessions SET handle_state_json=? WHERE track_id=?",
+                        )
+                        .bind(serde_json::to_string(&frame).unwrap())
+                        .bind(b.track_id.as_str())
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        previous = current;
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        }
+        // Release the seeding/writing assistant's knowledge through its actual lifecycle door.
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async  {
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            session_mark_superseded_runtime_tx(&mut tx, &assistant_identity(&b).session_id)
+                .await
+                .unwrap();
+            // Surviving knowledge must also protect an inactive session, outside active harnesses.
+            sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
+                .bind(planner_identity(&b).session_id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE track_vcs_objects SET created_at=0")
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            vcs::prune_all_tracks_once(&pool, 50).await.unwrap();
+            vcs::sweep_unreferenced_objects_once(&pool).await.unwrap();
+            assert!(vcs::cat_at(pool.read_pool(), &old, &path).await.is_ok());
+            let retained = counts(&b).await;
+            assert!(retained.0 >= 66);
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            sqlx::query("UPDATE worker_sessions SET state='running' WHERE id=?")
+                .bind(planner_identity(&b).session_id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            // Remove the other (fresh) harness endpoints from retention; only knowledge is under test.
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=NULL WHERE track_id=?")
                 .bind(b.track_id.as_str())
                 .execute(&mut **tx)
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
-            previous = current;
-        }
-        // Release the seeding/writing assistant's knowledge through its actual lifecycle door.
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        session_mark_superseded_runtime_tx(&mut tx, &assistant_identity(&b).session_id)
-            .await
-            .unwrap();
-        // Surviving knowledge must also protect an inactive session, outside active harnesses.
-        sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?")
-            .bind(planner_identity(&b).session_id)
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE track_vcs_objects SET created_at=0")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        vcs::prune_all_tracks_once(&pool, 50).await.unwrap();
-        vcs::sweep_unreferenced_objects_once(&pool).await.unwrap();
-        assert!(vcs::cat_at(pool.read_pool(), &old, &path).await.is_ok());
-        let retained = counts(&b).await;
-        assert!(retained.0 >= 66);
-        let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        sqlx::query("UPDATE worker_sessions SET state='running' WHERE id=?")
-            .bind(planner_identity(&b).session_id)
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        // Remove the other (fresh) harness endpoints from retention; only knowledge is under test.
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=NULL WHERE track_id=?")
-            .bind(b.track_id.as_str())
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        match release {
-            "overwrite" => {
-                commit(
-                    &b,
-                    planner_identity(&b),
-                    replace("概要", "# 概要\n\nreplacement\n"),
-                )
-                .await
-                .unwrap();
+            match release {
+                "overwrite" => {
+                    commit(
+                        &b,
+                        planner_identity(&b),
+                        replace("概要", "# 概要\n\nreplacement\n"),
+                    )
+                    .await
+                    .unwrap();
+                }
+                "delete" => {
+                    commit(
+                        &b,
+                        planner_identity(&b),
+                        serde_json::json!({"ops":[{"op":"delete","section":"概要"}]}),
+                    )
+                    .await
+                    .unwrap();
+                }
+                _ => {
+                    use crate::mcp_track_report::call_tool;
+                    call_tool(
+                        &b,
+                        calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ,
+                        planner_identity(&b),
+                        serde_json::json!({}),
+                    )
+                    .await
+                    .unwrap();
+                    call_tool(&b, calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE, planner_identity(&b), serde_json::json!({"body":"# fresh\n\nreplacement\n", "message":"whole replacement"})).await.unwrap();
+                }
             }
-            "delete" => {
-                commit(
-                    &b,
-                    planner_identity(&b),
-                    serde_json::json!({"ops":[{"op":"delete","section":"概要"}]}),
-                )
-                .await
-                .unwrap();
-            }
-            _ => {
-                use crate::mcp_track_report::call_tool;
-                call_tool(
-                    &b,
-                    calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ,
-                    planner_identity(&b),
-                    serde_json::json!({}),
-                )
-                .await
-                .unwrap();
-                call_tool(&b, calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE, planner_identity(&b), serde_json::json!({"body":"# fresh\n\nreplacement\n", "message":"whole replacement"})).await.unwrap();
-            }
-        }
-        assert!(
-            !known(&b)
-                .await
-                .blocks
-                .values()
-                .any(|block| block.history_ref
-                    == calm_types::report_knowledge::HistoryRef::Commit(old.clone()))
-        );
-        assert!(vcs::prune_all_tracks_once(&pool, 1).await.unwrap() > 60);
-        assert!(vcs::sweep_unreferenced_objects_once(&pool).await.unwrap() > 0);
-        let released = counts(&b).await;
-        eprintln!(
-            "{release}: retained (commits, objects, events)={retained:?}; released={released:?}"
-        );
-        assert!(released.0 < retained.0 && released.1 < retained.1);
-        assert!(vcs::cat_at(pool.read_pool(), &old, &path).await.is_err());
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM track_vcs_objects WHERE hash=?")
-                .bind(blob)
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap(),
-            0
-        );
+            assert!(
+                !known(&b)
+                    .await
+                    .blocks
+                    .values()
+                    .any(|block| block.history_ref
+                        == calm_types::report_knowledge::HistoryRef::Commit(old.clone()))
+            );
+            assert!(vcs::prune_all_tracks_once(&pool, 1).await.unwrap() > 60);
+            assert!(vcs::sweep_unreferenced_objects_once(&pool).await.unwrap() > 0);
+            let released = counts(&b).await;
+            eprintln!(
+                "{release}: retained (commits, objects, events)={retained:?}; released={released:?}"
+            );
+            assert!(released.0 < retained.0 && released.1 < retained.1);
+            assert!(vcs::cat_at(pool.read_pool(), &old, &path).await.is_err());
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM track_vcs_objects WHERE hash=?")
+                    .bind(blob)
+                    .fetch_one(pool.read_pool())
+                    .await
+                    .unwrap(),
+                0
+            );
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -230,36 +245,43 @@ async fn divergent_history(b: &crate::mcp_track_report::Boot, value: serde_json:
         .unwrap()
         .payload;
     let parent = head(b).await;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE cards SET payload=? WHERE id=?")
+                    .bind(value.to_string())
+                    .bind(b.report_card_id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                let tree = vcs::snapshot_tree(&mut tx, &b.track_id, vcs::MANIFEST_SCHEMA_VERSION)
+                    .await
+                    .unwrap();
+                vcs::commit_tree(
+                    &mut tx,
+                    &b.track_id,
+                    Some(&parent),
+                    &tree,
+                    None,
+                    "legacy projection fixture",
+                    vcs::MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE cards SET payload=? WHERE id=?")
+                    .bind(original.to_string())
+                    .bind(b.report_card_id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE cards SET payload=? WHERE id=?")
-        .bind(value.to_string())
-        .bind(b.report_card_id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    let tree = vcs::snapshot_tree(&mut tx, &b.track_id, vcs::MANIFEST_SCHEMA_VERSION)
-        .await
-        .unwrap();
-    vcs::commit_tree(
-        &mut tx,
-        &b.track_id,
-        Some(&parent),
-        &tree,
-        None,
-        "legacy projection fixture",
-        vcs::MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE cards SET payload=? WHERE id=?")
-        .bind(original.to_string())
-        .bind(b.report_card_id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -329,54 +351,60 @@ async fn absent_history_preserves_read_authority_and_can_be_replaced_by_own_writ
             .unwrap()
             .unwrap();
         let path = format!("cards/{}/.payload.json", b.report_card_id);
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    match missing {
+                        "head" => {
+                            sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
+                                .bind(b.track_id.as_str())
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                        }
+                        "tree" => {
+                            sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?")
+                                .bind(record.tree_hash)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                        }
+                        _ => {
+                            sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?")
+                                .bind(&manifest.entries[&path].blob_hash)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    tx.commit().await.unwrap();
+                    let text = read_sections(&b, planner_identity(&b), &["概要"]).await;
+                    assert!(text.contains("alpha"));
+                    let read = known(&b).await;
+                    assert!(read.blocks.values().all(|block| block.history_ref
+                        == HistoryRef::Unavailable(HistoryUnavailable::NotLocated)));
+                    // A missing history is not unread. The no-HEAD case rebuilds through the normal writer.
+                    if missing == "head" {
+                        commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nnew\n"))
+                            .await
+                            .unwrap();
+                        let current = head(&b).await;
+                        assert!(
+                            known(&b)
+                                .await
+                                .blocks
+                                .values()
+                                .all(|block| block.history_ref
+                                    == HistoryRef::Commit(current.clone()))
+                        );
+                    }
+                })
+            })
             .await
-            .unwrap();
-        match missing {
-            "head" => {
-                sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
-                    .bind(b.track_id.as_str())
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            }
-            "tree" => {
-                sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?")
-                    .bind(record.tree_hash)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            }
-            _ => {
-                sqlx::query("DELETE FROM track_vcs_objects WHERE hash=?")
-                    .bind(&manifest.entries[&path].blob_hash)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            }
-        }
-        tx.commit().await.unwrap();
-        let text = read_sections(&b, planner_identity(&b), &["概要"]).await;
-        assert!(text.contains("alpha"));
-        let read = known(&b).await;
-        assert!(
-            read.blocks.values().all(|block| block.history_ref
-                == HistoryRef::Unavailable(HistoryUnavailable::NotLocated))
-        );
-        // A missing history is not unread. The no-HEAD case rebuilds through the normal writer.
-        if missing == "head" {
-            commit(&b, planner_identity(&b), replace("概要", "# 概要\n\nnew\n"))
-                .await
-                .unwrap();
-            let current = head(&b).await;
-            assert!(
-                known(&b)
-                    .await
-                    .blocks
-                    .values()
-                    .all(|block| block.history_ref == HistoryRef::Commit(current.clone()))
-            );
-        }
+            .expect("independent write operation")
     }
 }
 
@@ -453,37 +481,44 @@ async fn mismatched_final_history_rolls_back_truth_history_knowledge_and_broadca
     let current = head(&b).await;
     let before = counts(&b).await;
     let pool = b.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    // Poison only the VCS input after the row was written and its event serialized.
-    sqlx::query(&format!(
-        "CREATE TRIGGER divergent_history AFTER INSERT ON events \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                // Poison only the VCS input after the row was written and its event serialized.
+                sqlx::query(&format!(
+                    "CREATE TRIGGER divergent_history AFTER INSERT ON events \
         WHEN NEW.kind='card.updated' BEGIN UPDATE cards \
         SET payload=json_set(payload,'$.body','divergent history') WHERE id='{}'; END",
-        b.report_card_id
-    ))
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let mut receiver = b.ctx.events.subscribe();
-    let error = commit(
-        &b,
-        planner_identity(&b),
-        replace("概要", "# 概要\n\nrollback\n"),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32603);
-    assert_eq!(payload(&b).await, original);
-    assert_eq!(known(&b).await, read);
-    assert_eq!(head(&b).await, current);
-    assert_eq!(counts(&b).await, before);
-    assert!(matches!(
-        receiver.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+                    b.report_card_id
+                ))
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let mut receiver = b.ctx.events.subscribe();
+                let error = commit(
+                    &b,
+                    planner_identity(&b),
+                    replace("概要", "# 概要\n\nrollback\n"),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(error.code, -32603);
+                assert_eq!(payload(&b).await, original);
+                assert_eq!(known(&b).await, read);
+                assert_eq!(head(&b).await, current);
+                assert_eq!(counts(&b).await, before);
+                assert!(matches!(
+                    receiver.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -502,36 +537,40 @@ async fn corrupt_or_missing_knowledge_commit_skips_prune_for_inactive_sessions()
     .await
     .unwrap();
     let pool = b.repo.sqlite_db().unwrap();
-    for invalid in [
-        serde_json::json!({}),
-        serde_json::json!({"commit":"absent"}),
-    ] {
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
-            "UPDATE worker_sessions SET state='exited',handle_state_json=NULL WHERE track_id=?",
-        )
-        .bind(b.track_id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=?")
-            .bind(invalid.to_string())
-            .bind(planner_identity(&b).session_id)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async  {
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"commit":"absent"}),
+        ] {
+            let mut tx = write_session.begin_immediate()
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE worker_sessions SET state='exited',handle_state_json=NULL WHERE track_id=?",
+            )
+            .bind(b.track_id.as_str())
             .execute(&mut **tx)
             .await
             .unwrap();
-        tx.commit().await.unwrap();
-        let before = counts(&b).await;
-        assert_eq!(
-            calm_truth::track_vcs::prune_all_tracks_once(&pool, 1)
+            sqlx::query("UPDATE report_read_ledger_blocks SET history_ref=? WHERE worker_session_id=?")
+                .bind(invalid.to_string())
+                .bind(planner_identity(&b).session_id)
+                .execute(&mut **tx)
                 .await
-                .unwrap(),
-            0
-        );
-        assert_eq!(counts(&b).await, before);
-    }
+                .unwrap();
+            tx.commit().await.unwrap();
+            let before = counts(&b).await;
+            assert_eq!(
+                calm_truth::track_vcs::prune_all_tracks_once(&pool, 1)
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(counts(&b).await, before);
+        }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

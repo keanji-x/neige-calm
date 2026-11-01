@@ -23,19 +23,26 @@ pub(super) async fn read_run(app: &axum::Router, cookie: &str, card: &str) -> Va
 
 async fn save_frame(fixture: &Fixture, worker: &str, frame: &CanonicalHarnessSnapshot) {
     let worker = worker.to_owned();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    crate::db::sqlite::session_set_handle_state_tx(
+                        &mut tx,
+                        &worker,
+                        Some(serde_json::to_value(frame).unwrap())
+                    )
+                    .await
+                    .unwrap()
+                );
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        crate::db::sqlite::session_set_handle_state_tx(
-            &mut tx,
-            &worker,
-            Some(serde_json::to_value(frame).unwrap())
-        )
-        .await
-        .unwrap()
-    );
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -64,10 +71,9 @@ async fn canonical_run_reads_the_actual_live_source_refusal_for_the_original_una
     let (card, worker, _) = fixture.carrier(track).await;
     // The real creation and native thread setup commit the claim. Fault only
     // its first crossing marker; the fixture never manufactures a claim.
-    sqlx::query(&format!("CREATE TRIGGER hold_read_feedback_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fixture.repo.db()).writer().execute(sqlx::query(&format!("CREATE TRIGGER hold_read_feedback_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN NEW.id='{worker}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts') > 0
-        BEGIN SELECT RAISE(ABORT,'fixture holds the original crossing marker'); END"))
-        .execute(fixture.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'fixture holds the original crossing marker'); END"))).await.unwrap();
     let original =
         super::source_readmission_tests::wait_for_claim(&fixture, track, &mut peer).await;
     post(
@@ -79,8 +85,9 @@ async fn canonical_run_reads_the_actual_live_source_refusal_for_the_original_una
     )
     .await;
     let cookie = super::source_readmission_tests::login_again(&app).await;
-    sqlx::query("DROP TRIGGER hold_read_feedback_marker")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_read_feedback_marker"))
         .await
         .unwrap();
     let handle = state
@@ -261,18 +268,20 @@ async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
         ("opencode", true),
         ("grok", true),
     ] {
-        sqlx::query(
+        (fixture.repo.db()).writer().execute(sqlx::query(
             "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) WHERE id=?2",
         )
         .bind(provider)
-        .bind(&card)
-        .execute(fixture.repo.pool())
+        .bind(&card))
         .await
         .unwrap();
-        sqlx::query("UPDATE worker_sessions SET provider=?1 WHERE id=?2")
-            .bind(provider)
-            .bind(&worker)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET provider=?1 WHERE id=?2")
+                    .bind(provider)
+                    .bind(&worker),
+            )
             .await
             .unwrap();
         let run = read_run(&app, &cookie, &card).await;
@@ -439,10 +448,13 @@ async fn p2_terminal_exact_key_and_payload_not_phase_or_latest_card_row() {
         Value::Null
     );
     // A changed carrier cannot inherit the old execution's terminal row.
-    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
-        .bind(&other_worker)
-        .bind(&card)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                .bind(&other_worker)
+                .bind(&card),
+        )
         .await
         .unwrap();
     let response = app
@@ -458,10 +470,13 @@ async fn p2_terminal_exact_key_and_payload_not_phase_or_latest_card_row() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
-        .bind(&worker)
-        .bind(&card)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+                .bind(&worker)
+                .bind(&card),
+        )
         .await
         .unwrap();
     // A current read requires present authorization, even with a stored fact.

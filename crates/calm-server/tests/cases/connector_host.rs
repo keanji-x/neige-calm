@@ -3447,8 +3447,9 @@ async fn a_cli_connector_whose_config_store_is_unreadable_lands_unavailable() {
     let host = b.host();
     seed_row(&b, CLI_CONFIG_ID).await;
 
-    sqlx::query("DROP TABLE plugins")
-        .execute(b.sqlx.pool())
+    (b.sqlx.db())
+        .writer()
+        .execute(sqlx::query("DROP TABLE plugins"))
         .await
         .expect("drop the plugins table out from under the host");
 

@@ -134,7 +134,7 @@ pub(crate) const SESSION: &str = "protocol-session";
 
 pub(crate) async fn admitted(
     owner: &execution::ProviderExecution,
-    files: impl FnOnce(&Path, Uuid),
+    files: impl FnOnce(&Path, Uuid) + Send,
     script: &str,
 ) -> Admitted {
     use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
@@ -170,81 +170,90 @@ pub(crate) async fn admitted(
         })
         .await
         .unwrap();
-    let mut tx = pool.writer_pool().begin().await.unwrap();
-    let card = crate::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        },
-        CardRole::Worker,
-        false,
-        &crate::card_role_cache::CardRoleCache::new(),
-    )
-    .await
-    .unwrap();
-    let thread = Uuid::new_v4();
-    crate::db::sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: SESSION.into(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: crate::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let mut launch = intent(dir.path().into());
-    launch.metadata.consumer = owner.owner.consumer().into();
-    launch.metadata.alias.0 = owner.owner.alias(SESSION, launch.metadata.id.as_str());
-    launch.metadata.program.program = "/bin/sh".into();
-    files(dir.path(), thread);
-    launch.metadata.program.args = vec!["-c".into(), format!("read start; {script}")];
-    let id = launch.metadata.id.clone();
-    let (claim, guard) = owner
-        .admit_for_test(
-            &pool,
-            &fixture.engine,
-            SESSION,
-            execution::PreparedIntent(launch),
-            execution::Purpose::RewindCheck,
-        )
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let card = crate::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id,
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: serde_json::json!({}),
+                    },
+                    CardRole::Worker,
+                    false,
+                    &crate::card_role_cache::CardRoleCache::new(),
+                )
+                .await
+                .unwrap();
+                let thread = Uuid::new_v4();
+                crate::db::sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: SESSION.into(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::ClaudeCard,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: crate::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let mut launch = intent(dir.path().into());
+                launch.metadata.consumer = owner.owner.consumer().into();
+                launch.metadata.alias.0 = owner.owner.alias(SESSION, launch.metadata.id.as_str());
+                launch.metadata.program.program = "/bin/sh".into();
+                files(dir.path(), thread);
+                launch.metadata.program.args = vec!["-c".into(), format!("read start; {script}")];
+                let id = launch.metadata.id.clone();
+                let (claim, guard) = owner
+                    .admit_for_test(
+                        &pool,
+                        &fixture.engine,
+                        SESSION,
+                        execution::PreparedIntent(launch),
+                        execution::Purpose::RewindCheck,
+                    )
+                    .await
+                    .unwrap();
+                execution::release::send(
+                    &pool,
+                    &fixture.engine,
+                    SESSION,
+                    &claim,
+                    b"start\n",
+                    &execution::release::NoAuthority,
+                )
+                .await
+                .unwrap();
+                Admitted {
+                    repo,
+                    pool,
+                    fixture,
+                    dir,
+                    thread,
+                    id,
+                    claim,
+                    guard,
+                }
+            })
+        })
         .await
-        .unwrap();
-    execution::release::send(
-        &pool,
-        &fixture.engine,
-        SESSION,
-        &claim,
-        b"start\n",
-        &execution::release::NoAuthority,
-    )
-    .await
-    .unwrap();
-    Admitted {
-        repo,
-        pool,
-        fixture,
-        dir,
-        thread,
-        id,
-        claim,
-        guard,
-    }
+        .expect("independent write operation")
 }
 
 async fn run_minimal(interrupt: bool) {

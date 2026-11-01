@@ -15,10 +15,9 @@ async fn durable_target_admission(restart: bool) {
     let mut f = Fixture::new().await;
     // Keep the real execution's settlement unavailable, forcing reclaim's wait to fail.
     // The executor may have finished deleting; that alone cannot release admission.
-    sqlx::query("CREATE TRIGGER hold_reclaim_settlement BEFORE UPDATE OF settled_at_ms \
+    (f.b.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hold_reclaim_settlement BEFORE UPDATE OF settled_at_ms \
         ON workspace_executions WHEN json_extract(NEW.intent_json,'$.consumer')='workspace-reclaim' \
-        BEGIN SELECT RAISE(FAIL,'settlement unavailable'); END")
-        .execute(f.b.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(FAIL,'settlement unavailable'); END")).await.unwrap();
     f.close().await;
     f.tick(&mut HashSet::new()).await;
     let id: String = sqlx::query_scalar(
@@ -88,8 +87,9 @@ async fn durable_target_admission(restart: bool) {
         assert_eq!(result.0, StatusCode::CONFLICT, "{result:?}");
         assert_eq!(result.1["code"], "workspace_busy");
     }
-    sqlx::query("DROP TRIGGER hold_reclaim_settlement")
-        .execute(f.b.repo.pool())
+    (f.b.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_reclaim_settlement"))
         .await
         .unwrap();
     f.b.state

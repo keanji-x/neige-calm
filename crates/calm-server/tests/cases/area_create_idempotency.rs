@@ -198,7 +198,13 @@ async fn area_create_idempotency_deleted_area_and_binding_tampering_fail_closed(
         "DELETE FROM area_create_idempotency",
         "UPDATE area_create_idempotency SET area_id = 'other'",
     ] {
-        assert!(sqlx::query(query).execute(boot.repo.pool()).await.is_err());
+        assert!(
+            (boot.repo.db())
+                .writer()
+                .execute(sqlx::query(query))
+                .await
+                .is_err()
+        );
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM area_create_idempotency")
         .fetch_one(boot.repo.pool())
@@ -210,8 +216,7 @@ async fn area_create_idempotency_deleted_area_and_binding_tampering_fail_closed(
 #[tokio::test]
 async fn area_create_idempotency_event_failure_rolls_back_area_and_binding() {
     let boot = boot().await;
-    sqlx::query("CREATE TRIGGER test_reject_area_event BEFORE INSERT ON events WHEN NEW.kind = 'area.updated' BEGIN SELECT RAISE(ABORT, 'test event write failed'); END;")
-        .execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER test_reject_area_event BEFORE INSERT ON events WHEN NEW.kind = 'area.updated' BEGIN SELECT RAISE(ABORT, 'test event write failed'); END;")).await.unwrap();
     let body = json!({"name":"Atomic", "color":"#123456", "default_template_id":"small-change"});
     let (status, _) = post(&boot, Some("atomic"), body.clone()).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -234,8 +239,9 @@ async fn area_create_idempotency_event_failure_rolls_back_area_and_binding() {
             .unwrap(),
         0
     );
-    sqlx::query("DROP TRIGGER test_reject_area_event")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER test_reject_area_event"))
         .await
         .unwrap();
     let (status, created) = post(&boot, Some("atomic"), body.clone()).await;
@@ -327,12 +333,11 @@ async fn area_create_idempotency_version_advertises_safe_retry_capability() {
 #[tokio::test]
 async fn area_create_idempotency_a_key_bound_past_the_replay_check_is_a_typed_retryable_409() {
     let boot = boot().await;
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "CREATE TRIGGER bind_raced_key AFTER INSERT ON areas WHEN NEW.name = 'Raced' BEGIN \
          INSERT INTO area_create_idempotency (creator_user_id, idempotency_key, request_fingerprint, area_id) \
          VALUES ('local-owner', 'raced', 'v1:another-request', NEW.id); END",
-    )
-    .execute(boot.repo.pool())
+    ))
     .await
     .unwrap();
     let body = json!({"name":"Raced", "color":"#123456"});
@@ -360,8 +365,9 @@ async fn area_create_idempotency_a_key_bound_past_the_replay_check_is_a_typed_re
         "the whole create rolled back, the trigger's row with it"
     );
 
-    sqlx::query("DROP TRIGGER bind_raced_key")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER bind_raced_key"))
         .await
         .unwrap();
     let (status, area) = post(&boot, Some("raced"), body).await;
@@ -373,50 +379,75 @@ async fn area_create_idempotency_a_key_bound_past_the_replay_check_is_a_typed_re
 async fn managed_bytes(boot: &Boot, area_id: &str) -> PathBuf {
     use calm_server::db::sqlite::{TrackWorkspacePlan, track_create_tx};
     let root = boot._tmp.path().join("workspaces");
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        calm_server::model::NewTrack {
-            area_id: area_id.into(),
-            title: "Files".into(),
-            sort: None,
-            template_input: None,
-            cwd: String::new(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        },
-        None,
-        &TrackWorkspacePlan::ManagedUnder(root.clone()),
-        None,
-        &calm_server::track_area_cache::TrackAreaCache::new(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let path = PathBuf::from(&track.workspace.path);
-    workspace::materialize::materialize_managed_workspace(&root, &path, track.id.as_str()).unwrap();
-    let sentinel = path.join("private.txt");
-    std::fs::write(&sentinel, "keep private bytes").unwrap();
-    sentinel
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    calm_server::model::NewTrack {
+                        area_id: area_id.into(),
+                        title: "Files".into(),
+                        sort: None,
+                        template_input: None,
+                        cwd: String::new(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    },
+                    None,
+                    &TrackWorkspacePlan::ManagedUnder(root.clone()),
+                    None,
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let path = PathBuf::from(&track.workspace.path);
+                workspace::materialize::materialize_managed_workspace(
+                    &root,
+                    &path,
+                    track.id.as_str(),
+                )
+                .unwrap();
+                let sentinel = path.join("private.txt");
+                std::fs::write(&sentinel, "keep private bytes").unwrap();
+                sentinel
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn registered_session(boot: &Boot, user_id: &str) -> String {
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::area_membership::application_user_register(&mut tx, user_id, user_id)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::area_membership::application_user_register(
+                    &mut tx, user_id, user_id,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let token = boot.auth.sessions.create(
+                    calm_server::auth::SessionIdentity {
+                        user_id: user_id.into(),
+                        display_name: user_id.into(),
+                        role: "member".into(),
+                    },
+                    calm_server::auth::SessionAuthority::PasswordLogin,
+                );
+                format!("{}={token}", calm_server::auth::SESSION_COOKIE)
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let token = boot.auth.sessions.create(
-        calm_server::auth::SessionIdentity {
-            user_id: user_id.into(),
-            display_name: user_id.into(),
-            role: "member".into(),
-        },
-        calm_server::auth::SessionAuthority::PasswordLogin,
-    );
-    format!("{}={token}", calm_server::auth::SESSION_COOKIE)
+        .expect("independent write operation")
 }
 
 async fn request_as(
@@ -485,9 +516,9 @@ async fn area_ownership_authenticated_creators_have_independent_keys_and_no_owne
     )
     .await;
     assert_eq!(replay["id"], area["id"]);
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-        .bind(id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM area_members WHERE area_id=?1").bind(id))
         .await
         .unwrap();
     let (status, _) = request_as(&boot, &alice, "POST", "/api/areas", body, Some("same-key")).await;
@@ -515,9 +546,9 @@ async fn area_ownership_routes_use_membership_and_distinguish_deployment_authori
     .await;
     let id = area["id"].as_str().unwrap();
     let sentinel = managed_bytes(&boot, id).await;
-    sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
-        .bind(id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)").bind(id))
         .await
         .unwrap();
     let uri = format!("/api/areas/{id}");
@@ -625,9 +656,9 @@ async fn area_ownership_delete_rechecks_owner_at_commit_and_preserves_permanent_
         !sentinel.exists(),
         "premise: the saga recycled the workspace before the commit hook"
     );
-    sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1").bind(&id))
         .await
         .unwrap();
     release.notify_one();
@@ -637,9 +668,9 @@ async fn area_ownership_delete_rechecks_owner_at_commit_and_preserves_permanent_
         std::fs::read_to_string(&sentinel).unwrap(),
         "keep private bytes"
     );
-    sqlx::query("UPDATE area_members SET role='owner' WHERE area_id=?1")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE area_members SET role='owner' WHERE area_id=?1").bind(&id))
         .await
         .unwrap();
     let response = boot

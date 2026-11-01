@@ -42,47 +42,56 @@ pub(super) fn init(repo: &Path) {
 }
 
 pub(super) async fn track(repo: &SqlxRepo, cwd: &Path, plan: TrackWorkspacePlan) -> Track {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "adopt".into(),
-            color: "#000".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "adopt".into(),
-            sort: None,
-            cwd: cwd.to_str().unwrap().into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &plan,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    track
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "adopt".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "adopt".into(),
+                        sort: None,
+                        cwd: cwd.to_str().unwrap().into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &plan,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                track
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn task(repo: &SqlxRepo, track: &Track) {
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,created_at_ms,updated_at_ms) \
          VALUES (?1,?1,'run','terminal','g','{}','running','read_write',1,1)",
-    ).bind(track.id.as_str()).execute(repo.pool()).await.unwrap();
+    ).bind(track.id.as_str())).await.unwrap();
 }
 
 pub(super) async fn observed_root(repo: &SqlxRepo, track: &Track) -> Option<String> {
@@ -234,37 +243,46 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
             .unwrap()
             .verify_managed_owner(track.id.as_str())
             .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_workspace_write_tx(
-        &mut tx,
-        track.id.as_str(),
-        &TrackWorkspace {
-            kind: TrackWorkspaceKind::Attached,
-            path: second.to_str().unwrap().into(),
-            frozen_at: None,
-            worktree: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(
-        workspace_observe_tx(&mut tx, &snapshot, &identity)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    super::observe_for_task(repo.db(), track.id.as_str())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                track_workspace_write_tx(
+                    &mut tx,
+                    track.id.as_str(),
+                    &TrackWorkspace {
+                        kind: TrackWorkspaceKind::Attached,
+                        path: second.to_str().unwrap().into(),
+                        frozen_at: None,
+                        worktree: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(
+                    workspace_observe_tx(&mut tx, &snapshot, &identity)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                super::observe_for_task(repo.db(), track.id.as_str())
+                    .await
+                    .unwrap();
+                let root: String = sqlx::query_scalar(
+                    "SELECT observed_root FROM workspace_resources WHERE observed_root IS NOT NULL",
+                )
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(root, second.to_str().unwrap());
+            })
+        })
         .await
-        .unwrap();
-    let root: String = sqlx::query_scalar(
-        "SELECT observed_root FROM workspace_resources WHERE observed_root IS NOT NULL",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(root, second.to_str().unwrap());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -334,12 +352,12 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
     .await;
     let sha = workspace::base::resolve_head_base(&source).unwrap();
     let common = workspace::base::lease_git_common_dir(&source).unwrap();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,created_at_ms,updated_at_ms, \
          base_sha,base_source,canonical_path,git_common_dir,delivery_policy,access_mode) \
          VALUES ('legacy','card',?1,?2,'held','legacy-owner',1,1,?3,'commit',?4,?5,'kernel','read_write')",
     ).bind(old.id.as_str()).bind(alias.to_str().unwrap()).bind(&sha)
-        .bind(source.to_str().unwrap()).bind(common.to_str().unwrap()).execute(repo.pool()).await.unwrap();
+        .bind(source.to_str().unwrap()).bind(common.to_str().unwrap())).await.unwrap();
     super::observe_for_task(repo.db(), new.id.as_str())
         .await
         .unwrap();
@@ -364,14 +382,17 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
             common.to_str().unwrap().into()
         )
     );
-    sqlx::query("UPDATE workspace_leases SET state='released' WHERE lease_id='legacy'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE workspace_leases SET state='released' WHERE lease_id='legacy'",
+        ))
         .await
         .unwrap();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO task_git_deliveries(delivery_id,track_id,producer_attempt_id,card_id,lease_id,ordinal,operation_key,forge_idempotency_key,created_at_ms) \
          VALUES ('delivery',?1,'producer','card','legacy',1,'delivery-op','delivery-key',1)",
-    ).bind(old.id.as_str()).execute(repo.pool()).await.unwrap();
+    ).bind(old.id.as_str())).await.unwrap();
     assert_eq!(
         checkout_occupancy(
             &mut repo.pool().acquire().await.unwrap(),
@@ -461,9 +482,9 @@ async fn workspace_identity_borrowed_observation_grants_no_physical_owner() {
     .await
     .unwrap();
     assert_eq!(physical_owner, owner.id.as_str());
-    sqlx::query("DELETE FROM tracks WHERE id=?1")
-        .bind(owner.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM tracks WHERE id=?1").bind(owner.id.as_str()))
         .await
         .unwrap();
     let retained_owner: String = sqlx::query_scalar(

@@ -85,109 +85,127 @@ pub async fn seed_claude_card_and_runtime_with_status(
 }
 
 pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "area".into(),
-            color: "#fff".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "track".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        card_id.to_string(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({ "task": "test" }),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    card
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "area".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "track".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    card_id.to_string(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({ "task": "test" }),
+                    },
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                card
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) -> Card {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "area".into(),
-            color: "#fff".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "track".into(),
-            sort: None,
-            cwd: cwd.into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        card_id.to_string(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "claude".into(),
-            sort: None,
-            payload: json!({ "schemaVersion": 1, "cwd": cwd }),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    card
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "area".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "track".into(),
+                        sort: None,
+                        cwd: cwd.into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    card_id.to_string(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "claude".into(),
+                        sort: None,
+                        payload: json!({ "schemaVersion": 1, "cwd": cwd }),
+                    },
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                card
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub async fn seed_runtime_for_card_with_status(
@@ -196,28 +214,37 @@ pub async fn seed_runtime_for_card_with_status(
     thread_id: Option<&str>,
     status: WorkerSessionState,
 ) -> WorkerSessionProjection {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: format!("rt-{}", card.id),
-            card_id: card.id.as_str().to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status,
-            terminal_run_id: None,
-            thread_id: thread_id.map(str::to_string),
-            session_id: thread_id.map(|id| format!("sess-{id}")),
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: format!("rt-{}", card.id),
+                        card_id: card.id.as_str().to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status,
+                        terminal_run_id: None,
+                        thread_id: thread_id.map(str::to_string),
+                        session_id: thread_id.map(|id| format!("sess-{id}")),
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub async fn seed_claude_runtime_for_card_with_status(
@@ -226,28 +253,37 @@ pub async fn seed_claude_runtime_for_card_with_status(
     session_id: &str,
     status: WorkerSessionState,
 ) -> WorkerSessionProjection {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: format!("rt-{}", card.id),
-            card_id: card.id.as_str().to_string(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: Some(session_id.to_string()),
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    runtime
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: format!("rt-{}", card.id),
+                        card_id: card.id.as_str().to_string(),
+                        kind: WorkerSessionKind::ClaudeCard,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: Some(session_id.to_string()),
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {

@@ -448,8 +448,7 @@ async fn c5_admission_failed_delete_releases_registration_and_locks() {
     let mut f = Fixture::new().await;
     typed(&mut f).await;
     let other = external_worktree(&f).await;
-    sqlx::query("CREATE TRIGGER c5_refuse_track_delete BEFORE DELETE ON tracks BEGIN SELECT RAISE(ABORT,'fixture commit failure'); END")
-        .execute(f.repo.pool()).await.unwrap();
+    (f.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER c5_refuse_track_delete BEFORE DELETE ON tracks BEGIN SELECT RAISE(ABORT,'fixture commit failure'); END")).await.unwrap();
     let (status, body) = f
         .request("DELETE", &format!("/api/tracks/{}", other.id), None)
         .await;

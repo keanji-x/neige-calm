@@ -54,19 +54,19 @@ async fn recover(scenario: &str) {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture, "no-input-replay");
     let (state, app, cookie) = fixture.application().await;
-    sqlx::query(
-        "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
         WHEN NEW.agent_session_id IS NOT NULL
         BEGIN SELECT RAISE(ABORT,'bind failed'); END",
-    )
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     if scenario == "crossing" {
-        sqlx::query("CREATE TRIGGER fail_attempt_report BEFORE UPDATE OF handle_state_json ON worker_sessions
+        (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_attempt_report BEFORE UPDATE OF handle_state_json ON worker_sessions
             WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].revision') > 0
-            BEGIN SELECT RAISE(ABORT,'attempt report failed'); END")
-            .execute(fixture.repo.pool()).await.unwrap();
+            BEGIN SELECT RAISE(ABORT,'attempt report failed'); END")).await.unwrap();
     }
     let area = post(
         &app,
@@ -114,13 +114,15 @@ async fn recover(scenario: &str) {
     fixture.shutdown_process(&state).await;
     drop((state, app));
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
-    sqlx::query("DROP TRIGGER fail_native_bind")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
         .await
         .unwrap();
     if scenario == "crossing" {
-        sqlx::query("DROP TRIGGER fail_attempt_report")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_attempt_report"))
             .await
             .unwrap();
     }
@@ -253,7 +255,7 @@ async fn recover(scenario: &str) {
             if scenario == "revoke" {
                 post(&app, &cookie, "/api/auth/logout", "logout", json!({})).await;
             } else {
-                sqlx::query("UPDATE claude_session_launches SET track_id='wrong-owner' WHERE worker_session_id=?1").bind(&worker).execute(fixture.repo.pool()).await.unwrap();
+                (fixture.repo.db()).writer().execute(sqlx::query("UPDATE claude_session_launches SET track_id='wrong-owner' WHERE worker_session_id=?1").bind(&worker)).await.unwrap();
             }
             pause.release.notify_one();
             assert_eq!(
@@ -382,35 +384,45 @@ async fn add_unproven_execution(fixture: &Fixture, worker: &str, track: &str) {
     let id = workspace_runtime::execution::ExecutionId::fresh().unwrap();
     metadata.id = id.clone();
     metadata.alias.0 = format!("planner:{worker}:{}", id.as_str());
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::workspace_execution::insert(
+                    &mut tx,
+                    id.as_str(),
+                    track,
+                    &metadata.alias.0,
+                    &serde_json::to_string(&metadata).unwrap(),
+                    "{}",
+                )
+                .await
+                .unwrap();
+                let settled =
+                    serde_json::to_string(&workspace_runtime::execution::Settlement::Journal(
+                        workspace_runtime::execution::ExecutionState::OriginalGroupEmpty {
+                            status: Some(0),
+                        },
+                    ))
+                    .unwrap();
+                crate::db::sqlite::workspace_execution::settle_tx(
+                    &mut tx,
+                    id.as_str(),
+                    &settled,
+                    crate::model::now_ms(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                crate::db::sqlite::workspace_execution::finish(fixture.repo.db(), id.as_str())
+                    .await
+                    .unwrap();
+            })
+        })
         .await
-        .unwrap();
-    crate::db::sqlite::workspace_execution::insert(
-        &mut tx,
-        id.as_str(),
-        track,
-        &metadata.alias.0,
-        &serde_json::to_string(&metadata).unwrap(),
-        "{}",
-    )
-    .await
-    .unwrap();
-    let settled = serde_json::to_string(&workspace_runtime::execution::Settlement::Journal(
-        workspace_runtime::execution::ExecutionState::OriginalGroupEmpty { status: Some(0) },
-    ))
-    .unwrap();
-    crate::db::sqlite::workspace_execution::settle_tx(
-        &mut tx,
-        id.as_str(),
-        &settled,
-        crate::model::now_ms(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    crate::db::sqlite::workspace_execution::finish(fixture.repo.db(), id.as_str())
-        .await
-        .unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -418,14 +430,15 @@ async fn canonical_claude_verified_replay_does_not_expose_an_identity_hold() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture, "exit");
     let (state, app, cookie) = fixture.application().await;
-    sqlx::query(
-        "CREATE TRIGGER fail_verified_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_verified_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
         WHEN NEW.agent_session_id IS NOT NULL
         BEGIN SELECT RAISE(ABORT,'bind failed'); END",
-    )
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let area = post(
         &app,
         &cookie,
@@ -482,14 +495,15 @@ async fn canonical_claude_live_named_identity_survives_keep_without_a_bind() {
     let mut fixture = Fixture::new().await;
     configure(&mut fixture, "no-input-replay");
     let (state, app, cookie) = fixture.application().await;
-    sqlx::query(
-        "CREATE TRIGGER fail_live_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_live_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
         WHEN NEW.agent_session_id IS NOT NULL
         BEGIN SELECT RAISE(ABORT,'bind failed'); END",
-    )
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let area = post(
         &app,
         &cookie,
@@ -526,8 +540,9 @@ async fn canonical_claude_live_named_identity_survives_keep_without_a_bind() {
         after.canonical_inputs.attempts[0].delivery,
         before.canonical_inputs.attempts[0].delivery
     );
-    sqlx::query("DROP TRIGGER fail_live_bind")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_live_bind"))
         .await
         .unwrap();
     std::fs::write(fixture.root.path().join("fake/scenario"), "exit").unwrap();

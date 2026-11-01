@@ -212,9 +212,12 @@ async fn report_knowledge_delta_header_reads_report_without_or_with_same_head() 
             .as_deref()
             .is_some_and(|text| text.contains("known_rev") && text.contains("current_rev"))
     );
-    sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
-        .bind(inner.track_id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
+                .bind(inner.track_id.as_str()),
+        )
         .await
         .unwrap();
     let absent = since_last_turn_diff_block(inner, None, track_vcs::ReportPatch::Include).await;

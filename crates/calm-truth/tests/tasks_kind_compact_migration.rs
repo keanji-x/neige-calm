@@ -3,7 +3,11 @@ use calm_truth::MIGRATOR;
 use sqlx::{Connection, SqliteConnection, migrate::Migrate, sqlite::SqliteConnectOptions};
 
 async fn exec(db: &mut SqliteConnection, sql: &str) {
-    sqlx::raw_sql(sql).execute(db).await.unwrap();
+    {
+        let query = sqlx::raw_sql(sql);
+        sqlx::Executor::execute(db, query).await
+    }
+    .unwrap();
 }
 
 async fn insert(

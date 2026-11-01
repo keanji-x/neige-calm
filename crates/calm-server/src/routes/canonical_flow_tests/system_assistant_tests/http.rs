@@ -77,15 +77,15 @@ async fn http_summary_native_bootstrap_and_full_counts_freeze_until_new_key() {
     phase(&fixture, card, HarnessPhaseTag::TurnCompleted).await;
     assert_eq!(recovery::receipts(&fixture, card).await.len(), 4);
     for receipt in &original {
-        sqlx::query("DELETE FROM events WHERE id=?1")
-            .bind(receipt.event_id)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM events WHERE id=?1").bind(receipt.event_id))
             .await
             .unwrap();
     }
-    sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
-        .bind(card)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM harness_items WHERE card_id=?1").bind(card))
         .await
         .unwrap();
     assert_eq!(summary_post(&app, &cookie, "first").await, accepted);
@@ -341,16 +341,16 @@ async fn http_failed_deleted_and_empty_activity_replay_is_permanent_read_only_ev
     let (worker, saved) = frame(&fixture, card).await;
     // Change the contributing Track's actual visibility, without editing any
     // already accepted event, to exercise a genuinely empty activity projection.
-    sqlx::query("UPDATE tracks SET area_id=(SELECT area_id FROM tracks WHERE purpose='launchpad') WHERE id=?1")
-        .bind(&activity_track).execute(fixture.repo.pool()).await.unwrap();
+    (fixture.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET area_id=(SELECT area_id FROM tracks WHERE purpose='launchpad') WHERE id=?1")
+        .bind(&activity_track)).await.unwrap();
     let reaper = ReaperCycle::hold(&state).await;
     for mutation in [
         "UPDATE worker_sessions SET state='failed' WHERE id=?1",
         "DELETE FROM cards WHERE session_id=?1",
     ] {
-        sqlx::query(mutation)
-            .bind(&worker)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(mutation).bind(&worker))
             .await
             .unwrap();
         projectors_settled(&fixture).await;
@@ -609,14 +609,14 @@ async fn http_human_and_historical_namespace_refuse_before_legacy_adoption_even_
             !historical || saw_enqueue,
             "historical mint must publish its enqueue"
         );
-        sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',plugin_scope='legacy' WHERE id=?1").bind(track).execute(fixture.repo.pool()).await.unwrap();
-        sqlx::query("CREATE TRIGGER refuse_namespace_adoption BEFORE UPDATE OF purpose ON tracks BEGIN SELECT RAISE(ABORT,'namespace must be qualified before adoption'); END").execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',plugin_scope='legacy' WHERE id=?1").bind(track)).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_namespace_adoption BEFORE UPDATE OF purpose ON tracks BEGIN SELECT RAISE(ABORT,'namespace must be qualified before adoption'); END")).await.unwrap();
         let reaper = ReaperCycle::hold(&state).await;
         for deleted in [false, true] {
             if deleted {
-                sqlx::query("DELETE FROM cards WHERE id=?1")
-                    .bind(&card)
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DELETE FROM cards WHERE id=?1").bind(&card))
                     .await
                     .unwrap();
             }

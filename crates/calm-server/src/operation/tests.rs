@@ -61,73 +61,82 @@ async fn legacy_compensation_harness(
     .await
     .unwrap();
     let runtime_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    crate::db::sqlite::session_start_runtime_tx(
-        &mut tx,
-        crate::session_projection_repo::WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card.id.to_string(),
-            kind: session_kind,
-            agent_provider,
-            status: crate::session_projection_repo::WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    crate::session_projection_repo::WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: session_kind,
+                        agent_provider,
+                        status: crate::session_projection_repo::WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
-    let events = EventBus::new();
-    let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let spawn_ctx = SpawnCtx::new(
-        route_repo.clone(),
-        operation_repo,
-        Arc::new(DaemonClient::new_stub()),
-        terminal_renderer,
-        events.clone(),
-        OperationCompletionBus::new(),
-    );
-    let card_id = card.id.to_string();
+                let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
+                let events = EventBus::new();
+                let operation_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
+                let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+                let spawn_ctx = SpawnCtx::new(
+                    route_repo.clone(),
+                    operation_repo,
+                    Arc::new(DaemonClient::new_stub()),
+                    terminal_renderer,
+                    events.clone(),
+                    OperationCompletionBus::new(),
+                );
+                let card_id = card.id.to_string();
 
-    LegacyCompensationHarness {
-        repo,
-        route_repo,
-        spawn_ctx,
-        output: TxOutput::new("card", Some(card_id.clone()), json!({})),
-        op: Operation {
-            id: new_id(),
-            operation_key: new_id(),
-            kind: format!("{card_kind}-test"),
-            idempotency_key: Some(new_id()),
-            payload_hash: new_id(),
-            target_type: "card".into(),
-            target_id: Some(card_id.clone()),
-            target: json!({ "type": "card", "id": card_id }),
-            payload: json!({}),
-            tx_output: None,
-            phase: Phase::Compensating,
-            phase_detail: None,
-            attempt: 0,
-            last_error: None,
-            compensation_state: None,
-            lease_owner: None,
-            lease_until_ms: None,
-            spawn_artifacts: None,
-            parked_at_ms: None,
-            parked_deadline_ms: None,
-        },
-        card_id,
-        runtime_id,
-        events,
-    }
+                LegacyCompensationHarness {
+                    repo,
+                    route_repo,
+                    spawn_ctx,
+                    output: TxOutput::new("card", Some(card_id.clone()), json!({})),
+                    op: Operation {
+                        id: new_id(),
+                        operation_key: new_id(),
+                        kind: format!("{card_kind}-test"),
+                        idempotency_key: Some(new_id()),
+                        payload_hash: new_id(),
+                        target_type: "card".into(),
+                        target_id: Some(card_id.clone()),
+                        target: json!({ "type": "card", "id": card_id }),
+                        payload: json!({}),
+                        tx_output: None,
+                        phase: Phase::Compensating,
+                        phase_detail: None,
+                        attempt: 0,
+                        last_error: None,
+                        compensation_state: None,
+                        lease_owner: None,
+                        lease_until_ms: None,
+                        spawn_artifacts: None,
+                        parked_at_ms: None,
+                        parked_deadline_ms: None,
+                    },
+                    card_id,
+                    runtime_id,
+                    events,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn assert_legacy_failed_status_compensation(
@@ -256,22 +265,25 @@ async fn migration_check_rejects_parked_without_artifacts_deadline() {
         .await
         .unwrap();
     let now = now_ms();
-    let err = sqlx::query(
-        r#"INSERT INTO operations (
+    let err = (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                    id, operation_key, kind, payload_hash, target_type,
                    target_json, payload_json, phase, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, 'test-kind', 'hash', 'unknown',
                        '{"type":"unknown","id":null}', '{}', 'parked', ?3, ?3)"#,
-    )
-    .bind(new_id())
-    .bind(new_id())
-    .bind(now)
-    .execute(sqlx_repo.pool())
-    .await
-    .unwrap_err();
+            )
+            .bind(new_id())
+            .bind(new_id())
+            .bind(now),
+        )
+        .await
+        .unwrap_err();
     assert!(
-        matches!(err, sqlx::Error::Database(_)),
+        matches!(err, calm_truth::TruthError::Db(sqlx::Error::Database(_))),
         "parked row without artifacts/deadline must fail CHECK: {err}"
     );
 }
@@ -334,43 +346,52 @@ async fn complete_parked_tx_splices_result_and_double_complete_is_resolved() {
     let repo = SqlxOperationRepo::new(sqlx_repo.db().clone());
     let op = parked_operation(&repo, now_ms() + 10_000).await;
 
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    let completion = complete_parked_tx(
-        &mut tx,
-        &op.id,
-        &ParkedOutcome::Succeeded {
-            result: json!({ "parked": "done" }),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert!(matches!(completion, ParkedCompletion::Completed(_)));
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let completion = complete_parked_tx(
+                    &mut tx,
+                    &op.id,
+                    &ParkedOutcome::Succeeded {
+                        result: json!({ "parked": "done" }),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(matches!(completion, ParkedCompletion::Completed(_)));
 
-    let result = repo.operation_result(&op.id).await.unwrap().unwrap();
-    assert!(matches!(
-        result.outcome,
-        OperationOutcome::Succeeded { ref result }
-            if result == &json!({ "parked": "done" })
-    ));
+                let result = repo.operation_result(&op.id).await.unwrap().unwrap();
+                assert!(matches!(
+                    result.outcome,
+                    OperationOutcome::Succeeded { ref result }
+                        if result == &json!({ "parked": "done" })
+                ));
 
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    let second = complete_parked_tx(
-        &mut tx,
-        &op.id,
-        &ParkedOutcome::Succeeded {
-            result: json!({ "ignored": true }),
-        },
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    assert!(matches!(
-        second,
-        ParkedCompletion::AlreadyResolved {
-            phase: PhaseTag::Succeeded
-        }
-    ));
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let second = complete_parked_tx(
+                    &mut tx,
+                    &op.id,
+                    &ParkedOutcome::Succeeded {
+                        result: json!({ "ignored": true }),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.rollback().await.unwrap();
+                assert!(matches!(
+                    second,
+                    ParkedCompletion::AlreadyResolved {
+                        phase: PhaseTag::Succeeded
+                    }
+                ));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -394,60 +415,69 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
         .applied()
         .expect("claim flips to compensating");
 
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    let completion = complete_parked_tx(
-        &mut tx,
-        &op.id,
-        &ParkedOutcome::Failed {
-            last_error: "late".into(),
-            last_error_class: Some("late".into()),
-        },
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    assert!(matches!(
-        completion,
-        ParkedCompletion::AlreadyResolved {
-            phase: PhaseTag::Compensating
-        }
-    ));
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let completion = complete_parked_tx(
+                    &mut tx,
+                    &op.id,
+                    &ParkedOutcome::Failed {
+                        last_error: "late".into(),
+                        last_error_class: Some("late".into()),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.rollback().await.unwrap();
+                assert!(matches!(
+                    completion,
+                    ParkedCompletion::AlreadyResolved {
+                        phase: PhaseTag::Compensating
+                    }
+                ));
 
-    let op = parked_operation(&repo, now_ms() + 10_000).await;
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    assert!(matches!(
-        complete_parked_tx(
-            &mut tx,
-            &op.id,
-            &ParkedOutcome::Succeeded {
-                result: json!({ "ok": true }),
-            },
-        )
+                let op = parked_operation(&repo, now_ms() + 10_000).await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(matches!(
+                    complete_parked_tx(
+                        &mut tx,
+                        &op.id,
+                        &ParkedOutcome::Succeeded {
+                            result: json!({ "ok": true }),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                    ParkedCompletion::Completed(_)
+                ));
+                tx.commit().await.unwrap();
+
+                let completion = OperationCompletionBus::new();
+                let route_repo: Arc<dyn crate::db::RouteRepo> = Arc::new(sqlx_repo);
+                let operation_repo = Arc::new(repo);
+                let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
+                let runtime = OperationRuntime::new_unchecked(
+                    operation_repo.clone(),
+                    Vec::new(),
+                    EventBus::new(),
+                    completion.clone(),
+                    SpawnCtx::new(
+                        route_repo,
+                        operation_repo,
+                        Arc::new(DaemonClient::new_stub()),
+                        terminal_renderer,
+                        EventBus::new(),
+                        completion,
+                    ),
+                );
+                assert!(!runtime.cancel_parked(&op.id, "too late").await.unwrap());
+            })
+        })
         .await
-        .unwrap(),
-        ParkedCompletion::Completed(_)
-    ));
-    tx.commit().await.unwrap();
-
-    let completion = OperationCompletionBus::new();
-    let route_repo: Arc<dyn crate::db::RouteRepo> = Arc::new(sqlx_repo);
-    let operation_repo = Arc::new(repo);
-    let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
-    let runtime = OperationRuntime::new_unchecked(
-        operation_repo.clone(),
-        Vec::new(),
-        EventBus::new(),
-        completion.clone(),
-        SpawnCtx::new(
-            route_repo,
-            operation_repo,
-            Arc::new(DaemonClient::new_stub()),
-            terminal_renderer,
-            EventBus::new(),
-            completion,
-        ),
-    );
-    assert!(!runtime.cancel_parked(&op.id, "too late").await.unwrap());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -487,9 +517,7 @@ async fn same_idempotency_key_different_hash_conflicts() {
 async fn operation_event_append_creates_track_vcs_commit() {
     use crate::card_role_cache::CardRoleCache;
     use crate::db::prelude::*;
-    use crate::db::sqlite::{
-        append_decision_event_in_tx, begin_immediate_tx, card_create_with_id_tx,
-    };
+    use crate::db::sqlite::{append_decision_event_in_tx, card_create_with_id_tx};
     use crate::event::{Event, EventScope};
     use crate::ids::{ActorId, CardId};
     use crate::model::{CardRole, NewArea, NewCard, NewTrack};
@@ -526,60 +554,71 @@ async fn operation_event_append_creates_track_vcs_commit() {
         .unwrap();
     let roles = CardRoleCache::new();
     let card_id = new_id();
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    let report = card_create_with_id_tx(
-        &mut tx,
-        card_id.clone(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "track-report".into(),
-            sort: None,
-            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
-        },
-        CardRole::ReportCard,
-        false,
-        &roles,
-    )
-    .await
-    .unwrap();
-    let scope = EventScope::Card {
-        card: CardId::from(card_id),
-        track: track.id.clone(),
-        area: area.id.clone(),
-    };
-    let event = Event::CardAdded(report);
-    let event_id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let report = card_create_with_id_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "track-report".into(),
+                        sort: None,
+                        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+                    },
+                    CardRole::ReportCard,
+                    false,
+                    &roles,
+                )
+                .await
+                .unwrap();
+                let scope = EventScope::Card {
+                    card: CardId::from(card_id),
+                    track: track.id.clone(),
+                    area: area.id.clone(),
+                };
+                let event = Event::CardAdded(report);
+                let event_id =
+                    append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
+                        .await
+                        .unwrap();
+                tx.commit().await.unwrap();
 
-    let head = crate::track_vcs::head(sqlx_repo.pool(), &track.id)
+                let head = crate::track_vcs::head(sqlx_repo.pool(), &track.id)
+                    .await
+                    .unwrap()
+                    .expect("vcs head");
+                let stored_event_id: i64 = sqlx::query_scalar(
+                    "SELECT updated_event_id FROM track_vcs_refs WHERE track_id = ?1",
+                )
+                .bind(track.id.as_str())
+                .fetch_one(sqlx_repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(stored_event_id, event_id);
+                let author: Option<String> =
+                    sqlx::query_scalar("SELECT author FROM track_vcs_commits WHERE hash = ?1")
+                        .bind(&head)
+                        .fetch_one(sqlx_repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(author.as_deref(), Some("kernel"));
+                assert!(
+                    crate::track_vcs::tree_at(sqlx_repo.pool(), &head)
+                        .await
+                        .unwrap()
+                        .expect("tree")
+                        .entries
+                        .contains_key("report.md")
+                );
+            })
+        })
         .await
-        .unwrap()
-        .expect("vcs head");
-    let stored_event_id: i64 =
-        sqlx::query_scalar("SELECT updated_event_id FROM track_vcs_refs WHERE track_id = ?1")
-            .bind(track.id.as_str())
-            .fetch_one(sqlx_repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(stored_event_id, event_id);
-    let author: Option<String> =
-        sqlx::query_scalar("SELECT author FROM track_vcs_commits WHERE hash = ?1")
-            .bind(&head)
-            .fetch_one(sqlx_repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(author.as_deref(), Some("kernel"));
-    assert!(
-        crate::track_vcs::tree_at(sqlx_repo.pool(), &head)
-            .await
-            .unwrap()
-            .expect("tree")
-            .entries
-            .contains_key("report.md")
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -771,24 +810,28 @@ async fn stale_driver_cannot_win_final_transition_after_reclaim() {
         .await
         .unwrap();
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE operations
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'spawn_succeeded',
                    tx_output_json = ?4,
                    lease_owner = 'driver-a',
                    lease_until_ms = ?1,
                    updated_at_ms = ?2
                WHERE id = ?3"#,
-    )
-    .bind(now - 1)
-    .bind(now)
-    .bind(&op_id)
-    .bind(
-        serde_json::to_string(&TxOutput::new("unknown", None, json!({"completed":true}))).unwrap(),
-    )
-    .execute(sqlx_repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(now - 1)
+            .bind(now)
+            .bind(&op_id)
+            .bind(
+                serde_json::to_string(&TxOutput::new("unknown", None, json!({"completed":true})))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
     let stale_driver = repo.get_operation(&op_id).await.unwrap().unwrap();
     assert_eq!(stale_driver.lease_owner.as_deref(), Some("driver-a"));
 
@@ -850,17 +893,27 @@ async fn claim_drive_batch_excludes_parked_and_claim_parked_is_exact_phase() {
     );
 
     let compensating = parked_operation(&repo, now_ms() + 10_000).await;
-    sqlx::query("UPDATE operations SET phase = 'compensating', lease_owner = NULL WHERE id = ?1")
-        .bind(&compensating.id)
-        .execute(sqlx_repo.pool())
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase = 'compensating', lease_owner = NULL WHERE id = ?1",
+            )
+            .bind(&compensating.id),
+        )
         .await
         .unwrap();
     assert!(repo.claim_parked(&compensating.id).await.unwrap().is_none());
 
     let terminal = parked_operation(&repo, now_ms() + 10_000).await;
-    sqlx::query("UPDATE operations SET phase = 'succeeded', lease_owner = NULL WHERE id = ?1")
-        .bind(&terminal.id)
-        .execute(sqlx_repo.pool())
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase = 'succeeded', lease_owner = NULL WHERE id = ?1",
+            )
+            .bind(&terminal.id),
+        )
         .await
         .unwrap();
     assert!(repo.claim_parked(&terminal.id).await.unwrap().is_none());
@@ -875,46 +928,58 @@ async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
     let parked = parked_operation(&repo, now_ms() + 10_000).await;
     let now = now_ms();
     let lease_owner = new_id();
-    let result = sqlx::query(
-        r#"UPDATE operations
+    let result = (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
                WHERE id = ?4
                  AND phase = 'parked'
                  AND (lease_owner IS NULL OR lease_until_ms < ?3)"#,
-    )
-    .bind(&lease_owner)
-    .bind(now + OPERATION_LEASE_MS)
-    .bind(now)
-    .bind(&parked.id)
-    .execute(sqlx_repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(result.rows_affected(), 1);
-
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    assert!(matches!(
-        complete_parked_tx(
-            &mut tx,
-            &parked.id,
-            &ParkedOutcome::Succeeded {
-                result: json!({ "winner": "completion" }),
-            },
+            )
+            .bind(&lease_owner)
+            .bind(now + OPERATION_LEASE_MS)
+            .bind(now)
+            .bind(&parked.id),
         )
         .await
-        .unwrap(),
-        ParkedCompletion::Completed(_)
-    ));
-    tx.commit().await.unwrap();
+        .unwrap();
+    assert_eq!(result.rows_affected(), 1);
 
-    assert!(
-        fetch_claimed_parked(sqlx_repo.db(), &parked.id, &lease_owner)
-            .await
-            .unwrap()
-            .is_none(),
-        "post-claim fetch must miss after completion clears the lease"
-    );
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(matches!(
+                    complete_parked_tx(
+                        &mut tx,
+                        &parked.id,
+                        &ParkedOutcome::Succeeded {
+                            result: json!({ "winner": "completion" }),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                    ParkedCompletion::Completed(_)
+                ));
+                tx.commit().await.unwrap();
+
+                assert!(
+                    fetch_claimed_parked(sqlx_repo.db(), &parked.id, &lease_owner)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "post-claim fetch must miss after completion clears the lease"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -927,47 +992,56 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
     let claimed = repo.claim_parked(&parked.id).await.unwrap().unwrap();
     assert!(claimed.lease_owner.is_some());
 
-    let mut tx = begin_immediate_tx(sqlx_repo.db()).await.unwrap();
-    assert!(matches!(
-        complete_parked_tx(
-            &mut tx,
-            &parked.id,
-            &ParkedOutcome::Succeeded {
-                result: json!({ "winner": "completion" }),
-            },
-        )
-        .await
-        .unwrap(),
-        ParkedCompletion::Completed(_)
-    ));
-    tx.commit().await.unwrap();
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                assert!(matches!(
+                    complete_parked_tx(
+                        &mut tx,
+                        &parked.id,
+                        &ParkedOutcome::Succeeded {
+                            result: json!({ "winner": "completion" }),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                    ParkedCompletion::Completed(_)
+                ));
+                tx.commit().await.unwrap();
 
-    assert!(
-        repo.settle_claimed(
-            &claimed,
-            crate::operation::TerminalOutcome::Failed {
-                last_error: "deadline".into(),
-                from_phase: PhaseTag::Parked,
-                last_error_class: Some("parked_deadline".into())
-            },
-            &TestParkingAdapter {
-                observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                record_artifacts: false,
-                steal_lease_after_artifacts: false
-            }
-        )
+                assert!(
+                    repo.settle_claimed(
+                        &claimed,
+                        crate::operation::TerminalOutcome::Failed {
+                            last_error: "deadline".into(),
+                            from_phase: PhaseTag::Parked,
+                            last_error_class: Some("parked_deadline".into())
+                        },
+                        &TestParkingAdapter {
+                            observer_runs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                            record_artifacts: false,
+                            steal_lease_after_artifacts: false
+                        }
+                    )
+                    .await
+                    .unwrap()
+                    .applied()
+                    .is_none(),
+                    "completion cleared the claim lease so mark_failed cannot overwrite"
+                );
+                let result = repo.operation_result(&parked.id).await.unwrap().unwrap();
+                assert!(matches!(
+                    result.outcome,
+                    OperationOutcome::Succeeded { ref result }
+                        if result == &json!({ "winner": "completion" })
+                ));
+            })
+        })
         .await
-        .unwrap()
-        .applied()
-        .is_none(),
-        "completion cleared the claim lease so mark_failed cannot overwrite"
-    );
-    let result = repo.operation_result(&parked.id).await.unwrap().unwrap();
-    assert!(matches!(
-        result.outcome,
-        OperationOutcome::Succeeded { ref result }
-            if result == &json!({ "winner": "completion" })
-    ));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1050,41 +1124,47 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'succeeded',
                    updated_at_ms = ?1
                WHERE id = ?2"#,
-    )
-    .bind(now_ms())
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(now_ms())
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
 
     let lease_id = new_id();
     let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let stale_boot = stale_boot_id();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(&op_id)
-    .bind(now + 60_000)
-    .bind(&stale_boot)
-    .bind(now)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_id)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(&op_id)
+            .bind(now + 60_000)
+            .bind(&stale_boot)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
     let plan = runtime.recover_on_boot().await.unwrap();
@@ -1168,17 +1248,20 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'succeeded',
                    updated_at_ms = ?1
                WHERE id = ?2"#,
-    )
-    .bind(now_ms())
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(now_ms())
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
 
     let tempdir = tempfile::tempdir().unwrap();
     let path_buf = tempdir.path().join("workspace");
@@ -1187,24 +1270,27 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let lease_id = new_id();
     let now = now_ms();
     let stale_boot = stale_boot_id();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(&op_id)
-    .bind(now + 60_000)
-    .bind(&stale_boot)
-    .bind(now)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_id)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(&op_id)
+            .bind(now + 60_000)
+            .bind(&stale_boot)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
     let plan = runtime
@@ -1226,7 +1312,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     );
 
     let replacement = new_id();
-    sqlx::query(
+    (repo.pool).writer().execute(sqlx::query(
         r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
@@ -1238,8 +1324,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     .bind(track.id.as_str())
     .bind(&path)
     .bind(now + 120_000)
-    .bind(now + 1)
-    .execute(repo.pool.writer_pool())
+    .bind(now + 1))
     .await
     .expect("released lease row frees the active path index");
 }
@@ -1303,41 +1388,47 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
         )
         .await
         .unwrap();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'succeeded',
                    updated_at_ms = ?1
                WHERE id = ?2"#,
-    )
-    .bind(now_ms())
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(now_ms())
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
 
     let lease_id = new_id();
     let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let boot_id = crate::proc_identity::read_boot_id().expect("current boot id");
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(&op_id)
-    .bind(now + 60_000)
-    .bind(&boot_id)
-    .bind(now)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_id)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(&op_id)
+            .bind(now + 60_000)
+            .bind(&boot_id)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
     let plan = runtime.recover_on_boot().await.unwrap();
@@ -1427,8 +1518,11 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
         Some(card.id.to_string()),
         json!({ "prepared": true }),
     );
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'tx_committed',
                    tx_output_json = ?1,
                    target_type = ?2,
@@ -1437,45 +1531,48 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
                    lease_owner = NULL,
                    lease_until_ms = NULL
                WHERE id = ?5"#,
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(&output.target_type)
-    .bind(&output.target_id)
-    .bind(
-        serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))
-        .unwrap(),
-    )
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(&output.target_type)
+            .bind(&output.target_id)
+            .bind(
+                serde_json::to_string(&json!({
+                    "type": output.target_type,
+                    "id": output.target_id,
+                }))
+                .unwrap(),
+            )
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
 
     let lease_id = new_id();
     let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
     let stale_boot = stale_boot_id();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, ?7, ?8, ?8)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(&op_id)
-    .bind(now + 60_000)
-    .bind(&stale_boot)
-    .bind(now)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_id)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(&op_id)
+            .bind(now + 60_000)
+            .bind(&stale_boot)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let observer_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let adapter = Arc::new(TestParkingAdapter {
@@ -1579,22 +1676,25 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let path = format!(".claude/worktrees/{}/{}", track.id, card.id);
     std::fs::create_dir_all(&path).unwrap();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'releasing', 'release-owner', ?5, 'dead-boot', ?6, ?6)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(sqlx_repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_id)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.db().clone()));
     let runtime = test_runtime(sqlx_repo, repo.clone(), vec![]);
@@ -1620,22 +1720,25 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     assert_eq!(released_events, 1);
 
     let replacement = new_id();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
                    lease_until_ms, boot_id, created_at_ms, updated_at_ms
                )
                VALUES (?1, ?2, ?3, ?4, 'held', 'new-owner', ?5, 'new-boot', ?6, ?6)"#,
-    )
-    .bind(&replacement)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(&path)
-    .bind(now + 120_000)
-    .bind(now + 1)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&replacement)
+            .bind(card.id.as_str())
+            .bind(track.id.as_str())
+            .bind(&path)
+            .bind(now + 120_000)
+            .bind(now + 1),
+        )
+        .await
+        .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -1649,22 +1752,25 @@ async fn boot_leave_parked_clears_abandoned_future_lease() {
     let (_child, artifacts) = live_child_spawn_artifacts();
     let artifacts_json = serde_json::to_string(&artifacts).unwrap();
     let now = now_ms();
-    sqlx::query(
-        r#"UPDATE operations
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET spawn_artifacts_json = ?1,
                    lease_owner = 'abandoned-boot-lease',
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
                WHERE id = ?4
                  AND phase = 'parked'"#,
-    )
-    .bind(artifacts_json)
-    .bind(now + OPERATION_LEASE_MS)
-    .bind(now)
-    .bind(&parked.id)
-    .execute(sqlx_repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(artifacts_json)
+            .bind(now + OPERATION_LEASE_MS)
+            .bind(now)
+            .bind(&parked.id),
+        )
+        .await
+        .unwrap();
 
     let before = repo.get_operation(&parked.id).await.unwrap().unwrap();
     assert_eq!(before.lease_owner.as_deref(), Some("abandoned-boot-lease"));
@@ -1791,44 +1897,50 @@ async fn claimed_spawn_started_operation(repo: &SqlxOperationRepo) -> Operation 
         .unwrap();
     let now = now_ms();
     let lease_owner = new_id();
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
                WHERE id = ?4"#,
-    )
-    .bind(&lease_owner)
-    .bind(now + OPERATION_LEASE_MS)
-    .bind(now)
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(&lease_owner)
+            .bind(now + OPERATION_LEASE_MS)
+            .bind(now)
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
     let output = TxOutput::new("unknown", None, json!({ "initial": true }));
-    sqlx::query(
-        r#"UPDATE operations
+    (repo.pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
                SET phase = 'spawn_started',
                    tx_output_json = ?1,
                    target_type = ?2,
                    target_id = ?3,
                    target_json = ?4
                WHERE id = ?5"#,
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(&output.target_type)
-    .bind(&output.target_id)
-    .bind(
-        serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))
-        .unwrap(),
-    )
-    .bind(&op_id)
-    .execute(repo.pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(&output.target_type)
+            .bind(&output.target_id)
+            .bind(
+                serde_json::to_string(&json!({
+                    "type": output.target_type,
+                    "id": output.target_id,
+                }))
+                .unwrap(),
+            )
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
     repo.get_operation(&op_id).await.unwrap().unwrap()
 }
 
@@ -1986,21 +2098,24 @@ impl ProviderAdapter for TestParkingAdapter {
             if self.steal_lease_after_artifacts {
                 let pool = ctx.operation_repo.sqlite_db();
                 let now = now_ms();
-                let result = sqlx::query(
-                    r#"UPDATE operations
+                let result = (pool)
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            r#"UPDATE operations
                            SET lease_owner = 'stolen-driver',
                                lease_until_ms = ?1,
                                updated_at_ms = ?2
                            WHERE id = ?3
                              AND phase = 'spawn_started'
                              AND lease_owner = ?4"#,
-                )
-                .bind(now + OPERATION_LEASE_MS)
-                .bind(now)
-                .bind(&op.id)
-                .bind(required_lease_owner(op)?)
-                .execute(pool.writer_pool())
-                .await?;
+                        )
+                        .bind(now + OPERATION_LEASE_MS)
+                        .bind(now)
+                        .bind(&op.id)
+                        .bind(required_lease_owner(op)?),
+                    )
+                    .await?;
                 if result.rows_affected() == 0 {
                     return Err(CalmError::Internal(
                         "test adapter failed to steal operation lease".into(),
@@ -2079,11 +2194,20 @@ pub(super) async fn prepare_claimed_adapter(
     let prepared = collect_claimed_preparation(repo.clone(), adapter, op)
         .await?
         .expect("worker returns one-shot preparation");
-    let mut tx = begin_immediate_tx(repo.db()).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, op).await? else {
-        panic!("stable fixture facts became stale");
-    };
-    tx.commit().await?;
-    Ok(output)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, op).await? else {
+                    panic!("stable fixture facts became stale");
+                };
+                tx.commit().await?;
+                Ok(output)
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }

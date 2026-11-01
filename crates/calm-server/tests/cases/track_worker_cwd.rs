@@ -76,21 +76,30 @@ pub(super) async fn managed_world() -> World {
         &[],
     )
     .await;
-    let mut tx = world.fx.pool().begin().await.unwrap();
-    calm_server::test_seams::prepare_worker_lease_for_test(
-        &mut tx,
-        world.fx.track(),
-        &world.fx.workspace_root,
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    git(
-        &world.fx.worktree,
-        &["config", "user.email", "managed@example.test"],
-    );
-    git(&world.fx.worktree, &["config", "user.name", "Managed Test"]);
-    world
+    let write_db = (world.fx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    world.fx.track(),
+                    &world.fx.workspace_root,
+                )
+                .await
+                .unwrap();
+                tx.rollback().await.unwrap();
+                git(
+                    &world.fx.worktree,
+                    &["config", "user.email", "managed@example.test"],
+                );
+                git(&world.fx.worktree, &["config", "user.name", "Managed Test"]);
+                world
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn borrowed_world(development: bool) -> World {

@@ -1057,37 +1057,46 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
         })
         .await
         .unwrap();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Exited,
-            terminal_run_id: Some(term.id),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::ClaudeCard,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status: WorkerSessionState::Exited,
+                        terminal_run_id: Some(term.id),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let (status, response) = post_restart(boot.app.clone(), card.id.as_str()).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
-    assert!(
-        response["error"]
-            .as_str()
-            .unwrap()
-            .contains("no resumable session id"),
-        "body={response:?}"
-    );
+                let (status, response) = post_restart(boot.app.clone(), card.id.as_str()).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
+                assert!(
+                    response["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("no resumable session id"),
+                    "body={response:?}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1352,24 +1361,27 @@ async fn post_claude_card_idempotency_key_reused_by_other_kind_uses_fresh_operat
     let key = "shared-user-key";
     let terminal_op_id = new_id();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
                phase, created_at_ms, updated_at_ms, completed_at_ms
            )
            VALUES (?1, ?2, 'terminal-create', ?3, 'terminal-hash',
                    'track', ?4, ?5, '{}', 'succeeded', ?6, ?6, ?6)"#,
-    )
-    .bind(&terminal_op_id)
-    .bind(key)
-    .bind(key)
-    .bind(&boot.track_id)
-    .bind(serde_json::to_string(&json!({ "type": "track", "id": boot.track_id })).unwrap())
-    .bind(now)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&terminal_op_id)
+            .bind(key)
+            .bind(key)
+            .bind(&boot.track_id)
+            .bind(serde_json::to_string(&json!({ "type": "track", "id": boot.track_id })).unwrap())
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let (status, card) = post(
         boot.app.clone(),

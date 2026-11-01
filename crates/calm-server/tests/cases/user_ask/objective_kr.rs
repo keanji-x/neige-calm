@@ -60,56 +60,60 @@ async fn measure(boot: &Boot, revision: &str, changed: bool) {
     )
     .await;
     let db = boot.repo.sqlite_db().unwrap();
-    for job in objective_host::unsettled_intents_for_track(&db, &boot.track_id)
-        .await
-        .unwrap()
-    {
-        let objective::Intent::RunCheck {
-            objective,
-            evaluation,
-            check,
-            revision,
-            sample,
-        } = job.intent
-        else {
-            continue;
-        };
-        let output = match check.as_str() {
-            "cmd" => json!({"kind":"command","output":{"exit_code":if changed {7} else {0}}}),
-            "lower" | "higher" => {
-                json!({"kind":"metric","output":{"value":if changed {3.5} else {5.0}}})
-            }
-            "majority" | "median" => {
-                json!({"kind":"evaluator","output":{"judgements":[{"item":"quality","trend":if sample > 0 {"better"} else if changed {"worse"} else {"same"},"evidence":[{"path":"src/lib.rs","line":1}]}],"findings":{"blocking":if sample > 0 {if changed {3} else {2}} else {0},"major":if sample > 0 {if changed {4} else {3}} else if changed {1} else {0},"minor":if sample > 0 {if changed {5} else {4}} else {0}}}})
-            }
-            _ => json!({"kind":"fact","output":{"holds":!changed}}),
-        };
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for job in objective_host::unsettled_intents_for_track(&db, &boot.track_id)
             .await
-            .unwrap();
-        objective_host::intent_mark_dispatched_tx(&mut tx, &job.id)
-            .await
-            .unwrap();
-        objective_host::react_tx(
-            &mut tx,
-            &ObjectiveInput {
-                track_id: boot.track_id.clone(),
-                source: InputSource::IntentJob { intent: job.id },
-                event: objective::Event::CheckFinished {
-                    objective,
-                    evaluation,
-                    check,
-                    revision,
-                    sample,
-                    output: serde_json::from_value(output).unwrap(),
+            .unwrap()
+        {
+            let objective::Intent::RunCheck {
+                objective,
+                evaluation,
+                check,
+                revision,
+                sample,
+            } = job.intent
+            else {
+                continue;
+            };
+            let output = match check.as_str() {
+                "cmd" => json!({"kind":"command","output":{"exit_code":if changed {7} else {0}}}),
+                "lower" | "higher" => {
+                    json!({"kind":"metric","output":{"value":if changed {3.5} else {5.0}}})
+                }
+                "majority" | "median" => {
+                    json!({"kind":"evaluator","output":{"judgements":[{"item":"quality","trend":if sample > 0 {"better"} else if changed {"worse"} else {"same"},"evidence":[{"path":"src/lib.rs","line":1}]}],"findings":{"blocking":if sample > 0 {if changed {3} else {2}} else {0},"major":if sample > 0 {if changed {4} else {3}} else if changed {1} else {0},"minor":if sample > 0 {if changed {5} else {4}} else {0}}}})
+                }
+                _ => json!({"kind":"fact","output":{"holds":!changed}}),
+            };
+            let mut tx = write_session.begin_immediate()
+                .await
+                .unwrap();
+            objective_host::intent_mark_dispatched_tx(&mut tx, &job.id)
+                .await
+                .unwrap();
+            objective_host::react_tx(
+                &mut tx,
+                &ObjectiveInput {
+                    track_id: boot.track_id.clone(),
+                    source: InputSource::IntentJob { intent: job.id },
+                    event: objective::Event::CheckFinished {
+                        objective,
+                        evaluation,
+                        check,
+                        revision,
+                        sample,
+                        output: serde_json::from_value(output).unwrap(),
+                    },
                 },
-            },
-            1,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
+                1,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn fixture(measurement: bool) -> Boot {

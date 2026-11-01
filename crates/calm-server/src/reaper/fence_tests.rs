@@ -5,7 +5,7 @@ use calm_truth::db::RepoRead;
 use crate::card_role_cache::CardRoleCache;
 
 use calm_truth::db::RepoEventWrite;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
+use calm_truth::db::sqlite::{SqlxRepo, session_insert_tx};
 use calm_truth_test_harness::FakeProvider;
 use calm_types::worker::{LivenessTag, WorkerProviderKind};
 
@@ -37,30 +37,37 @@ async fn stale_probe(change: Change) {
     let task = insert_task(&repo, &track, "fence", TaskStatus::Running).await;
     let card = insert_session(&repo, session("old", track.clone(), 1)).await;
     if matches!(change, Change::LegacyRestart) {
-        sqlx::query("UPDATE worker_sessions SET provider = 'claude', agent_session_id = 'legacy-agent' WHERE id = 'old'")
-            .execute(repo.pool()).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET provider = 'claude', agent_session_id = 'legacy-agent' WHERE id = 'old'")).await.unwrap();
     }
     let op = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'old'")
-        .bind(&op)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'old'").bind(&op),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-        .bind(card.id.as_str())
-        .bind(&task.id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                .bind(card.id.as_str())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     let (mut lease, _) = acquire_test_workspace_lease(&repo, card.id.as_str(), &track, &op).await;
     if matches!(change, Change::MissingBinding) {
-        sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?")
-            .bind(&task.id)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?").bind(&task.id))
             .await
             .unwrap();
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'old'")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'old'",
+            ))
             .await
             .unwrap();
     }
@@ -83,81 +90,81 @@ async fn stale_probe(change: Change) {
     reaper_on_boot();
     let sweep = tokio::spawn(async move { reaper.sweep_all().await });
     entered.notified().await;
-    match change {
-        Change::LegacyRestart => legacy_restart(&repo, &card).await,
-        Change::AttemptReplaced => {
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = 'old'")
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            let mut replacement = session("replacement", track.clone(), 2);
-            replacement.card_id = Some(card.id.clone());
-            session_insert_tx(&mut tx, replacement).await.unwrap();
-            sqlx::query("UPDATE cards SET session_id = 'replacement' WHERE id = ?")
-                .bind(card.id.as_str())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            let new_op = replace_attempt(&repo, &task, &card).await;
-            sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'replacement'")
-                .bind(&new_op)
-                .execute(repo.pool())
-                .await
-                .unwrap();
-            (lease, _) =
-                acquire_test_workspace_lease(&repo, card.id.as_str(), &track, &new_op).await;
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        match change {
+            Change::LegacyRestart => legacy_restart(&repo, &card).await,
+            Change::AttemptReplaced => {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = 'old'")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                let mut replacement = session("replacement", track.clone(), 2);
+                replacement.card_id = Some(card.id.clone());
+                session_insert_tx(&mut tx, replacement).await.unwrap();
+                sqlx::query("UPDATE cards SET session_id = 'replacement' WHERE id = ?")
+                    .bind(card.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let new_op = replace_attempt(&repo, &task, &card).await;
+                (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'replacement'")
+                    .bind(&new_op))
+                    .await
+                    .unwrap();
+                (lease, _) =
+                    acquire_test_workspace_lease(&repo, card.id.as_str(), &track, &new_op).await;
+            }
+            Change::WrongCard => {
+                let replacement = insert_session(&repo, session("replacement", track.clone(), 2)).await;
+                (repo.db()).writer().execute(sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                    .bind(replacement.id.as_str())
+                    .bind(&task.id))
+                    .await
+                    .unwrap();
+            }
+            Change::MissingBinding => {
+                (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'old'"))
+                    .await
+                    .unwrap();
+                (repo.db()).writer().execute(sqlx::query("UPDATE cards SET session_id = NULL WHERE id = ?")
+                    .bind(card.id.as_str()))
+                    .await
+                    .unwrap();
+            }
         }
-        Change::WrongCard => {
-            let replacement = insert_session(&repo, session("replacement", track.clone(), 2)).await;
-            sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-                .bind(replacement.id.as_str())
-                .bind(&task.id)
-                .execute(repo.pool())
-                .await
-                .unwrap();
-        }
-        Change::MissingBinding => {
-            sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'old'")
-                .execute(repo.pool())
-                .await
-                .unwrap();
-            sqlx::query("UPDATE cards SET session_id = NULL WHERE id = ?")
-                .bind(card.id.as_str())
-                .execute(repo.pool())
-                .await
-                .unwrap();
-        }
-    }
-    let historical_before = repo.task_get(&task.id).await.unwrap().unwrap();
-    let before = repo.tasks_by_track(track.as_str()).await.unwrap();
-    let events_before = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
-        .await
-        .unwrap()
-        .len();
-    resume.notify_one();
-    sweep.await.unwrap();
-    assert_eq!(repo.tasks_by_track(track.as_str()).await.unwrap(), before);
-    assert_eq!(
-        repo.task_get(&task.id).await.unwrap().unwrap(),
-        historical_before
-    );
-    let state: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
-        .bind(&lease)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(state, "held");
-    assert!(task_failed_events(&repo, &task.id).await.is_empty());
-    assert_eq!(
-        RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+        let historical_before = repo.task_get(&task.id).await.unwrap().unwrap();
+        let before = repo.tasks_by_track(track.as_str()).await.unwrap();
+        let events_before = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
             .await
             .unwrap()
-            .len(),
-        events_before
-    );
-    reset_reaper_boot_gate_for_test();
+            .len();
+        resume.notify_one();
+        sweep.await.unwrap();
+        assert_eq!(repo.tasks_by_track(track.as_str()).await.unwrap(), before);
+        assert_eq!(
+            repo.task_get(&task.id).await.unwrap().unwrap(),
+            historical_before
+        );
+        let state: String = sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
+            .bind(&lease)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(state, "held");
+        assert!(task_failed_events(&repo, &task.id).await.is_empty());
+        assert_eq!(
+            RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+                .await
+                .unwrap()
+                .len(),
+            events_before
+        );
+        reset_reaper_boot_gate_for_test();
+
+    })).await.expect("independent write operation")
 }
 
 // Materialize a released recovery shape, as existing persisted attempts may carry it.
@@ -165,95 +172,114 @@ async fn replace_attempt(repo: &SqlxRepo, task: &crate::model::Task, card: &Card
     use calm_types::task_recovery::{
         TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint,
     };
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    sqlx::query("UPDATE tasks SET status = 'failed', finished_at_ms = ? WHERE id = ?")
-        .bind(now_ms())
-        .bind(&task.id)
-        .execute(&mut **tx)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        sqlx::query("UPDATE tasks SET status = 'failed', finished_at_ms = ? WHERE id = ?")
+            .bind(now_ms())
+            .bind(&task.id)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        release_workspace_lease_for_card_tx(
+            &mut tx,
+            card.id.as_str(),
+            ReleaseDelivery::CommitAsTaskEnded,
+        )
         .await
         .unwrap();
-    release_workspace_lease_for_card_tx(
-        &mut tx,
-        card.id.as_str(),
-        ReleaseDelivery::CommitAsTaskEnded,
-    )
-    .await
-    .unwrap();
-    let mut replacement = task.clone();
-    replacement.id = format!("{}:replacement", task.id);
-    replacement.worker_card_id = Some(card.id.to_string());
-    let origin = TaskAttemptOrigin::Recovery {
-        previous_attempt_id: task.id.clone(),
-        idempotency_key: "retry".into(),
-        request_fingerprint: "retry".into(),
-        reason: "retry".into(),
-        actor: ActorId::Kernel,
-        constraint: TaskRecoveryConstraint::V1 {
-            refs: vec![calm_types::event::TaskContextRef {
-                track_id: task.track_id.clone().into(),
-                block_id: "root".into(),
-                rev: 0,
-                hash: "a".repeat(64),
-                is_root: true,
-            }],
-            spawn: TASK_IN_TRACK_ROUTE.into(),
-            declared_by: "user".into(),
-        },
-    };
-    sqlx::query("INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES(?,?,?,2,?,?)")
-        .bind(&replacement.id).bind(&task.track_id).bind(&task.key)
-        .bind(serde_json::to_string(&origin).unwrap()).bind(now_ms()).execute(&mut **tx).await.unwrap();
-    crate::test_support::insert_task_tx(&mut tx, &replacement)
-        .await
-        .unwrap();
-    // Preserve the stale live row a delayed writer can still see after allocation replacement,
-    // as in the terminal-worker supersession regression. Current-session fencing must dominate it.
-    sqlx::query("UPDATE tasks SET status = 'running' WHERE id = ?")
-        .bind(&task.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    insert_spawn_operation(repo, Some(&replacement.id), Some(card.id.as_str())).await
+        let mut replacement = task.clone();
+        replacement.id = format!("{}:replacement", task.id);
+        replacement.worker_card_id = Some(card.id.to_string());
+        let origin = TaskAttemptOrigin::Recovery {
+            previous_attempt_id: task.id.clone(),
+            idempotency_key: "retry".into(),
+            request_fingerprint: "retry".into(),
+            reason: "retry".into(),
+            actor: ActorId::Kernel,
+            constraint: TaskRecoveryConstraint::V1 {
+                refs: vec![calm_types::event::TaskContextRef {
+                    track_id: task.track_id.clone().into(),
+                    block_id: "root".into(),
+                    rev: 0,
+                    hash: "a".repeat(64),
+                    is_root: true,
+                }],
+                spawn: TASK_IN_TRACK_ROUTE.into(),
+                declared_by: "user".into(),
+            },
+        };
+        sqlx::query("INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES(?,?,?,2,?,?)")
+            .bind(&replacement.id).bind(&task.track_id).bind(&task.key)
+            .bind(serde_json::to_string(&origin).unwrap()).bind(now_ms()).execute(&mut **tx).await.unwrap();
+        crate::test_support::insert_task_tx(&mut tx, &replacement)
+            .await
+            .unwrap();
+        // Preserve the stale live row a delayed writer can still see after allocation replacement,
+        // as in the terminal-worker supersession regression. Current-session fencing must dominate it.
+        sqlx::query("UPDATE tasks SET status = 'running' WHERE id = ?")
+            .bind(&task.id)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        insert_spawn_operation(repo, Some(&replacement.id), Some(card.id.as_str())).await
+
+    })).await.expect("independent write operation")
 }
 
 async fn legacy_restart(repo: &Arc<SqlxRepo>, card: &Card) {
     let settings = tempfile::tempdir().unwrap();
-    sqlx::query("UPDATE cards SET kind = 'claude', payload = ? WHERE id = ?")
+    (repo.db()).writer().execute(sqlx::query("UPDATE cards SET kind = 'claude', payload = ? WHERE id = ?")
         .bind(json!({"settings_path": settings.path().join("settings.json"), "session_id": "legacy-agent"}).to_string())
-        .bind(card.id.as_str()).execute(repo.pool()).await.unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    crate::db::sqlite::session_complete_tx(&mut tx, &"old".to_owned(), WorkerSessionState::Exited)
+        .bind(card.id.as_str())).await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                crate::db::sqlite::session_complete_tx(
+                    &mut tx,
+                    &"old".to_owned(),
+                    WorkerSessionState::Exited,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let adapter = crate::operation::claude_restart_adapter::ClaudeRestartAdapter::new(
+                    repo.clone(),
+                    Arc::new(crate::state::CodexClient::new_stub()),
+                    None,
+                    CardRoleCache::new(),
+                    TrackAreaCache::new(),
+                );
+                let operations = SqlxOperationRepo::new(repo.db().clone());
+                let id = insert_spawn_operation(repo, None, None).await;
+                let op = operations.get_operation(&id).await.unwrap().unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let payload =
+                    crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload {
+                        actor: ActorId::KernelDispatcher,
+                        worker_session_id: Some("restarted".into()),
+                        card_id: card.id.to_string(),
+                    };
+                adapter
+                    .prepare_tx(&mut tx, &serde_json::to_value(payload).unwrap(), &op)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let current: String =
+                    sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?")
+                        .bind(card.id.as_str())
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(current, "restarted");
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let adapter = crate::operation::claude_restart_adapter::ClaudeRestartAdapter::new(
-        repo.clone(),
-        Arc::new(crate::state::CodexClient::new_stub()),
-        None,
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
-    );
-    let operations = SqlxOperationRepo::new(repo.db().clone());
-    let id = insert_spawn_operation(repo, None, None).await;
-    let op = operations.get_operation(&id).await.unwrap().unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let payload = crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload {
-        actor: ActorId::KernelDispatcher,
-        worker_session_id: Some("restarted".into()),
-        card_id: card.id.to_string(),
-    };
-    adapter
-        .prepare_tx(&mut tx, &serde_json::to_value(payload).unwrap(), &op)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let current: String = sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?")
-        .bind(card.id.as_str())
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(current, "restarted");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -285,60 +311,76 @@ async fn w_reaper_nonterminal_task_race_releases_nothing() {
         let task = insert_task(&repo, &track, "nonterminal", status).await;
         let card = insert_session(&repo, session("current", track.clone(), 1)).await;
         let op = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'current'")
-            .bind(&op)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'current'")
+                    .bind(&op),
+            )
             .await
             .unwrap();
-        sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-            .bind(card.id.as_str())
-            .bind(&task.id)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                    .bind(card.id.as_str())
+                    .bind(&task.id),
+            )
             .await
             .unwrap();
         // Legacy leases have no delivery guard to mask an unauthorized release.
         let lease_path = tempfile::tempdir().unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let (lease, _) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
-            &mut tx,
-            card.id.as_str(),
-            track.as_str(),
-            &op,
-            lease_path.path(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let lease = lease.lease_id;
-        let before = repo.task_get(&task.id).await.unwrap();
-        let events_before = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let (lease, _) =
+                        crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+                            &mut tx,
+                            card.id.as_str(),
+                            track.as_str(),
+                            &op,
+                            lease_path.path(),
+                        )
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    let lease = lease.lease_id;
+                    let before = repo.task_get(&task.id).await.unwrap();
+                    let events_before = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+                        .await
+                        .unwrap();
+                    let reaper = Reaper::new(
+                        repo.clone(),
+                        registry(Arc::new(
+                            FakeProvider::new().with_probe_script([exited_liveness()]),
+                        )),
+                        EventBus::new(),
+                        write_context(&repo).await,
+                    );
+                    reaper_on_boot();
+                    reaper.sweep_all().await;
+                    assert_eq!(repo.task_get(&task.id).await.unwrap(), before);
+                    let state: String =
+                        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
+                            .bind(&lease)
+                            .fetch_one(repo.pool())
+                            .await
+                            .unwrap();
+                    assert_eq!(state, "held", "nonterminal task {status:?}");
+                    assert_eq!(
+                        RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
+                            .await
+                            .unwrap()
+                            .len(),
+                        events_before.len()
+                    );
+                })
+            })
             .await
-            .unwrap();
-        let reaper = Reaper::new(
-            repo.clone(),
-            registry(Arc::new(
-                FakeProvider::new().with_probe_script([exited_liveness()]),
-            )),
-            EventBus::new(),
-            write_context(&repo).await,
-        );
-        reaper_on_boot();
-        reaper.sweep_all().await;
-        assert_eq!(repo.task_get(&task.id).await.unwrap(), before);
-        let state: String =
-            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?")
-                .bind(&lease)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(state, "held", "nonterminal task {status:?}");
-        assert_eq!(
-            RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
-                .await
-                .unwrap()
-                .len(),
-            events_before.len()
-        );
+            .expect("independent write operation")
     }
     reset_reaper_boot_gate_for_test();
 }
@@ -355,33 +397,36 @@ async fn restarted_session_death(access: crate::model::TaskAccess, attempt_ended
     .await;
     let task = insert_task(&repo, &track, "restarted", TaskStatus::Running).await;
     let card = insert_session(&repo, session("old", track.clone(), 1)).await;
-    sqlx::query("UPDATE worker_sessions SET provider = 'claude', agent_session_id = 'legacy-agent' WHERE id = 'old'")
-        .execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET provider = 'claude', agent_session_id = 'legacy-agent' WHERE id = 'old'")).await.unwrap();
     let op = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'old'")
-        .bind(&op)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'old'").bind(&op),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-        .bind(card.id.as_str())
-        .bind(&task.id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                .bind(card.id.as_str())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     let (lease, _) =
         acquire_test_workspace_lease_as(&repo, card.id.as_str(), &track, &op, access).await;
     legacy_restart(&repo, &card).await;
     // The replacement spawn came up; its row carries no spawn op.
-    let spawned = sqlx::query("UPDATE worker_sessions SET state = 'running' WHERE id = 'restarted' AND spawn_op_id IS NULL")
-        .execute(repo.pool())
+    let spawned = (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state = 'running' WHERE id = 'restarted' AND spawn_op_id IS NULL"))
         .await
         .unwrap();
     assert_eq!(spawned.rows_affected(), 1);
     if attempt_ended {
-        sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?")
-            .bind(&task.id)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?").bind(&task.id))
             .await
             .unwrap();
     }
@@ -448,9 +493,11 @@ async fn w_reaper_stale_nonterminal_session_records_liveness() {
     let (repo, track) = seeded_repo().await;
     let card = insert_session(&repo, session("stale", track.clone(), 1)).await;
     // The card no longer names this still-active session as its current one.
-    sqlx::query("UPDATE cards SET session_id = NULL WHERE id = ?")
-        .bind(card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET session_id = NULL WHERE id = ?").bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     let reaper = Reaper::new(

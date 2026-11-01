@@ -12,7 +12,7 @@ async fn insert_reader(
     head: Option<&str>,
     base: Option<&str>,
 ) {
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms, access, head, base) \
          VALUES (?1, ?2, ?3, 'codex', 'review', 'null', '[]', 'dispatched', 1, 1, 'read_only', ?4, ?5)",
@@ -21,8 +21,7 @@ async fn insert_reader(
     .bind(&harness.track_id)
     .bind(key)
     .bind(head)
-    .bind(base)
-    .execute(harness.repo.pool())
+    .bind(base))
     .await
     .unwrap();
 }

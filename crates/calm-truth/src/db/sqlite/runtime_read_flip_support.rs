@@ -138,196 +138,242 @@ pub(super) async fn seed_runtime(
     case: RuntimeReadCase,
     now_ms: i64,
 ) -> WorkerSessionProjection {
-    let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let card_id =
-        create_card_in_tx(repo, &mut tx, case.label, case.card_kind, case.card_payload).await;
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: format!("rt-read-flip-{}", case.label),
-            card_id,
-            kind: case.kind,
-            agent_provider: case.agent_provider,
-            status: case.status,
-            terminal_run_id: None,
-            thread_id: Some(format!("thread-{}", case.label)),
-            session_id: Some(format!("agent-session-{}", case.label)),
-            active_turn_id: Some(format!("turn-{}", case.label)),
-            handle_state_json: Some(json!({"case": case.label})),
-            spawn_op_id: None,
-            now_ms,
-        },
-    )
-    .await
-    .expect("start runtime");
-    tx.commit().await.expect("commit seed tx");
-    runtime
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed tx");
+                let card_id =
+                    create_card_in_tx(repo, &mut tx, case.label, case.card_kind, case.card_payload)
+                        .await;
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: format!("rt-read-flip-{}", case.label),
+                        card_id,
+                        kind: case.kind,
+                        agent_provider: case.agent_provider,
+                        status: case.status,
+                        terminal_run_id: None,
+                        thread_id: Some(format!("thread-{}", case.label)),
+                        session_id: Some(format!("agent-session-{}", case.label)),
+                        active_turn_id: Some(format!("turn-{}", case.label)),
+                        handle_state_json: Some(json!({"case": case.label})),
+                        spawn_op_id: None,
+                        now_ms,
+                    },
+                )
+                .await
+                .expect("start runtime");
+                tx.commit().await.expect("commit seed tx");
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn seed_runtime_with_keys(
     repo: &SqlxRepo,
     seed: KeyedRuntimeSeed,
 ) -> WorkerSessionProjection {
-    let mut tx = repo.pool().begin().await.expect("begin keyed seed tx");
-    let card_id =
-        create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind, seed.card_payload).await;
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: format!("rt-read-flip-{}", seed.label),
-            card_id,
-            kind: seed.kind,
-            agent_provider: seed.agent_provider,
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: seed.thread_id.map(str::to_string),
-            session_id: seed.session_id.map(str::to_string),
-            active_turn_id: Some(format!("turn-{}", seed.label)),
-            handle_state_json: Some(json!({"case": seed.label})),
-            spawn_op_id: None,
-            now_ms: seed.now_ms,
-        },
-    )
-    .await
-    .expect("start keyed runtime");
-    tx.commit().await.expect("commit keyed seed tx");
-    runtime
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin keyed seed tx");
+                let card_id =
+                    create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind, seed.card_payload)
+                        .await;
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: format!("rt-read-flip-{}", seed.label),
+                        card_id,
+                        kind: seed.kind,
+                        agent_provider: seed.agent_provider,
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: seed.thread_id.map(str::to_string),
+                        session_id: seed.session_id.map(str::to_string),
+                        active_turn_id: Some(format!("turn-{}", seed.label)),
+                        handle_state_json: Some(json!({"case": seed.label})),
+                        spawn_op_id: None,
+                        now_ms: seed.now_ms,
+                    },
+                )
+                .await
+                .expect("start keyed runtime");
+                tx.commit().await.expect("commit keyed seed tx");
+                runtime
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn seed_terminal_runtime(
     repo: &SqlxRepo,
     label: &'static str,
 ) -> (WorkerSessionProjection, String) {
-    let mut tx = repo.pool().begin().await.expect("begin terminal seed tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: format!("read flip {label}"),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create terminal area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id,
-            title: format!("read flip {label}"),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create terminal track");
-    let runtime_id = format!("rt-read-flip-{label}");
-    let (_card, terminal) = card_with_terminal_create_tx(
-        &mut tx,
-        format!("card-read-flip-{label}"),
-        &runtime_id,
-        None,
-        track.id,
-        None,
-        None,
-        "bash".into(),
-        "/tmp".into(),
-        json!({}),
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-        RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .expect("create terminal card");
-    let runtime = session_projection_by_id_tx(&mut tx, &runtime_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin terminal seed tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: format!("read flip {label}"),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create terminal area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id,
+                        title: format!("read flip {label}"),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create terminal track");
+                let runtime_id = format!("rt-read-flip-{label}");
+                let (_card, terminal) = card_with_terminal_create_tx(
+                    &mut tx,
+                    format!("card-read-flip-{label}"),
+                    &runtime_id,
+                    None,
+                    track.id,
+                    None,
+                    None,
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                    RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .expect("create terminal card");
+                let runtime = session_projection_by_id_tx(&mut tx, &runtime_id)
+                    .await
+                    .expect("read seeded terminal runtime")
+                    .expect("seeded terminal runtime exists");
+                tx.commit().await.expect("commit terminal seed tx");
+                (runtime, terminal.id)
+            })
+        })
         .await
-        .expect("read seeded terminal runtime")
-        .expect("seeded terminal runtime exists");
-    tx.commit().await.expect("commit terminal seed tx");
-    (runtime, terminal.id)
+        .expect("independent write operation")
 }
 
 pub(super) async fn seed_codex_terminal_card(
     repo: &SqlxRepo,
     label: &'static str,
 ) -> (String, String, String) {
-    let mut tx = repo
-        .pool()
-        .begin()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin codex terminal seed tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: format!("read flip {label}"),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create codex terminal area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id,
+                        title: format!("read flip {label}"),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create codex terminal track");
+                let runtime_id = format!("rt-read-flip-{label}-initial");
+                let (card, terminal, _mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    format!("card-read-flip-{label}"),
+                    &runtime_id,
+                    None,
+                    track.id,
+                    None,
+                    None,
+                    "/tmp".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    false,
+                    repo.card_role_cache(),
+                    RequestTheme::default_dark(),
+                )
+                .await
+                .expect("create codex terminal card");
+                tx.commit().await.expect("commit codex terminal seed tx");
+                (card.id.to_string(), terminal.id, runtime_id)
+            })
+        })
         .await
-        .expect("begin codex terminal seed tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: format!("read flip {label}"),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create codex terminal area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id,
-            title: format!("read flip {label}"),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create codex terminal track");
-    let runtime_id = format!("rt-read-flip-{label}-initial");
-    let (card, terminal, _mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        format!("card-read-flip-{label}"),
-        &runtime_id,
-        None,
-        track.id,
-        None,
-        None,
-        "/tmp".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        repo.card_role_cache(),
-        RequestTheme::default_dark(),
-    )
-    .await
-    .expect("create codex terminal card");
-    tx.commit().await.expect("commit codex terminal seed tx");
-    (card.id.to_string(), terminal.id, runtime_id)
+        .expect("independent write operation")
 }
 
 pub(super) async fn age_terminal_past_grace(repo: &SqlxRepo, terminal_id: &str) {
-    let res = sqlx::query("UPDATE terminals SET created_at = 1 WHERE id = ?1")
-        .bind(terminal_id)
-        .execute(repo.pool())
+    let res = (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE terminals SET created_at = 1 WHERE id = ?1").bind(terminal_id))
         .await
         .expect("age terminal past grace");
     assert_eq!(res.rows_affected(), 1);
@@ -389,64 +435,77 @@ pub(super) async fn seed_projectable_history(
     label: &'static str,
     include_active: bool,
 ) -> ProjectableHistory {
-    let mut tx = repo.pool().begin().await.expect("begin projectable tx");
-    let card_id =
-        create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
-    let older = session_start_runtime_tx(
-        &mut tx,
-        projectable_runtime_init(
-            &card_id,
-            label,
-            "older",
-            WorkerSessionState::Running,
-            10_000,
-        ),
-    )
-    .await
-    .expect("start older runtime");
-    let exited = session_supersede_and_start_tx(
-        &mut tx,
-        &older.id,
-        projectable_runtime_init(
-            &card_id,
-            label,
-            "exited",
-            WorkerSessionState::Exited,
-            20_000,
-        ),
-    )
-    .await
-    .expect("supersede older runtime with exited runtime");
-    let superseded = session_projection_by_id_tx(&mut tx, &older.id)
-        .await
-        .expect("read superseded runtime")
-        .expect("superseded runtime row");
-    let active = if include_active {
-        Some(
-            session_start_runtime_tx(
-                &mut tx,
-                projectable_runtime_init(
-                    &card_id,
-                    label,
-                    "active",
-                    WorkerSessionState::Running,
-                    30_000,
-                ),
-            )
-            .await
-            .expect("start active runtime"),
-        )
-    } else {
-        None
-    };
-    tx.commit().await.expect("commit projectable tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin projectable tx");
+                let card_id =
+                    create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1}))
+                        .await;
+                let older = session_start_runtime_tx(
+                    &mut tx,
+                    projectable_runtime_init(
+                        &card_id,
+                        label,
+                        "older",
+                        WorkerSessionState::Running,
+                        10_000,
+                    ),
+                )
+                .await
+                .expect("start older runtime");
+                let exited = session_supersede_and_start_tx(
+                    &mut tx,
+                    &older.id,
+                    projectable_runtime_init(
+                        &card_id,
+                        label,
+                        "exited",
+                        WorkerSessionState::Exited,
+                        20_000,
+                    ),
+                )
+                .await
+                .expect("supersede older runtime with exited runtime");
+                let superseded = session_projection_by_id_tx(&mut tx, &older.id)
+                    .await
+                    .expect("read superseded runtime")
+                    .expect("superseded runtime row");
+                let active = if include_active {
+                    Some(
+                        session_start_runtime_tx(
+                            &mut tx,
+                            projectable_runtime_init(
+                                &card_id,
+                                label,
+                                "active",
+                                WorkerSessionState::Running,
+                                30_000,
+                            ),
+                        )
+                        .await
+                        .expect("start active runtime"),
+                    )
+                } else {
+                    None
+                };
+                tx.commit().await.expect("commit projectable tx");
 
-    ProjectableHistory {
-        card_id,
-        superseded,
-        exited,
-        active,
-    }
+                ProjectableHistory {
+                    card_id,
+                    superseded,
+                    exited,
+                    active,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn seed_deferred_projectable_placeholder(
@@ -454,17 +513,30 @@ pub(super) async fn seed_deferred_projectable_placeholder(
     label: &'static str,
 ) -> (String, String) {
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
-    let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id =
-        create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1})).await;
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
-    )
-    .await
-    .expect("prepare deferred projectable placeholder");
-    tx.commit().await.expect("commit placeholder tx");
-    (card_id, placeholder_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin placeholder tx");
+                let card_id =
+                    create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1}))
+                        .await;
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
+                )
+                .await
+                .expect("prepare deferred projectable placeholder");
+                tx.commit().await.expect("commit placeholder tx");
+                (card_id, placeholder_id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) fn assert_ws_backed_projection(

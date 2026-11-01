@@ -111,15 +111,14 @@ fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
 #[tokio::test]
 async fn claude_worker_task_prompt_runs_its_gate_through_the_mcp_tool() {
     let harness = claude_worker_harness().await;
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms, gate_json) \
          VALUES (?1, ?2, 'gated', 'claude', 'test', 'null', '[]', 'dispatched', 1, 1, ?3)",
     )
     .bind(format!("{}:gated", harness.track_id))
     .bind(&harness.track_id)
-    .bind(json!({ "steps": [{ "name": "check", "cmd": "true" }] }).to_string())
-    .execute(harness.repo.pool())
+    .bind(json!({ "steps": [{ "name": "check", "cmd": "true" }] }).to_string()))
     .await
     .unwrap();
     let (output, _, _) = prepare_claude_worker(&harness, "gated").await;
@@ -336,14 +335,13 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
         ClaudeRestartAdapter, ClaudeRestartOperationPayload,
     };
     let harness = claude_worker_harness().await;
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, 'again', 'claude', 'work', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(format!("{}:again", harness.track_id))
-    .bind(&harness.track_id)
-    .execute(harness.repo.pool())
+    .bind(&harness.track_id))
     .await
     .unwrap();
     let output = prepare_claude_worker_as_scheduled(&harness, "again").await;
@@ -362,88 +360,97 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
             .await
             .unwrap();
     assert!(handshake(&harness, &predecessor_token).await.is_some());
-    match previous {
-        PreviousEnd::Exited => {
-            crate::db::RepoOutOfDomain::terminal_set_exit(
-                harness.repo.as_ref(),
-                &terminal_id,
-                Some(0),
-                false,
-            )
-            .await
-            .unwrap();
-            let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-            crate::db::sqlite::session_complete_for_card_tx(
-                &mut tx,
-                &card_id,
-                WorkerSessionState::Exited,
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-        }
-        PreviousEnd::ReapedWithoutExitRow => {
-            use crate::db::prelude::*;
-            // What the first spawn recorded of its child.
-            crate::db::RepoOutOfDomain::terminal_set_pid(
-                harness.repo.as_ref(),
-                &terminal_id,
-                Some(4242),
-            )
-            .await
-            .unwrap();
-            harness
-                .repo
-                .session_commit_exit(
-                    &calm_types::worker::WorkerSessionId::from(first_session.as_str()),
-                    WorkerSessionState::Failed,
-                    crate::model::now_ms(),
-                    None,
-                    "failed",
-                )
-                .await
-                .unwrap();
-        }
-    }
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                match previous {
+                    PreviousEnd::Exited => {
+                        crate::db::RepoOutOfDomain::terminal_set_exit(
+                            harness.repo.as_ref(),
+                            &terminal_id,
+                            Some(0),
+                            false,
+                        )
+                        .await
+                        .unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        crate::db::sqlite::session_complete_for_card_tx(
+                            &mut tx,
+                            &card_id,
+                            WorkerSessionState::Exited,
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    }
+                    PreviousEnd::ReapedWithoutExitRow => {
+                        use crate::db::prelude::*;
+                        // What the first spawn recorded of its child.
+                        crate::db::RepoOutOfDomain::terminal_set_pid(
+                            harness.repo.as_ref(),
+                            &terminal_id,
+                            Some(4242),
+                        )
+                        .await
+                        .unwrap();
+                        harness
+                            .repo
+                            .session_commit_exit(
+                                &calm_types::worker::WorkerSessionId::from(first_session.as_str()),
+                                WorkerSessionState::Failed,
+                                crate::model::now_ms(),
+                                None,
+                                "failed",
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
 
-    let mcp_dir = tempfile::tempdir().unwrap();
-    let mcp_server = test_mcp_server(mcp_dir.path());
-    let (spawned, hook) = capturing_hook();
-    let restart = ClaudeRestartAdapter::new_with_spawn_hook(
-        harness.repo.clone(),
-        Arc::new(CodexClient::new_stub()),
-        Some(mcp_server.clone()),
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
-        hook,
-    );
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor: ActorId::KernelDispatcher,
-        worker_session_id: None,
-        card_id: card_id.clone(),
-    })
-    .unwrap();
-    let restart_op = claude_worker_op("op-restart", payload.clone());
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let restart_output = restart
-        .prepare_tx(&mut tx, &payload, &restart_op)
+                let mcp_dir = tempfile::tempdir().unwrap();
+                let mcp_server = test_mcp_server(mcp_dir.path());
+                let (spawned, hook) = capturing_hook();
+                let restart = ClaudeRestartAdapter::new_with_spawn_hook(
+                    harness.repo.clone(),
+                    Arc::new(CodexClient::new_stub()),
+                    Some(mcp_server.clone()),
+                    CardRoleCache::new(),
+                    TrackAreaCache::new(),
+                    hook,
+                );
+                let payload = serde_json::to_value(ClaudeRestartOperationPayload {
+                    actor: ActorId::KernelDispatcher,
+                    worker_session_id: None,
+                    card_id: card_id.clone(),
+                })
+                .unwrap();
+                let restart_op = claude_worker_op("op-restart", payload.clone());
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let restart_output = restart
+                    .prepare_tx(&mut tx, &payload, &restart_op)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let restart_session = restart_output.output_string("runtime_id", "test").unwrap();
+                WorkerRestart {
+                    harness,
+                    _mcp_dir: mcp_dir,
+                    mcp_server,
+                    spawned,
+                    restart,
+                    restart_op,
+                    restart_output,
+                    restart_session,
+                    card_id,
+                    settings_path,
+                    predecessor_token,
+                }
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let restart_session = restart_output.output_string("runtime_id", "test").unwrap();
-    WorkerRestart {
-        harness,
-        _mcp_dir: mcp_dir,
-        mcp_server,
-        spawned,
-        restart,
-        restart_op,
-        restart_output,
-        restart_session,
-        card_id,
-        settings_path,
-        predecessor_token,
-    }
+        .expect("independent write operation")
 }
 
 #[cfg(feature = "fixtures")]

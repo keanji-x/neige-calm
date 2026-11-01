@@ -20,70 +20,74 @@ impl ProviderExecution {
         }
         let inventory =
             executions::consumer_inventory(pool.read_pool(), self.owner.consumer()).await?;
-        for (id, row) in inventory {
-            let entry = match row {
-                Ok(entry) => entry,
-                Err(error) => {
-                    tracing::warn!(%id, %error, "unclassified execution; retaining");
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            for (id, row) in inventory {
+                let entry = match row {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        tracing::warn!(%id, %error, "unclassified execution; retaining");
+                        continue;
+                    }
+                };
+                // A malformed owner row is not evidence of an orphan. Its typed identity
+                // still identifies all possible aliases belonging to that session.
+                if unclassified
+                    .iter()
+                    .any(|session| self.owner.alias(session, &id) == entry.alias)
+                {
                     continue;
                 }
-            };
-            // A malformed owner row is not evidence of an orphan. Its typed identity
-            // still identifies all possible aliases belonging to that session.
-            if unclassified
-                .iter()
-                .any(|session| self.owner.alias(session, &id) == entry.alias)
-            {
-                continue;
-            }
-            let owned = claims.iter().find(|(session, claim)| {
-                claim.record().execution_id == id && self.owner.alias(session, &id) == entry.alias
-            });
-            let result = async {
-                let execution_id = ExecutionId::try_from(id.clone()).map_err(conflict)?;
-                if let Some((session, claim)) = owned {
-                    if self.drivers.contains(&execution_id) {
-                        return Ok(());
-                    }
-                    if claim.record().decision == Decision::Observing {
-                        self.stop(pool, engine, session, claim, StopReason::DriverLost)
-                            .await?;
-                    }
-                    if entry.settled {
-                        self.finish(pool, engine, session, claim, None).await?;
-                    }
-                } else {
-                    // (a) Absent or mismatched claim, including a deleted owner.
-                    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-                    // Re-read under the writer lock: admission and owner deletion may
-                    // race the inventory. A fresh exact claim always wins.
-                    for (session, row) in sql::list(&mut **tx).await? {
-                        if self.owner.alias(&session, &id) != entry.alias {
-                            continue;
+                let owned = claims.iter().find(|(session, claim)| {
+                    claim.record().execution_id == id && self.owner.alias(session, &id) == entry.alias
+                });
+                let result = async {
+                    let execution_id = ExecutionId::try_from(id.clone()).map_err(conflict)?;
+                    if let Some((session, claim)) = owned {
+                        if self.drivers.contains(&execution_id) {
+                            return Ok(());
                         }
-                        match row {
-                            Err(_) => return Ok(()),
-                            Ok(claim) if claim.record().execution_id == id => return Ok(()),
-                            Ok(_) => {}
+                        if claim.record().decision == Decision::Observing {
+                            self.stop(pool, engine, session, claim, StopReason::DriverLost)
+                                .await?;
                         }
+                        if entry.settled {
+                            self.finish(pool, engine, session, claim, None).await?;
+                        }
+                    } else {
+                        // (a) Absent or mismatched claim, including a deleted owner.
+                        let mut tx = write_session.begin_immediate().await?;
+                        // Re-read under the writer lock: admission and owner deletion may
+                        // race the inventory. A fresh exact claim always wins.
+                        for (session, row) in sql::list(&mut **tx).await? {
+                            if self.owner.alias(&session, &id) != entry.alias {
+                                continue;
+                            }
+                            match row {
+                                Err(_) => return Ok(()),
+                                Ok(claim) if claim.record().execution_id == id => return Ok(()),
+                                Ok(_) => {}
+                            }
+                        }
+                        executions::request(
+                            &mut tx,
+                            &id,
+                            if entry.settled { "retire" } else { "stop" },
+                        )
+                        .await?;
+                        tx.commit().await?;
+                        crate::execution_quiesce::drive(engine, [execution_id]);
                     }
-                    executions::request(
-                        &mut tx,
-                        &id,
-                        if entry.settled { "retire" } else { "stop" },
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    crate::execution_quiesce::drive(engine, [execution_id]);
+                    Ok::<_, CalmError>(())
                 }
-                Ok::<_, CalmError>(())
+                .await;
+                if let Err(error) = result {
+                    tracing::warn!(%id, %error, "provider sweep row failed; retry next pass");
+                }
             }
-            .await;
-            if let Err(error) = result {
-                tracing::warn!(%id, %error, "provider sweep row failed; retry next pass");
-            }
-        }
-        Ok(())
+            Ok(())
+
+    })).await.map_err(calm_truth::TruthError::from)?
     }
 }
 
@@ -298,8 +302,9 @@ mod tests {
         let (sweep, mut exited) = held_sweep(false).await;
         state.provider_sweep = Some(sweep.clone());
         // Fail the real fatal boot fence, after the sweep exists.
-        sqlx::query("DROP TABLE area_folders")
-            .execute(state.sqlite_db().unwrap().writer_pool())
+        (state.sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query("DROP TABLE area_folders"))
             .await
             .unwrap();
         let cfg = crate::config::Config::parse_from([

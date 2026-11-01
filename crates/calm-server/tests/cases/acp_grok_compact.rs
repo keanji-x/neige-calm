@@ -117,22 +117,24 @@ async fn acp_grok_compact_cleanup_failure_unconfirmed() {
         .await
         .unwrap();
     let pool = stack.repo().sqlite_db().unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_grok_revoke BEFORE UPDATE OF mcp_token_hash ",
-        "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
-        "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
-    ))
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+    (pool)
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_grok_revoke BEFORE UPDATE OF mcp_token_hash ",
+            "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
+            "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
+        )))
+        .await
+        .unwrap();
     cleanup.release.notify_one();
     wait_phase(&stack, &runtime.id, "wedged").await;
     assert_eq!(
         snapshot(&stack, &card).await["compact_outcome"]["status"],
         "unconfirmed"
     );
-    sqlx::query("DROP TRIGGER refuse_grok_revoke")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_grok_revoke"))
         .await
         .unwrap();
     assert_eq!(requests(&root, "_x.ai/compact_conversation").len(), 1);

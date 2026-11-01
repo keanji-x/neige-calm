@@ -12,95 +12,111 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
     let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
     let repo = repo().await;
     let mut targets = Vec::new();
-    for (i, role) in [CardRole::Planner, CardRole::Assistant, CardRole::Worker]
-        .into_iter()
-        .enumerate()
-    {
-        let existing = seed_card(&repo, i).await;
-        let track = repo.card_get(&existing).await.unwrap().unwrap().track_id;
-        let card = new_id();
-        let mut tx = repo.pool().begin().await.unwrap();
-        calm_server::db::sqlite::card_create_with_id_tx(
-            &mut tx,
-            card.clone(),
-            NewCard {
-                track_id: track,
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: if role == CardRole::Planner {
-                    json!({"codex_source":"shared","planner_provider":"codex"})
-                } else {
-                    json!({"codex_source":"shared"})
-                },
-            },
-            role,
-            true,
-            &calm_server::card_role_cache::CardRoleCache::new(),
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for (i, role) in [CardRole::Planner, CardRole::Assistant, CardRole::Worker]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let existing = seed_card(&repo, i).await;
+                    let track = repo.card_get(&existing).await.unwrap().unwrap().track_id;
+                    let card = new_id();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    calm_server::db::sqlite::card_create_with_id_tx(
+                        &mut tx,
+                        card.clone(),
+                        NewCard {
+                            track_id: track,
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: if role == CardRole::Planner {
+                                json!({"codex_source":"shared","planner_provider":"codex"})
+                            } else {
+                                json!({"codex_source":"shared"})
+                            },
+                        },
+                        role,
+                        true,
+                        &calm_server::card_role_cache::CardRoleCache::new(),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let thread = format!("approval-thread-{i}");
+                    let kind = if role == CardRole::Worker {
+                        WorkerSessionKind::CodexCard
+                    } else {
+                        WorkerSessionKind::SharedPlanner
+                    };
+                    seed_runtime_thread_with_kind(&repo, &card, &thread, kind).await;
+                    targets.push((card, thread, role));
+                }
+                let daemon = server(&root, repo.clone()).await;
+                daemon.start_or_takeover().await.unwrap();
+                let rows = wait_for_requests(&capture, 4).await;
+                for (_, thread, role) in &targets {
+                    let request = rows
+                        .iter()
+                        .find(|r| {
+                            r["method"] == "thread/resume" && r["params"]["threadId"] == *thread
+                        })
+                        .unwrap();
+                    let tools = request.pointer("/params/config/mcp_servers/neige/tools");
+                    match role {
+                        CardRole::Planner => assert_eq!(
+                            tools,
+                            Some(&json!({
+                                "neige_terminal_open":{"approval_mode":"approve"},
+                                "neige_terminal_control":{"approval_mode":"approve"},
+                                "neige_terminal_input":{"approval_mode":"approve"}
+                            }))
+                        ),
+                        // #2492: an Assistant drives existing workers but opens no card.
+                        CardRole::Assistant => assert_eq!(
+                            tools,
+                            Some(&json!({
+                                "neige_terminal_control":{"approval_mode":"approve"},
+                                "neige_terminal_input":{"approval_mode":"approve"}
+                            }))
+                        ),
+                        _ => assert!(request.pointer("/params/config/mcp_servers").is_none()),
+                    }
+                }
+                // A stale SharedPlanner session kind cannot retain the Planner's delegation after demotion: the
+                // resumed thread gets the Assistant's, without `neige_terminal_open`.
+                (repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
+                            .bind(&targets[0].0),
+                    )
+                    .await
+                    .unwrap();
+                daemon.mark_needs_respawn();
+                daemon.ensure_respawn_for_current_settings().await.unwrap();
+                let after = wait_for_requests(&capture, rows.len() + 4).await;
+                let resumed = after
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r["method"] == "thread/resume" && r["params"]["threadId"] == targets[0].1
+                    })
+                    .unwrap();
+                assert_eq!(
+                    resumed.pointer("/params/config/mcp_servers/neige/tools"),
+                    Some(&json!({
+                        "neige_terminal_control":{"approval_mode":"approve"},
+                        "neige_terminal_input":{"approval_mode":"approve"}
+                    }))
+                );
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let thread = format!("approval-thread-{i}");
-        let kind = if role == CardRole::Worker {
-            WorkerSessionKind::CodexCard
-        } else {
-            WorkerSessionKind::SharedPlanner
-        };
-        seed_runtime_thread_with_kind(&repo, &card, &thread, kind).await;
-        targets.push((card, thread, role));
-    }
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-    let rows = wait_for_requests(&capture, 4).await;
-    for (_, thread, role) in &targets {
-        let request = rows
-            .iter()
-            .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == *thread)
-            .unwrap();
-        let tools = request.pointer("/params/config/mcp_servers/neige/tools");
-        match role {
-            CardRole::Planner => assert_eq!(
-                tools,
-                Some(&json!({
-                    "neige_terminal_open":{"approval_mode":"approve"},
-                    "neige_terminal_control":{"approval_mode":"approve"},
-                    "neige_terminal_input":{"approval_mode":"approve"}
-                }))
-            ),
-            // #2492: an Assistant drives existing workers but opens no card.
-            CardRole::Assistant => assert_eq!(
-                tools,
-                Some(&json!({
-                    "neige_terminal_control":{"approval_mode":"approve"},
-                    "neige_terminal_input":{"approval_mode":"approve"}
-                }))
-            ),
-            _ => assert!(request.pointer("/params/config/mcp_servers").is_none()),
-        }
-    }
-    // A stale SharedPlanner session kind cannot retain the Planner's delegation after demotion: the
-    // resumed thread gets the Assistant's, without `neige_terminal_open`.
-    sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
-        .bind(&targets[0].0)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    daemon.mark_needs_respawn();
-    daemon.ensure_respawn_for_current_settings().await.unwrap();
-    let after = wait_for_requests(&capture, rows.len() + 4).await;
-    let resumed = after
-        .iter()
-        .rev()
-        .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == targets[0].1)
-        .unwrap();
-    assert_eq!(
-        resumed.pointer("/params/config/mcp_servers/neige/tools"),
-        Some(&json!({
-            "neige_terminal_control":{"approval_mode":"approve"},
-            "neige_terminal_input":{"approval_mode":"approve"}
-        }))
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]

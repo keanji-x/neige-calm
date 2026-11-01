@@ -84,23 +84,29 @@ async fn reuse_refs_sampling_releases_writer_and_revalidates_run() {
         let pool = fx.db();
         let task_id = a.task.id.clone();
         let mut writer = tokio::spawn(async move {
-            let mut tx = begin_immediate_tx(&pool).await?;
-            // An unrelated update proves the write slot is available while refs is blocked.
-            sqlx::query(
+            pool.writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await?;
+                        // An unrelated update proves the write slot is available while refs is blocked.
+                        sqlx::query(
                 "UPDATE tracks SET title=title WHERE id=(SELECT track_id FROM tasks WHERE id=?1)",
             )
             .bind(&task_id)
             .execute(&mut **tx)
             .await?;
-            if change_run {
-                sqlx::query(include_str!("../../fixtures/gate_run_verdict_change.sql"))
-                    .bind(TASK_GATE_RUN_KIND)
-                    .bind(format!("{task_id}#r1"))
-                    .execute(&mut **tx)
-                    .await?;
-            }
-            tx.commit().await?;
-            Ok::<_, calm_server::error::CalmError>(())
+                        if change_run {
+                            sqlx::query(include_str!("../../fixtures/gate_run_verdict_change.sql"))
+                                .bind(TASK_GATE_RUN_KIND)
+                                .bind(format!("{task_id}#r1"))
+                                .execute(&mut **tx)
+                                .await?;
+                        }
+                        tx.commit().await?;
+                        Ok::<_, calm_server::error::CalmError>(())
+                    })
+                })
+                .await?
         });
         let committed = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         let unbumped = current(&fx.boot, &a.task.key).await.gate_attempt;

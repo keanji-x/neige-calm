@@ -95,10 +95,19 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         &self,
         track: &str,
     ) -> Result<Vec<workspace_runtime::reclaim::ExtraWorktree>> {
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.receipts.db).await?;
-        let targets = super::reclaim::snapshot(&mut tx, track, &[]).await?;
-        tx.commit().await?;
-        Ok(targets)
+        let write_db = (self.receipts.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    let targets = super::reclaim::snapshot(&mut tx, track, &[]).await?;
+                    tx.commit().await?;
+                    Ok(targets)
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {

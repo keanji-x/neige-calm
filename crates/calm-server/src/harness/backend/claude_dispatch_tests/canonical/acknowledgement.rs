@@ -128,50 +128,58 @@ async fn canonical_claude_acknowledgement_allows_next_human_input_without_keep()
     let fx = Fixture::new("exit").await;
     let harness = fx.start_loop().await;
     fx.phase("turn_completed").await;
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "following acknowledged input".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("Human")
+                };
+                tx.commit().await.unwrap();
+                harness
+                    .observe_canonical_source(message, fx.source.clone())
+                    .await
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(25), async {
+                    loop {
+                        let cp = fx.checkpoint().await;
+                        if cp.attempts.len() == 2 && cp.active.is_none() {
+                            assert!(cp.attempts.iter().all(|attempt| matches!(
+                                attempt.delivery,
+                                InputDeliveryFact::Accepted { .. }
+                            )));
+                            assert!(cp.pending.is_empty());
+                            assert!(cp.receipts.is_empty());
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(fx.session.user_line_writes_for_test(), 2);
+                harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "following acknowledged input".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("Human")
-    };
-    tx.commit().await.unwrap();
-    harness
-        .observe_canonical_source(message, fx.source.clone())
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(25), async {
-        loop {
-            let cp = fx.checkpoint().await;
-            if cp.attempts.len() == 2 && cp.active.is_none() {
-                assert!(
-                    cp.attempts.iter().all(|attempt| matches!(
-                        attempt.delivery,
-                        InputDeliveryFact::Accepted { .. }
-                    ))
-                );
-                assert!(cp.pending.is_empty());
-                assert!(cp.receipts.is_empty());
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(fx.session.user_line_writes_for_test(), 2);
-    harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -185,88 +193,101 @@ async fn canonical_claude_replay_records_on_failed_current_carrier_without_react
     })
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let turn = carrier.checkpoint().attempts[0]
+                    .correlation
+                    .local_turn_id
+                    .clone()
+                    .unwrap();
+                let mut header = RuntimeExecutionFence::from_carrier(&carrier)
+                    .header()
+                    .clone();
+                header["phase"] = serde_json::json!("wedged");
+                header["wedged_reason"] =
+                    serde_json::json!(calm_types::harness::HARNESS_RUNTIME_FAILED_REASON);
+                header["last_turn_id"] = serde_json::json!(turn);
+                persist_runtime_frame_tx(
+                    &mut tx,
+                    &fx.owner.card,
+                    &fx.owner.worker,
+                    &RuntimeExecutionFence::from_carrier(&carrier),
+                    header,
+                )
+                .await
+                .unwrap();
+                // The phase mirror permits failure while a provider claim is live; the
+                // compensation writer intentionally refuses that precondition.
+                crate::db::sqlite::session_set_harness_observation_runtime_tx(
+                    &mut tx,
+                    &fx.owner.worker,
+                    calm_types::worker::WorkerSessionState::Failed,
+                    Some(&fx.owner.thread),
+                    Some(&turn),
+                )
+                .await
+                .unwrap();
+                let failed: String =
+                    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
+                        .bind(&fx.owner.worker)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    failed, "failed",
+                    "establish the actual failed-carrier precondition"
+                );
+                tx.commit().await.unwrap();
+                std::fs::write(fx.dir.path().join("release-replay"), "").unwrap();
+                fx.wait_end().await;
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let facts =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                assert!(matches!(
+                    facts.checkpoint().attempts[0].delivery,
+                    InputDeliveryFact::Accepted { .. }
+                ));
+                assert!(facts.checkpoint().active.is_none());
+                assert!(
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .is_err(),
+                    "native facts must not reopen execution admission"
+                );
+                let state: String =
+                    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
+                        .bind(&fx.owner.worker)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    state, "failed",
+                    "factual acknowledgement must not restore execution authority"
+                );
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let turn = carrier.checkpoint().attempts[0]
-        .correlation
-        .local_turn_id
-        .clone()
-        .unwrap();
-    let mut header = RuntimeExecutionFence::from_carrier(&carrier)
-        .header()
-        .clone();
-    header["phase"] = serde_json::json!("wedged");
-    header["wedged_reason"] = serde_json::json!(calm_types::harness::HARNESS_RUNTIME_FAILED_REASON);
-    header["last_turn_id"] = serde_json::json!(turn);
-    persist_runtime_frame_tx(
-        &mut tx,
-        &fx.owner.card,
-        &fx.owner.worker,
-        &RuntimeExecutionFence::from_carrier(&carrier),
-        header,
-    )
-    .await
-    .unwrap();
-    // The phase mirror permits failure while a provider claim is live; the
-    // compensation writer intentionally refuses that precondition.
-    crate::db::sqlite::session_set_harness_observation_runtime_tx(
-        &mut tx,
-        &fx.owner.worker,
-        calm_types::worker::WorkerSessionState::Failed,
-        Some(&fx.owner.thread),
-        Some(&turn),
-    )
-    .await
-    .unwrap();
-    let failed: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
-        .bind(&fx.owner.worker)
-        .fetch_one(&mut **tx)
-        .await
-        .unwrap();
-    assert_eq!(
-        failed, "failed",
-        "establish the actual failed-carrier precondition"
-    );
-    tx.commit().await.unwrap();
-    std::fs::write(fx.dir.path().join("release-replay"), "").unwrap();
-    fx.wait_end().await;
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let facts = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-        .await
-        .unwrap();
-    assert!(matches!(
-        facts.checkpoint().attempts[0].delivery,
-        InputDeliveryFact::Accepted { .. }
-    ));
-    assert!(facts.checkpoint().active.is_none());
-    assert!(
-        current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-            .await
-            .is_err(),
-        "native facts must not reopen execution admission"
-    );
-    let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?")
-        .bind(&fx.owner.worker)
-        .fetch_one(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        state, "failed",
-        "factual acknowledgement must not restore execution authority"
-    );
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn canonical_claude_failed_acknowledgement_write_preserves_uncertainty_and_end() {
     let fx = Fixture::new("exit").await;
-    sqlx::query("CREATE TRIGGER fail_input_ack BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fx.owner.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER fail_input_ack BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].delivery.kind')='accepted'
-        BEGIN SELECT RAISE(ABORT,'ack failed'); END")
-        .execute(fx.owner.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'ack failed'); END")).await.unwrap();
     fx.dispatch().await.unwrap();
     fx.wait_end().await;
     let cp = fx.checkpoint().await;

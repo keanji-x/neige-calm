@@ -660,37 +660,46 @@ mod tests {
             .unwrap();
         }
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let (composite, _) = card_with_terminal_create_tx(
-            &mut tx,
-            crate::model::new_id(),
-            &crate::model::new_id(),
-            None,
-            track.id,
-            Some("T".into()),
-            None,
-            "bash".into(),
-            "/tmp".into(),
-            json!({}),
-            CardRole::Worker,
-            true,
-            repo.card_role_cache(),
-            RequestTheme::default_dark(),
-            false,
-            calm_types::card_presentation::CardCreationSource::Manual,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            repo.card_get(composite.id.as_str())
-                .await
-                .unwrap()
-                .unwrap()
-                .title
-                .as_deref(),
-            Some("T")
-        );
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let (composite, _) = card_with_terminal_create_tx(
+                        &mut tx,
+                        crate::model::new_id(),
+                        &crate::model::new_id(),
+                        None,
+                        track.id,
+                        Some("T".into()),
+                        None,
+                        "bash".into(),
+                        "/tmp".into(),
+                        json!({}),
+                        CardRole::Worker,
+                        true,
+                        repo.card_role_cache(),
+                        RequestTheme::default_dark(),
+                        false,
+                        calm_types::card_presentation::CardCreationSource::Manual,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        repo.card_get(composite.id.as_str())
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .title
+                            .as_deref(),
+                        Some("T")
+                    );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// `card_update_tx` keeps a stored `terminal_signals: true` sticky across a whole-payload replacement, refuses a
@@ -723,117 +732,129 @@ mod tests {
             })
             .await
             .unwrap();
-        let open = |planner_hooks: bool| {
-            let track_id = track.id.clone();
-            let repo = &repo;
-            async move {
-                let mut tx = repo.pool().begin().await.unwrap();
-                let (card, _) = card_with_terminal_create_tx(
-                    &mut tx,
-                    crate::model::new_id(),
-                    &crate::model::new_id(),
-                    None,
-                    track_id,
-                    None,
-                    None,
-                    "bash".into(),
-                    "/tmp".into(),
-                    json!({}),
-                    CardRole::Worker,
-                    true,
-                    repo.card_role_cache(),
-                    RequestTheme::default_dark(),
-                    planner_hooks,
-                    calm_types::card_presentation::CardCreationSource::Manual,
+
+        {
+            let open = |planner_hooks: bool| {
+                let track_id = track.id.clone();
+                let repo = &repo;
+                async move {
+                    let write_db = (repo.db()).clone();
+                    write_db
+                        .writer()
+                        .with_writer(|write_session_1| {
+                            Box::pin(async move {
+                                let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                let (card, _) = card_with_terminal_create_tx(
+                                    &mut tx,
+                                    crate::model::new_id(),
+                                    &crate::model::new_id(),
+                                    None,
+                                    track_id,
+                                    None,
+                                    None,
+                                    "bash".into(),
+                                    "/tmp".into(),
+                                    json!({}),
+                                    CardRole::Worker,
+                                    true,
+                                    repo.card_role_cache(),
+                                    RequestTheme::default_dark(),
+                                    planner_hooks,
+                                    calm_types::card_presentation::CardCreationSource::Manual,
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                card
+                            })
+                        })
+                        .await
+                        .expect("independent write operation")
+                }
+            };
+            let marked = open(true).await;
+            let plain = open(false).await;
+            assert_eq!(marked.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+            assert!(plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none());
+
+            let replaced = repo
+                .card_update(
+                    marked.id.as_str(),
+                    CardPatch {
+                        payload: Some(json!({ "schemaVersion": 1, "terminal_id": "x" })),
+                        ..Default::default()
+                    },
                 )
                 .await
                 .unwrap();
-                tx.commit().await.unwrap();
-                card
-            }
-        };
-        let marked = open(true).await;
-        let plain = open(false).await;
-        assert_eq!(marked.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
-        assert!(plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none());
-
-        let replaced = repo
-            .card_update(
-                marked.id.as_str(),
-                CardPatch {
-                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "x" })),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(replaced.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
-        assert_eq!(replaced.payload["terminal_id"], "x");
-        assert_eq!(
-            repo.card_get(marked.id.as_str())
+            assert_eq!(replaced.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+            assert_eq!(replaced.payload["terminal_id"], "x");
+            assert_eq!(
+                repo.card_get(marked.id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
+                true
+            );
+            // Sticky across a kind retarget as well (the hook route keys on the payload, never on the patchable kind).
+            let retargeted = repo
+                .card_update(
+                    marked.id.as_str(),
+                    CardPatch {
+                        kind: Some("codex".into()),
+                        payload: Some(json!({ "schemaVersion": 1 })),
+                        ..Default::default()
+                    },
+                )
                 .await
-                .unwrap()
-                .unwrap()
-                .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
-            true
-        );
-        // Sticky across a kind retarget as well (the hook route keys on the payload, never on the patchable kind).
-        let retargeted = repo
-            .card_update(
-                marked.id.as_str(),
-                CardPatch {
-                    kind: Some("codex".into()),
-                    payload: Some(json!({ "schemaVersion": 1 })),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(retargeted.kind, "codex");
-        assert_eq!(retargeted.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
+                .unwrap();
+            assert_eq!(retargeted.kind, "codex");
+            assert_eq!(retargeted.payload[TERMINAL_SIGNALS_PAYLOAD_KEY], true);
 
-        let err = repo
-            .card_update(
-                marked.id.as_str(),
-                CardPatch {
-                    payload: Some(json!("not an object")),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                CalmError::Core(calm_types::error::CoreError::BadRequest(_))
-            ),
-            "{err:?}"
-        );
-        assert_eq!(
-            repo.card_get(marked.id.as_str())
+            let err = repo
+                .card_update(
+                    marked.id.as_str(),
+                    CardPatch {
+                        payload: Some(json!("not an object")),
+                        ..Default::default()
+                    },
+                )
                 .await
-                .unwrap()
-                .unwrap()
-                .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
-            true,
-            "the refused replacement wrote nothing"
-        );
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+                ),
+                "{err:?}"
+            );
+            assert_eq!(
+                repo.card_get(marked.id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .payload[TERMINAL_SIGNALS_PAYLOAD_KEY],
+                true,
+                "the refused replacement wrote nothing"
+            );
 
-        let plain = repo
-            .card_update(
-                plain.id.as_str(),
-                CardPatch {
-                    payload: Some(json!({ "schemaVersion": 1, "terminal_id": "y" })),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert!(
-            plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none(),
-            "an update never mints the marker: {}",
-            plain.payload
-        );
+            let plain = repo
+                .card_update(
+                    plain.id.as_str(),
+                    CardPatch {
+                        payload: Some(json!({ "schemaVersion": 1, "terminal_id": "y" })),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                plain.payload.get(TERMINAL_SIGNALS_PAYLOAD_KEY).is_none(),
+                "an update never mints the marker: {}",
+                plain.payload
+            );
+        }
     }
 
     /// Only the kernel-minted shapes are sticky: a stored `false` marker is NOT re-inserted,

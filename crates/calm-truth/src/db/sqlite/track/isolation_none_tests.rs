@@ -39,23 +39,32 @@ async fn isolation_none_missing_cwd_cannot_use_ancestor_fallback() {
     let repo = super::super::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-    let error = admit_attached_workspace_tx(
-        &mut tx,
-        tmp.path().join("missing").to_str().unwrap(),
-        &[tmp.path().join("managed")],
-        &[],
-        &TrackWorkspacePlan::AttachedFromCwd,
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            CalmError::Core(calm_types::error::CoreError::BadRequest(_))
-        ),
-        "{error}"
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = admit_attached_workspace_tx(
+                    &mut tx,
+                    tmp.path().join("missing").to_str().unwrap(),
+                    &[tmp.path().join("managed")],
+                    &[],
+                    &TrackWorkspacePlan::AttachedFromCwd,
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        &error,
+                        CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+                    ),
+                    "{error}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -68,23 +77,32 @@ async fn isolation_none_unresolvable_owned_symlink_is_refused() {
     let repo = super::super::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-    let error = admit_attached_workspace_tx(
-        &mut tx,
-        candidate.to_str().unwrap(),
-        &[alias.join("owned-root")],
-        &[],
-        &TrackWorkspacePlan::AttachedFromCwd,
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            CalmError::Core(calm_types::error::CoreError::BadRequest(_))
-        ),
-        "{error}"
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = admit_attached_workspace_tx(
+                    &mut tx,
+                    candidate.to_str().unwrap(),
+                    &[alias.join("owned-root")],
+                    &[],
+                    &TrackWorkspacePlan::AttachedFromCwd,
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        &error,
+                        CalmError::Core(calm_types::error::CoreError::BadRequest(_))
+                    ),
+                    "{error}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -98,25 +116,35 @@ async fn isolation_none_resolution_error_preserves_bad_request_message() {
     let repo = super::super::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
-    let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-    let error = admit_attached_workspace_tx(
-        &mut tx,
-        candidate.to_str().unwrap(),
-        std::slice::from_ref(&owned),
-        &[],
-        &TrackWorkspacePlan::AttachedFromCwd,
-    )
-    .await
-    .unwrap_err();
-    let CalmError::Core(calm_types::error::CoreError::BadRequest(message)) = error else {
-        panic!("expected BadRequest")
-    };
-    assert_eq!(
-        message,
-        format!(
-            "cannot resolve existing ancestor {} of {}",
-            alias.display(),
-            owned.display()
-        )
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let error = admit_attached_workspace_tx(
+                    &mut tx,
+                    candidate.to_str().unwrap(),
+                    std::slice::from_ref(&owned),
+                    &[],
+                    &TrackWorkspacePlan::AttachedFromCwd,
+                )
+                .await
+                .unwrap_err();
+                let CalmError::Core(calm_types::error::CoreError::BadRequest(message)) = error
+                else {
+                    panic!("expected BadRequest")
+                };
+                assert_eq!(
+                    message,
+                    format!(
+                        "cannot resolve existing ancestor {} of {}",
+                        alias.display(),
+                        owned.display()
+                    )
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

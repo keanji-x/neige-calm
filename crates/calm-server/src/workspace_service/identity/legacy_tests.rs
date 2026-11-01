@@ -104,21 +104,30 @@ async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
             );
         }
         assert!(observed_root(&repo, &current).await.is_none());
-        let mut tx = repo.pool().begin().await.unwrap();
-        let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
-            &mut tx,
-            current.id.as_str(),
-            crate::model::TaskAccess::ReadWrite,
-            tmp.path(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(plan.path, directory);
-        assert!(
-            directory.is_dir(),
-            "the original production prepare still materializes its directory"
-        );
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
+                        &mut tx,
+                        current.id.as_str(),
+                        crate::model::TaskAccess::ReadWrite,
+                        tmp.path(),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(plan.path, directory);
+                    assert!(
+                        directory.is_dir(),
+                        "the original production prepare still materializes its directory"
+                    );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -202,12 +211,12 @@ async fn workspace_identity_legacy_per_card_submit_replay_keeps_original_source_
     task(&repo, &current).await;
     let base = workspace::base::resolve_head_base(&old_cwd).unwrap();
     let common = workspace::base::lease_git_common_dir(&old_cwd).unwrap();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO workspace_leases(lease_id,card_id,track_id,path,state,lease_owner,created_at_ms,updated_at_ms, \
          base_sha,base_source,canonical_path,git_common_dir,delivery_policy,access_mode) \
          VALUES ('historical','card',?1,?2,'held','historical-owner',1,1,?3,'commit',?2,?4,'kernel','read_write')",
     ).bind(current.id.as_str()).bind(old_cwd.to_str().unwrap()).bind(&base)
-        .bind(common.to_str().unwrap()).execute(repo.pool()).await.unwrap();
+        .bind(common.to_str().unwrap())).await.unwrap();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let capture = observed.clone();
     let adapter = Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(

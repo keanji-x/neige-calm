@@ -106,30 +106,39 @@ pub(super) async fn complete(fx: &Fixture, peer: &mut Peer, thread: &str, turn: 
 }
 
 pub(super) async fn accept(fx: &Fixture, body: &str) -> MessageRevisionRef {
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: body.into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human")
-    };
-    message
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = current_input_carrier_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: body.into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human")
+                };
+                message
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn stop(fx: &Fixture, peer: &mut Peer) {
@@ -150,104 +159,108 @@ async fn stop(fx: &Fixture, peer: &mut Peer) {
 #[tokio::test]
 async fn objective_canonical_reply_and_end_before_start_ack_persist_without_accepting_echo() {
     let fx = Fixture::new().await;
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    crate::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &fx.harness.inner.track_id,
-        &[calm_types::track_capability::TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let (_client, mut peer) = connect(&fx.daemon).await;
-    fx.harness
-        .observe_canonical_source(fx.message.clone(), fx.source.clone())
+    let write_db = (fx.original.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        crate::db::sqlite::track_capabilities::stamp_tx(
+            &mut tx,
+            &fx.harness.inner.track_id,
+            &[calm_types::track_capability::TrackCapability::Objectives],
+        )
         .await
         .unwrap();
-    let call = next_start(&mut peer).await;
-    let thread = call["params"]["threadId"].as_str().unwrap();
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/started",
-        json!({"id":"early","status":"inProgress"}),
-    )
-    .await;
-    notify(&fx, &mut peer, "item/completed", json!({"threadId":thread,"turnId":"early",
-        "item":{"id":"human-echo","type":"userMessage","content":[{"type":"inputText","text":"canonical scheduler human body"}]}})).await;
-    item(
-        &fx,
-        &mut peer,
-        thread,
-        "early",
-        "early-reply",
-        "real early answer",
-    )
-    .await;
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/completed",
-        json!({"id":"early","status":"completed"}),
-    )
-    .await;
-    let before_ack = fx.frame().await;
-    assert_eq!(before_ack.header.phase, HarnessPhaseTag::IssuingTurn);
-    assert!(matches!(
-        before_ack.canonical_inputs.attempts[0].delivery,
-        InputDeliveryFact::CrossingUnknown
-    ));
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"early"}}}),
-    )
-    .await;
-    let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let (_, state) = calm_truth::objective_host::read_state(
-                fx.original.repo.pool(),
-                &fx.harness.inner.track_id,
-            )
+        tx.commit().await.unwrap();
+        let (_client, mut peer) = connect(&fx.daemon).await;
+        fx.harness
+            .observe_canonical_source(fx.message.clone(), fx.source.clone())
             .await
             .unwrap();
-            assert_eq!(state.usage.context_tokens, 0, "no initial endpoint");
-            if state.usage.turns == 1 {
-                break;
+        let call = next_start(&mut peer).await;
+        let thread = call["params"]["threadId"].as_str().unwrap();
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            thread,
+            "turn/started",
+            json!({"id":"early","status":"inProgress"}),
+        )
+        .await;
+        notify(&fx, &mut peer, "item/completed", json!({"threadId":thread,"turnId":"early",
+            "item":{"id":"human-echo","type":"userMessage","content":[{"type":"inputText","text":"canonical scheduler human body"}]}})).await;
+        item(
+            &fx,
+            &mut peer,
+            thread,
+            "early",
+            "early-reply",
+            "real early answer",
+        )
+        .await;
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            thread,
+            "turn/completed",
+            json!({"id":"early","status":"completed"}),
+        )
+        .await;
+        let before_ack = fx.frame().await;
+        assert_eq!(before_ack.header.phase, HarnessPhaseTag::IssuingTurn);
+        assert!(matches!(
+            before_ack.canonical_inputs.attempts[0].delivery,
+            InputDeliveryFact::CrossingUnknown
+        ));
+        send(
+            &mut peer,
+            json!({"id":call["id"],"result":{"turn":{"id":"early"}}}),
+        )
+        .await;
+        let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (_, state) = calm_truth::objective_host::read_state(
+                    fx.original.repo.pool(),
+                    &fx.harness.inner.track_id,
+                )
+                .await
+                .unwrap();
+                assert_eq!(state.usage.context_tokens, 0, "no initial endpoint");
+                if state.usage.turns == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("committed early END must count with no visible initial endpoint");
-    let row = wait_item(&fx, "early-reply").await;
-    let presentation: i64 = sqlx::query_scalar("SELECT native_item_row_id FROM conversation_presentations WHERE card_id=?1 AND source_kind='native_item'")
-        .bind(fx.harness.inner.card_id.as_str()).fetch_one(fx.original.repo.pool()).await.unwrap();
-    assert_eq!(presentation, row);
-    let echoes: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='human-echo'",
-    )
-    .bind(fx.harness.inner.card_id.as_str())
-    .fetch_one(fx.original.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(echoes, 0, "native Human echo must never recreate a body");
-    let humans: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
-            .bind(fx.harness.inner.card_id.as_str())
-            .fetch_one(fx.original.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(humans, 1);
-    assert!(done.canonical_inputs.pending.is_empty());
-    assert!(done.canonical_inputs.active.is_none());
-    assert!(matches!(
-        done.canonical_inputs.attempts[0].delivery,
-        InputDeliveryFact::Accepted { .. }
-    ));
-    stop(&fx, &mut peer).await;
+        })
+        .await
+        .expect("committed early END must count with no visible initial endpoint");
+        let row = wait_item(&fx, "early-reply").await;
+        let presentation: i64 = sqlx::query_scalar("SELECT native_item_row_id FROM conversation_presentations WHERE card_id=?1 AND source_kind='native_item'")
+            .bind(fx.harness.inner.card_id.as_str()).fetch_one(fx.original.repo.pool()).await.unwrap();
+        assert_eq!(presentation, row);
+        let echoes: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='human-echo'",
+        )
+        .bind(fx.harness.inner.card_id.as_str())
+        .fetch_one(fx.original.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(echoes, 0, "native Human echo must never recreate a body");
+        let humans: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
+                .bind(fx.harness.inner.card_id.as_str())
+                .fetch_one(fx.original.repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(humans, 1);
+        assert!(done.canonical_inputs.pending.is_empty());
+        assert!(done.canonical_inputs.active.is_none());
+        assert!(matches!(
+            done.canonical_inputs.attempts[0].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        stop(&fx, &mut peer).await;
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -304,62 +317,66 @@ async fn canonical_erased_native_reply_cannot_leave_a_raw_body_on_late_repeat() 
     complete(&fx, &mut peer, &thread, "original").await;
     // Declare the existing presentation erasure owner's identity-only tombstone,
     // as its storage tests do. No synthetic END, delivery or runtime transition.
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let changed = sqlx::query(
-        "UPDATE conversation_presentations
+    let write_db = (fx.original.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        let changed = sqlx::query(
+            "UPDATE conversation_presentations
          SET erased_by_operation_id=?1,native_item_row_id=NULL
          WHERE card_id=?2 AND native_item_row_id=?3",
-    )
-    .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    .bind(fx.harness.inner.card_id.as_str())
-    .bind(row)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    assert_eq!(changed.rows_affected(), 1);
-    sqlx::query("DELETE FROM harness_items WHERE id=?1")
+        )
+        .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .bind(fx.harness.inner.card_id.as_str())
         .bind(row)
         .execute(&mut **tx)
         .await
         .unwrap();
-    tx.commit().await.unwrap();
-    let before = fx.frame().await;
-    item(
-        &fx,
-        &mut peer,
-        &thread,
-        "original",
-        "erased-reply",
-        "private reply",
-    )
-    .await;
-    // A following ordinary item proves this same loop consumed the repeat.
-    item(
-        &fx,
-        &mut peer,
-        &thread,
-        "original",
-        "following-reply",
-        "visible tail",
-    )
-    .await;
-    wait_item(&fx, "following-reply").await;
-    let bodies: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='erased-reply'",
-    )
-    .bind(fx.harness.inner.card_id.as_str())
-    .fetch_one(fx.original.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        bodies, 0,
-        "erasure refusal must happen before committing the raw body"
-    );
-    let erased: Option<i64> = sqlx::query_scalar("SELECT native_item_row_id FROM conversation_presentations WHERE card_id=?1 AND erased_by_operation_id IS NOT NULL")
-        .bind(fx.harness.inner.card_id.as_str()).fetch_one(fx.original.repo.pool()).await.unwrap();
-    assert_eq!(erased, None);
-    assert_eq!(fx.frame().await, before);
-    stop(&fx, &mut peer).await;
+        assert_eq!(changed.rows_affected(), 1);
+        sqlx::query("DELETE FROM harness_items WHERE id=?1")
+            .bind(row)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = fx.frame().await;
+        item(
+            &fx,
+            &mut peer,
+            &thread,
+            "original",
+            "erased-reply",
+            "private reply",
+        )
+        .await;
+        // A following ordinary item proves this same loop consumed the repeat.
+        item(
+            &fx,
+            &mut peer,
+            &thread,
+            "original",
+            "following-reply",
+            "visible tail",
+        )
+        .await;
+        wait_item(&fx, "following-reply").await;
+        let bodies: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM harness_items WHERE card_id=?1 AND item_uuid='erased-reply'",
+        )
+        .bind(fx.harness.inner.card_id.as_str())
+        .fetch_one(fx.original.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            bodies, 0,
+            "erasure refusal must happen before committing the raw body"
+        );
+        let erased: Option<i64> = sqlx::query_scalar("SELECT native_item_row_id FROM conversation_presentations WHERE card_id=?1 AND erased_by_operation_id IS NOT NULL")
+            .bind(fx.harness.inner.card_id.as_str()).fetch_one(fx.original.repo.pool()).await.unwrap();
+        assert_eq!(erased, None);
+        assert_eq!(fx.frame().await, before);
+        stop(&fx, &mut peer).await;
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
