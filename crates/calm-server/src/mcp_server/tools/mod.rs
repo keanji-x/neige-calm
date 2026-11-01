@@ -238,7 +238,8 @@ mod tests {
         // #3425: five optional inspection tools add 2,350 bytes of typed read,
         // classification and reminder contracts. Background quiet checks issue no
         // model requests; this fixed declaration cost is measured, not history growth.
-        const SURFACE_MAX_BYTES: usize = 40_359;
+        // #3427 adds three bytes to existing Report declarations; the inspection delta stays fixed.
+        const SURFACE_MAX_BYTES: usize = 40_362;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
