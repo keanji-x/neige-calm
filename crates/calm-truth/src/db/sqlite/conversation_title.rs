@@ -67,7 +67,11 @@ async fn sources_on_connection(
                     });
             if row.try_get::<bool, _>("canonical")? {
                 source.input = Some(ConversationTitleInput::Canonical(
-                    canonical_title(connection, &source.card_id).await?,
+                    super::conversation_read::first_title_on_connection(
+                        connection,
+                        &source.card_id,
+                    )
+                    .await?,
                 ));
                 continue;
             }
@@ -98,34 +102,6 @@ async fn sources_on_connection(
             .collect();
     }
     Ok(sources.into_values().collect())
-}
-
-/// The finite presentation reader owns revision, withdrawal and private-erasure
-/// semantics. Advance bounded pages until its first Human, never a native echo.
-async fn canonical_title(connection: &mut SqliteConnection, card: &str) -> Result<Option<String>> {
-    let mut after = 0;
-    loop {
-        let page = super::conversation_read::page_on_connection(
-            connection,
-            card,
-            after,
-            CANDIDATE_BATCH,
-            false,
-        )
-        .await?;
-        for item in page.items {
-            if let calm_types::conversation_display::ConversationDisplaySource::Human {
-                text, ..
-            } = item.source
-            {
-                return Ok(crate::conversation_title::conversation_title(&text));
-            }
-        }
-        match page.next_cursor {
-            Some(cursor) => after = cursor.position,
-            None => return Ok(None),
-        }
-    }
 }
 
 pub(super) async fn context(

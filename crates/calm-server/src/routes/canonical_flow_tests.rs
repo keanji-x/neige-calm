@@ -69,6 +69,7 @@ mod presentation_capability_tests;
 mod presentation_read_feedback_tests;
 mod resolution_tests;
 mod system_assistant_tests;
+mod title_lookup_tests;
 
 struct Fixture {
     repo: Arc<SqlxRepo>,
