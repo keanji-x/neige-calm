@@ -264,7 +264,7 @@ it.each([1280, 390])('restores a closed track by clicking its existing AI questi
 });
 
 it('renders grant_admin choices and posts the grant click only to the ask answer route', async () => {
-  const grantAsk = { ...ASK, action: { kind: 'grant_admin' },
+  const grantAsk = { ...ASK, action: { kind: 'grant_admin' as const },
     questions: [{ title: 'Manage Tracks?', options: ['Grant admin', 'Not now'] }] };
   const { requests } = setup('light', grantAsk);
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
