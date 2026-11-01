@@ -518,8 +518,16 @@ async fn persist(
                 ));
             }
             events.extend(task_projection.kernel_events);
+            let before = calm_truth::track_vcs::head_in_tx(tx, &track_id).await?;
             let (ids, commits) =
                 crate::db::sqlite::append_actor_events_in_tx(tx, None, &write, &events).await?;
+            let after = commits
+                .get(&track_id)
+                .ok_or_else(|| {
+                    CalmError::Internal("Report write produced no history commit".into())
+                })?
+                .clone();
+            trace.history = Some(super::receipt::CommitHistory { before, after });
             if let (Some(session), Some(read)) =
                 (knowledge_session.as_deref(), trace.knowledge.as_mut())
             {

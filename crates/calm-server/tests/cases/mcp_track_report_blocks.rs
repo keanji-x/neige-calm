@@ -1763,21 +1763,14 @@ async fn commit_three_ops_and_summary_land_atomically_with_one_doc_rev_bump() {
         Some(2),
         "one bump for three ops: {out}"
     );
-    let blocks = out["blocks"].as_array().expect("blocks index");
-    assert_eq!(blocks.len(), 2, "{out}");
-    assert_eq!(blocks[0]["kind"], "prose");
-    assert_eq!(blocks[0]["rev"].as_u64(), Some(1), "C is new: rev 1");
-    assert_eq!(
-        blocks[1]["id"].as_str(),
-        Some(a_id.as_str()),
-        "A keeps its id"
-    );
-    assert_eq!(
-        blocks[1]["rev"].as_u64(),
-        Some(a_rev + 1),
-        "A rev bumped once"
-    );
-    assert!(blocks.iter().all(|b| b["id"] != json!(b_id)), "B deleted");
+    let changes = out["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(changes[0]["kind"], "prose");
+    assert_eq!(changes[0]["rev"], 1);
+    assert_eq!(changes[1]["id"], a_id);
+    assert_eq!(changes[1]["rev"], a_rev + 1);
+    assert_eq!(changes[2]["id"], b_id);
+    assert!(changes[2]["rev"].is_null(), "B was deleted");
 
     let after = current_payload(&boot).await;
     assert_eq!(after.doc_rev, 2);
@@ -1945,17 +1938,12 @@ async fn commit_summary_only_with_empty_ops_bumps_doc_rev_and_keeps_blocks() {
     .await
     .expect("summary-only commit");
     assert_eq!(out["doc_rev"].as_u64(), Some(2));
-    let blocks = out["blocks"].as_array().unwrap();
+    assert_eq!(out["changes"], json!([]));
+    assert_eq!(out["changes_total"], 0);
     assert_eq!(
-        blocks
-            .iter()
-            .map(|b| (
-                b["id"].as_str().unwrap().to_string(),
-                b["rev"].as_u64().unwrap()
-            ))
-            .collect::<Vec<_>>(),
+        index_of(&read(&boot, json!({})).await),
         index,
-        "block ids and revs untouched"
+        "summary keeps block revisions"
     );
     let after = current_payload(&boot).await;
     assert_eq!(after.summary, "摘要 v2");

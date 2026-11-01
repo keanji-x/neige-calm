@@ -20,6 +20,8 @@ use calm_types::track_report::ReportBlock;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+mod index;
+
 pub const TOOL_REPORT_READ: &str = "neige_report_read";
 
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -96,6 +98,8 @@ fn read_descriptor() -> ToolDescriptor {
                 "sections": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                 "detail": { "type": "string", "enum": ["full", "index"] },
                 "with_markers": { "type": "boolean" },
+                "commit": { "type": "string", "minLength": 1, "description": "Immutable history reference; requires detail:index and grants no read knowledge." },
+                "cursor": { "type": "string", "description": "Historical index next_cursor; keep commit unchanged." },
                 "resolve": {
                     "type": "object",
                     "additionalProperties": { "type": "string", "enum": ["full", "none"] }
@@ -114,6 +118,9 @@ pub(crate) async fn report_read(
     args: Value,
 ) -> Result<Value, RpcError> {
     let select = parse_select_arg(&args, TOOL_REPORT_READ)?;
+    if let Some(value) = index::read(&ctx, identity.clone(), &args).await? {
+        return Ok(value);
+    }
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -208,7 +215,6 @@ pub(crate) async fn report_read(
         })
         .await
         .map_err(crate::mcp_server::framing::calm_error)?;
-    let listed = || listed_blocks(&snapshot.blocks);
     let task_diagnostics = if identity.role == CardRole::Planner {
         let scope = match (&select, &text) {
             (ReadSelect::Full, _) => ReportReadScope::Full,
@@ -221,18 +227,15 @@ pub(crate) async fn report_read(
     } else {
         Vec::new()
     };
-    // The index of a text read omits the task blocks it did not render.
+    // An index read navigates the whole report; a text read indexes only what it rendered.
     let indexed: Vec<ReportBlock> = match &text {
         None => snapshot.blocks.clone(),
-        Some((_, rendered)) => {
-            let listed: Vec<&str> = listed().map(|block| block.id.as_str()).collect();
-            snapshot
-                .blocks
-                .iter()
-                .filter(|block| listed.contains(&block.id.as_str()) || rendered.contains(&block.id))
-                .cloned()
-                .collect()
-        }
+        Some((_, rendered)) => snapshot
+            .blocks
+            .iter()
+            .filter(|block| rendered.contains(&block.id))
+            .cloned()
+            .collect(),
     };
     // `resolved` is rows and overlays only; this read never calls a plugin and never writes.
     let index: Vec<Value> =

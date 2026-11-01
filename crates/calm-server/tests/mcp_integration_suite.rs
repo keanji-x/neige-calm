@@ -135,3 +135,6 @@ mod mcp_report_anchor_knowledge_history;
 
 #[path = "cases/mcp_report_anchor_knowledge_conflicts.rs"]
 mod mcp_report_anchor_knowledge_conflicts;
+
+#[path = "cases/mcp_report_receipts.rs"]
+mod mcp_report_receipts;

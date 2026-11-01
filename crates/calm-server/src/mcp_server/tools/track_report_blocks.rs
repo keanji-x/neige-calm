@@ -2,7 +2,7 @@
 //! Neither write takes a revision (#1883): the anchors are what this session last read through `neige_report_read`, checked inside
 //! the persist transaction against CRDT truth; a mismatch is `-32409` and writes nothing.
 
-use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
+use crate::decision_sink::CardDecisionSink;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, refuse_unknown_keys,
@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 mod anchors;
 mod contracts;
+mod receipt;
 
 use anchors::parse_section_op;
 use contracts::{commit_descriptor, kinds_descriptor, kinds_table, write_markdown_descriptor};
@@ -84,22 +85,14 @@ async fn write_markdown(
         summary: summary_override,
         body,
     };
-    let ReportOpCommit {
-        card,
-        warnings,
-        anchor,
-        ..
-    } = match CardDecisionSink::from_app_context(&ctx)
+    let out = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(&identity, op, message)
         .await
     {
         Ok(out) => out,
         Err(e) => return Err(map_commit_err(tool, e)),
     };
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    Ok(
-        json!({ "updated_at": crate::time_format::at(card.updated_at), "doc_rev": doc_rev, "anchor": anchor, "anchor_status": crate::report_read_ledger::anchor_line(&anchor), "warnings": warnings }),
-    )
+    receipt::render(out, tool)
 }
 
 /// The one-call update: the whole op list lands as one [`ReportDocOp::Batch`] inside one persist
@@ -139,12 +132,7 @@ async fn commit(
         .enumerate()
         .map(|(index, raw)| parse_batch_op(raw, index, tool))
         .collect::<Result<Vec<_>, _>>()?;
-    let ReportOpCommit {
-        card,
-        warnings,
-        anchor,
-        ..
-    } = CardDecisionSink::from_app_context(&ctx)
+    let out = CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(
             &identity,
             ReportDocOp::AgentBatch { summary, ops },
@@ -152,28 +140,7 @@ async fn commit(
         )
         .await
         .map_err(|e| map_commit_err(tool, e))?;
-    let doc_rev = updated_report_doc_rev(&card, tool)?;
-    // Read off the persisted payload so it is exactly what the next `neige_report_read` would return.
-    let blocks = card
-        .payload
-        .get("blocks")
-        .and_then(Value::as_array)
-        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no blocks")))?
-        .iter()
-        .map(|block| {
-            json!({
-                "id": block.get("id").cloned().unwrap_or(Value::Null),
-                "kind": block.get("kind").cloned().unwrap_or(Value::Null),
-                "rev": block.get("rev").cloned().unwrap_or(Value::Null),
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(json!({
-        "updated_at": crate::time_format::at(card.updated_at),
-        "doc_rev": doc_rev,
-        "blocks": blocks,
-        "anchor": anchor, "anchor_status": crate::report_read_ledger::anchor_line(&anchor), "warnings": warnings,
-    }))
+    receipt::render(out, tool)
 }
 
 /// One `ops[i]` of `neige_report_commit`: an id op anchored by the block's rev in `last_read`, or a section op.

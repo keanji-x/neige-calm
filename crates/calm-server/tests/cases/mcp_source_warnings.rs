@@ -71,7 +71,7 @@ async fn commit_reports_a_dangling_source_id_and_still_writes() {
     .await
     .expect("commit writes despite the dangling link");
     assert_eq!(receipt["doc_rev"], rev + 1);
-    let blocks = receipt["blocks"].as_array().unwrap();
+    let blocks = receipt["changes"].as_array().unwrap();
     let written = blocks.last().unwrap()["id"].as_str().unwrap();
     assert_eq!(
         receipt["warnings"],
@@ -219,7 +219,7 @@ async fn malformed_ids_and_anchors_are_warned_about() {
     )
     .await
     .expect("commit writes despite malformed links");
-    let written = receipt["blocks"].as_array().unwrap().last().unwrap()["id"]
+    let written = receipt["changes"].as_array().unwrap().last().unwrap()["id"]
         .as_str()
         .unwrap();
     assert_eq!(

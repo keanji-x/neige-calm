@@ -41,6 +41,8 @@ pub struct ReportOpCommit {
     pub block: Option<BlockOpOutcome>,
     pub warnings: Vec<SourceLinkWarning>,
     pub anchor: serde_json::Value,
+    pub changes: Vec<track_report::receipt::BlockChange>,
+    pub history: track_report::receipt::CommitHistory,
 }
 
 impl CardDecisionSink {
@@ -355,6 +357,10 @@ impl CardDecisionSink {
             block: trace.block,
             warnings,
             anchor,
+            changes: trace.changes,
+            history: trace
+                .history
+                .ok_or_else(|| CalmError::Internal("Report commit lacks history".into()))?,
         })
     }
 }
