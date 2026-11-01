@@ -8,13 +8,15 @@ use sqlx::{Row, SqliteConnection};
 
 // A per-card batch size, never a cap on how far the first visible input can be found.
 const CANDIDATE_BATCH: i64 = 32;
+// Guard the legacy seek itself: SQLite may evaluate the IN subquery before
+// the outer JOIN condition, even when the conversation is canonical.
 const SOURCES: &str = r#"
 SELECT c.id AS card_id, h.id AS item_id, h.params, h.input_segments, c.canonical
 FROM json_each(?1) request
 JOIN (SELECT c.id, c.role, {canonical_storage} AS canonical FROM cards c) c ON c.id = json_extract(request.value, '$.card_id')
 LEFT JOIN harness_items h ON NOT c.canonical AND h.id IN (
     SELECT candidate.id FROM harness_items candidate
-    WHERE candidate.card_id = c.id
+    WHERE candidate.card_id = CASE WHEN c.canonical THEN NULL ELSE c.id END
       AND candidate.id > json_extract(request.value, '$.after_id')
       AND candidate.method = 'item/completed'
       AND candidate.item_type IN ('userMessage', 'user_message')
