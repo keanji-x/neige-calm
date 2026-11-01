@@ -1,3 +1,0 @@
-Read inspection health and stable batch references in bounded pages. Sources report independent success cursors and faults. Imported progress and approvals are historical claims, not proof of coverage or fresh authorization. Read the import batch's legacy pages to recover user rules and pending provenance. Available only to the current Planner of the operator-configured Track.
-
-Sources and reminder records are bounded pages too: follow next_after_source_id and next_after_reminder_key using their matching after_* arguments. Due wakes name reminder keys; inspect their retained notes and original evidence.

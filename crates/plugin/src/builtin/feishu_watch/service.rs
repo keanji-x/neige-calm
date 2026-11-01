@@ -163,7 +163,7 @@ pub fn check_size(state: &State) -> Result<(), String> {
         .len()
         > MAX_STATE_BYTES
     {
-        return Err("feishu-watch state exceeds 1 MiB; nothing was committed; operator reconciliation required".into());
+        return Err("feishuwatch state exceeds 1 MiB; nothing was committed; operator reconciliation required".into());
     }
     Ok(())
 }

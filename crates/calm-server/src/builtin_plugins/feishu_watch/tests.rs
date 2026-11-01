@@ -314,7 +314,7 @@ async fn inspection_native_tools_fence_foreign_and_stale_planners() {
     let (fx, owner) = Fixture::configured().await;
     fx.initialize().await;
     let registry = crate::mcp_server::build_default_registry();
-    let status = registry.lookup("plugin_feishu_watch_status").unwrap();
+    let status = registry.lookup("plugin_feishuwatch_status").unwrap();
     status(fx.ctx.clone(), owner.clone(), json!({}))
         .await
         .unwrap();
@@ -323,7 +323,7 @@ async fn inspection_native_tools_fence_foreign_and_stale_planners() {
     let mut stale = owner.clone();
     stale.session_id = "retired".into();
     assert!(status(fx.ctx.clone(), stale, json!({})).await.is_err());
-    let settle = registry.lookup("plugin_feishu_watch_settle").unwrap();
+    let settle = registry.lookup("plugin_feishuwatch_settle").unwrap();
     let mut stale = owner;
     stale.session_id = "retired".into();
     assert!(settle(fx.ctx.clone(),stale,json!({"batch_id":"import","classification":{},"deadlines":[],"cancel_deadline_keys":[]})).await.is_err());
@@ -383,9 +383,9 @@ async fn inspection_registered_reminder_changes_need_no_new_batch_and_reject_sta
     let (fx, owner) = Fixture::configured().await;
     let a = fx.initialize().await;
     let registry = crate::mcp_server::build_default_registry();
-    let update = registry.lookup("plugin_feishu_watch_reminders").unwrap();
+    let update = registry.lookup("plugin_feishuwatch_reminder_set").unwrap();
     let revision = a.load().await.unwrap().unwrap().revision;
-    let request = json!({"request_id":"first","expected_revision":revision,"deadlines":[{"key":"review","at_ms":crate::model::now_ms()+60_000,"note":"Ask reference"}],"cancel_deadline_keys":[]});
+    let request = json!({"idempotency_key":"first","expected_version":revision,"key":"review","at_ms":crate::model::now_ms()+60_000,"note":"Ask reference"});
     update(fx.ctx.clone(), owner.clone(), request.clone())
         .await
         .unwrap();
@@ -395,11 +395,13 @@ async fn inspection_registered_reminder_changes_need_no_new_batch_and_reject_sta
     let state = a.load().await.unwrap().unwrap();
     assert!(state.due.contains_key("review"));
     assert_eq!(state.inbox.len(), 1);
-    let cancel = json!({"request_id":"answered","expected_revision":state.revision,"deadlines":[],"cancel_deadline_keys":["review"]});
+    let cancel =
+        json!({"idempotency_key":"answered","expected_version":state.revision,"key":"review"});
+    let remove = registry.lookup("plugin_feishuwatch_reminder_rm").unwrap();
     let mut stale = owner.clone();
     stale.session_id = "retired".into();
-    assert!(update(fx.ctx.clone(), stale, cancel.clone()).await.is_err());
+    assert!(remove(fx.ctx.clone(), stale, cancel.clone()).await.is_err());
     assert!(a.load().await.unwrap().unwrap().due.contains_key("review"));
-    update(fx.ctx.clone(), owner, cancel).await.unwrap();
+    remove(fx.ctx.clone(), owner, cancel).await.unwrap();
     assert!(a.load().await.unwrap().unwrap().due.is_empty());
 }

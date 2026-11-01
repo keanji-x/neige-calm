@@ -19,7 +19,7 @@ whole scan/checkpoint path rather than copying these policies into the kernel.
 
 ## Ownership
 
-Add an optional compiled `feishu-watch` feature component using the existing
+Add an optional compiled `feishuwatch` feature component using the existing
 builtin registry and background lifecycle. V1 intentionally binds one
 operator-configured Track. Its operator configuration pins the Track, CLI
 executable, authentication HOME, profile and expected user identity. A separately
@@ -46,7 +46,9 @@ siblings may progress. Each thread has its own cursor. Overlap is filtered by
 message identity, not by discarding every timestamp below the previous scan.
 Missing required fields and unknown pagination completeness fail visibly.
 
-Persist one revisioned feature state in plugin KV, with a 1 MiB cap. A CAS failure,
+Persist one revisioned feature state in plugin KV, with a 1 MiB cap. Quiet
+checkpoints use the existing silent transaction; state plus a nonempty wake
+uses the existing event transaction. Both share one authority/CAS/write helper. A CAS failure,
 configuration change, disable or Track closure rejects stale publication. Capture
 the active runtime Arc under the plugin lifecycle lock, release during external
 reads, and re-acquire before publication with Arc identity equality. This also

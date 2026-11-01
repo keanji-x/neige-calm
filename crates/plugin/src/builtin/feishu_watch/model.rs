@@ -24,7 +24,7 @@ impl Config {
             || !self.home.is_absolute()
             || !self.import_state_path.is_absolute()
         {
-            return Err("feishu-watch requires identity and absolute operator paths".into());
+            return Err("feishuwatch requires identity and absolute operator paths".into());
         }
         Ok(())
     }

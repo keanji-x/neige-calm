@@ -12,7 +12,7 @@ struct Status {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Read {
+struct Batch {
     batch_id: String,
     after_id: Option<String>,
     limit: Option<usize>,
@@ -27,11 +27,19 @@ struct Reminder {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ReminderUpdate {
-    request_id: String,
-    expected_revision: u64,
-    deadlines: Vec<Reminder>,
-    cancel_deadline_keys: Vec<String>,
+struct ReminderSet {
+    idempotency_key: String,
+    expected_version: u64,
+    key: String,
+    at_ms: i64,
+    note: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderRm {
+    idempotency_key: String,
+    expected_version: u64,
+    key: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,11 +147,11 @@ pub(super) async fn call(
                 None
             };
             bounded(
-                json!({"initialized":true,"revision":state.revision,"last_scan_ms":state.last_scan_ms,"sources":sources,"source_count":state.sources.len(),"next_after_source_id":next_source,"batch_count":state.inbox.len(),"batches":batches,"next_after_batch_id":next,"reminder_count":state.due.len(),"reminders":reminders,"next_after_reminder_key":next_reminder,"diagnostic":diagnostic,"legacy_provenance":feature::LEGACY_HELP.trim_end()}),
+                json!({"initialized":true,"version":state.revision,"last_scan_ms":state.last_scan_ms,"sources":sources,"source_count":state.sources.len(),"next_after_source_id":next_source,"batch_count":state.inbox.len(),"batches":batches,"next_after_batch_id":next,"reminder_count":state.due.len(),"reminders":reminders,"next_after_reminder_key":next_reminder,"diagnostic":diagnostic,"legacy_provenance":feature::LEGACY_HELP.trim_end()}),
             )
         }
-        "read" => {
-            let args: Read = parse(args)?;
+        "batch_cat" => {
+            let args: Batch = parse(args)?;
             let state = adapter
                 .load()
                 .await
@@ -210,29 +218,39 @@ pub(super) async fn call(
             .map_err(RpcError::invalid_params)?;
             bounded(json!({"settled":args.batch_id}))
         }
-        "reminders" => {
-            let args: ReminderUpdate = parse(args)?;
-            let deadlines = args
-                .deadlines
-                .into_iter()
-                .map(|d| Deadline {
-                    key: d.key,
-                    at_ms: d.at_ms,
-                    note: d.note,
-                    fired: false,
-                })
-                .collect();
+        "reminder_set" => {
+            let args: ReminderSet = parse(args)?;
+            let deadline = Deadline {
+                key: args.key,
+                at_ms: args.at_ms,
+                note: args.note,
+                fired: false,
+            };
             feature::service::change_reminders(
                 &adapter,
-                &args.request_id,
-                args.expected_revision,
-                deadlines,
-                args.cancel_deadline_keys,
+                &args.idempotency_key,
+                args.expected_version,
+                vec![deadline],
+                vec![],
                 crate::model::now_ms(),
             )
             .await
             .map_err(RpcError::invalid_params)?;
-            bounded(json!({"reminders_updated":args.request_id}))
+            bounded(json!({"reminder_updated":args.idempotency_key}))
+        }
+        "reminder_rm" => {
+            let args: ReminderRm = parse(args)?;
+            feature::service::change_reminders(
+                &adapter,
+                &args.idempotency_key,
+                args.expected_version,
+                vec![],
+                vec![args.key],
+                crate::model::now_ms(),
+            )
+            .await
+            .map_err(RpcError::invalid_params)?;
+            bounded(json!({"reminder_removed":args.idempotency_key}))
         }
         _ => Err(RpcError::method_not_found(tool)),
     }

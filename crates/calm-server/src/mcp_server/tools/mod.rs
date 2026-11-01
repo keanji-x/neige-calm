@@ -235,7 +235,10 @@ mod tests {
         // #3126 review fix: naming plus explicit retry-result wording adds 61 bytes
         // to the previous 37,055; the real registry totals 37,116 after those offsets.
         // Shared task reports replace handback; compact descriptions pay for Planner visibility.
-        const SURFACE_MAX_BYTES: usize = 38_038;
+        // #3425: five optional inspection tools add 2,350 bytes of typed read,
+        // classification and reminder contracts. Background quiet checks issue no
+        // model requests; this fixed declaration cost is measured, not history growth.
+        const SURFACE_MAX_BYTES: usize = 40_359;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

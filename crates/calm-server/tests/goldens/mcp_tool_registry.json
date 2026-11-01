@@ -2520,6 +2520,237 @@
     ]
   },
   {
+    "name": "plugin_feishuwatch_batch_cat",
+    "description_sha256": "711c7a0ab0cbd89cfcd5d6ecf69a91547889a0950361e9f8c1dbe343d9bebf9f",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_id": {
+          "type": "string"
+        },
+        "batch_id": {
+          "type": "string"
+        },
+        "legacy_offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limit": {
+          "maximum": 25,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "batch_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_feishuwatch_reminder_rm",
+    "description_sha256": "d9f46f0179bae1d49469e5e9a15f09023440bcc1f74d483b63fe218978417edf",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_version": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "expected_version",
+        "key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_feishuwatch_reminder_set",
+    "description_sha256": "e548b9b38e4ac2fd80b222eb5a5920b366c77bcedb52fb4a79da169eaca49ad3",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "at_ms": {
+          "type": "integer"
+        },
+        "expected_version": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "expected_version",
+        "key",
+        "at_ms",
+        "note"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_feishuwatch_settle",
+    "description_sha256": "6b8647908a5272515e80ef33109d481e304b97800c8cf5dc4f2bc842d097e429",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "type": "string"
+        },
+        "cancel_deadline_keys": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array"
+        },
+        "classification": {
+          "type": "object"
+        },
+        "deadlines": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at_ms": {
+                "type": "integer"
+              },
+              "key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "note": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "at_ms",
+              "note"
+            ],
+            "type": "object"
+          },
+          "maxItems": 100,
+          "type": "array"
+        }
+      },
+      "required": [
+        "batch_id",
+        "classification",
+        "deadlines",
+        "cancel_deadline_keys"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
+    "name": "plugin_feishuwatch_status",
+    "description_sha256": "9735aa9f303fc32c844d7576fee46643369add1ad797b46fa7ab04cc1ca2d119",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_batch_id": {
+          "type": "string"
+        },
+        "after_reminder_key": {
+          "type": "string"
+        },
+        "after_source_id": {
+          "type": "string"
+        },
+        "limit": {
+          "maximum": 25,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "plugin_gitforge_gh_run_rerun",
     "description_sha256": "de1d4c1bc7f217a8683ad8d2466c84d77f5236dcf2493cda4f48042eec117961",
     "input_schema": {

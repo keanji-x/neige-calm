@@ -906,8 +906,10 @@ fn prompt_neige_mentions_name_served_commands() {
 #[test]
 fn task_report_surfaces_name_the_execution_id_attempt_id() {
     // Where `idempotency_key` is a real caller-chosen dedupe key, not a task execution id.
-    const CALLER_DEDUPE_KEY_PROMPTS: [&str; 6] = [
+    const CALLER_DEDUPE_KEY_PROMPTS: [&str; 8] = [
         "../plugin/src/builtin/calendar/prompts/plugin_calendar_add.md",
+        "../plugin/src/builtin/feishu_watch/prompts/tools/plugin_feishuwatch_reminder_set.md",
+        "../plugin/src/builtin/feishu_watch/prompts/tools/plugin_feishuwatch_reminder_rm.md",
         "../plugin/src/builtin/gitforge/prompts/plugin_gitforge_publish.md",
         "prompts/tools/neige_terminal_open.md",
         "prompts/tools/neige_terminal_input.md",

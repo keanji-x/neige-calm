@@ -200,7 +200,9 @@ impl Adapter {
                         .unwrap_or(false)
                         == failed
                     {
-                        return Ok::<_, CalmError>(((), vec![]));
+                        return Err(CalmError::Conflict(
+                            "inspection diagnostic unchanged".into(),
+                        ));
                     }
                     let at = crate::model::now_ms();
                     let reason = if failed {
@@ -238,7 +240,10 @@ impl Adapter {
         )
         .await
         .map(|_| ())
-        .map_err(|_| "inspection diagnostic publication refused".into())
+        .or_else(|error| match error {
+            CalmError::Conflict(reason) if reason == "inspection diagnostic unchanged" => Ok(()),
+            _ => Err("inspection diagnostic publication refused".into()),
+        })
     }
     pub async fn diagnostic_value(&self) -> Result<Option<Value>, String> {
         self.repo
@@ -289,57 +294,73 @@ impl Storage for Adapter {
             );
         }
         let this = self.clone();
-        write_with_events_typed(
-            self.repo.as_ref(),
-            ActorId::Kernel,
-            None,
-            &self.events,
-            &self.write,
-            move |tx| {
+        match wake {
+            Some(wake) => write_with_events_typed(
+                self.repo.as_ref(),
+                ActorId::Kernel,
+                None,
+                &self.events,
+                &self.write,
+                move |tx| {
+                    Box::pin(async move {
+                        let track = this.replace_tx(tx, expected_revision, raw).await?;
+                        Ok(((), vec![this.event(&track, wake)]))
+                    })
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+            None => write_in_tx_typed(self.repo.as_ref(), move |tx| {
                 Box::pin(async move {
-                    let track = this.authorize_tx(tx).await?;
-                    let old: Option<String> = sqlx::query_scalar(
-                        "SELECT value FROM plugin_kv WHERE plugin_id=? AND key=?",
-                    )
-                    .bind(PLUGIN_ID)
-                    .bind(this.key())
-                    .fetch_optional(&mut **tx)
-                    .await?;
-                    let old = old
-                        .map(|v| serde_json::from_str::<Stored>(&v))
-                        .transpose()
-                        .map_err(|_| {
-                            CalmError::Conflict("invalid retained inspection state".into())
-                        })?;
-                    if old.as_ref().map(|v| v.state.revision) != expected_revision
-                        || old.as_ref().is_some_and(|v| v.config != this.config)
-                    {
-                        return Err(CalmError::Conflict(
-                            "inspection state changed; retry latest checkpoint".into(),
-                        ));
-                    }
-                    sqlx::query(
-                        "INSERT INTO plugin_kv(plugin_id,key,value,updated_at) VALUES(?,?,?,?) \
-                ON CONFLICT(plugin_id,key) DO UPDATE \
-                SET value=excluded.value,updated_at=excluded.updated_at",
-                    )
-                    .bind(PLUGIN_ID)
-                    .bind(this.key())
-                    .bind(raw)
-                    .bind(crate::model::now_ms())
-                    .execute(&mut **tx)
-                    .await?;
-                    Ok((
-                        (),
-                        wake.map(|wake| this.event(&track, wake))
-                            .into_iter()
-                            .collect(),
-                    ))
+                    this.replace_tx(tx, expected_revision, raw)
+                        .await
+                        .map(|_| ())
                 })
-            },
+            })
+            .await
+            .map_err(|e| e.to_string()),
+        }
+    }
+}
+impl Adapter {
+    /// Both publication modes share the same authority/CAS/write path. Only the
+    /// eventful mode uses the kernel's deliberately non-empty event transaction.
+    async fn replace_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        expected: Option<u64>,
+        raw: String,
+    ) -> Result<crate::model::Track, CalmError> {
+        let track = self.authorize_tx(tx).await?;
+        let old: Option<String> =
+            sqlx::query_scalar("SELECT value FROM plugin_kv WHERE plugin_id=? AND key=?")
+                .bind(PLUGIN_ID)
+                .bind(self.key())
+                .fetch_optional(&mut **tx)
+                .await?;
+        let old = old
+            .map(|v| serde_json::from_str::<Stored>(&v))
+            .transpose()
+            .map_err(|_| CalmError::Conflict("invalid retained inspection state".into()))?;
+        if old.as_ref().map(|v| v.state.revision) != expected
+            || old.as_ref().is_some_and(|v| v.config != self.config)
+        {
+            return Err(CalmError::Conflict(
+                "inspection state changed; retry latest checkpoint".into(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO plugin_kv(plugin_id,key,value,updated_at) VALUES(?,?,?,?) \
+            ON CONFLICT(plugin_id,key) DO UPDATE \
+            SET value=excluded.value,updated_at=excluded.updated_at",
         )
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .bind(PLUGIN_ID)
+        .bind(self.key())
+        .bind(raw)
+        .bind(crate::model::now_ms())
+        .execute(&mut **tx)
+        .await?;
+        Ok(track)
     }
 }

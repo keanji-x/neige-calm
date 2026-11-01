@@ -1,6 +1,6 @@
 {
   "manifest_version": 4,
-  "id": "feishu-watch",
+  "id": "feishuwatch",
   "version": "0.1.0",
   "min_kernel_version": "0.1.0",
   "kind": "builtin",
