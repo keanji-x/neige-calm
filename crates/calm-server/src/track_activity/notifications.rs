@@ -215,10 +215,12 @@ mod tests {
                 delivery,
                 questions: vec![
                     AskQuestion {
+                        detail: None,
                         title: "Merge PR #7?".into(),
                         options: vec!["Merge".into(), "Hold".into()],
                     },
                     AskQuestion {
+                        detail: None,
                         title: "Which branch?".into(),
                         options: Vec::new(),
                     },

@@ -46,6 +46,7 @@ pub async fn ask_reopen_requested_tx(
         tx,
         card,
         vec![AskQuestion {
+            detail: None,
             title: question.title.clone(),
             options: OPTIONS.iter().map(|value| (*value).into()).collect(),
         }],

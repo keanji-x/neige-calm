@@ -1,5 +1,5 @@
 //! Planner wake for `ask.answered` (#2209). The answer carries only the ask's id; the question
-//! titles come from the persisted `ask.requested`, so live push and boot catch-up render the same
+//! title and full detail come from the persisted `ask.requested`, so live push and boot catch-up render the same
 //! text. A clicked option is rendered as its label. Only a `wake` ask's answer wakes the Planner
 //! (#2348): a `hold` ask's answer went to the paused provider request, and the turn it paused
 //! goes on. An ask that is not on this track maps to no observation.
@@ -67,7 +67,11 @@ pub(super) async fn qualified_observation(
             AskAnswer::Text(text) => text.clone(),
         };
         answered.push(AnsweredQuestion {
-            title: question.title,
+            // The answer refers to the complete persisted question, not just its short label.
+            title: match question.detail {
+                Some(detail) => format!("{}\n{detail}", question.title),
+                None => question.title,
+            },
             answer,
         });
     }

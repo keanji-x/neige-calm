@@ -280,6 +280,7 @@ async fn each_option_of_each_approval_kind_is_its_exact_answer() {
             assert_eq!(
                 opened.questions,
                 vec![AskQuestion {
+                    detail: None,
                     title: title.into(),
                     options: vec![
                         "Allow".into(),

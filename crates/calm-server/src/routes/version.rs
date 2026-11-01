@@ -58,7 +58,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #3279: 63 -> 64 requires exact current terminal outcome metadata in negotiated run reads.
 // #3318: older bundles reject the identity_unconfirmed recovery hold reason.
 // #3363: recovery adds a terminal-provider-error cause and recover_session action.
-pub const WEB_COMPAT_VERSION: u32 = 67;
+// #3423: objective approval snapshots require complete question detail presentation.
+pub const WEB_COMPAT_VERSION: u32 = 68;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

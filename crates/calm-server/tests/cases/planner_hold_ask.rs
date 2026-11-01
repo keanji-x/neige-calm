@@ -491,6 +491,7 @@ impl Rig {
 
 fn question() -> AskQuestion {
     AskQuestion {
+        detail: None,
         title: "Run `cargo test` (cwd /work)?".into(),
         options: vec!["Allow".into(), "Deny".into()],
     }

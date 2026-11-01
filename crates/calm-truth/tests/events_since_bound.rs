@@ -350,6 +350,7 @@ async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
         action: None,
         track_id: "track".into(),
         questions: vec![calm_types::event::AskQuestion {
+            detail: None,
             title: "Continue?".into(),
             options: Vec::new(),
         }],

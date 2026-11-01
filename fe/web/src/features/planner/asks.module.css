@@ -43,6 +43,15 @@
     overflow-wrap: anywhere;
   }
 
+  .detail {
+    font-family: var(--font-mono);
+    font-size: var(--font-step-1-size);
+    line-height: var(--font-step-1-line);
+    margin: 0 0 var(--space-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
   .questions {
     display: flex;
     flex-direction: column;

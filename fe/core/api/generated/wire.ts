@@ -50,7 +50,7 @@ export type ArtifactRef = string;
 /**
  * An explicit user choice with a lifecycle effect; absent on ordinary/native asks.
  */
-export type AskAction = { "kind": "objective_approval", objective: string, standard_hash: string, } | { "kind": "reopen_track", closed_at: number, } | { "kind": "grant_admin" } | { "kind": "forge_action", idempotency_key: string, payload_hash: string, };
+export type AskAction = { "kind": "objective_approval_v2", objective: string, standard_hash: string, } | { "kind": "objective_approval", objective: string, standard_hash: string, } | { "kind": "reopen_track", closed_at: number, } | { "kind": "grant_admin" } | { "kind": "forge_action", idempotency_key: string, payload_hash: string, };
 
 /**
  * One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking
@@ -68,7 +68,11 @@ export type AskDelivery = "wake" | "hold";
  * One question of an `ask.requested`: what the user is asked, and the answers offered. The first
  * option is the recommended one; no options means a free-text answer.
  */
-export type AskQuestion = { title: string, options: Array<string>, };
+export type AskQuestion = { title: string, 
+/**
+ * Complete plain-text context frozen with this question. Never clipped by title bounds.
+ */
+detail?: string, options: Array<string>, };
 
 /**
  * `<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is

@@ -1,0 +1,28 @@
+{
+  "definition": {
+    "key": "kr",
+    "title": "Historical\n{name",
+    "mode": "converge",
+    "checks": [
+      {
+        "id": "accepted",
+        "role": "goal",
+        "config": {
+          "kind": "fact",
+          "params": {
+            "fact": "task_accepted",
+            "subject": "finish"
+          }
+        }
+      }
+    ],
+    "constraints": [],
+    "budget": {
+      "tokens": 10000,
+      "turns": 1000,
+      "wall_secs": 10000
+    },
+    "compact": "none"
+  },
+  "title": "批准 KR kr「Historical\n{name」的细则？\n{\n  \"key\": \"kr\",\n  \"title\": \"Historical\\n{name\",\n  \"mode\": \"converge\",\n  \"checks\": [\n    {\n      \"id\": \"accepted\",\n      \"role\": \"goal\",\n      \"config\": {\n        \"kind\": \"fact\",\n        \"params\": {\n          \"fact\": \"task_accepted\",\n          \"subject\": \"finish\"\n        }\n      }\n    }\n  ],\n  \"constraints\": [],\n  \"budget\": {\n    \"turns\": 1000,\n    \"tokens\": 10000,\n    \"wall_secs\": 10000\n  },\n  \"compact\": \"none\"\n}"
+}

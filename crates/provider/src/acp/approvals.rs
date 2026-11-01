@@ -445,6 +445,7 @@ fn question(request: &PermissionRequest) -> AskQuestion {
         cut
     };
     AskQuestion {
+        detail: None,
         title: clip_ask_title(&format!("{head}{paths}")),
         options: request
             .options

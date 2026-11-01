@@ -96,6 +96,7 @@ pub fn validate_questions(questions: Vec<AskQuestion>) -> Result<Vec<AskQuestion
                 )));
             }
             Ok(AskQuestion {
+                detail: question.detail,
                 title: bounded(
                     &format!("questions[{i}].title"),
                     &question.title,
@@ -496,6 +497,7 @@ mod tests {
 
     fn q(title: &str, options: &[&str]) -> AskQuestion {
         AskQuestion {
+            detail: None,
             title: title.into(),
             options: options.iter().map(|o| (*o).to_string()).collect(),
         }

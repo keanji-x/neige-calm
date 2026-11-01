@@ -112,6 +112,7 @@ fn hold_ask(asked: &(i64, Event)) -> i64 {
     assert_eq!(
         questions,
         &vec![AskQuestion {
+            detail: None,
             title: "Run: echo one > one.txt".into(),
             options: vec!["Allow once".into(), "Always allow".into(), "Reject".into()],
         }]

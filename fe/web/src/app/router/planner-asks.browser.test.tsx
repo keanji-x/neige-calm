@@ -1,3 +1,4 @@
+import type { AskAction, AskQuestion } from '../../../../core/api/generated/wire.ts';
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 import '../../styles/entry.css';
@@ -48,7 +49,7 @@ function largeAsk(count: number, long: boolean) {
   return { ...ASK, key: 'ask:7', text: `${count} questions`, questions };
 }
 
-function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK, reopen = false) {
+function setup(theme: 'light' | 'dark', ask: Omit<typeof ASK, 'questions'> & { questions: AskQuestion[]; action?: AskAction } = ASK, reopen = false) {
   const requests: ApiRequest[] = [];
   let currentTrack = reopen ? { ...TRACK, closed_at: 42 } : TRACK;
   const transport: ApiTransportPort = { async send(request) {
@@ -263,7 +264,7 @@ it.each([1280, 390])('restores a closed track by clicking its existing AI questi
 });
 
 it('renders grant_admin choices and posts the grant click only to the ask answer route', async () => {
-  const grantAsk = { ...ASK, action: { kind: 'grant_admin' },
+  const grantAsk = { ...ASK, action: { kind: 'grant_admin' as const },
     questions: [{ title: 'Manage Tracks?', options: ['Grant admin', 'Not now'] }] };
   const { requests } = setup('light', grantAsk);
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
@@ -287,4 +288,23 @@ it('marks a real pending question on its Planner conversation even without a per
   expect(button.closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('attention');
   const description = document.getElementById(button.getAttribute('aria-describedby') ?? '');
   expect(description?.textContent).toContain('Needs input');
+});
+
+it.each([1280, 390])('shows the complete frozen approval detail at width %i', async (width) => {
+  await page.viewport(width, 844);
+  const detail = `${'完整验收条件'.repeat(500)} LAST CRITERION <img src=x onerror=alert(1)>`;
+  const { requests } = setup('light', { ...ASK, text: '批准此 KR 的验收标准？',
+    action: { kind: 'objective_approval_v2', objective: 'kr', standard_hash: 'hash' },
+    questions: [{ title: '批准此 KR 的验收标准？', detail, options: ['批准', '不批准'] }],
+  });
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const content = await ask.getByLabelText('Question details').findElement();
+  expect(content.textContent).toBe(detail);
+  expect(content.querySelector('img')).toBeNull();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  await page.screenshot({ path: `../../../../test-results/objective-approval-${width}.png` });
+  await ask.getByRole('button', { name: '批准', exact: true }).click();
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
+  expect(requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({ answers: [{ option: 0 }] });
 });

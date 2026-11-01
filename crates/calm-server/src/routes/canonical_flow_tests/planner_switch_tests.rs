@@ -565,6 +565,7 @@ async fn planner_switch_open_wake_refused_before_revoke() {
         &mut tx,
         &p.cards[0].clone().into(),
         vec![crate::event::AskQuestion {
+            detail: None,
             title: "Open wake".into(),
             options: vec!["Yes".into()],
         }],

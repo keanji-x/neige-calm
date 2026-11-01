@@ -18,6 +18,7 @@ async fn asked(repo: &SqlxRepo, track: &str, actor: &str, action: AskAction) -> 
         &TrackEvent::AskRequested {
             track_id: track.into(),
             questions: vec![AskQuestion {
+                detail: None,
                 title: "批准？".into(),
                 options: vec!["批准".into(), "不批准".into()],
             }],

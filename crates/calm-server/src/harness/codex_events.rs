@@ -144,6 +144,7 @@ fn item_questions(params: &Value) -> Vec<AskQuestion> {
         Ok(questions) => questions
             .into_iter()
             .map(|question| AskQuestion {
+                detail: None,
                 title: question.title,
                 options: question.options.unwrap_or_default(),
             })

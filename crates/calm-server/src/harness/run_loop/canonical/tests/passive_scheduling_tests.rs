@@ -40,6 +40,7 @@ async fn held_answer_wakes_without_polling_and_preserves_the_paused_budget() {
             request_key: RequestKey("passive-budget".into()),
             connection: ConnectionId("passive-source".into()),
             questions: vec![crate::event::AskQuestion {
+                detail: None,
                 title: "Continue?".into(),
                 options: vec!["Yes".into(), "No".into()],
             }],

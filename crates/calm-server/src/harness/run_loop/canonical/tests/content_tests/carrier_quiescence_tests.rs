@@ -121,6 +121,7 @@ async fn carrier_quiescence_parked_loop_keeps_ingress_polling() {
             request_key: RequestKey("parked-approval".into()),
             connection: ConnectionId("parked-source".into()),
             questions: vec![crate::event::AskQuestion {
+                detail: None,
                 title: "Proceed?".into(),
                 options: vec!["Yes".into(), "No".into()],
             }],

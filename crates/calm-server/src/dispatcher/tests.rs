@@ -178,10 +178,12 @@ fn ask_requested(track: &TrackId) -> Event {
         track_id: track.clone(),
         questions: vec![
             AskQuestion {
+                detail: None,
                 title: "Merge PR #7 (head abc)?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             },
             AskQuestion {
+                detail: None,
                 title: "Which region?".into(),
                 options: Vec::new(),
             },
@@ -4453,6 +4455,7 @@ async fn grant_admin_wake_text_is_explicit() {
     let payload = serde_json::to_value(Event::AskRequested {
         track_id: TrackId::from("w"),
         questions: vec![AskQuestion {
+            detail: None,
             title: "Manage Tracks?".into(),
             options: vec!["Grant admin".into(), "Not now".into()],
         }],

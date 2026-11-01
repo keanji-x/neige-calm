@@ -167,6 +167,7 @@ impl ApprovalRequest {
 
     pub(super) fn questions(&self) -> Vec<AskQuestion> {
         vec![AskQuestion {
+            detail: None,
             title: self.title.clone(),
             options: OPTIONS.iter().map(|option| (*option).to_owned()).collect(),
         }]

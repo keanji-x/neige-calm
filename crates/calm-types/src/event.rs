@@ -298,6 +298,10 @@ pub fn clip_ask_title(text: &str) -> String {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct AskQuestion {
     pub title: String,
+    /// Complete plain-text context frozen with this question. Never clipped by title bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
     pub options: Vec<String>,
 }
 
@@ -326,6 +330,12 @@ pub enum AskAnswer {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AskAction {
+    /// Snapshot-bearing objective approval. A distinct kind makes older clients refuse it
+    /// instead of offering approval while discarding the question detail.
+    ObjectiveApprovalV2 {
+        objective: String,
+        standard_hash: String,
+    },
     /// Human approval of exactly one objective standard, granted only by the first option.
     ObjectiveApproval {
         objective: String,
@@ -1807,6 +1817,7 @@ mod scope_tests {
             action: None,
             track_id: TrackId::from("track-1"),
             questions: vec![AskQuestion {
+                detail: None,
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],
@@ -2870,6 +2881,7 @@ mod scope_tests {
                 action: None,
                 track_id: TrackId::from("track-1"),
                 questions: vec![AskQuestion {
+                    detail: None,
                     title: "Which branch?".into(),
                     options: Vec::new(),
                 }],

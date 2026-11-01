@@ -323,6 +323,20 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     ]);
   });
 
+  it('preserves frozen objective details through the activity overlay decoder', () => {
+    const detail = `${'完整验收条件'.repeat(500)} LAST CRITERION`;
+    const question = { title: '批准此 KR 的验收标准？', detail, options: ['批准', '不批准'] };
+    const action = { kind: 'objective_approval_v2', objective: 'kr', standard_hash: 'hash' };
+    const activity = trackActivityFrom('t1', [overlay({ ...payload, items: [{
+      source: 'ask', key: 'ask:7', text: question.title, at_ms: 10, ask_id: 7,
+      questions: [question], delivery: 'wake', action,
+    }] })]);
+    expect(activity.attentionItems).toEqual([{
+      source: 'ask', key: 'ask:7', text: question.title, atMs: 10, askId: 7,
+      questions: [question], delivery: 'wake', action,
+    }]);
+  });
+
   it('keeps the neutral values for a track the kernel has not written yet', () => {
     const activity = trackActivityFrom('t2', [overlay(payload)]);
     expect(activity).toEqual(NEUTRAL_ACTIVITY);
