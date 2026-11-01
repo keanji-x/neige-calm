@@ -1,4 +1,4 @@
-//! Bounded preview; the immutable before/after indexes retain complete evidence.
+//! Bounded preview; immutable before/after indexes retain complete identity, revision and order evidence.
 use crate::decision_sink::ReportOpCommit;
 use crate::mcp_server::framing::RpcError;
 use serde_json::{Value, json};
