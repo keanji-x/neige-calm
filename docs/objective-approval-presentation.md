@@ -42,7 +42,9 @@ silently truncate criteria or fail only at approval time.
 ## Surface and verification
 
 Sweep Rust AskQuestion constructors and validators, generated TS, frontend runtime
-schemas and domain types, and the existing Planner ask renderer. Snapshot display
+schemas and domain types, and the existing Planner ask renderer. Planner answer wake observations must also
+carry the complete persisted detail so approve/decline still names the exact standard;
+live and boot catch-up share that same generic rendering entry point. Snapshot display
 must preserve the last criterion on desktop and narrow screens. Queue labels remain
 short. Regenerate bindings through the real generator.
 
