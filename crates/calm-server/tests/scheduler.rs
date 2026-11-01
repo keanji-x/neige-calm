@@ -7546,6 +7546,13 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
     scheduler.open_context_sweep_gate().await;
     scheduler.sweep_boot().await;
     assert!(scheduler.boot_sweep_completed());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while task_row(&boot, "early").await.status != TaskStatus::Running {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("boot recovery must eventually resume the dispatched task");
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
     assert_eq!(task_row(&boot, "early").await.status, TaskStatus::Running);
 
@@ -9438,6 +9445,8 @@ async fn aborted_observer_leaves_gate_group_alive_and_reattach_lands_verdict() {
     c2b::released_boot_recovers().await;
 }
 
+#[path = "scheduler/boot_recovery.rs"]
+mod boot_recovery;
 #[cfg(target_os = "linux")]
 #[path = "scheduler/recovery_3192.rs"]
 mod recovery_3192;

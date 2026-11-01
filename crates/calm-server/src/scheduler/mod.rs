@@ -1564,17 +1564,17 @@ impl Scheduler {
             );
             return;
         }
-        let pending_tracks = self.sweep_reconcile().await;
+        let pending_tracks = self.sweep_reconcile(false).await;
         for track_id in pending_tracks {
             self.schedule_track(TrackId::from(track_id)).await;
         }
     }
 
-    /// Boot-time sweep: the reconcile arms run synchronously (after operation recovery) but
-    /// pending-arm dispatching goes through async `poke` so boot never blocks the HTTP
-    /// server. Completing it opens the boot gate.
+    /// Boot-time sweep: reconcile recovered state after operation recovery, then resume
+    /// dispatched work and poke pending work in the background. Worker capacity and
+    /// operation settlement must not hold the HTTP listener closed.
     pub async fn sweep_boot(self: &Arc<Self>) {
-        let pending_tracks = self.sweep_reconcile().await;
+        let pending_tracks = self.sweep_reconcile(true).await;
         for track_id in pending_tracks {
             self.poke(TrackId::from(track_id));
         }
@@ -1613,7 +1613,7 @@ impl Scheduler {
 
     /// Shared sweep body: runs the reconcile arms inline and returns the set of tracks
     /// holding `pending` rows for the caller to dispatch.
-    async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
+    async fn sweep_reconcile(self: &Arc<Self>, during_boot: bool) -> BTreeSet<String> {
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade() {
@@ -1641,10 +1641,10 @@ impl Scheduler {
                     pending_tracks.insert(task.track_id.clone());
                 }
                 TaskStatus::Running if task.kind == TaskKind::Compact => {
-                    self.resume_dispatched(task).await;
+                    self.resume_dispatched_for_sweep(task, during_boot).await;
                 }
                 TaskStatus::Dispatched => {
-                    self.resume_dispatched(task).await;
+                    self.resume_dispatched_for_sweep(task, during_boot).await;
                 }
                 // Sub-track parents have their own child-state reconciler.
                 // task_has_running_liveness_deadline excludes them from timeout;
@@ -1747,6 +1747,17 @@ impl Scheduler {
     }
 
     /// Sweep `dispatched` arm: the claim landed but the spawn outcome was never reconciled.
+    async fn resume_dispatched_for_sweep(self: &Arc<Self>, task: Task, during_boot: bool) {
+        if during_boot {
+            let scheduler = Arc::clone(self);
+            tokio::spawn(async move {
+                scheduler.resume_dispatched(task).await;
+            });
+        } else {
+            self.resume_dispatched(task).await;
+        }
+    }
+
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()` + guarded writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task) {
         if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
