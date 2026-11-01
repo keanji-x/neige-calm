@@ -177,17 +177,25 @@ OpenAPI 预检，运行 `scripts/local-rust-gates.sh --quick`。完整的
 配置的改动也由 CI 验证。只有在明确要求，或修改它本身或 `scripts/run-rust-nextest.sh`
 时，才在本地运行完整门禁。
 
-运行新前端门禁：
+新前端改动在迭代时运行受影响的测试，交付前统一运行一次 lint/build
+（请将测试路径占位符替换为实际选择器）：
 
 ```bash
-(cd fe && npm ci && npm run lint && npm run build && npm test)
+(cd fe && npm test -- <test-path>)
+(cd fe && npm run lint && npm run build)
 ```
 
-浏览器测试还需要安装 Playwright Chromium：
+浏览器行为改动运行受影响的浏览器测试：
 
 ```bash
-(cd fe && npx playwright install --with-deps chromium && npm run test:browser)
+(cd fe && npm run test:browser -- <browser-test-path>)
 ```
+
+仅在依赖缺失，或安装后 manifest/lockfile 发生变化时运行 `(cd fe && npm ci)`。
+仅在所需浏览器版本或系统依赖缺失时运行
+`(cd fe && npx playwright install --with-deps chromium)`。
+契约检查、扩大测试范围的条件，以及验证结果复用规则见
+[AGENTS.md](AGENTS.md#verification)。
 
 默认端到端测试层不会消耗模型 Token：
 

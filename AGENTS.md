@@ -23,8 +23,8 @@ unless the task requires it.
    If it does not reproduce, report that rather than inventing a cause.
 4. Implement the smallest root-cause fix. Exercise production entry points; do
    not copy the behavior under test into fixtures or helper scripts.
-5. Run focused tests, mutation-verify critical assertions, then run the gates
-   appropriate to the changed surface.
+5. While iterating, run focused tests and mutation-verify critical assertions.
+   Before delivery, run the gates appropriate to the final changed surface.
 6. Review the complete diff at its tier. Classify findings with evidence and
    fix every blocking finding.
 7. Re-run invalidated checks after every fix, rebase, conflict resolution, or
@@ -187,39 +187,71 @@ must remove it in the same session with `git worktree remove <path>` without
 
 ## Verification
 
-Run only the smallest relevant tests while iterating and before delivery. Do
-not run workspace-wide `nextest` by default; the broad suite belongs to CI.
+Separate iteration from final verification. While editing, run only the tests
+and checks needed to validate the current change. Before delivery, run the
+applicable checks below once against the final tree. Reuse successful results
+while their source, dependencies, configuration and generated inputs remain
+unchanged; after a fix, rerun only checks whose inputs or covered behavior changed.
+A successful check covering a broader scope also satisfies a narrower one. Do not
+rerun the same check just because a new chat turn, review round or commit began.
+CI owns broad suites; do not run workspace-wide `nextest` by default.
 
 ```bash
-# Every change, including docs-only: the CI lint job's text gates
+# Before every delivery, including docs-only: the CI lint job's text gates
 scripts/local-ratchet-gates.sh
-
-# Every Rust change: package-wide goldens, registries and source scans
-scripts/local-contract-gates.sh
 
 # Rust: select the affected package and test-name filter
 env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked \
   -p <package> <test-name-filter> --test-threads 8
 
-# Rust compile/lint preflight; OpenAPI is selected by the shared CI classifier
+# Once before delivery of Rust changes; OpenAPI uses the shared CI classifier
 scripts/local-rust-gates.sh --quick --base origin/main
 
-# Next-generation frontend only
-(cd fe && npm ci && npm run lint && npm run build && npm test)
+# Once before delivery of next-generation frontend code changes
+(cd fe && npm run lint && npm run build)
 
-# When browser behavior changes
-(cd fe && npx playwright install --with-deps chromium && npm run test:browser)
+# Affected frontend tests (replace the placeholder with explicit test paths)
+(cd fe && npm test -- <test-path>)
+
+# Affected browser tests when browser behavior changes
+(cd fe && npm run test:browser -- <browser-test-path>)
 ```
 
-- Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
-  ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the
-  commands above do not; it scans tracked and untracked files in the working
-  tree and skips ignored ones.
+- Run `scripts/local-ratchet-gates.sh` once before delivery of every change,
+  including docs-only ones. It runs every `scripts/gate-*.sh` step of the CI lint
+  job, which the commands above do not; it scans tracked and untracked files in
+  the working tree and skips ignored ones.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
   concurrency on the shared production host.
+- Rust changes must also run the affected package's relevant contract suites:
+  goldens, registries, source scans and covers-every-X checks. A behavior-specific
+  test filter alone does not select these. Identify the affected contracts from
+  `scripts/local-contract-gates.sh` and the package's test registrations, and run
+  them with explicit package/target/test selectors. Confirm the expected tests
+  actually ran; an empty selection is not verification. Run the full
+  `scripts/local-contract-gates.sh` once before delivery for L2 Rust changes,
+  cross-package contract changes, changes to contract selection/registration, or
+  when the affected contract scope cannot be established confidently.
+- Frontend test selectors must cover affected consumers as well as the edited
+  module. Run the full `npm test` once before delivery for L2 frontend changes,
+  shared API/domain/UI contract changes, test infrastructure changes, or when
+  affected consumers cannot be bounded confidently. Browser changes need the
+  relevant browser tests and real preview below; use the full
+  `npm run test:browser` when their affected scope cannot be bounded confidently.
+- Install dependencies as preparation, not on every edit: run `(cd fe && npm ci)`
+  when dependencies are missing, the lockfile/package manifest changed since
+  installation, or the installation is known to be inconsistent. Install
+  Playwright Chromium with `(cd fe && npx playwright install --with-deps chromium)`
+  only when the required browser/system dependencies are missing or its version
+  changed. Documentation-only changes do not require frontend or Rust code gates.
+- Avoid concurrent Cargo checks sharing a target directory: they serialize on
+  build locks. Reuse the existing build cache; do not delete it or switch to a
+  fresh target directory just to bypass a lock. If another task owns the lock,
+  continue independent work and report unresolved verification honestly; a
+  timeout or interrupted check is not a pass.
 - Quick runs fmt and clippy with `calm-server/codex-e2e`; default-feature lib
   check and release builds belong to CI. OpenAPI runs only when the shared CI
   classifier selects changed paths (committed since the merge-base, staged,
@@ -227,7 +259,7 @@ scripts/local-rust-gates.sh --quick --base origin/main
   missing comparison refs and empty diffs conservatively run OpenAPI.
 - When a kernel gate owns verification, declare the verification plan once:
   the worker runs focused tests and formatter/lint fixes; the gate runs quick,
-  required text/contract checks and one focused-test replay that rejects empty
+  applicable text/contract checks and one focused-test replay that rejects empty
   selection. CI owns broad suites. Give each check one place, except that
   intended replay. Re-run invalidated checks when the final tree changes;
   worker results do not replace verification of the gate's frozen target.

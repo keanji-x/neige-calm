@@ -245,17 +245,26 @@ routine development command: CI runs the broad workspace test suite, so a
 nextest configuration change is verified there. Run the full local gate only
 when explicitly requested or when changing it or `scripts/run-rust-nextest.sh`.
 
-Run the next-generation frontend gates:
+For next-generation frontend changes, run affected tests while iterating and
+lint/build once before delivery (replace test paths with real selectors):
 
 ```bash
-(cd fe && npm ci && npm run lint && npm run build && npm test)
+(cd fe && npm test -- <test-path>)
+(cd fe && npm run lint && npm run build)
 ```
 
-Browser tests additionally require Playwright Chromium:
+For browser behavior changes, run the affected browser tests:
 
 ```bash
-(cd fe && npx playwright install --with-deps chromium && npm run test:browser)
+(cd fe && npm run test:browser -- <browser-test-path>)
 ```
+
+Run `(cd fe && npm ci)` when dependencies are missing or their manifest/lockfile
+changed since installation. Install Chromium with
+`(cd fe && npx playwright install --with-deps chromium)` only when its required
+version or system dependencies are missing. Follow
+[AGENTS.md](AGENTS.md#verification) for contract checks, broader-suite triggers
+and reuse of successful verification.
 
 The default end-to-end tier does not spend model tokens:
 

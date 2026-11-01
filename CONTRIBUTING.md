@@ -70,10 +70,13 @@ Never claim a check was run when it was not.
 
 ### Verification
 
-Run only the smallest relevant checks while iterating and before requesting
-review. The commands, and when each one applies, are listed under
-[Verification in AGENTS.md](AGENTS.md#verification); run
-`scripts/local-ratchet-gates.sh` for every change, including docs-only ones.
+While iterating, run focused checks for the affected behavior. Before requesting
+review, run the applicable final checks once as listed under
+[Verification in AGENTS.md](AGENTS.md#verification), including
+`scripts/local-ratchet-gates.sh` for docs-only changes. Reuse successful checks
+whose inputs remain unchanged; rerun checks invalidated by subsequent fixes.
+Install dependencies only when needed. Use affected contract/frontend suites,
+expanding to the full suites for the cases specified in AGENTS.md.
 Workspace-wide Rust tests run in CI and are not a routine local step. When an
 integrated flow changes, run `./e2e/run.sh`. Without flags it selects tier 1
 only, which needs no Codex credentials and spends no tokens, so it may run on
