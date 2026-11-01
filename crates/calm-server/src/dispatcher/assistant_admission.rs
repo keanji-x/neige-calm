@@ -123,7 +123,7 @@ impl EventAdmission {
     ) -> Result<Option<HarnessObservation>> {
         match self {
             Self::Planner(v) => {
-                qualification::qualified_observation(repo, &v.track, &fact.envelope).await
+                qualification::qualified_observation_tx(tx, repo, &v.track, &fact.envelope).await
             }
             Self::Assistant(v) => match &fact.envelope.event {
                 Event::AssistantInputRequested { card_id, text, .. } if *card_id == v.card => {

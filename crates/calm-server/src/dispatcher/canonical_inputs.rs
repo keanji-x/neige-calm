@@ -296,7 +296,7 @@ impl Inner {
             return Err(CalmError::Forbidden("event Track scope changed".into()));
         }
         let Some(observation) =
-            qualification::qualified_observation(self.repo.as_ref(), track, &fact.envelope).await?
+            qualification::qualified_observation(self.repo.clone(), track, &fact.envelope).await?
         else {
             return Ok(None);
         };

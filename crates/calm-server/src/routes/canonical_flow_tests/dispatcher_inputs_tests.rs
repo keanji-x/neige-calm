@@ -5,6 +5,7 @@ use crate::shared_codex_appserver::native_owner_tests::Peer;
 use calm_types::conversation::PendingInput;
 
 mod child_results;
+mod git_delivery;
 mod knowledge;
 mod phase_trace;
 #[cfg(all(test, feature = "fixtures"))]

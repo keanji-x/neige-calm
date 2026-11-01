@@ -16,6 +16,23 @@ impl FactReads {
 }
 
 pub(super) async fn qualified_observation(
+    repo: Arc<dyn Repo>,
+    track: &TrackId,
+    envelope: &crate::db::TrackEvent,
+) -> Result<Option<HarnessObservation>> {
+    let track = track.clone();
+    let envelope = envelope.clone();
+    let reader = repo.clone();
+    crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(
+            async move { qualified_observation_tx(tx, reader.as_ref(), &track, &envelope).await },
+        )
+    })
+    .await
+}
+
+pub(super) async fn qualified_observation_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     repo: &dyn Repo,
     track: &TrackId,
     envelope: &crate::db::TrackEvent,
@@ -33,7 +50,11 @@ pub(super) async fn qualified_observation(
     {
         return Ok(None);
     }
-    resolve_event_observation(repo, track, event, true).await
+    if matches!(event, Event::TaskGitDeliverySettled { .. }) {
+        git_delivery_settled::qualified_observation_tx(tx, track, event, true).await
+    } else {
+        resolve_event_observation(repo, track, event, true).await
+    }
 }
 
 /// A later delivery/gate event carries the wake for a deferred worker self-report.
