@@ -108,17 +108,21 @@ async fn receipt_reports_equal_writes_explicit_moves_deletions_and_created_ids()
     .unwrap();
     let read = index_page(&b, json!({})).await;
     let id = read["blocks"][1]["id"].clone();
-    let equal = commit(
-        &b,
-        planner_identity(&b),
-        json!({"ops":[{"op":"upsert","id":id,"kind":"prose","markdown":"# B\n\nbeta\n"}]}),
-    )
-    .await
-    .unwrap();
+    let update = json!({"ops":[{"op":"upsert","id":id,"kind":"prose","markdown":"# B\n\nbeta\n"}]});
+    // Establish the byte-identical input through the write entry point first:
+    // the whole-write seed's B block carries an extra separating newline.
+    commit(&b, planner_identity(&b), update.clone())
+        .await
+        .unwrap();
+    let equal = commit(&b, planner_identity(&b), update).await.unwrap();
     assert_eq!(equal["changes_total"], 1);
+    assert_eq!(equal["changes"][0]["id"], id);
+    let equal_rev = equal["changes"][0]["rev"]
+        .as_u64()
+        .expect("live block revision");
     assert_eq!(
-        equal["changes"][0]["rev"],
-        equal["changes"][0]["previous_rev"]
+        equal["changes"][0]["previous_rev"].as_u64(),
+        Some(equal_rev)
     );
     let moved = commit(
         &b,
@@ -144,7 +148,7 @@ async fn receipt_reports_equal_writes_explicit_moves_deletions_and_created_ids()
     assert_eq!(removed["changes_total"], 1);
     assert_eq!(removed["changes"][0]["id"], id);
     assert!(removed["changes"][0]["rev"].is_null());
-    assert_eq!(removed["changes"][0]["previous_rev"], 1);
+    assert_eq!(removed["changes"][0]["previous_rev"], equal_rev);
     let created = commit(
         &b,
         planner_identity(&b),
@@ -299,7 +303,8 @@ async fn mutation_receipt_growth_depends_on_changes_not_report_size() {
             "content-only clients must receive the complete receipt"
         );
         eprintln!(
-            "report_blocks={count} receipt_payload_bytes={} serialized_result_bytes={} content_text_bytes={}",
+            "report_sections={count} report_blocks={} receipt_payload_bytes={} serialized_result_bytes={} content_text_bytes={}",
+            read["blocks"].as_array().unwrap().len(),
             receipt.to_string().len(),
             wire.to_string().len(),
             text.len()
