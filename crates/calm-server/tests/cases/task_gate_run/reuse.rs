@@ -306,7 +306,6 @@ pub(super) async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
         attempt: 1,
     })
     .unwrap();
-    let pool = fx.pool();
     let repo = Arc::new(SqlxOperationRepo::new(fx.db().clone()));
     let op_id = repo
         .insert_operation(

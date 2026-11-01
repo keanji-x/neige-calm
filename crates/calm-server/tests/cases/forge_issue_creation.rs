@@ -71,7 +71,7 @@ async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
             })
         })
         .await
-        .map_err(calm_truth::TruthError::from)?
+        .expect("independent write operation")
 }
 fn assert_real_result(outcome: &OperationOutcome) {
     match outcome {
