@@ -271,8 +271,11 @@ async fn partial_and_unproven_inputs_cannot_publish() {
     let mut c = SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", db.display()))
         .await
         .unwrap();
-    { let query = sqlx::raw_sql("CREATE VIRTUAL TABLE unproven USING fts5(content)"); sqlx::Executor::execute(&mut c, query).await }
-        .unwrap();
+    {
+        let query = sqlx::raw_sql("CREATE VIRTUAL TABLE unproven USING fts5(content)");
+        sqlx::Executor::execute(&mut c, query).await
+    }
+    .unwrap();
     c.close().await.unwrap();
     assert!(!cli(&db, &owned, Some(&out)).status.success());
     assert!(!out.exists());

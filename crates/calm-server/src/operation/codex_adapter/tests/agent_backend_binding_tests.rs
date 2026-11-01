@@ -66,7 +66,7 @@ async fn agent_backend_selection_respects_weight_inflight_and_readiness() {
                     .writer()
                     .with_writer(|write_session| {
                         Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             calm_truth::db::sqlite::session_backend::insert_tx(
                                 &mut tx, &session, "codex", id,
                             )

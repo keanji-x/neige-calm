@@ -674,7 +674,7 @@ async fn agent_backend_single_reconnect_does_not_need_database_writer() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 tokio::time::timeout(
                     Duration::from_secs(2),
                     daemon.model_list(tokio::time::Instant::now() + Duration::from_secs(2)),
@@ -708,7 +708,7 @@ async fn agent_backend_running_ensure_running_has_no_side_effects() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 tokio::time::timeout(Duration::from_secs(1), daemon.ensure_running())
                     .await
                     .expect("Running must return without transition or registry work")

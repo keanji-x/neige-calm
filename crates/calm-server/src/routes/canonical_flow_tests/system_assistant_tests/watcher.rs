@@ -47,7 +47,7 @@ pub(super) async fn worker(fixture: &Fixture, state: &AppState, track: &str) -> 
         .unwrap();
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let (_, terminal, _) = crate::db::sqlite::card_with_codex_create_tx(
@@ -428,7 +428,7 @@ async fn sql_source_owner_refuses_generic_or_mismatched_observation_facts() {
                         "threshold" => fact.quiet_after_ms = 0,
                         _ => {}
                     }
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let event = crate::event::Event::AssistantInputRequested {
                         card_id: if change == "target" {
                             "foreign".into()
@@ -604,7 +604,7 @@ async fn foreign_boot_scope_and_historical_namespace_refuse_live_episode() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             crate::db::sqlite::card_create_with_id_tx(
                     &mut tx,
                     card.clone(),

@@ -17,7 +17,7 @@ async fn create(repo: &SqlxRepo, cwd: &str, plan: TrackWorkspacePlan) -> Track {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -186,7 +186,7 @@ async fn workspace_resource_writer_repoints_atomically_and_freezes_both_projecti
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             track_workspace_write_tx(&mut tx, track.id.as_str(), &next)
                                 .await
                                 .unwrap();
@@ -200,7 +200,7 @@ async fn workspace_resource_writer_repoints_atomically_and_freezes_both_projecti
                             assert_ne!(rebound, original);
                             tx.rollback().await.unwrap();
                             assert_eq!(resource(&repo, &track).await, original);
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             track_workspace_write_tx(&mut tx, track.id.as_str(), &next)
                                 .await
                                 .unwrap();
@@ -219,7 +219,7 @@ async fn workspace_resource_writer_repoints_atomically_and_freezes_both_projecti
                 .unwrap();
                             assert_eq!((version, frozen), (2, Some(42)));
                             let current = resource(&repo, &track).await;
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert!(
                                 track_workspace_write_tx(&mut tx, track.id.as_str(), &track.workspace)
                                     .await

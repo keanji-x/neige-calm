@@ -211,7 +211,7 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let foreign = session_projection_active_for_card_tx(&mut tx, &boot.other_card_id)
                     .await
                     .unwrap()
@@ -243,7 +243,7 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
                         .unwrap()
                         .contains("other than this connection")
                 );
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_mark_superseded_runtime_tx(&mut tx, &boot.session_id)
                     .await
                     .unwrap();

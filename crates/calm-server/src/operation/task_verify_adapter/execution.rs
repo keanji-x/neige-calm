@@ -32,7 +32,7 @@ impl TaskVerifyAdapter {
             pool.writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await?;
+                        let mut tx = write_session.begin_immediate().await?;
                         require_prior_settled(&mut tx, prior_task, prior_attempt).await?;
                         tx.commit().await?;
                         Ok::<_, CalmError>(())

@@ -807,9 +807,11 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     );
     assert!(worktree.join("target/debug/app").is_file());
 
-    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
-        .bind(&session_id)
-        .execute(pool)
+    db.writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
+                .bind(&session_id),
+        )
         .await
         .unwrap();
     assert_eq!(clean(db, &b.state.operation_runtime).await.unwrap(), 1);

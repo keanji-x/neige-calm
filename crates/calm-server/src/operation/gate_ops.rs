@@ -204,12 +204,13 @@ impl super::OperationRuntime {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let ops = attempt_gate_ops(&mut tx, task_id, None).await;
                     tx.rollback().await?;
                     ops
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }

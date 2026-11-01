@@ -22,7 +22,7 @@ async fn removed_human_keeps_exact_identity_and_cursor_after_erasure_and_reopen(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let operation =
                                 PrivateHistoryOperationId::parse(&calm_server::model::new_id()).unwrap();
                             // Persisted presentation tombstone exercises reads without shipping a withdraw API.
@@ -82,7 +82,7 @@ async fn mixed_native_page_and_events_keep_presentation_cursor_separate_from_raw
         .unwrap();
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let sequence = allocate_presentation_tx(
@@ -159,7 +159,7 @@ async fn two_session_authors_and_current_membership_control_items_run_and_live()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             calm_server::db::sqlite::area_membership::application_user_register(
                                 &mut tx, "alice", "Alice",
                             )
@@ -259,7 +259,7 @@ async fn failed_current_run_preserves_active_and_pending_without_promoting_the_c
     // This read-only fixture does not claim a live source, dispatch or native END.
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
@@ -361,7 +361,7 @@ async fn historical_card_without_current_runtime_reports_explicit_null_runtime_s
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let card = calm_server::db::sqlite::card_create_with_id_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -414,7 +414,7 @@ async fn u2_imported_http_redacts_original_paths_and_preserves_erased_provenance
         r#"{"item":{"type":"userMessage","content":[{"type":"localImage","path":"/private/history.png"},{"type":"inputText","text":"Imported words"}]}}"#,None).await.unwrap();
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let boundary: i64 =

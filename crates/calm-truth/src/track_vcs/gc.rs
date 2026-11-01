@@ -149,7 +149,7 @@ pub async fn prune_all_tracks_once(pool: &crate::db::sqlite::SqliteDb, keep: usi
             Box::pin(async move {
                 for track_id in track_ids {
                     let track_id = TrackId::from(track_id);
-                    let mut tx = match write_session.begin().await {
+                    let mut tx = match write_session.begin_immediate().await {
                         Ok(tx) => tx,
                         Err(e) => {
                             tracing::warn!(
@@ -195,7 +195,8 @@ pub async fn prune_all_tracks_once(pool: &crate::db::sqlite::SqliteDb, keep: usi
                 Ok(total_pruned)
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 async fn insert_prune_keep_refs_tx<'a, I>(tx: &mut Transaction<'_, Sqlite>, hashes: I) -> Result<()>

@@ -134,7 +134,7 @@ async fn boot_inner(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let track = track_create_tx(
                     &mut tx,
                     NewTrack {
@@ -166,7 +166,7 @@ async fn boot_inner(
 
                 track_area_cache.insert(track.id.clone(), area.id);
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let planner_card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),

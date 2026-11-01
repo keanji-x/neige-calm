@@ -828,7 +828,7 @@ async fn seed_runtime_thread_with_kind(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1600,7 +1600,7 @@ async fn hot_takeover_plain_resumes_without_rotating_cached_thread_token() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
                     .await
                     .unwrap();
@@ -1670,7 +1670,7 @@ async fn restart_resumes_rollout_backed_threads() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
                     .await
                     .unwrap();
@@ -1782,7 +1782,7 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
                     .await
                     .unwrap();

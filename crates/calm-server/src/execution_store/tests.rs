@@ -22,7 +22,7 @@ impl StoreHarness for SqliteExecutionStore {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     f(self, &mut tx).await;
                     match end {
                         test_support::TransactionEnd::Commit => tx.commit().await.unwrap(),
@@ -49,7 +49,7 @@ async fn inserted(store: &SqliteExecutionStore, pool: &SqliteDb) -> ExecutionInt
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 store.insert(&mut tx, &intent).await.unwrap();
                 tx.commit().await.unwrap();
                 intent
@@ -72,7 +72,7 @@ async fn store_admit_rolls_back_with_domain_write() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 // A real domain-table write shares the caller's transaction with Engine::admit.
                 sqlx::query(
                     "INSERT INTO areas (id, name, color, sort, created_at, updated_at)
@@ -108,7 +108,7 @@ async fn store_stop_settlement_keeps_secrets_check() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 store.request(&mut tx, id, Desired::Stop).await.unwrap();
                 tx.commit().await.unwrap();
                 store
@@ -152,7 +152,7 @@ async fn store_pending_includes_settled_retire() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 store.request(&mut tx, id, Desired::Retire).await.unwrap();
                 tx.commit().await.unwrap();
                 assert_eq!(store.pending().await.unwrap(), vec![id.clone()]);
@@ -184,8 +184,9 @@ async fn store_triggers_reject_rewrites() {
     ] {
         let query = format!("UPDATE workspace_executions SET {assignment} WHERE execution_id = ?");
         assert!(
-            (pool).writer().execute(sqlx::query(&query)
-                .bind(id.as_str()))
+            (pool)
+                .writer()
+                .execute(sqlx::query(&query).bind(id.as_str()))
                 .await
                 .is_err(),
             "accepted {assignment}"
@@ -204,11 +205,11 @@ async fn store_triggers_reject_rewrites() {
     same_alias.metadata.alias = intent.metadata.alias.clone();
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(store.insert(&mut tx, &same_alias).await.is_err());
         tx.rollback().await.unwrap();
         for (desired, rejected) in [(Desired::Stop, "run"), (Desired::Retire, "stop")] {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             store.request(&mut tx, id, desired).await.unwrap();
             tx.commit().await.unwrap();
             assert!(
@@ -220,7 +221,7 @@ async fn store_triggers_reject_rewrites() {
             );
         }
         // Retiring frees the current-alias uniqueness index; the old row is retained.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         store.insert(&mut tx, &same_alias).await.unwrap();
         tx.commit().await.unwrap();
         store
@@ -342,7 +343,7 @@ async fn projection_registered_per_kind() {
                     let mut intent = test_support::intent("/".into());
                     intent.metadata.alias = ProcessAlias(kind.into());
                     intent.metadata.consumer = kind.into();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     store.insert(&mut tx, &intent).await.unwrap();
                     tx.commit().await.unwrap();
                     store.spawned(&intent.metadata.id).await.unwrap();
@@ -392,7 +393,7 @@ async fn unregistered_projection_fails_and_rolls_back() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             store.insert(&mut tx, &intent).await.unwrap();
                             tx.commit().await.unwrap();
                             let store = SqliteExecutionStore::new(pool.clone());
@@ -438,7 +439,7 @@ async fn unregistered_consumer_refused_at_admit() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     store.insert(&mut tx, &intent).await.unwrap_err().0,
                     "missing execution projection for consumer: port-contract"
@@ -497,7 +498,7 @@ async fn c4_consumer_inventory_real_store_unclassified_rows_and_scan_cost() {
     // Real Store serialization across a representative retained-history inventory.
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         for _ in 0..1000 {
             let next = test_support::intent("/".into());
             store.insert(&mut tx, &next).await.unwrap();

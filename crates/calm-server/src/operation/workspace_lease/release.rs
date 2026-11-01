@@ -156,7 +156,7 @@ pub(crate) async fn release_workspace_lease_by_id(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let sql = format!(
                     "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE lease_id = ?1 AND state IN ('held','releasing')"
@@ -180,7 +180,8 @@ pub(crate) async fn release_workspace_lease_by_id(
                 Ok(released)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn release_lease_tx(
@@ -293,7 +294,7 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
                     {
                         continue;
                     }
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let mut released = fail_lease_attempt_tx(&mut tx, &lease).await?;
                     let lease_events = release_lease_tx(
                         &mut tx,
@@ -316,7 +317,8 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
                 Ok(reclaimed)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Codex workers are daemon-resident threads, so operation spawn artifacts are not a liveness

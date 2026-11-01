@@ -29,7 +29,7 @@ pub async fn backfill_existing_tracks(pool: &crate::db::sqlite::SqliteDb) -> Res
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin_once().await?;
+                let mut tx = write_session.begin_immediate_once().await?;
                 let res = backfill_existing_tracks_tx(&mut tx).await;
                 match res {
                     Ok(count) => {
@@ -43,7 +43,8 @@ pub async fn backfill_existing_tracks(pool: &crate::db::sqlite::SqliteDb) -> Res
                 }
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 async fn backfill_existing_tracks_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<usize> {

@@ -173,7 +173,7 @@ impl Harness {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let metadata: ExecutionMetadata = serde_json::from_str(
                         &calm_truth::db::sqlite::workspace_execution::intent_tx(
                             &mut tx,
@@ -234,7 +234,7 @@ impl Harness {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     CONFIG
                         .prepare_disposal_tx(&mut tx, &self.metadata)
                         .await
@@ -302,7 +302,7 @@ async fn w_owned_pipe_disposal_fences_stale_release_completion_and_readmission()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(retire(CONFIG, &mut tx, &h.op).await.is_err());
                 tx.rollback().await.unwrap();
                 let root = h._executor._root.path().canonicalize().unwrap();
@@ -318,7 +318,7 @@ async fn w_owned_pipe_disposal_fences_stale_release_completion_and_readmission()
                     .unwrap();
                 assert_eq!(count, 1);
                 // Replayed disposal does not replace the live observer lease or change the reason.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     !CONFIG
                         .stop_for_disposal_tx(&mut tx, &h.metadata)
@@ -342,7 +342,7 @@ async fn w_owned_pipe_disposal_is_atomic_and_preserves_natural_completion() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     CONFIG
                         .stop_for_disposal_tx(&mut tx, &h.metadata)
@@ -378,7 +378,7 @@ async fn w_owned_pipe_disposal_is_atomic_and_preserves_natural_completion() {
                     )
                     .await
                     .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     !CONFIG
                         .stop_for_disposal_tx(&mut tx, &h.metadata)
@@ -396,7 +396,7 @@ async fn w_owned_pipe_disposal_is_atomic_and_preserves_natural_completion() {
                 assert_eq!(row.desired, "run");
                 assert!(CONFIG.finish(&h.runtime, &h.metadata).await.unwrap());
                 // The owner would normally have already retired it. Stop our deliberately held fixture.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_truth::db::sqlite::workspace_execution::request(
                     &mut tx,
                     h.metadata.id.as_str(),
@@ -430,7 +430,7 @@ async fn w_owned_disposal_missing_ports_and_corrupt_owner_retain_execution() {
     damaged.alias.0 = "wrong-alias".into();
     let write_db = (h.db.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         assert!(matches!(
@@ -507,7 +507,7 @@ async fn w_owned_disposal_waits_for_owner_completion_and_retirement() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &current)
                     .await
                     .unwrap();

@@ -172,7 +172,7 @@ async fn actual_allocation_accepts_once_without_native_or_workspace_effects() {
         assert!(!fx.state.shared_codex_appserver.is_running());
         let write_db = (fx.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let carrier = current_input_carrier_tx(&mut tx, card, runtime)
                 .await
                 .unwrap();
@@ -247,7 +247,7 @@ async fn original_ack_replays_after_claim_without_readopting_a_body() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
                         .await
                         .unwrap();
@@ -278,7 +278,7 @@ async fn original_ack_replays_after_claim_without_readopting_a_body() {
                         fx.accept("original", "different body").await,
                         Err(CalmError::IdempotencyKeyReused(_))
                     ));
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_carrier_tx(&mut tx, card, runtime)
                         .await
                         .unwrap();
@@ -302,7 +302,7 @@ async fn original_ack_survives_dormant_carrier_transfer_and_origin_retirement() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = current_input_carrier_tx(&mut tx, card, origin)
                     .await
                     .unwrap();
@@ -337,7 +337,7 @@ async fn original_ack_survives_dormant_carrier_transfer_and_origin_retirement() 
                 let before = fx.counts().await;
                 assert_replayed(fx.accept("retired-origin", FIRST).await.unwrap(), &ack);
                 assert_eq!(fx.counts().await, before);
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let current = current_input_carrier_tx(&mut tx, card, &replacement)
                     .await
                     .unwrap();
@@ -369,7 +369,7 @@ async fn replay_rechecks_current_session_source_and_membership() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             area_membership::application_user_register(&mut tx, "alice", "Owner")
                                 .await
                                 .unwrap();
@@ -403,7 +403,7 @@ async fn replay_rechecks_current_session_source_and_membership() {
                                 .await,
                                 Err(CalmError::IdempotencyKeyReused(_))
                             ));
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                                 "UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2",
                             )
@@ -460,7 +460,7 @@ async fn deleted_original_allocation_never_reuses_its_acceptance_key() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::track_delete_tx(&mut tx, track, fx.repo.track_area_cache())
                     .await
                     .unwrap();
@@ -515,7 +515,7 @@ async fn separate_database_owners_race_to_the_same_original_ack() {
     let a = Arc::new(SqlxRepo::open(&url).await.unwrap());
     let write_db = (a.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         area_membership::application_user_register(&mut tx, LEGACY_OWNER_USER_ID, "Owner")
             .await
             .unwrap();
@@ -585,7 +585,7 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
         fx.provider = provider;
         let write_db = (fx.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
                 area_membership::application_user_register(&mut tx, "alice", "Owner")
                     .await
                     .unwrap();
@@ -624,7 +624,7 @@ async fn a_shared_area_member_can_accept_content_without_an_execution_grant() {
                 .unwrap()
                 .ack;
                 let (_, card, _, runtime, message) = ids(&ack);
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = message_tx(&mut tx, &message.message_id).await.unwrap();
                 assert_eq!(
                     stored.author,

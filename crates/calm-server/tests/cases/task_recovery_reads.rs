@@ -273,7 +273,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     let pool = boot.repo.sqlite_db().unwrap();
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         for index in 0..130 {

@@ -74,7 +74,7 @@ async fn u9_canonical_turn_owner_requires_settled_correlated_execution() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(facts(&mut tx, &card, &worker).await, None);
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
@@ -167,7 +167,7 @@ async fn u9_canonical_turn_owner_not_dispatched_and_released() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -210,7 +210,7 @@ async fn u9_canonical_turn_owner_retired_claims_and_reference_retry() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -316,7 +316,7 @@ async fn u9_canonical_turn_owner_current_binding_and_corruption_propagate() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -406,7 +406,7 @@ async fn u9_canonical_turn_owner_missing_initial_and_plan_errors_propagate() {
     let s = super::retry_storage_tests::seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
             .await
             .unwrap();

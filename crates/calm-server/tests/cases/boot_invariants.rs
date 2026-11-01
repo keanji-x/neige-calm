@@ -84,7 +84,7 @@ async fn seed_null_card_worker(repo: &SqlxRepo) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_insert_tx(
                     &mut tx,
                     WorkerSession {

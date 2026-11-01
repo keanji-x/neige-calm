@@ -202,6 +202,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
     }
 }
 
+mod observation_reads;
 mod qualification;
 pub(crate) use qualification::{is_deferred_self_report, is_stale_worker_stop_hook};
 
@@ -1523,22 +1524,24 @@ pub(crate) async fn resolve_harness_observation(
     track_id: &TrackId,
     event: &Event,
 ) -> crate::error::Result<Option<HarnessObservation>> {
-    resolve_event_observation(repo, track_id, event, false).await
+    if matches!(event, Event::TaskGitDeliverySettled { .. }) {
+        return git_delivery_settled::observation(repo, track_id, event).await;
+    }
+    resolve_event_observation(
+        &observation_reads::ObservationReads::events_only(repo),
+        track_id,
+        event,
+        false,
+    )
+    .await
 }
 
 async fn resolve_event_observation(
-    repo: &dyn crate::db::RepoEventWrite,
+    repo: &observation_reads::ObservationReads<'_>,
     track_id: &TrackId,
     event: &Event,
     strict: bool,
 ) -> crate::error::Result<Option<HarnessObservation>> {
-    if matches!(event, Event::TaskGitDeliverySettled { .. }) {
-        return if strict {
-            git_delivery_settled::qualified_observation(repo, track_id, event, true).await
-        } else {
-            git_delivery_settled::observation(repo, track_id, event).await
-        };
-    }
     if let Event::AskAnswered {
         ask_id, answers, ..
     } = event
@@ -1546,7 +1549,7 @@ async fn resolve_event_observation(
         return if strict {
             ask_answered::qualified_observation(repo, track_id, *ask_id, answers, true).await
         } else {
-            ask_answered::observation(repo, track_id, *ask_id, answers).await
+            ask_answered::qualified_observation(repo, track_id, *ask_id, answers, false).await
         };
     }
     let task_key = if let Event::TaskGateResult {
@@ -1566,13 +1569,11 @@ async fn resolve_event_observation(
         calm_truth::track_fs_view::task_gate_log_path(task_id, *attempt).map_err(|error| {
             crate::error::CalmError::Conflict(format!("gate observation: {error:?}"))
         })?;
-        let task = calm_truth::db::RepoRead::task_get(repo, task_id)
-            .await?
-            .ok_or_else(|| {
-                crate::error::CalmError::Conflict(format!(
-                    "gate observation: missing execution {task_id}"
-                ))
-            })?;
+        let task = repo.task_get(task_id).await?.ok_or_else(|| {
+            crate::error::CalmError::Conflict(format!(
+                "gate observation: missing execution {task_id}"
+            ))
+        })?;
         if task.track_id != track_id.as_str() {
             return Err(crate::error::CalmError::Forbidden(
                 "gate observation belongs to another track".into(),
@@ -1594,7 +1595,7 @@ async fn resolve_event_observation(
 /// attached only when the report as read still projects to the event's `body_after`; otherwise
 /// both fields stay `None`.
 async fn attach_report_block_refs(
-    repo: &dyn crate::db::RepoRead,
+    repo: &observation_reads::ObservationReads<'_>,
     event: &Event,
     observation: &mut HarnessObservation,
 ) {
@@ -1614,19 +1615,18 @@ async fn attach_report_block_refs(
     else {
         return;
     };
-    let snapshot =
-        match crate::track_report_read::load_report_doc_snapshot(repo, card_id.as_str()).await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                tracing::warn!(
-                    %track_id,
-                    report_card_id = %card_id,
-                    %error,
-                    "report edit observation: report read failed; the diff carries no block ids"
-                );
-                return;
-            }
-        };
+    let snapshot = match repo.report_snapshot(card_id.as_str()).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(
+                %track_id,
+                report_card_id = %card_id,
+                %error,
+                "report edit observation: report read failed; the diff carries no block ids"
+            );
+            return;
+        }
+    };
     match calm_types::report_edit_diff::align_block_refs(body_after, &snapshot.blocks) {
         Some(refs) => {
             *doc_rev_after = Some(snapshot.doc_rev);

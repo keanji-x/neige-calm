@@ -385,7 +385,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                     "UPDATE acp_submissions SET state='sending',outcome_json=NULL WHERE worker_session_id=?1",
                 )
@@ -601,7 +601,7 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 delete_checkpoint_rows(&mut tx, &card, "item/completed").await;
                 delete_checkpoint_rows(&mut tx, &card, "item/started").await;
                 delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
@@ -731,7 +731,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     stack.shutdown().await;
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")

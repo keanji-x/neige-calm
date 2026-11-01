@@ -32,7 +32,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     area_membership::application_user_register(&mut tx, "alice", "Owner")
                         .await
                         .unwrap();
@@ -106,9 +106,9 @@ impl Fixture {
         } else {
             "DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'"
         };
-        sqlx::query(sql)
-            .bind(&self.area)
-            .execute(&self.pool)
+        (self.state.sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query(sql).bind(&self.area))
             .await
             .unwrap();
     }
@@ -221,9 +221,12 @@ async fn session_registration_and_missing_scope() {
 #[tokio::test]
 async fn invisible_malformed_track_is_not_decoded() {
     let f = Fixture::new().await;
-    sqlx::query("UPDATE tracks SET template_input='malformed-private{' WHERE id=?1")
-        .bind(&f.track)
-        .execute(&f.pool)
+    (f.state.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET template_input='malformed-private{' WHERE id=?1")
+                .bind(&f.track),
+        )
         .await
         .unwrap();
     let (status, body) = get(&f.app, "/api/tracks", Some(&f.alice)).await;
@@ -300,12 +303,15 @@ async fn global_window_order_and_area_sort_remain_distinct() {
         (&c, 5, None, 20),
         (&d, 10, Some(12), 10),
     ] {
-        sqlx::query("UPDATE tracks SET created_at=?2, closed_at=?3, sort=?4 WHERE id=?1")
-            .bind(id)
-            .bind(created)
-            .bind(closed)
-            .bind(sort)
-            .execute(&f.pool)
+        (f.state.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET created_at=?2, closed_at=?3, sort=?4 WHERE id=?1")
+                    .bind(id)
+                    .bind(created)
+                    .bind(closed)
+                    .bind(sort),
+            )
             .await
             .unwrap();
     }
@@ -399,10 +405,13 @@ async fn publication_rechecks_moved_track_even_between_authorized_areas() {
         let f = Fixture::new().await;
         f.member(true).await;
         let parked = park(&f, path(&f, kind)).await;
-        sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
-            .bind(&f.track)
-            .bind(&f.other)
-            .execute(&f.pool)
+        (f.state.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                    .bind(&f.track)
+                    .bind(&f.other),
+            )
             .await
             .unwrap();
         finish(parked, StatusCode::FORBIDDEN).await;

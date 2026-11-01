@@ -515,7 +515,7 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("tx");
+                let mut tx = write_session.begin_immediate().await.expect("tx");
                 calm_server::db::sqlite::session_mark_superseded_runtime_tx(
                     &mut tx,
                     &rig.worker_session_id,
@@ -590,7 +590,7 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut held = write_session.begin().await.expect("tx");
+                let mut held = write_session.begin_immediate().await.expect("tx");
                 sqlx::query(
                     "UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1",
                 )
@@ -659,7 +659,7 @@ async fn a_lost_bind_holds_the_reopened_session_without_relaunching() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut held = write_session.begin().await.expect("tx");
+                let mut held = write_session.begin_immediate().await.expect("tx");
                 sqlx::query(
                     "UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1",
                 )

@@ -83,7 +83,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         if change == 1 {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             // Model an already-persisted erasure fact; there is no canonical erase command.
             sqlx::query(
                 "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
@@ -107,7 +107,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
             assert!(fixture.source.current_principal().is_ok());
             eprintln!("stage: actual private body erased before releasing native gate");
         } else if change >= 2 {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let area = conversation_area_tx(&mut tx, &fixture.card).await.unwrap();
             if change != 4 {
                 crate::db::sqlite::area_membership::application_user_register(
@@ -165,7 +165,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
         })
         .await
         .expect("the actual dispatch must return or expose its private effect");
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let original = message_tx(&mut tx, &fixture.message.message_id)
             .await
             .unwrap();
@@ -182,7 +182,7 @@ async fn input_gate_case(change: u8, outbound: bool) {
                 checkpoint.pending.is_empty(),
                 "erased private content must never be restored to pending"
             );
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             assert!(matches!(
                 revision_tx(&mut tx, &fixture.message)
                     .await

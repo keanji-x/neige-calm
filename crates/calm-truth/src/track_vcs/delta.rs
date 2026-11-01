@@ -607,7 +607,10 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.expect("begin transaction");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin transaction");
                     sqlx::query(
                         "INSERT INTO cards \
              (id, track_id, kind, sort, payload, role, deletable, created_at, updated_at) \

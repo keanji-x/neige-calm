@@ -428,7 +428,7 @@ impl ProviderAdapter for ChildTrackAdapter {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut snapshot = write_session.begin().await?;
+                    let mut snapshot = write_session.begin_immediate().await?;
                     let mut frozen =
                         FrozenParent::read(&mut snapshot, &payload.parent_track_id).await?;
                     snapshot.commit().await?;
@@ -485,10 +485,11 @@ impl ProviderAdapter for ChildTrackAdapter {
                         adapter: self.clone(),
                         input: input.clone(),
                         frozen,
-                    })))
+                    }) as Box<dyn PreparedTx>))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn prepare_tx<'tx>(
@@ -660,7 +661,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let area = area_create_tx(
                         &mut tx,
                         calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -753,7 +754,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     crate::test_support::insert_task_tx(&mut tx, &task)
                         .await
                         .unwrap();
@@ -809,7 +810,7 @@ mod tests {
         report.blocks = Some(blocks);
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let updated = sqlx::query(
                 "UPDATE cards SET payload=?1,body_crdt=NULL WHERE track_id=?2 AND kind='track-report'",
             )
@@ -859,7 +860,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         task_claim_pending_tx(&mut tx, task_id, now_ms(), &[], false)
                             .await
@@ -883,11 +884,13 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let root_id =
-                        root_and_depth(&mut write_session.begin().await.unwrap(), parent_track_id)
-                            .await
-                            .unwrap()
-                            .0;
+                    let root_id = root_and_depth(
+                        &mut write_session.begin_immediate().await.unwrap(),
+                        parent_track_id,
+                    )
+                    .await
+                    .unwrap()
+                    .0;
                     let mut conn = repo.pool().acquire().await.unwrap();
                     let budget = track_tree_budget(&mut conn, &root_id).await.unwrap();
                     let inventory = track_tree_planner_inventory(&mut conn, &root_id)
@@ -922,7 +925,7 @@ mod tests {
                         std::path::PathBuf::from("/unused-objective-checkouts"),
                         workspace_runtime::sweep::TeardownTargets::default(),
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let output = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -960,7 +963,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let area = area_create_tx(
                                     &mut tx,
                                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -1015,7 +1018,7 @@ mod tests {
                                     std::path::PathBuf::from("/unused-objective-checkouts"),
                                     workspace_runtime::sweep::TeardownTargets::default(),
                                 );
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let output = adapter
                                     .prepare_tx(&mut tx, &input, &operation(input.clone()))
                                     .await
@@ -1094,7 +1097,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let area = area_create_tx(
                                     &mut tx,
                                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -1153,7 +1156,7 @@ mod tests {
                                     std::path::PathBuf::from("/unused-objective-checkouts"),
                                     workspace_runtime::sweep::TeardownTargets::default(),
                                 );
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let output = adapter
                                     .prepare_tx(&mut tx, &input, &operation(input.clone()))
                                     .await
@@ -1274,7 +1277,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let area = area_create_tx(
                                     &mut tx,
                                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -1322,7 +1325,7 @@ mod tests {
                                     std::path::PathBuf::from("/unused-objective-checkouts"),
                                     workspace_runtime::sweep::TeardownTargets::default(),
                                 );
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let output = adapter
                                     .prepare_tx(&mut tx, &input, &operation(input.clone()))
                                     .await
@@ -1424,7 +1427,7 @@ mod tests {
         );
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let output = adapter
                 .prepare_tx(&mut tx, &input, &operation(input.clone()))
                 .await
@@ -1566,7 +1569,7 @@ mod tests {
                             std::path::PathBuf::from("/unused-objective-checkouts"),
                             workspace_runtime::sweep::TeardownTargets::default(),
                         );
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let output = adapter
                             .prepare_tx(&mut tx, &input, &operation(input.clone()))
                             .await
@@ -1606,7 +1609,7 @@ mod tests {
                         std::path::PathBuf::from("/unused-objective-checkouts"),
                         workspace_runtime::sweep::TeardownTargets::default(),
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1628,7 +1631,7 @@ mod tests {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     let second_area = {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let area = area_create_tx(
                             &mut tx,
                             calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -1656,7 +1659,7 @@ mod tests {
                         std::path::PathBuf::from("/unused-objective-checkouts"),
                         workspace_runtime::sweep::TeardownTargets::default(),
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1673,7 +1676,7 @@ mod tests {
                     assert_eq!(cross_area_edges, 0);
 
                     // The unrelated area is independently deletable: the adapter did not route its child there.
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     area_delete_tx(&mut tx, &second_area).await.unwrap();
                     tx.commit().await.unwrap();
                 })
@@ -1705,7 +1708,7 @@ mod tests {
                             std::path::PathBuf::from("/unused-objective-checkouts"),
                             workspace_runtime::sweep::TeardownTargets::default(),
                         );
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let output = adapter
                             .prepare_tx(&mut tx, &input, &operation(input.clone()))
                             .await
@@ -1722,7 +1725,7 @@ mod tests {
                         )
                         .await
                         .unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = tokio::time::timeout(
                         std::time::Duration::from_millis(500),
                         root_and_depth(&mut tx, &a),
@@ -1742,7 +1745,7 @@ mod tests {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let error = root_and_depth(&mut tx, "missing").await.unwrap_err();
             assert!(
                 matches!(&error, CalmError::NotFound(message) if message == "track missing"),
@@ -1785,7 +1788,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1813,7 +1816,7 @@ mod tests {
                         )
                         .await
                         .unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let output = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1863,7 +1866,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1886,7 +1889,7 @@ mod tests {
                         .fetch_one(repo.pool())
                         .await
                         .unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await
@@ -1922,7 +1925,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     track_update_tx(
                         &mut tx,
                         &root,
@@ -1953,7 +1956,7 @@ mod tests {
                     // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
                     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
                     let root = seed_parent(&repo, false).await;
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     track_update_tx(
                         &mut tx,
                         &root,
@@ -2000,7 +2003,7 @@ mod tests {
         let root = seed_parent(&repo, false).await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             track_update_tx(
                 &mut tx,
                 &root,
@@ -2043,7 +2046,7 @@ mod tests {
                 std::path::PathBuf::from("/unused-objective-checkouts"),
                 workspace_runtime::sweep::TeardownTargets::default(),
             );
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let error = adapter
                 .prepare_tx(&mut tx, &input, &operation(input.clone()))
                 .await
@@ -2078,7 +2081,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     track_update_tx(
                         &mut tx,
                         &root,
@@ -2093,7 +2096,7 @@ mod tests {
                     tx.commit().await.unwrap();
                     project_pending_tasks(&repo, &root, "equal", 3).await;
 
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let plain = tasks_rebuild_tx(&mut tx, &root).await.unwrap();
                     let tree = tasks_rebuild_tree_tx(&mut tx, &root).await.unwrap();
                     let tree = &tree
@@ -2153,7 +2156,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = adapter
                         .prepare_tx(&mut tx, &input, &operation(input.clone()))
                         .await

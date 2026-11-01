@@ -11,18 +11,29 @@ async fn repo() -> SqlxRepo {
         .expect("open in-memory repo")
 }
 
-pub(super) async fn insert_event(pool: &SqlitePool, kind: &str, payload: &str, at: i64) -> i64 {
-    sqlx::query_scalar(
-        r#"INSERT INTO events (kind, payload, actor, at, correlation)
+pub(super) async fn insert_event(
+    pool: &crate::db::sqlite::SqliteDb,
+    kind: &str,
+    payload: &str,
+    at: i64,
+) -> i64 {
+    pool.writer()
+        .autocommit(|connection| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    r#"INSERT INTO events (kind, payload, actor, at, correlation)
            VALUES (?1, ?2, 'user', ?3, NULL)
            RETURNING id"#,
-    )
-    .bind(kind)
-    .bind(payload)
-    .bind(at)
-    .fetch_one(pool)
-    .await
-    .expect("insert event")
+                )
+                .bind(kind)
+                .bind(payload)
+                .bind(at)
+                .fetch_one(&mut **connection)
+                .await
+            })
+        })
+        .await
+        .expect("insert event")
 }
 
 pub(super) fn overlay_payload(
@@ -76,11 +87,11 @@ async fn keeps_exactly_max_id_per_overlay_quad() {
     let pool = repo.pool();
     let quad_a = overlay_payload("kernel", "view", "w1", "layout");
     let quad_b = overlay_payload("p1", "card", "c1", "status");
-    let _a1 = insert_event(pool, "overlay.set", &quad_a, old(90)).await;
-    let _a2 = insert_event(pool, "overlay.set", &quad_a, old(80)).await;
-    let _b1 = insert_event(pool, "overlay.set", &quad_b, old(70)).await;
-    let a3 = insert_event(pool, "overlay.set", &quad_a, old(60)).await;
-    let b2 = insert_event(pool, "overlay.set", &quad_b, old(50)).await;
+    let _a1 = insert_event(repo.db(), "overlay.set", &quad_a, old(90)).await;
+    let _a2 = insert_event(repo.db(), "overlay.set", &quad_a, old(80)).await;
+    let _b1 = insert_event(repo.db(), "overlay.set", &quad_b, old(70)).await;
+    let a3 = insert_event(repo.db(), "overlay.set", &quad_a, old(60)).await;
+    let b2 = insert_event(repo.db(), "overlay.set", &quad_b, old(50)).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -95,10 +106,10 @@ async fn keeps_rows_newer_than_horizon_even_when_superseded() {
     let repo = repo().await;
     let pool = repo.pool();
     let quad = overlay_payload("kernel", "view", "w1", "layout");
-    let _old_dup = insert_event(pool, "overlay.set", &quad, old(60)).await;
-    let new_dup = insert_event(pool, "overlay.set", &quad, old(1)).await;
-    let new_latest = insert_event(pool, "overlay.set", &quad, now_ms()).await;
-    let new_hook = insert_event(pool, "claude.hook", "{}", old(2)).await;
+    let _old_dup = insert_event(repo.db(), "overlay.set", &quad, old(60)).await;
+    let new_dup = insert_event(repo.db(), "overlay.set", &quad, old(1)).await;
+    let new_latest = insert_event(repo.db(), "overlay.set", &quad, now_ms()).await;
+    let new_hook = insert_event(repo.db(), "claude.hook", "{}", old(2)).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -115,12 +126,12 @@ async fn keeps_rows_newer_than_horizon_even_when_superseded() {
 async fn deletes_old_transient_kinds_past_horizon() {
     let repo = repo().await;
     let pool = repo.pool();
-    insert_event(pool, "claude.hook", "{}", old(31)).await;
-    insert_event(pool, "codex.hook", "{}", old(31)).await;
-    insert_event(pool, "harness.phase.changed", "{}", old(45)).await;
-    insert_event(pool, "harness.item.added", "{}", old(45)).await;
-    let recent_claude = insert_event(pool, "claude.hook", "{}", now_ms()).await;
-    let recent_codex = insert_event(pool, "codex.hook", "{}", now_ms()).await;
+    insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
+    insert_event(repo.db(), "codex.hook", "{}", old(31)).await;
+    insert_event(repo.db(), "harness.phase.changed", "{}", old(45)).await;
+    insert_event(repo.db(), "harness.item.added", "{}", old(45)).await;
+    let recent_claude = insert_event(repo.db(), "claude.hook", "{}", now_ms()).await;
+    let recent_codex = insert_event(repo.db(), "codex.hook", "{}", now_ms()).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -134,10 +145,10 @@ async fn deletes_old_transient_kinds_past_horizon() {
 async fn never_touches_non_allowlist_kinds_or_overlay_deleted() {
     let repo = repo().await;
     let pool = repo.pool();
-    let structural = insert_event(pool, "area.updated", "{}", 0).await;
-    let card = insert_event(pool, "card.added", "{}", old(400)).await;
+    let structural = insert_event(repo.db(), "area.updated", "{}", 0).await;
+    let card = insert_event(repo.db(), "card.added", "{}", old(400)).await;
     let tombstone = insert_event(
-        pool,
+        repo.db(),
         "overlay.deleted",
         r#"{"plugin_id":"kernel","entity_kind":"view","entity_id":"w1","kind":"layout"}"#,
         old(400),
@@ -157,7 +168,7 @@ async fn prunes_across_multiple_batches() {
     let repo = repo().await;
     let pool = repo.pool();
     for _ in 0..7 {
-        insert_event(pool, "claude.hook", "{}", old(31)).await;
+        insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
     }
     let policy = EventsRetentionPolicy {
         batch: 3,
@@ -174,8 +185,8 @@ async fn prunes_across_multiple_batches() {
 async fn zero_batch_still_makes_progress() {
     let repo = repo().await;
     let pool = repo.pool();
-    insert_event(pool, "claude.hook", "{}", old(31)).await;
-    insert_event(pool, "claude.hook", "{}", old(31)).await;
+    insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
+    insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
     let policy = EventsRetentionPolicy {
         batch: 0,
         ..EventsRetentionPolicy::default()
@@ -192,9 +203,9 @@ async fn advances_durable_watermark_to_max_pruned_id() {
     let pool = repo.pool();
     assert_eq!(repo.events_prune_watermark().await.expect("watermark"), 0);
 
-    insert_event(pool, "claude.hook", "{}", old(31)).await;
-    let hook2 = insert_event(pool, "claude.hook", "{}", old(31)).await;
-    let structural = insert_event(pool, "area.updated", "{}", old(31)).await;
+    insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
+    let hook2 = insert_event(repo.db(), "claude.hook", "{}", old(31)).await;
+    let structural = insert_event(repo.db(), "area.updated", "{}", old(31)).await;
 
     prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -220,7 +231,7 @@ async fn freezes_quad_whose_latest_row_is_version_unsupported() {
     let repo = repo().await;
     let pool = repo.pool();
     let supported = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -233,7 +244,7 @@ async fn freezes_quad_whose_latest_row_is_version_unsupported() {
     )
     .await;
     let future = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -246,8 +257,8 @@ async fn freezes_quad_whose_latest_row_is_version_unsupported() {
     )
     .await;
     let quad_b = overlay_payload("p1", "card", "c1", "status");
-    let _b1 = insert_event(pool, "overlay.set", &quad_b, old(80)).await;
-    let b2 = insert_event(pool, "overlay.set", &quad_b, old(50)).await;
+    let _b1 = insert_event(repo.db(), "overlay.set", &quad_b, old(80)).await;
+    let b2 = insert_event(repo.db(), "overlay.set", &quad_b, old(50)).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -262,7 +273,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     let repo = repo().await;
     let pool = repo.pool();
     let supported = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -284,7 +295,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     // The freeze is decided inside the delete tx, never carried over from an
     // earlier scan, so the NEXT batch must keep BOTH rows.
     let future = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -305,7 +316,7 @@ async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
     assert_eq!(remaining_ids(pool).await, vec![supported, future]);
 
     let healed = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -331,11 +342,11 @@ async fn malformed_overlay_payload_never_poisons_the_batch() {
     let repo = repo().await;
     let pool = repo.pool();
     // Malformed JSON: ungated, `json_extract` would RAISE and disable overlay pruning.
-    let malformed = insert_event(pool, "overlay.set", "{not json", old(90)).await;
+    let malformed = insert_event(repo.db(), "overlay.set", "{not json", old(90)).await;
     let quad = overlay_payload("p1", "card", "c1", "status");
-    let _superseded = insert_event(pool, "overlay.set", &quad, old(80)).await;
-    let latest = insert_event(pool, "overlay.set", &quad, old(50)).await;
-    let _hook = insert_event(pool, "claude.hook", "{}", old(40)).await;
+    let _superseded = insert_event(repo.db(), "overlay.set", &quad, old(80)).await;
+    let latest = insert_event(repo.db(), "overlay.set", &quad, old(50)).await;
+    let _hook = insert_event(repo.db(), "claude.hook", "{}", old(40)).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await
@@ -345,7 +356,7 @@ async fn malformed_overlay_payload_never_poisons_the_batch() {
     assert_eq!(remaining_ids(pool).await, vec![malformed, latest]);
 
     let frozen_latest = insert_event(
-        pool,
+        repo.db(),
         "overlay.set",
         &overlay_payload_with_inner(
             "kernel",
@@ -465,9 +476,10 @@ async fn first_message_dedup_kind_is_never_prunable() {
 
     let repo = repo().await;
     let pool = repo.pool();
-    let dedup_evidence = insert_event(pool, "harness.user_message.enqueued", "{}", old(400)).await;
+    let dedup_evidence =
+        insert_event(repo.db(), "harness.user_message.enqueued", "{}", old(400)).await;
     // A sibling allowlisted kind, so the pass provably did work rather than no-opped.
-    insert_event(pool, "harness.item.added", "{}", old(400)).await;
+    insert_event(repo.db(), "harness.item.added", "{}", old(400)).await;
 
     let pruned = prune_events_once(repo.db(), &EventsRetentionPolicy::default())
         .await

@@ -71,13 +71,14 @@ async fn observe(pool: &crate::db::sqlite::SqliteDb, track_id: &str) -> Result<(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 workspace_observe_tx(&mut tx, &snapshot, &identity).await?;
                 tx.commit().await?;
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 #[cfg(test)]

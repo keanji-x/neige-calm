@@ -405,7 +405,7 @@ async fn g1_report_first(cold: bool, attach_folder: bool) {
     assert_eq!(first["params"]["clientUserMessageId"], submission.as_str());
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
             .await
             .unwrap();
@@ -476,7 +476,7 @@ async fn g1_report_first(cold: bool, attach_folder: bool) {
         );
         ack_turn(&fixture, &state, &mut peer, track, &second, "human-next").await;
         let running = fixture.carrier(track).await.2;
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let human_plan = crate::db::sqlite::conversation::submission_plan_tx(
             &mut tx,
             &running.canonical_inputs.attempts[1].attempt.submission_id,

@@ -348,7 +348,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let n = task_claim_pending_tx(&mut tx, attempt_id, at_ms, &refs, false)
                         .await
                         .unwrap();
@@ -373,7 +373,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let n = task_mark_running_tx(
                         &mut tx,
                         &Self::task_id(track_id, key),
@@ -404,7 +404,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let n = task_complete_from_worker_tx(
                         &mut tx,
                         &Self::task_id(track_id, key),
@@ -432,7 +432,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let n = task_fail_from_worker_tx(
                         &mut tx,
                         &Self::task_id(track_id, key),
@@ -477,7 +477,7 @@ impl Fx {
         };
         let write_db = (self.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query(
                 "INSERT INTO task_attempt_allocations \
              (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
@@ -802,10 +802,13 @@ impl Fx {
 
     /// Pin a transcript row to a known instant AFTER the production writer stamped the clock.
     pub(crate) async fn pin_transcript_row(&self, id: i64, at_ms: i64) {
-        sqlx::query("UPDATE harness_items SET created_at_ms = ?1 WHERE id = ?2")
-            .bind(at_ms)
-            .bind(id)
-            .execute(&self.pool)
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE harness_items SET created_at_ms = ?1 WHERE id = ?2")
+                    .bind(at_ms)
+                    .bind(id),
+            )
             .await
             .unwrap();
     }

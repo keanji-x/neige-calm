@@ -114,7 +114,7 @@ async fn registry_miss_reads_the_row_without_native_marker_cleanup() {
                     WorkerSessionKind::ClaudeCard,
                 ] {
                     let id = calm_server::model::new_id();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let row = session_start_runtime_tx(
                         &mut tx,
                         WorkerSessionInit {

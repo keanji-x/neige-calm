@@ -501,7 +501,7 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     let retry = calm_server::model::new_id();
     let write_db = (boot.sqlx.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let (_, _, retry_token) = card_with_codex_create_tx(
             &mut tx,
             retry.clone(),
@@ -604,7 +604,7 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let (_, _, gone_token) = card_with_codex_create_tx(
                                 &mut tx,
                                 gone.clone(),

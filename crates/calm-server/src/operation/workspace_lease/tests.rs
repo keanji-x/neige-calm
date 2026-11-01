@@ -20,7 +20,7 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (lease, _event) = acquire_plain_workspace_lease_tx(
                     &mut tx, &card_id, &track_id, "op-test", &path,
                 )
@@ -167,7 +167,7 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let plan = prepare_worker_lease_as_tx(
             &mut tx,
             &track_id,
@@ -217,7 +217,7 @@ async fn prepare_refuses_an_attached_track_without_a_worktree() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = prepare_worker_lease_as_tx(
                     &mut tx,
                     &track_id,
@@ -306,7 +306,7 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let plan = prepare_worker_lease_as_tx(
                                 &mut tx,
                                 &track_id,
@@ -330,7 +330,7 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
                 .unwrap();
 
                             let next_card = new_card(&repo, &track_id).await;
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let plan = prepare_worker_lease_as_tx(
                                 &mut tx,
                                 &track_id,
@@ -389,28 +389,33 @@ async fn every_lease_reader_returns_base_and_policy() {
                     let track_id = &track_id;
                     async move {
                         let write_db = (repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                        let plan = prepare_worker_lease_as_tx(
-                            &mut tx,
-                            track_id,
-                            crate::model::TaskAccess::ReadWrite,
-                            &unused_workspace_root(),
-                        )
-                        .await
-                        .unwrap();
-                        let (lease, _event) = acquire_workspace_lease_tx(
-                            &mut tx, &card_id, track_id, "op-test", &plan,
-                        )
-                        .await
-                        .unwrap();
-                        tx.commit().await.unwrap();
-                        assert_eq!(lease.base.as_ref(), Some(&plan.base));
-                        assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
-                        lease
-
-        })).await.expect("independent write operation")
-}
+                        write_db
+                            .writer()
+                            .with_writer(|write_session_1| {
+                                Box::pin(async move {
+                                    let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                    let plan = prepare_worker_lease_as_tx(
+                                        &mut tx,
+                                        track_id,
+                                        crate::model::TaskAccess::ReadWrite,
+                                        &unused_workspace_root(),
+                                    )
+                                    .await
+                                    .unwrap();
+                                    let (lease, _event) = acquire_workspace_lease_tx(
+                                        &mut tx, &card_id, track_id, "op-test", &plan,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    tx.commit().await.unwrap();
+                                    assert_eq!(lease.base.as_ref(), Some(&plan.base));
+                                    assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
+                                    lease
+                                })
+                            })
+                            .await
+                            .expect("independent write operation")
+                    }
                 };
 
                 // The card-repo release.
@@ -428,7 +433,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                 // The card-tx release.
                 let card_tx = new_card(&repo, &track_id).await;
                 take(card_tx.clone()).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let released = release_workspace_lease_for_card_tx(
                     &mut tx,
                     &card_tx,
@@ -441,7 +446,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                 // By id (the compensation step), and by id in any state (the delivery hand-off's reader).
                 let card_by_id = new_card(&repo, &track_id).await;
                 let lease_by_id = take(card_by_id).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let any_state = facts::workspace_lease_by_id_tx(&mut tx, &lease_by_id.lease_id)
                     .await
                     .unwrap()
@@ -461,7 +466,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                 // The facts reader.
                 let card_facts = new_card(&repo, &track_id).await;
                 take(card_facts.clone()).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let facts = facts::worker_worktree_facts_tx(&mut tx, &card_facts)
                     .await
                     .unwrap()
@@ -476,7 +481,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                 let all_active = active_workspace_leases(repo.pool()).await.unwrap();
                 assert_eq!(all_active.len(), 1);
                 assert!(all_active.iter().all(|lease| lease.base.is_some()));
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let release = release_workspace_leases_for_track_tx(
                     &mut tx,
                     &track_id,
@@ -811,7 +816,7 @@ async fn isolation_none_worker_refusal_explains_isolation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = prepare_worker_lease_as_tx(
                     &mut tx,
                     &track_id,

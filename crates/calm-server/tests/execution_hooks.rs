@@ -176,7 +176,7 @@ impl Fixture {
         let id = intent.metadata.id.clone();
         let write_db = (self.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let ticket = self.engine.admit(&mut tx, intent).await.unwrap();
             tx.commit().await.unwrap();
             if live {
@@ -260,7 +260,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let ticket = self
                         .engine
                         .request(&mut tx, id, Desired::Retire)
@@ -341,7 +341,7 @@ async fn unsettled_executions_scopes() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _ticket = f
                     .engine
                     .request(&mut tx, &id, Desired::Retire)
@@ -384,7 +384,7 @@ async fn terminal_delete_tx_returns_retire_and_rolls_back() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let deleted = sqlite::terminal_delete_tx(&mut tx, &terminal.id)
                     .await
                     .unwrap();
@@ -441,7 +441,7 @@ async fn track_delete_preflight_refused_keeps_typed_running() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let child = sqlite::track_create_tx(
                     &mut tx,
                     NewTrack {
@@ -516,7 +516,7 @@ async fn repoint_rejects_unsettled_typed_without_stop() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                         tx.commit().await.unwrap();
                         let target = f._temp.path().join("attached");
@@ -597,7 +597,7 @@ async fn worker(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlite::session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -741,7 +741,7 @@ async fn worktree_clean_skips_until_settled() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                 let mut workspace = sqlite::track_workspace_read_tx(&mut tx, &f.track)
                     .await

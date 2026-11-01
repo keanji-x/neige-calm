@@ -46,7 +46,7 @@ pub(super) async fn finish(boot: &Boot, task: &Task, success: bool) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(
                         &mut tx,
@@ -134,7 +134,7 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert_eq!(
                                 task_claim_pending_tx(
                                     &mut tx,

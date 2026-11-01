@@ -129,7 +129,7 @@ async fn seed_planner_card_row(repo: &SqlxRepo, track_id: &TrackId) -> calm_serv
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -226,7 +226,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (runtime_id, card_id) in [
                     (&chat_runtime_id, chat.id.as_str()),
                     (&pty_runtime_id, pty.id.as_str()),
@@ -336,7 +336,7 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -449,7 +449,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -648,7 +648,7 @@ async fn c1_fence_direct_harness_recovery_waits_then_respawns() {
     snapshot.last_turn_id = Some("turn-recovered".into());
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
@@ -1014,7 +1014,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1176,7 +1176,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1299,7 +1299,7 @@ async fn boot_recovery_skips_terminal_tracks() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1393,7 +1393,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_prepare_deferred_planner_tx(
                     &mut tx,
                     &WorkerSessionInit {
@@ -1628,7 +1628,7 @@ async fn legacy_boot_replay_suppresses_gated_self_report_and_replays_gate_result
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             session_start_runtime_tx(
                                 &mut tx,
                                 WorkerSessionInit {
@@ -1793,7 +1793,7 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mk = |track_id: TrackId, payload: serde_json::Value| NewCard {
             track_id,
             title: None,

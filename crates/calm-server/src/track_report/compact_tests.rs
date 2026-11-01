@@ -275,7 +275,7 @@ async fn compact_structural_init_refuses_live_blocks_before_writing() {
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let result = structural_init_report_tx(
             &mut tx,
             InitialReportTarget {

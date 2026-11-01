@@ -16,7 +16,7 @@ pub(super) async fn seed_worker_cards(repo: &SqlxRepo, ids: &[&str]) -> Vec<Stri
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -198,7 +198,7 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
                     .await
                     .unwrap();

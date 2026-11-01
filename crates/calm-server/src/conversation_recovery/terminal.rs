@@ -90,16 +90,14 @@ pub(super) async fn prove(
         .sqlite_db
         .as_ref()
         .ok_or(CalmError::ExecutionUnavailable)?;
-    let write_db = (db).clone();
-    write_db
-        .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                let admit = NativePromptAdmission::new(
-                    || source.current_principal().map(drop),
-                    || {
-                        Box::pin(async {
-                            let mut tx = write_session.begin().await?;
+    let admit = NativePromptAdmission::new(
+        || source.current_principal().map(drop),
+        || {
+            Box::pin(async {
+                db.writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await?;
                             authorize(&mut tx, source, captured.card_id()).await?;
                             let current = current_input_fact_carrier_tx(
                                 &mut tx,
@@ -126,30 +124,30 @@ pub(super) async fn prove(
                             tx.rollback().await?;
                             Ok(())
                         })
-                    },
-                );
-                let runtime = s
-                    .repo
-                    .session_projection_by_id(captured.worker_session_id())
-                    .await?
-                    .ok_or_else(|| CalmError::Conflict("recovery carrier disappeared".into()))?;
-                let target =
-                    crate::harness::backend::factory::RecoveryTarget::known_failed(&runtime)?;
-                let turn = captured.snapshot()["last_turn_id"]
-                    .as_str()
-                    .ok_or_else(|| CalmError::Conflict("failed turn missing".into()))?;
-                let prepared = daemon
-                    .terminal_recovery_guard(&target, turn, &admit)
+                    })
                     .await
-                    .map_err(provider_confirmation_error)?;
-                Ok(RecoveryProof::Codex {
-                    native: prepared.native,
-                    transcript: prepared.transcript,
-                    daemon: daemon.clone(),
-                })
+                    .map_err(calm_truth::TruthError::from)?
             })
-        })
-        .await.map_err(calm_truth::TruthError::from)?
+        },
+    );
+    let runtime = s
+        .repo
+        .session_projection_by_id(captured.worker_session_id())
+        .await?
+        .ok_or_else(|| CalmError::Conflict("recovery carrier disappeared".into()))?;
+    let target = crate::harness::backend::factory::RecoveryTarget::known_failed(&runtime)?;
+    let turn = captured.snapshot()["last_turn_id"]
+        .as_str()
+        .ok_or_else(|| CalmError::Conflict("failed turn missing".into()))?;
+    let prepared = daemon
+        .terminal_recovery_guard(&target, turn, &admit)
+        .await
+        .map_err(provider_confirmation_error)?;
+    Ok(RecoveryProof::Codex {
+        native: prepared.native,
+        transcript: prepared.transcript,
+        daemon: daemon.clone(),
+    })
 }
 
 /// Provider transport/JSON-RPC errors may contain private request echoes. The

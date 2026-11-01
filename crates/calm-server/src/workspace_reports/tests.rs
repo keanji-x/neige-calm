@@ -34,7 +34,7 @@ pub(crate) async fn event(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let id = crate::db::sqlite::append_decision_event_in_tx(
                     &mut tx,
                     &crate::ids::ActorId::Kernel,

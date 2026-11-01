@@ -952,7 +952,10 @@ async fn create_card_caller(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin card tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin card tx");
                 let (_card, _term, mcp_token) = card_with_codex_create_tx(
                     &mut tx,
                     card_id.clone(),
@@ -1121,7 +1124,10 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime tx");
                 let runtime_id = if let Some(runtime) =
                     session_projection_active_for_card_tx(&mut tx, card_id)
                         .await

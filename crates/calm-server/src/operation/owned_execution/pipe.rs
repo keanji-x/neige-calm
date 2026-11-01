@@ -108,7 +108,7 @@ pub(crate) async fn admit(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 if let Some(authority) = authority {
                     authority.authorize_tx(&mut tx).await?;
@@ -145,7 +145,7 @@ pub(crate) async fn transition(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 if let Some(authority) = authority {
                     authority.authorize_tx(&mut tx).await?;

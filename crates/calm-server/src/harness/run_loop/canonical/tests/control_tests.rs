@@ -267,7 +267,7 @@ async fn pending(fx: &Fixture) -> MessageRevisionRef {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     crate::db::sqlite::conversation::current_input_content_carrier_tx(
                         &mut tx,
@@ -388,7 +388,7 @@ async fn failed_stays_failed_after_end(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
                     &mut tx,
                     fx.harness.inner.card_id.as_str(),
@@ -620,7 +620,7 @@ async fn canonical_metadata_refuses_a_corrupt_control_checkpoint_without_a_nativ
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_set_handle_state_tx(
                     &mut tx,
                     &fx.harness.inner.worker_session_id,

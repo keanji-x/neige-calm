@@ -331,7 +331,7 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query(
                     "INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)",
                 )

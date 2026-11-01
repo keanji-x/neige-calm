@@ -375,7 +375,7 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
                         )
                         .await
                         .unwrap();
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         crate::db::sqlite::session_complete_for_card_tx(
                             &mut tx,
                             &card_id,
@@ -427,7 +427,7 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
                 })
                 .unwrap();
                 let restart_op = claude_worker_op("op-restart", payload.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let restart_output = restart
                     .prepare_tx(&mut tx, &payload, &restart_op)
                     .await

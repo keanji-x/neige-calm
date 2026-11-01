@@ -28,7 +28,7 @@ async fn seed_with_owner(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 super::super::insert(&mut tx, id, "track", alias, &metadata.to_string(), "{}")
                     .await
                     .unwrap();
@@ -119,7 +119,7 @@ async fn w_owned_card_scope_unions_terminal_alias_and_keeps_settled_owners() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let terminal = crate::db::sqlite::terminal_create_tx(
                     &mut tx,
                     crate::model::NewTerminal {
@@ -144,7 +144,7 @@ async fn w_owned_card_scope_unions_terminal_alias_and_keeps_settled_owners() {
                 )
                 .await;
                 // Alias still finds a typed terminal whose owner isn't an operation targeting this card.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 super::super::settle_tx(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "{}", 1)
                     .await
                     .unwrap();
@@ -164,7 +164,7 @@ async fn w_owned_card_scope_unions_terminal_alias_and_keeps_settled_owners() {
                 );
                 drop(conn);
                 // Retire is a durable request, not proof that the owner/executor have finished.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 super::super::request(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "retire")
                     .await
                     .unwrap();

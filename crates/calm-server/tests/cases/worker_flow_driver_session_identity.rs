@@ -72,7 +72,7 @@ async fn terminal_identity(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let replacement = {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let init = WorkerSessionInit {
                         id: format!("replacement-{card}"),
                         card_id: card.into(),

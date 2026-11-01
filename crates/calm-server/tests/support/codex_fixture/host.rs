@@ -193,7 +193,10 @@ pub async fn seed_planner_session(repo: &SqlxRepo, track_id: &str, planner_card_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin planner session tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin planner session tx");
                 session_start_runtime_tx(
                     &mut tx,
                     crate::support::planner::session_init(

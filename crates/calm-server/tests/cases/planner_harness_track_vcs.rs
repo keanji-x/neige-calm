@@ -100,7 +100,7 @@ async fn boot() -> Boot {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -202,7 +202,7 @@ async fn plain_chat_turn_does_not_refresh_or_read_track_vcs() {
     snapshot.last_thread_id = Some(thread_id.clone());
     let write_db = (boot.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
@@ -348,7 +348,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit::managed_assistant(

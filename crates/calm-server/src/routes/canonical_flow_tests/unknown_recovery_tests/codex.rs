@@ -33,7 +33,7 @@ async fn canonical_codex_cold_accepted_completion_rechecks_current_carrier() {
 pub(super) async fn bind_other_backend(fixture: &Fixture, worker: &str) {
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         // Controlled namespace change: persisted backend metadata is the owning authority.

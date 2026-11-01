@@ -62,7 +62,7 @@ async fn queued_task_change(replace_session: bool) {
     let roles = CardRoleCache::new();
     let write_db = (sql.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         card_with_codex_create_tx(
             &mut tx,
             planner.clone(),
@@ -150,7 +150,7 @@ async fn queued_task_change(replace_session: bool) {
             .unwrap();
         assert!(matches!(&queued, SupervisorControl::Write(_)));
         if replace_session {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             crate::db::sqlite::session_supersede_and_start_tx(
                 &mut tx,
                 &session,

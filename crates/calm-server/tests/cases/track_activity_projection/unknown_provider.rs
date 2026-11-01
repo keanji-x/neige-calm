@@ -33,9 +33,12 @@ async fn track_activity_unknown_provider_retains_task_and_live_harness_evidence(
     f.exit_session(&interactive_session, WorkerSessionState::Failed, 1_500)
         .await;
     // The released schema admits nonempty providers beyond this binary's codec.
-    sqlx::query("UPDATE worker_sessions SET provider = 'unknown' WHERE id = ?1")
-        .bind(&interactive_session)
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider = 'unknown' WHERE id = ?1")
+                .bind(&interactive_session),
+        )
         .await
         .unwrap();
     f.plan_tasks(&t, &[("build", "codex", TASK_IN_TRACK_ROUTE, None)])
@@ -54,10 +57,13 @@ async fn track_activity_unknown_provider_retains_task_and_live_harness_evidence(
     assert_eq!(f.stored(&t).await.unwrap(), p);
 
     // Task evidence also remains independent of its own session's provider.
-    sqlx::query("UPDATE worker_sessions SET provider = 'unknown' WHERE id IN (?1, ?2)")
-        .bind(&worker_session)
-        .bind(&harness)
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider = 'unknown' WHERE id IN (?1, ?2)")
+                .bind(&worker_session)
+                .bind(&harness),
+        )
         .await
         .unwrap();
     let p = f.recompute(&t).await;

@@ -109,7 +109,7 @@ async fn transcript_refresh_legacy_full_snapshot_uses_only_prepared_hooks() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, manifest.entries, now_ms())
                     .await
                     .unwrap();
@@ -197,7 +197,7 @@ async fn transcript_refresh_both_providers_keep_order_and_existing_projection_by
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let events = hook_events_for_card_tx(&mut tx, &fx.track.id, &fx.card.id)
                     .await
                     .unwrap();
@@ -261,7 +261,7 @@ async fn transcript_refresh_missing_prepared_input_fails_instead_of_rendering_li
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = HookInputs::Prepared(&prepared)
                     .put_card(&mut tx, &mut entries, &fx.track.id, &fx.card.id, now_ms())
                     .await

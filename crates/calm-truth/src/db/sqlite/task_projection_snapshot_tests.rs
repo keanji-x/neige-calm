@@ -142,7 +142,7 @@ async fn setup() -> Arc<SqlxRepo> {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("seed task tx");
+                let mut tx = write_session.begin_immediate().await.expect("seed task tx");
                 project_tasks_tx(&mut tx, "snapshot-track", &[persisted], &[vec![]])
                     .await
                     .expect("project pending task");

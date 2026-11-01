@@ -153,7 +153,7 @@ async fn assistant_provider_codex_failed_carrier_send_preserves_thread_and_queue
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::session_bind_attribution_tx(
                     &mut tx,
                     &runtime.id,
@@ -299,7 +299,7 @@ async fn assistant_provider_catalog_get_put_follow_registered_backend_admission(
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         for registration in registrations.as_array().unwrap() {
             let provider = registration["availability"]["provider"].clone();
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let card = card_create_with_id_tx(
                 &mut tx,
                 calm_server::model::new_id(),

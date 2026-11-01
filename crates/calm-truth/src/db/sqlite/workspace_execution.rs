@@ -401,7 +401,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     insert(&mut tx, "history-id", "track", &alias, "{}", "{}")
                         .await
                         .unwrap();
@@ -413,12 +413,12 @@ mod tests {
                             .unwrap()
                     );
 
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     request(&mut tx, "history-id", "retire").await.unwrap();
                     tx.commit().await.unwrap();
                     assert!(alias_has_execution(pool, &alias).await.unwrap());
 
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     settle_tx(&mut tx, "history-id", "{}", 1).await.unwrap();
                     tx.commit().await.unwrap();
                     finish(db, "history-id").await.unwrap();

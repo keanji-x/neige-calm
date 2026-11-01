@@ -2423,7 +2423,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     insert_pending_operation_row(&boot.repo, &op).await;
     let write_db = (boot.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
         tx.commit().await.unwrap();
         mark_operation_succeeded(&boot.repo, &op.id).await;
@@ -2917,7 +2917,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
                 assert_minted_runtime(&boot.repo, output, WorkerSessionKind::Terminal).await;
@@ -2935,7 +2935,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
                     boot.state.track_area_cache.clone(),
                 );
                 let op = pending_operation("codex-create", &boot.track_id, payload.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
                 assert_minted_runtime(&boot.repo, output, WorkerSessionKind::CodexCard).await;
@@ -2950,7 +2950,7 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
                     boot.state.track_area_cache.clone(),
                 );
                 let op = pending_operation("claude-create", &boot.track_id, payload.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
                 assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;

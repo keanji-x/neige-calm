@@ -181,7 +181,7 @@ pub async fn create_track_with_workspace_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let track =
                     crate::db::sqlite::track_create_tx(&mut tx, params, None, plan, None, cache)
                         .await?;
@@ -192,7 +192,8 @@ pub async fn create_track_with_workspace_for_test(
                 Ok(track)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Finish an already-declared track worktree without changing its stored selection.
@@ -206,7 +207,7 @@ pub async fn ensure_track_worktree_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let track = calm_truth::db::sqlite::track_get_tx(
                     &mut tx,
                     &crate::ids::TrackId::from(track_id.to_string()),
@@ -228,7 +229,8 @@ pub async fn ensure_track_worktree_for_test(
                 Ok(path.into())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Reach the production workspace-lease acquisition from an integration test.
@@ -245,7 +247,7 @@ pub async fn acquire_workspace_lease_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
                     &mut tx,
                     card_id,
@@ -258,7 +260,8 @@ pub async fn acquire_workspace_lease_for_test(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Take a lease that RECORDS ITS BASE through the production `acquire_workspace_lease_tx` (the
@@ -299,13 +302,14 @@ pub async fn acquire_based_workspace_lease_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
                 tx.commit().await?;
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Release a card's active workspace lease through the production release (#1830 S2 D7), with
@@ -366,7 +370,7 @@ pub async fn take_kernel_workspace_lease_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let plan = prepare_worker_lease_as_tx(
                     &mut tx,
                     track_id,
@@ -387,7 +391,8 @@ pub async fn take_kernel_workspace_lease_for_test(
                 })
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Admit one gate run (#2464) through the production admission transaction, without driving it:
@@ -406,7 +411,7 @@ pub async fn admit_gate_run_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let admitted = crate::operation::task_gate_run::admit_run_tx(
                     &mut tx,
                     attempt_id,
@@ -422,7 +427,8 @@ pub async fn admit_gate_run_for_test(
                 }
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Where an idle Planner is about to persist its hibernation snapshot; keyed by card id.

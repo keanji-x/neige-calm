@@ -163,7 +163,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     crate::db::sqlite::session_start_runtime_tx(
                         &mut tx,
                         crate::session_projection_repo::WorkerSessionInit {

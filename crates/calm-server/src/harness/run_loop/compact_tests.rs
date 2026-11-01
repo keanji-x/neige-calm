@@ -774,7 +774,7 @@ async fn carrier_quiescence_historical_entries_skip_held_resources() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let _tx = write_session.begin().await.unwrap();
+                let _tx = write_session.begin_immediate().await.unwrap();
                 let (compact, tick) = tokio::join!(
                     tokio::time::timeout(
                         Duration::from_millis(200),

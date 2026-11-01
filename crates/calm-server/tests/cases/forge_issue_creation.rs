@@ -64,13 +64,14 @@ async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 insert_workspace_lease(&mut tx, &card, &track, &path).await;
                 tx.commit().await.unwrap();
                 result
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 fn assert_real_result(outcome: &OperationOutcome) {
     match outcome {

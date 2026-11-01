@@ -47,7 +47,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin");
+        let mut tx = write_session.begin_immediate().await.expect("begin");
         let track = super::track_create_tx(
             &mut tx,
             crate::model::NewTrack {
@@ -91,7 +91,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
         assert_eq!(row.2, Some(track.created_at));
 
         // The latch lives at the bottom write, not at the route.
-        let mut tx = write_session.begin().await.expect("begin");
+        let mut tx = write_session.begin_immediate().await.expect("begin");
         let refused = super::track_workspace::track_workspace_write_tx(
             &mut tx,
             track.id.as_str(),
@@ -117,7 +117,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
             .await
             .expect("clear the freeze stamp");
 
-        let mut tx = write_session.begin().await.expect("begin");
+        let mut tx = write_session.begin_immediate().await.expect("begin");
         super::track_workspace::track_workspace_write_tx(
             &mut tx,
             track.id.as_str(),
@@ -177,7 +177,7 @@ async fn track_update_tx_leaves_the_workspace_alone() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let track = super::track_create_tx(
                     &mut tx,
                     crate::model::NewTrack {
@@ -242,7 +242,7 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let created = super::track_create_tx(
                     &mut tx,
                     crate::model::NewTrack {

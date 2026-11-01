@@ -204,7 +204,7 @@ pub async fn snapshot_transcripts_for_cards_in_track(
                         super::transcript_writer_tests::Phase::BeforeWrite,
                     )
                     .await;
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !inputs_are_current(&mut tx, track_id, &prepared).await? {
                         tx.rollback().await?;
                         continue;
@@ -237,7 +237,8 @@ pub async fn snapshot_transcripts_for_cards_in_track(
                 ))
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 #[cfg(test)]

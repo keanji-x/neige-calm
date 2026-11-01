@@ -18,23 +18,47 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
         ),
         ..sqlx::migrate::Migrator::DEFAULT
     };
-    { let migrator = &(old);
-    (pool).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(old);
+        (pool)
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     let repo = super::SqlxRepo {
         db: pool,
         card_role_cache: super::CardRoleCache::new(),
         track_area_cache: super::TrackAreaCache::new(),
         database_id: std::sync::Arc::new("acp-upgrade".into()),
     };
+    type Row = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+    );
     let write_db = (repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
+    let (repo, select, before, constraints_before) = write_db.writer().with_writer(|write_session| Box::pin(async move {
         for state in ["sending", "unknown", "completed", "released"] {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = super::runtime_read_flip_support::create_card_in_tx(&repo, &mut tx, state, "codex", serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode"})).await;
                 let mut init = crate::session_projection_repo::WorkerSessionInit::shared_planner(
                     state.into(),
@@ -56,47 +80,40 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
                     .unwrap();
                 tx.commit().await.unwrap();
             }
-            let mut db = repo.db().writer_pool().acquire().await.unwrap();
+            let (select, before, constraints_before) = write_session.autocommit(|db| Box::pin(async move {
             assert!(
                 sqlx::query_scalar::<_, bool>("PRAGMA foreign_keys")
-                    .fetch_one(&mut *db)
+                    .fetch_one(&mut **db)
                     .await
                     .unwrap()
             );
             for state in ["sending", "unknown", "completed"] {
                 sqlx::query("INSERT INTO acp_submissions VALUES(?1,?1,?1,'thread','native-'||?1,'{\"input\":[],\"prompt\":[],\"queue\":[]}',?1,CASE WHEN ?1='completed' THEN '{ \"result\": [] }' ELSE NULL END,7)")
-                    .bind(state).execute(&mut *db).await.unwrap();
+                    .bind(state).execute(&mut **db).await.unwrap();
             }
             let select = concat!(
                 "SELECT ",
                 "worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,outcome_json,c",
                 "reated_at_ms FROM acp_submissions ORDER BY client_id",
             );
-            type Row = (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                i64,
-            );
-            let before: Vec<Row> = sqlx::query_as(select).fetch_all(&mut *db).await.unwrap();
-            let constraints_before = constraint_inventory(&mut db).await;
-            drop(db);
-            repo.db().writer_pool().close().await;
-            repo.db().read_pool().close().await;
-            drop(repo);
-            let repo = super::SqlxRepo::open(&url).await.unwrap();
-            let mut db = repo.db().writer_pool().acquire().await.unwrap();
-            let after: Vec<Row> = sqlx::query_as(select).fetch_all(&mut *db).await.unwrap();
+            let before: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
+            let constraints_before = constraint_inventory(&mut **db).await;
+            Ok::<_, sqlx::Error>((select, before, constraints_before))
+            })).await.unwrap();
+            (repo, select, before, constraints_before)
+    })).await.expect("independent write operation");
+    repo.db().writer().close_for_test().await.unwrap();
+    repo.db().read_pool().close().await;
+    drop(repo);
+    let repo = super::SqlxRepo::open(&url).await.unwrap();
+    repo.db().writer().with_writer(|write_session| Box::pin(async move {
+            write_session.autocommit(|db| Box::pin(async move {
+            let after: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
             assert_eq!(before, after);
-            assert_eq!(constraints_before, constraint_inventory(&mut db).await);
+            assert_eq!(constraints_before, constraint_inventory(&mut **db).await);
             let schema: String =
                 sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='acp_submissions'")
-                    .fetch_one(&mut *db)
+                    .fetch_one(&mut **db)
                     .await
                     .unwrap();
             assert!(schema.contains("WITHOUT ROWID"));
@@ -117,14 +134,14 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
                 "worker_session_id='absent-parent'",
             ] {
                 let sql = format!("UPDATE acp_submissions SET {assignment} WHERE client_id='sending'");
-                assert!(sqlx::query(&sql).execute(&mut *db).await.is_err(), "{sql}");
+                assert!(sqlx::query(&sql).execute(&mut **db).await.is_err(), "{sql}");
             }
-            let after_constraints: Vec<Row> = sqlx::query_as(select).fetch_all(&mut *db).await.unwrap();
+            let after_constraints: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
             assert_eq!(before, after_constraints);
             let count: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM acp_submissions WHERE kept_cleanup_json IS NOT NULL",
             )
-            .fetch_one(&mut *db)
+            .fetch_one(&mut **db)
             .await
             .unwrap();
             assert_eq!(count, 0);
@@ -134,7 +151,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
 "acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,stat",
 "e,created_at_ms) VALUES(?1,'successor',?1||'-next','thread','native','{}','sending',8)",
         ))
-                    .bind(state).execute(&mut *db).await.is_err());
+                    .bind(state).execute(&mut **db).await.is_err());
                 for evidence in ["{}", "null", "not json", "{\"version\":\"v1\"}"] {
                     assert!(
                         sqlx::query(
@@ -142,7 +159,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
                         )
                         .bind(evidence)
                         .bind(state)
-                        .execute(&mut *db)
+                        .execute(&mut **db)
                         .await
                         .is_err()
                     );
@@ -162,15 +179,17 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
         WHERE worker_session_id='released';
         INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_at_ms)
         VALUES('released','successor','released-next','thread','native-released','{}','sending',9);
-    "#); sqlx::Executor::execute(&mut *db, query).await }.unwrap();
+    "#); sqlx::Executor::execute(&mut **db, query).await }.unwrap();
             assert!(
                 sqlx::query("PRAGMA foreign_key_check")
-                    .fetch_all(&mut *db)
+                    .fetch_all(&mut **db)
                     .await
                     .unwrap()
                     .is_empty()
             );
 
+            Ok::<_, sqlx::Error>(())
+            })).await.unwrap();
     })).await.expect("independent write operation")
 }
 

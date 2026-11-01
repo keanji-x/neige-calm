@@ -62,7 +62,7 @@ pub async fn dispose(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let mut owners = Vec::new();
                 let mut unique = std::collections::BTreeSet::new();
                 for id in ids {
@@ -121,7 +121,8 @@ pub async fn dispose(
                 .map_err(conflict)?
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn retired(pool: &SqliteDb, id: &ExecutionId) -> Result<bool> {

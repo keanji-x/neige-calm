@@ -29,7 +29,7 @@ impl SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                                let mut tx = match write_session.begin_once().await {
+                                let mut tx = match write_session.begin_immediate_once().await {
                                     Ok(tx) => tx,
                                     Err(e) => {
                                         #[cfg(feature = "fixtures")]
@@ -179,7 +179,7 @@ pub async fn worker_flow_cursor_set_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 worker_flow_cursor_upsert_tx(
                     &mut tx,
                     card_id,
@@ -192,7 +192,8 @@ pub async fn worker_flow_cursor_set_for_test(
                 Ok(())
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 /// `record_index` may move down when a source file is rewritten (compaction); the capture's

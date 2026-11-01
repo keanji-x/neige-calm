@@ -155,7 +155,7 @@ async fn objective_report_source_must_match_committed_block() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let rows = log::read_tx(&mut write_session.begin().await.unwrap(), &"t".into())
+                            let rows = log::read_tx(&mut write_session.begin_immediate().await.unwrap(), &"t".into())
                                 .await
                                 .unwrap();
                             assert_eq!(rows[0].source, report_source());
@@ -190,7 +190,7 @@ async fn project(
 ) -> Result<()> {
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let payload =
             serde_json::json!({"schemaVersion":1,"docRev":rev,"summary":"","body":"","blocks":after});
         sqlx::query("UPDATE cards SET payload=? WHERE id='report'")

@@ -62,7 +62,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
                     frame.header.last_thread_id = Some(owner.thread.clone());
                     crate::db::sqlite::session_set_handle_state_tx(
@@ -155,7 +155,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
                             .await
@@ -174,7 +174,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let target = crate::harness::input_dispatch::execution_target_tx(
                         &mut tx,
                         &self.owner.card,
@@ -229,7 +229,7 @@ async fn canonical_claude_start_checkpoints_before_first_line() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                     "CREATE TRIGGER fail_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
          WHEN NEW.handle_state_json LIKE '%crossing_unknown%'
@@ -293,7 +293,7 @@ async fn canonical_claude_gate_rechecks_source_after_spawn_and_writer_wait() {
                 tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
                     .await
                     .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 match change {
                     Change::Membership => {
                         let area = conversation_area_tx(&mut tx, &fx.owner.card).await.unwrap();
@@ -604,7 +604,7 @@ async fn canonical_claude_fact_persistence_failure_preserves_crossing_and_input(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query(
                     "CREATE TRIGGER fail_fact BEFORE UPDATE OF handle_state_json ON worker_sessions
          WHEN json_extract(NEW.handle_state_json,
@@ -697,7 +697,7 @@ async fn canonical_claude_resumed_session_keeps_local_identity_and_completes_cur
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

@@ -137,7 +137,7 @@ async fn canonical_retry_http_response_loss_replays_original_successor() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
                     .await
                     .unwrap();
@@ -200,7 +200,7 @@ async fn canonical_retry_http_erased_or_unproven_context_is_keep_only() {
         let write_db = (fixture.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
             if frozen {
-                let mut tx = write_session.begin()
+                let mut tx = write_session.begin_immediate()
                     .await
                     .unwrap();
                 if withdrawn {

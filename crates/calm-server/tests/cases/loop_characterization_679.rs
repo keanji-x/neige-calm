@@ -100,7 +100,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let planner_card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -142,7 +142,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
                 let mut snapshot = HarnessSnapshot::initial(0, vec![]);
                 snapshot.phase = HarnessPhaseTag::Idle;
                 snapshot.last_thread_id = Some(thread_id.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

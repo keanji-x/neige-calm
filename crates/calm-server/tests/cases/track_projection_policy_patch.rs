@@ -832,7 +832,7 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
                         .await
@@ -954,7 +954,7 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &parent_task, 1, &[], false)
                         .await
@@ -996,7 +996,7 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
                     .await
                     .unwrap();
                 let task_id = seed_pending_report_task(&repo, child.id.as_str(), "inflight").await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
                         .await
@@ -1043,7 +1043,7 @@ async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_st
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
                         .await
@@ -1125,7 +1125,7 @@ async fn tightening_planner_ceiling_below_inflight_inventory_commits_degraded_st
                     blocked_rows, 0,
                     "ceiling degradation must freeze admission of a newly declared task"
                 );
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &blocked_task, 2, &[], false)
                         .await

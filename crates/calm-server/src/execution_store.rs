@@ -156,7 +156,7 @@ impl Store for SqliteExecutionStore {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.map_err(error)?;
+                    let mut tx = write_session.begin_immediate().await.map_err(error)?;
                     let metadata: ExecutionMetadata = serde_json::from_str(
                         &sql::intent_tx(&mut tx, id.as_str()).await.map_err(error)?,
                     )
@@ -183,7 +183,7 @@ impl Store for SqliteExecutionStore {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.map_err(error)?;
+                    let mut tx = write_session.begin_immediate().await.map_err(error)?;
                     let now = chrono::Utc::now().timestamp_millis();
                     sql::settle_tx(
                         &mut tx,

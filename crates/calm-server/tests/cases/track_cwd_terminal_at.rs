@@ -1219,24 +1219,33 @@ async fn list_tracks_window_filters_by_created_and_closed_at() {
     // Pin the timestamps via raw SQL: `track_create_tx` / `track_update_tx` always stamp `now_ms()`, which
     // would cluster all three within a millisecond.
     let pool = boot.sqlx_repo.pool();
-    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
-        .bind(1_i64)
-        .bind(2_i64)
-        .bind(a.id.as_str())
-        .execute(pool)
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
+                .bind(1_i64)
+                .bind(2_i64)
+                .bind(a.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = NULL WHERE id = ?2")
-        .bind(5_i64)
-        .bind(b.id.as_str())
-        .execute(pool)
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = NULL WHERE id = ?2")
+                .bind(5_i64)
+                .bind(b.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
-        .bind(10_i64)
-        .bind(12_i64)
-        .bind(c.id.as_str())
-        .execute(pool)
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at = ?1, closed_at = ?2 WHERE id = ?3")
+                .bind(10_i64)
+                .bind(12_i64)
+                .bind(c.id.as_str()),
+        )
         .await
         .unwrap();
 

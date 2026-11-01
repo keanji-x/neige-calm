@@ -127,7 +127,7 @@ pub(crate) async fn collect<A: WorkerAdmission>(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 if !crate::operation::repo_sqlite::has_live_claim_tx(&mut tx, op).await? {
                     tx.rollback().await?;
                     return Ok(None); // Repository's original-claim guard rejects before direct prepare.
@@ -136,7 +136,7 @@ pub(crate) async fn collect<A: WorkerAdmission>(
                 tx.rollback().await?;
                 admitted?;
                 observe_worker_checkout(ctx, track_id).await?;
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let facts = read_facts(&mut tx, track_id, attempt).await;
                 tx.rollback().await?;
                 let facts = facts?;
@@ -147,10 +147,11 @@ pub(crate) async fn collect<A: WorkerAdmission>(
                     facts,
                     evidence,
                     root: root.to_owned(),
-                })))
+                }) as Box<dyn PreparedTx>))
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn observe(facts: &Facts) -> Evidence {

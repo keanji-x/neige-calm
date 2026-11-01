@@ -28,7 +28,7 @@ async fn pending_controls_edit_preserves_old_revision_order_and_attachments() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -147,7 +147,7 @@ async fn pending_controls_refuse_another_author_and_do_not_change_claimed_input(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -208,7 +208,7 @@ async fn pending_controls_supplemental_non_dispatch_releases_only_its_own_claim(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -353,7 +353,7 @@ async fn pending_controls_supplemental_non_dispatch_releases_only_its_own_claim(
                 .unwrap();
                 tx.commit().await.unwrap();
                 // Reload persisted facts as after a cancelled HTTP waiter or server restart.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();

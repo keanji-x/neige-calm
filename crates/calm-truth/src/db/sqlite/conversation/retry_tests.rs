@@ -1,5 +1,5 @@
 //! Real coupled resolutions, ordinary claims/releases, retained facts and reopen.
-use super::super::begin_immediate_tx;
+
 use super::retry::{RetryUnavailableReason, resolve_retry_tx};
 use super::retry_storage_tests::{request, seed};
 use super::transaction_tests::provenance;
@@ -24,7 +24,7 @@ async fn canonical_retry_reserves_one_successor_and_receipt_atomically() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let decision = resolve_retry_tx(
                                 &mut tx,
                                 &s.card,
@@ -77,7 +77,7 @@ async fn canonical_retry_same_key_after_response_loss_replays_original_successor
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = resolve_retry_tx(
                     &mut tx,
                     &s.card,
@@ -90,7 +90,7 @@ async fn canonical_retry_same_key_after_response_loss_replays_original_successor
                 .unwrap()
                 .unwrap();
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -156,7 +156,7 @@ async fn canonical_retry_rollback_and_cross_action_key_conflict() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 resolve_retry_tx(
                     &mut tx,
                     &s.card,
@@ -169,7 +169,7 @@ async fn canonical_retry_rollback_and_cross_action_key_conflict() {
                 .unwrap()
                 .unwrap();
                 tx.rollback().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_fact_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -226,7 +226,7 @@ async fn canonical_retry_not_dispatched_repeated_crossings_preserve_history() {
     let s = seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let decision = resolve_retry_tx(
             &mut tx,
             &s.card,
@@ -347,7 +347,7 @@ async fn canonical_retry_unknown_successor_can_have_a_new_human_intent() {
     let s = seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let first = resolve_retry_tx(
             &mut tx,
             &s.card,
@@ -434,7 +434,7 @@ async fn canonical_retry_successor_interleaves_without_folding_accepted_inputs()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let decision = resolve_retry_tx(
                     &mut tx,
                     &s.card,
@@ -493,19 +493,33 @@ async fn canonical_retry_inactive_text_plan_reopens_without_git_dependency() {
     let repo = super::super::SqlxRepo::open(&url).await.unwrap();
     let (_, card) = super::tests::fixture_card(&repo).await;
     let s = super::retry_storage_tests::seed_repo(repo, card, false).await;
-    let mut tx = begin_immediate_tx(s.repo.db()).await.unwrap();
-    let decision = resolve_retry_tx(
-        &mut tx,
-        &s.card,
-        LEGACY_OWNER_USER_ID,
-        "reopen",
-        &request(&s),
-        &provenance(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    tx.commit().await.unwrap();
+    let decision = {
+        let write_db = (s.repo.db()).clone();
+        let s = &s;
+
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let decision = resolve_retry_tx(
+                        &mut tx,
+                        &s.card,
+                        LEGACY_OWNER_USER_ID,
+                        "reopen",
+                        &request(&s),
+                        &provenance(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    decision
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     (s.repo.db())
         .writer()
         .execute(
@@ -516,35 +530,51 @@ async fn canonical_retry_inactive_text_plan_reopens_without_git_dependency() {
     let (card, carrier_id, root, expected) = (s.card, s.carrier, s.root, s.render);
     drop(s.repo);
     let repo = super::super::SqlxRepo::open(&url).await.unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    // This fixture has no frozen document heads. Remove its unrelated VCS graph
-    // after boot, so the actual retry reader must hydrate using canonical facts only.
-    sqlx::query(
+    {
+        let write_db = (repo.db()).clone();
+        let card = &card;
+        let carrier_id = &carrier_id;
+        let decision = &decision;
+        let root = &root;
+        let expected = &expected;
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    // This fixture has no frozen document heads. Remove its unrelated VCS graph
+                    // after boot, so the actual retry reader must hydrate using canonical facts only.
+                    sqlx::query(
         "DELETE FROM track_vcs_refs; DELETE FROM track_vcs_commits; DELETE FROM track_vcs_objects",
     )
     .execute(&mut **tx)
     .await
     .unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM track_vcs_commits")
-            .fetch_one(&mut **tx)
+                    assert_eq!(
+                        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM track_vcs_commits")
+                            .fetch_one(&mut **tx)
+                            .await
+                            .unwrap(),
+                        0,
+                        "retry text hydration must work with no git commits present"
+                    );
+                    let carrier = current_input_fact_carrier_tx(&mut tx, &card, &carrier_id)
+                        .await
+                        .unwrap();
+                    let intent = retry_intent_tx(&mut tx, &carrier, &id(&decision))
+                        .await
+                        .unwrap();
+                    assert!(!carrier.is_execution_current());
+                    assert_eq!(carrier.checkpoint().pending, vec![intent.pending]);
+                    assert_eq!(&intent.root_submission_id, root);
+                    assert_eq!(&intent.plan.plan, expected);
+                    assert_eq!(intent.invocation.model.as_deref(), Some("original-model"));
+                    tx.commit().await.unwrap();
+                })
+            })
             .await
-            .unwrap(),
-        0,
-        "retry text hydration must work with no git commits present"
-    );
-    let carrier = current_input_fact_carrier_tx(&mut tx, &card, &carrier_id)
-        .await
-        .unwrap();
-    let intent = retry_intent_tx(&mut tx, &carrier, &id(&decision))
-        .await
-        .unwrap();
-    assert!(!carrier.is_execution_current());
-    assert_eq!(carrier.checkpoint().pending, vec![intent.pending]);
-    assert_eq!(intent.root_submission_id, root);
-    assert_eq!(intent.plan.plan, expected);
-    assert_eq!(intent.invocation.model.as_deref(), Some("original-model"));
-    tx.commit().await.unwrap();
+            .expect("independent write operation")
+    };
 }
 
 #[tokio::test]
@@ -563,7 +593,7 @@ async fn canonical_retry_racing_keys_has_one_effective_consumer() {
                 start.wait().await;
                 let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
+let mut tx = write_session_1.begin_immediate().await?;
                 let result = resolve_retry_tx(
                     &mut tx,
                     &card,
@@ -589,7 +619,7 @@ let mut tx = write_session_1.begin().await?;
             }
         }
         assert_eq!(winners.len(), 1);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
             .await
             .unwrap();

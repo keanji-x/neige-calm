@@ -160,7 +160,7 @@ async fn replace_carrier_owned(
         .ok_or(CalmError::ExecutionUnavailable)?;
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let principal = authorize(&mut tx, &source, &card).await?;
         if let Some(replay) =
             replay_carrier_recovery_tx(&mut tx, &card, &principal.user_id, &key, &request).await?
@@ -183,7 +183,7 @@ async fn replace_carrier_owned(
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-abandon-before-push", &card).await;
         let _push = s.dispatcher.planner_switch_push_lock(&track).await;
-        let mut replay_tx = write_session.begin().await?;
+        let mut replay_tx = write_session.begin_immediate().await?;
         let principal = authorize(&mut replay_tx, &source, &card).await?;
         if let Some(replay) =
             replay_carrier_recovery_tx(&mut replay_tx, &card, &principal.user_id, &key, &request)
@@ -222,7 +222,7 @@ async fn replace_carrier_owned(
             .map_err(|_| CalmError::Conflict("Wait for pending tool calls before recovery".into()))?;
         let _drive = s.operation_runtime.lock_for_track_delete().await;
         let _track = crate::per_card_lock::lock_key(&s.track_delete_locks, track.as_str()).await;
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         authorize(&mut tx, &source, &card).await?;
         let captured = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
         if recovery_target_tx(&mut tx, &captured, action).await? != Some((kind, request.clone())) {
@@ -292,7 +292,7 @@ async fn replace_carrier_owned(
         };
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("canonical-abandon-before-commit", &card).await;
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let principal = authorize(&mut tx, &source, &card).await?;
         if !s
             .harness

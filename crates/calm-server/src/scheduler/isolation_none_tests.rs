@@ -70,7 +70,7 @@ async fn isolation_none_scheduler_refuses_upstream_worker_before_fetch_writes() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::test_support::insert_task_tx(&mut tx, &dispatched)
                     .await
                     .unwrap();

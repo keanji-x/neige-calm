@@ -101,7 +101,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(
                         session_set_handle_state_tx(
                             &mut tx,
@@ -513,7 +513,7 @@ async fn assert_resumed_context_usage(usage: Option<&str>) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(
                     &mut tx,
                     fx.harness.inner.card_id.as_str(),
@@ -586,7 +586,7 @@ async fn assert_resumed_context_usage(usage: Option<&str>) {
                     usize::from(usage.is_some())
                 );
                 assert!(!input.contains("not recorded"));
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = crate::db::sqlite::conversation::submission_plan_tx(
                     &mut tx,
                     &claim.submission_id,
@@ -637,7 +637,7 @@ async fn context_usage_canonical_freezes_context_at_claim() {
         .submission_ids[0];
     let write_db = (fx.original.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
             .await
             .unwrap();
@@ -691,7 +691,7 @@ async fn context_usage_canonical_freezes_context_at_claim() {
         .unwrap();
         let restored: CanonicalHarnessSnapshot = serde_json::from_str(&wire).unwrap();
         assert_eq!(restored, frozen);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
             .await
             .unwrap();

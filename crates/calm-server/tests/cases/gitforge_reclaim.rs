@@ -475,8 +475,7 @@ async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
         ids::ActorId,
     };
     use calm_truth::db::sqlite::{
-        append_decision_event_in_tx, begin_immediate_tx,
-        worktree_events::unmatched_provisioned_worktrees,
+        append_decision_event_in_tx, worktree_events::unmatched_provisioned_worktrees,
     };
     let f = Fixture::new().await;
     f.close().await;
@@ -507,7 +506,7 @@ async fn gitforge_reclaim_old_success_does_not_cancel_new_provision() {
             .unwrap();
     let write_db = (f.b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let provision = append_decision_event_in_tx(
             &mut tx,
             &ActorId::KernelDispatcher,
@@ -655,11 +654,22 @@ async fn foreign_execution_retains_extra(delete: bool) {
         intent.metadata.track = TrackId("foreign-owner".into());
         let id = intent.metadata.id.clone();
         let engine = f._execution.lifecycle.engine().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(f.b.repo.db())
-            .await
-            .unwrap();
-        let ticket = engine.admit(&mut tx, intent).await.unwrap();
-        tx.commit().await.unwrap();
+        let ticket = {
+            let write_db = (f.b.repo.db()).clone();
+            let engine = &engine;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        let ticket = engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        ticket
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         engine.drive(ticket.committed());
         if delete {
             assert_foreign_occupancy(&f, &id).await;

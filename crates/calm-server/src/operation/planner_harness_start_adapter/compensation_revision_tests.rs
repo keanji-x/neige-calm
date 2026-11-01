@@ -81,7 +81,7 @@ impl GiveBack {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let card = card_create_with_id_tx(
                         &mut tx,
                         new_id(),

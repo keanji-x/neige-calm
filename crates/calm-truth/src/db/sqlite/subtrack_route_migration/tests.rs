@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, String, SqlxRepo) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -153,7 +153,7 @@ async fn subtrack_upgrade_rolls_back_every_report_and_marker_on_corrupt_crdt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area_id: String = sqlx::query_scalar("SELECT area_id FROM tracks LIMIT 1")
                     .fetch_one(&mut **tx)
                     .await

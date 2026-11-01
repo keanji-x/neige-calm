@@ -232,7 +232,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let deletable_card = calm_server::db::sqlite::card_create_with_id_tx(
             &mut tx,
             calm_server::model::new_id(),

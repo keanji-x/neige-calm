@@ -27,7 +27,7 @@ async fn bind_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -61,7 +61,7 @@ async fn bind_superseded_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_i
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

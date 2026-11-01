@@ -332,7 +332,7 @@ async fn conversation_title_restoration_cancel_retains_unique_source_for_both_ow
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut blocker = write_session.begin().await.unwrap();
+                    let mut blocker = write_session.begin_immediate().await.unwrap();
                     // The restoration can still read its projection; it stalls at acquiring its writer.
                     sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
                         .execute(&mut **blocker)

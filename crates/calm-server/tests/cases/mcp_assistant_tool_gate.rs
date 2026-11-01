@@ -360,7 +360,10 @@ async fn seed_track_report_card(boot: &support::mcp::CardBoot) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin report card tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin report card tx");
                 let report_card = calm_server::db::sqlite::card_create_with_id_tx(
                     &mut tx,
                     report_card_id.clone(),

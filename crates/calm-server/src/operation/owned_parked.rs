@@ -3,7 +3,7 @@ use super::{
     Operation, ParkedCompletion, ParkedRecovery, ProviderAdapter, RecoveryMode, SpawnCtx,
     complete_parked_tx,
 };
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::error::{CalmError, Result};
 
 /// Both live observer and the existing boot/sweep loop use this one lease fence.
@@ -30,7 +30,7 @@ pub(crate) fn reconcile<'a>(
                         .writer()
                         .with_writer(|write_session| {
                             Box::pin(async move {
-                                let mut tx = write_session.begin().await?;
+                                let mut tx = write_session.begin_immediate().await?;
                                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                                 let completion =
                                     complete_parked_tx(&mut tx, &op.id, &outcome).await?;

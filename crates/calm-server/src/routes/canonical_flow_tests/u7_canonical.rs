@@ -120,7 +120,7 @@ async fn u7_canonical_named_sources_commit_original_human_acceptance() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
                             &mut tx,
                             area["id"].as_str().unwrap(),
@@ -354,7 +354,7 @@ async fn u7_canonical_fork_source_deletion_and_access_revocation_races_rollback(
                 } else {
                     // The create holds the target Area fence, so simulate the already-admitted
                     // source deletion in its storage owner, rather than deadlock its HTTP fence.
-                    let mut tx = write_session.begin()
+                    let mut tx = write_session.begin_immediate()
                         .await
                         .unwrap();
                     crate::db::sqlite::track_delete_tx(
@@ -409,7 +409,7 @@ async fn stored_plan(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
                     .await
                     .unwrap();

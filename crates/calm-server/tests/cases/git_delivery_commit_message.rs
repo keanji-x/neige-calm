@@ -280,7 +280,7 @@ async fn upgrade_restart_settles_a_legacy_null_message_without_a_forge_op() {
     // constructs this row at the base schema and upgrades it with the real migrator.
     let write_db = (fx.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let triggers: Vec<(String, String)> = sqlx::query_as(
             "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'task_git_deliveries'"
         ).fetch_all(&mut **tx).await.unwrap();

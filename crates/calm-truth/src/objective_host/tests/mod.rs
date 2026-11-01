@@ -42,7 +42,7 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         if enabled {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             for track in ["t", "other"] {
                 crate::db::sqlite::track_capabilities::stamp_tx(
                     &mut tx,
@@ -54,7 +54,7 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
             }
             tx.commit().await.unwrap();
         }
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let cache = crate::card_role_cache::CardRoleCache::new();
         for (id, track, role, payload) in [
             (
@@ -212,7 +212,7 @@ async fn fixture_react(repo: &SqlxRepo, event: Event, id: &str) -> Reaction {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let result = react_fixture_tx(&mut tx, &input, 0).await.unwrap();
                 tx.commit().await.unwrap();
                 result
@@ -275,11 +275,12 @@ async fn fixture_input_react(repo: &SqlxRepo, input: ObjectiveInput) -> Result<C
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let reaction = react_fixture_tx(&mut tx, &input, 0).await?;
                 tx.commit().await?;
                 Ok(CommittedReaction { reaction })
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }

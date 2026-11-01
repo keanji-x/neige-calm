@@ -241,7 +241,7 @@ async fn seed_ask_with(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let id = crate::db::sqlite::append_decision_event_in_tx(
                     &mut tx,
                     &ActorId::AiPlanner(planner),
@@ -2233,7 +2233,7 @@ async fn a_hold_answer_does_not_wake_the_planner() {
         .with_writer(|write_session| {
             Box::pin(async move {
                 for ask_id in [wake, hold] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     crate::db::sqlite::append_decision_event_in_tx(
                         &mut tx,
                         &ActorId::User,
@@ -2303,7 +2303,7 @@ async fn planner_push_delivery_fixture() -> (crate::db::sqlite::SqlxRepo, Event)
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
                     &mut tx,
                     "worker",
@@ -3785,7 +3785,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let planner_card = card_create_with_id_tx(
             &mut tx,
             new_id(),
@@ -3977,7 +3977,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
             async move {
                 let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
+let mut tx = write_session_1.begin_immediate().await.unwrap();
                 let id = append_decision_event_in_tx(&mut tx, &ActorId::Kernel, &scope, None, &event)
                     .await
                     .unwrap();

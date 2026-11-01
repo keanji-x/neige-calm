@@ -84,22 +84,27 @@ async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) 
     let pool = fx.db();
 
     {
-
         let mut writer = tokio::spawn(async move {
             let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
-            sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
-                .execute(&mut **tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, calm_server::error::CalmError>(())
-
-        })).await.expect("independent write operation")
-});
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, calm_server::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
         // This bound is far shorter than the production clean-check budget. Timeout cancellation
         // of the Git command must not masquerade as releasing a writer before the filter release.
-        let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        let committed_before_release =
+            tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         assert!(!release.exists());
         // Release and drain before asserting so the expected red run leaves no blocked subprocess.
         std::fs::write(&release, "release").unwrap();
@@ -128,9 +133,7 @@ let mut tx = write_session_1.begin().await?;
             .await
             .unwrap();
         assert_eq!(writes, 1);
-
-
-}
+    }
 }
 
 struct CleanBarrier {
@@ -381,7 +384,7 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         if change == "context" {
                             sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
                                 .bind(calm_server::model::now_ms())

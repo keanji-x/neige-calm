@@ -140,7 +140,7 @@ async fn conversation_title_requeue_cancel_retry_keeps_complete_retirement() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut blocker = write_session.begin().await.unwrap();
+                let mut blocker = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
                     .execute(&mut **blocker)
                     .await

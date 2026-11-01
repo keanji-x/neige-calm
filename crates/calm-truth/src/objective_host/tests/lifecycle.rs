@@ -43,7 +43,7 @@ pub(super) async fn dispatch(repo: &SqlxRepo, id: &IntentId) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 intent_mark_dispatched_tx(&mut tx, id).await.unwrap();
                 tx.commit().await.unwrap();
             })
@@ -78,7 +78,7 @@ async fn lifecycle_transitions_have_typed_refusals() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     intent_mark_dispatched_tx(&mut tx, &missing).await,
                     Err(TruthError::Core(calm_types::error::CoreError::NotFound(_)))
@@ -89,7 +89,7 @@ async fn lifecycle_transitions_have_typed_refusals() {
                 ));
                 tx.rollback().await.unwrap();
                 dispatch(&repo, &job.id).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 conflict(intent_mark_dispatched_tx(&mut tx, &job.id).await);
                 intent_settle_tx(
                     &mut tx,
@@ -145,7 +145,7 @@ async fn executor_settlements_are_durable_from_pending_or_dispatched() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         intent_settle_tx(&mut tx, &job.id, settlement.clone())
                             .await
                             .unwrap();
@@ -289,7 +289,7 @@ async fn job_tuple_and_state_fences() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 intent_settle_tx(&mut tx, &job.id, ExecutorSettlement::Executed)
                     .await
                     .unwrap();
@@ -333,7 +333,7 @@ async fn intent_job_authorization_matrix_is_closed() {
                         event,
                         ..finished(&job)
                     };
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let result = react_tx(&mut tx, &input, 0).await;
                     if allowed {
                         assert!(result.is_ok(), "{result:?}");

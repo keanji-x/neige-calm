@@ -52,7 +52,7 @@ impl SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let ids = sqlx::query(
                         r#"SELECT id
                FROM operations
@@ -112,7 +112,8 @@ impl SqlxOperationRepo {
                     Ok(claimed)
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn claim_operation_for_boot_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
@@ -200,7 +201,9 @@ impl OperationRepo for SqlxOperationRepo {
 
         match inserted {
             Ok(_) => Ok(id),
-            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+            Err(calm_truth::TruthError::Db(sqlx::Error::Database(db_err)))
+                if db_err.is_unique_violation() =>
+            {
                 if let Some(idempotency_key) = key.idempotency_key.as_deref()
                     && let Some(existing) =
                         self.find_by_kind_idempotency(kind, idempotency_key).await?
@@ -311,7 +314,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::PrepareAdvance::ClaimLost);
                     }
@@ -346,7 +349,8 @@ impl OperationRepo for SqlxOperationRepo {
                     Ok(super::PrepareAdvance::Committed(Box::new(next), events))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_phase(
@@ -373,7 +377,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::LeaveWrite::ClaimLost);
                     }
@@ -410,7 +414,8 @@ impl OperationRepo for SqlxOperationRepo {
                         .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_phase_and_tx_output(
@@ -424,7 +429,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let written =
                         write_phase_and_tx_output(&mut tx, PhaseWrite::Claimed(op), &phase, output)
                             .await?;
@@ -438,7 +443,8 @@ impl OperationRepo for SqlxOperationRepo {
                         .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_compensating(
@@ -452,7 +458,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::LeaveWrite::ClaimLost);
                     }
@@ -500,7 +506,8 @@ impl OperationRepo for SqlxOperationRepo {
                         .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn update_compensation_state(
@@ -513,7 +520,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(None);
                     }
@@ -540,7 +547,8 @@ impl OperationRepo for SqlxOperationRepo {
                         .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn settle_claimed(
@@ -554,7 +562,7 @@ impl OperationRepo for SqlxOperationRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::LeaveWrite::ClaimLost);
                     }
@@ -570,7 +578,8 @@ impl OperationRepo for SqlxOperationRepo {
                     Ok(super::LeaveWrite::Applied(result))
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }
 
@@ -611,13 +620,14 @@ pub async fn complete_parked_for_test(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let completion = complete_parked_tx(&mut tx, op_id, outcome).await?;
                 tx.commit().await?;
                 Ok(completion)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 pub(super) async fn fetch_claimed_parked(

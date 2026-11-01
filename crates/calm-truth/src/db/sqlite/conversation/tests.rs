@@ -28,7 +28,7 @@ pub(super) async fn fixture_card_for_provider(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     LEGACY_OWNER_USER_ID,
@@ -138,7 +138,7 @@ async fn canonical_revision_preserves_author_digest_and_erasure_without_body_rec
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let first = insert_message_tx(&mut tx, &card, &author(), body("private body"))
                                 .await
                                 .unwrap();
@@ -207,11 +207,11 @@ async fn canonical_schema_rejects_missing_author_fields_and_implicit_current_rev
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(sqlx::query("INSERT INTO conversation_messages(id,card_id,current_revision,author_kind,created_at_ms)
          VALUES('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',?1,1,'authenticated_human',1)").bind(&card).execute(&mut **tx).await.is_err());
         tx.rollback().await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query(
             "INSERT INTO conversation_messages(id,card_id,current_revision,author_kind,author_user_id,
          created_at_ms)
@@ -235,7 +235,7 @@ async fn canonical_effective_claim_is_unique_by_message_identity_across_revision
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let first = insert_message_tx(&mut tx, &card, &author(), body("one"))
             .await
             .unwrap();
@@ -295,7 +295,7 @@ async fn canonical_presentation_reuses_identity_before_any_native_thread_and_rol
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     history_contract_tx(&mut tx, &card).await.unwrap(),
                     ConversationHistoryContract::Private
@@ -405,7 +405,7 @@ async fn canonical_system_plan_erasure_preserves_original_digest_and_rejects_bod
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let human = insert_message_tx(&mut tx, &card, &author(), body("human private body"))
             .await
             .unwrap();

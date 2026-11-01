@@ -40,7 +40,7 @@ async fn u9_canonical_creator_real_turn_facts() {
         .unwrap();
     let write_db = (flow.fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let facts = crate::harness::turn_input::latest(&mut tx, &flow.card, &flow.worker)
             .await
             .unwrap();
@@ -118,7 +118,7 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let time: i64 = sqlx::query_scalar(
                     "SELECT created_at_ms FROM conversation_turns WHERE id=?1 AND card_id=?2",
                 )

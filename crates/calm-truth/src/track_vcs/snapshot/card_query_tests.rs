@@ -67,7 +67,7 @@ async fn card_visibility_preserves_scoped_announcements_and_inheritance() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (index, card) in cards.iter().enumerate() {
                     assert_eq!(
                         card_in_track_tx(&mut tx, &fx.track.id, card.id.as_str(), &visibility)
@@ -94,20 +94,24 @@ async fn card_visibility_preserves_scoped_announcements_and_inheritance() {
 #[tokio::test]
 async fn card_visibility_history_work_does_not_multiply_by_card_count() {
     let fx = Fixture::new().await;
-    let mut conn = fx.repo.db().read_pool().acquire().await.unwrap();
     // Unpublished rows force the selector to establish absence, rather than stop at an early hit.
     for index in 0..64 {
-        sqlx::query(
-            "INSERT INTO cards
+        fx.repo
+            .db()
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO cards
             (id,track_id,kind,sort,payload,role,created_at,updated_at)
             VALUES(?1,?2,'codex',0,'{}','worker',0,0)",
-        )
-        .bind(format!("unpublished-{index}"))
-        .bind(fx.track.id.as_str())
-        .execute(&mut *conn)
-        .await
-        .unwrap();
+                )
+                .bind(format!("unpublished-{index}"))
+                .bind(fx.track.id.as_str()),
+            )
+            .await
+            .unwrap();
     }
+    let mut conn = fx.repo.db().read_pool().acquire().await.unwrap();
     let measure = async |conn: &mut sqlx::SqliteConnection| {
         let steps = Arc::new(AtomicUsize::new(0));
         let count = steps.clone();
@@ -158,39 +162,41 @@ async fn card_visibility_point_lookup_retains_early_exit() {
     let fx = Fixture::new().await;
 
     {
-
         let measure = async || {
             let fx = &fx;
             let write_db = (fx.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin()
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        let ticks = Arc::new(AtomicUsize::new(0));
+                        let count = ticks.clone();
+                        tx.lock_handle()
+                            .await
+                            .unwrap()
+                            .set_progress_handler(100, move || {
+                                count.fetch_add(1, Ordering::Relaxed);
+                                true
+                            });
+                        let found = card_in_track_tx(
+                            &mut tx,
+                            &fx.track.id,
+                            fx.card.id.as_str(),
+                            &CardVisibility::announced_only(),
+                        )
+                        .await
+                        .unwrap();
+                        tx.lock_handle().await.unwrap().remove_progress_handler();
+                        assert_eq!(found.unwrap().card.id, fx.card.id);
+                        let result = ticks.load(Ordering::Relaxed);
+                        tx.rollback().await.unwrap();
+                        result
+                    })
+                })
                 .await
-                .unwrap();
-            let ticks = Arc::new(AtomicUsize::new(0));
-            let count = ticks.clone();
-            tx.lock_handle()
-                .await
-                .unwrap()
-                .set_progress_handler(100, move || {
-                    count.fetch_add(1, Ordering::Relaxed);
-                    true
-                });
-            let found = card_in_track_tx(
-                &mut tx,
-                &fx.track.id,
-                fx.card.id.as_str(),
-                &CardVisibility::announced_only(),
-            )
-            .await
-            .unwrap();
-            tx.lock_handle().await.unwrap().remove_progress_handler();
-            assert_eq!(found.unwrap().card.id, fx.card.id);
-            let result = ticks.load(Ordering::Relaxed);
-            tx.rollback().await.unwrap();
-            result
-
-        })).await.expect("independent write operation")
-};
+                .expect("independent write operation")
+        };
         let before = measure().await;
         for index in 0..2048 {
             let mut card = fx.card.clone();
@@ -213,7 +219,5 @@ let mut tx = write_session_1.begin()
             after.saturating_sub(before) < 10,
             "one card lookup must stop at its publication, not rebuild later history: {before} -> {after}"
         );
-
-
-}
+    }
 }

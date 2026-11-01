@@ -137,7 +137,7 @@ async fn runtime_by_id_tx_snapshot(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
                 tx.commit().await.unwrap();
                 runtime
@@ -161,7 +161,7 @@ async fn mint_terminal_session(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -204,7 +204,7 @@ async fn mint_codex_session(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_with_codex_create_tx(
                     &mut tx,
                     new_id(),
@@ -355,7 +355,7 @@ async fn session_get_by_active_token_hash_filters_terminal_rows() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (id, state, hash, _) in rows {
                     session_insert_tx(&mut tx, worker_session(id, track.id.clone(), state, hash))
                         .await
@@ -392,7 +392,7 @@ async fn runtime_start_shared_planner_restarts_track_root_on_respawn() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -413,7 +413,7 @@ async fn runtime_start_shared_planner_restarts_track_root_on_respawn() {
                         .unwrap();
                 assert_eq!(root.as_deref(), Some(first.id.as_str()));
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let second = session_supersede_and_start_tx(
                     &mut tx,
                     &first.id,
@@ -452,7 +452,7 @@ async fn runtime_start_terminal_shared_planner_does_not_stamp_track_root() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let failed = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -475,7 +475,7 @@ async fn runtime_start_terminal_shared_planner_does_not_stamp_track_root() {
                 assert_eq!(root, None);
 
                 let live_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let live = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -498,7 +498,7 @@ async fn runtime_start_terminal_shared_planner_does_not_stamp_track_root() {
                 assert_eq!(root.as_deref(), Some(live.id.as_str()));
 
                 let exited_card = make_card_in_track(&repo, track.id.clone(), "codex").await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let exited = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -539,7 +539,7 @@ async fn runtime_start_executor_respawn_leaves_track_root_unchanged() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let root = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -564,7 +564,7 @@ async fn runtime_start_executor_respawn_leaves_track_root_unchanged() {
                 .unwrap();
                 tx.commit().await.unwrap();
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let replacement = session_supersede_and_start_tx(
                     &mut tx,
                     &executor.id,
@@ -602,7 +602,7 @@ async fn runtime_start_links_card_to_worker_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -646,7 +646,7 @@ async fn phase1_reorder_cold_start_no_supersede() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             session_prepare_deferred_planner_tx(&mut tx, &init)
                                 .await
                                 .unwrap();
@@ -686,7 +686,7 @@ async fn runtime_restore_repoints_card_and_root_to_restored_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -785,7 +785,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let old = session_start_runtime_tx(
             &mut tx,
             runtime_init(
@@ -841,7 +841,7 @@ async fn phase1_reorder_hot_start_supersedes_old_one_row() {
             WorkerSessionState::Starting,
         );
         let fresh_placeholder_id = fresh_placeholder_init.id.clone();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_prepare_deferred_planner_tx(&mut tx, &fresh_placeholder_init)
             .await
             .unwrap();
@@ -900,7 +900,7 @@ async fn phase2_supersedes_placeholder_one_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_prepare_deferred_planner_tx(&mut tx, &placeholder_init)
                     .await
                     .unwrap();
@@ -914,7 +914,7 @@ async fn phase2_supersedes_placeholder_one_row() {
                 );
                 real_init.id = placeholder_id.clone();
                 real_init.thread_id = Some("thread-phase2".into());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let real = session_supersede_and_start_tx(&mut tx, &placeholder_id, real_init)
                     .await
                     .unwrap();
@@ -969,7 +969,7 @@ async fn chat_placeholder_refreshes_in_place_on_the_same_card() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, placeholder)
                     .await
                     .unwrap();
@@ -983,7 +983,7 @@ async fn chat_placeholder_refreshes_in_place_on_the_same_card() {
                 );
                 refreshed.id = runtime_id.clone();
                 refreshed.thread_id = Some("chat-thread".into());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, refreshed)
                     .await
                     .expect("same-card chat placeholder refresh must remain authorized");
@@ -1022,7 +1022,7 @@ async fn executor_same_id_cross_card_refresh_is_rejected() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, placeholder)
                     .await
                     .unwrap();
@@ -1035,7 +1035,7 @@ async fn executor_same_id_cross_card_refresh_is_rejected() {
                     WorkerSessionState::Idle,
                 );
                 foreign.id = runtime_id.clone();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = session_start_runtime_tx(&mut tx, foreign)
                     .await
                     .expect_err("should turn red if an executor id can refresh across cards");
@@ -1070,7 +1070,7 @@ async fn runtime_entrances_dual_write_worker_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -1140,7 +1140,7 @@ async fn runtime_tolerant_entrances_dual_write_without_session_matrix() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -1199,7 +1199,7 @@ async fn session_supersede_and_start_tx_mirrors_old_superseded_and_new_starting_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -1257,7 +1257,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -1320,7 +1320,7 @@ async fn stale_harness_observation_cannot_revive_superseded_runtime() {
 
                 let replacement_card = make_card(&repo, "planner").await;
                 let replacement_card_id = replacement_card.id.to_string();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let replaced_old = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -1405,7 +1405,7 @@ async fn session_start_runtime_tx_terminal_persists_active_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1459,7 +1459,7 @@ async fn runtime_complete_for_terminal_exited_path() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1521,7 +1521,7 @@ async fn runtime_complete_for_terminal_failed_path() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1589,7 +1589,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1621,7 +1621,7 @@ async fn runtime_set_status_for_card_noop_when_no_active() {
                 tx.commit().await.unwrap();
 
                 let before = runtime_row_snapshot(&repo, &runtime_id).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_set_status_for_card_tx(
                     &mut tx,
                     card.id.as_ref(),
@@ -1655,7 +1655,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1687,7 +1687,7 @@ async fn runtime_complete_for_card_noop_when_no_active() {
                 tx.commit().await.unwrap();
 
                 let before = runtime_row_snapshot(&repo, &runtime_id).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
                     .await
                     .unwrap();
@@ -1717,7 +1717,7 @@ async fn runtime_card_lifecycle_helpers_mark_running_and_failed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -1790,7 +1790,7 @@ async fn runtime_codex_helper_writes_starting_with_terminal_ref() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term, _token) = card_with_codex_create_tx(
                     &mut tx,
                     new_id(),
@@ -1873,7 +1873,7 @@ async fn worker_session_spawn_op_id_stamped_only_for_worker_mints() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1973,7 +1973,7 @@ async fn session_commit_exit_absorbs_lost_session_race_without_clobber() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_tx(&mut tx, &session_id.0, WorkerSessionState::Exited)
                     .await
                     .unwrap();
@@ -2016,13 +2016,13 @@ async fn session_commit_exit_tx_conflicts_from_terminal_state() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_tx(&mut tx, &session_id.0, WorkerSessionState::Exited)
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = session_commit_exit_tx(
                     &mut tx,
                     &session_id,
@@ -2105,7 +2105,6 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
     let mut handles = Vec::new();
 
     {
-
         for _ in 0..2 {
             let repo = Arc::clone(&repo);
             let card_id = card_id.clone();
@@ -2119,33 +2118,39 @@ async fn ws_unique_active_per_card_blocks_concurrent_double_spawn() {
 
                 let outcome = async {
                     let write_db = (repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin()
+                    write_db
+                        .writer()
+                        .with_writer(|write_session_1| {
+                            Box::pin(async move {
+                                let mut tx = write_session_1
+                                    .begin_immediate()
+                                    .await
+                                    .expect("BEGIN IMMEDIATE must not fail");
+                                let started = session_start_runtime_tx(
+                                    &mut tx,
+                                    runtime_init(
+                                        card_id,
+                                        WorkerSessionKind::CodexCard,
+                                        Some(AgentProvider::Codex),
+                                        WorkerSessionState::Running,
+                                    ),
+                                )
+                                .await;
+                                match started {
+                                    Ok(session) => {
+                                        tx.commit().await.expect("winner commits");
+                                        Ok(session)
+                                    }
+                                    Err(e) => {
+                                        tx.rollback().await.expect("loser rolls back");
+                                        Err(e)
+                                    }
+                                }
+                            })
+                        })
                         .await
-                        .expect("BEGIN IMMEDIATE must not fail");
-                    let started = session_start_runtime_tx(
-                        &mut tx,
-                        runtime_init(
-                            card_id,
-                            WorkerSessionKind::CodexCard,
-                            Some(AgentProvider::Codex),
-                            WorkerSessionState::Running,
-                        ),
-                    )
-                    .await;
-                    match started {
-                        Ok(session) => {
-                            tx.commit().await.expect("winner commits");
-                            Ok(session)
-                        }
-                        Err(e) => {
-                            tx.rollback().await.expect("loser rolls back");
-                            Err(e)
-                        }
-                    }
-
-        })).await.expect("independent write operation")
-}
+                        .expect("independent write operation")
+                }
                 .await;
 
                 in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -2201,9 +2206,7 @@ let mut tx = write_session_1.begin()
             vec![winners[0].id.clone()],
             "the winner's row must be the only active worker session on the card"
         );
-
-
-}
+    }
 }
 
 #[tokio::test]
@@ -2215,7 +2218,7 @@ async fn session_supersede_and_start_tx_atomic() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2269,7 +2272,7 @@ async fn runtime_set_status_superseded_rejected() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2308,7 +2311,7 @@ async fn runtime_set_status_same_running_rejected() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2346,7 +2349,7 @@ async fn runtime_bind_attribution_transitions_pending_to_running() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2397,7 +2400,7 @@ async fn session_start_runtime_tx_codex_empty_is_turn_pending() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2433,7 +2436,7 @@ async fn runtime_pending_drop_completes_failed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2472,7 +2475,7 @@ async fn session_start_runtime_tx_claude_records_session_when_present() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = card_with_claude_create_tx(
                     &mut tx,
                     new_id(),
@@ -2570,7 +2573,7 @@ async fn runtime_handle_state_json_roundtrip() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -2597,7 +2600,7 @@ async fn session_set_handle_state_tx_writes_active_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2652,7 +2655,7 @@ async fn session_set_handle_state_tx_noops_for_superseded_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
                 let _replacement = session_supersede_and_start_tx(
                     &mut tx,
@@ -2707,7 +2710,7 @@ async fn session_start_runtime_tx_shared_planner_thread_present_running() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -2766,7 +2769,7 @@ async fn projection_overwrites_stale_legacy_keys_from_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -2824,7 +2827,7 @@ async fn projection_prefers_active_runtime_over_failed_no_thread() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, failed).await.unwrap();
                 session_start_runtime_tx(&mut tx, active).await.unwrap();
                 tx.commit().await.unwrap();
@@ -2878,7 +2881,7 @@ async fn runtime_shared_planner_reset_supersedes_active_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = session_start_runtime_tx(&mut tx, first_init).await.unwrap();
                 let second = session_supersede_and_start_tx(&mut tx, &first.id, second_init)
                     .await
@@ -2926,7 +2929,7 @@ async fn session_start_runtime_tx_shared_planner_absent_turn_pending() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2957,7 +2960,7 @@ async fn session_complete_tx_marks_completed_at() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -2996,7 +2999,7 @@ async fn runtime_get_active_for_card_returns_none_when_only_superseded() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -3060,7 +3063,7 @@ async fn runtime_get_active_by_thread_finds_active() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -3093,7 +3096,7 @@ async fn runtime_get_active_by_thread_skips_terminal_status() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(&mut tx, init).await.unwrap();
                 session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
                     .await
@@ -3156,7 +3159,7 @@ async fn runtime_active_shared_thread_attribution_returns_shared_and_codex_with_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, shared_init)
                     .await
                     .unwrap();
@@ -3199,7 +3202,7 @@ async fn runtimes_active_for_kind_filters() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let active_shared_runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -3277,7 +3280,7 @@ async fn runtimes_active_for_kind_codex_kind_excludes_placeholder() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_prepare_deferred_planner_tx(&mut tx, &placeholder)
                     .await
                     .unwrap();
@@ -3336,7 +3339,7 @@ async fn harvest_reads_retired_unstamped_rows_and_stamps_every_row_it_read() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let started = session_start_runtime_tx(&mut tx, init).await.unwrap();
                     if terminal == WorkerSessionState::Failed {
                         session_fail_if_active_runtime_tx(&mut tx, &started.id)
@@ -3551,7 +3554,7 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
     );
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_prepare_deferred_planner_tx(&mut tx, &init)
             .await
             .unwrap();
@@ -3568,7 +3571,7 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
         );
 
         init.now_ms = now_ms();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_prepare_deferred_planner_tx(&mut tx, &init)
             .await
             .unwrap();
@@ -3581,7 +3584,7 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
         );
 
         let other = make_card(&repo, "codex").await;
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let predecessor = session_start_runtime_tx(
             &mut tx,
             runtime_init(
@@ -3601,7 +3604,7 @@ async fn re_arming_a_row_clears_the_harvest_marker() {
             .unwrap();
         tx.commit().await.unwrap();
 
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_restore_from_superseded_runtime_tx(&mut tx, &predecessor.id, WorkerSessionState::Idle)
             .await
             .unwrap();

@@ -217,7 +217,7 @@ pub(crate) async fn admit_action(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 // Claim plus create-if-absent serialize cleanup with a newer claimant's admission.
                 sql::insert(&mut tx, &op.id, KEY, &encoded(&record)?).await?;
@@ -229,7 +229,8 @@ pub(crate) async fn admit_action(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 #[derive(Debug)]
@@ -287,7 +288,7 @@ pub(crate) async fn admit_probe(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 if calm_truth::db::sqlite::track_find_tx(&mut tx, &frozen.track_id)
                     .await?
@@ -327,7 +328,8 @@ pub(crate) async fn admit_probe(
                 Ok(ProbeAdmission::Admitted)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 async fn transition(
     ctx: &SpawnCtx,
@@ -342,7 +344,7 @@ async fn transition(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(old)?, &encoded(new)?).await?;
                 if let Some(id) = stop {
@@ -358,7 +360,8 @@ async fn transition(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 pub(crate) async fn stop(
     ctx: &SpawnCtx,

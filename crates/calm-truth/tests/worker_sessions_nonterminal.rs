@@ -88,7 +88,7 @@ async fn sessions_nonterminal_matches_worker_session_state_terminal_set() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 for (idx, state) in states.into_iter().enumerate() {
                     session_insert_tx(&mut tx, session(state, track_id.clone(), idx as i64 + 1))
                         .await
@@ -130,7 +130,7 @@ async fn session_set_liveness_preserves_updated_at_ms() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 session_insert_tx(&mut tx, seeded)
                     .await
                     .expect("insert session");
@@ -174,7 +174,7 @@ async fn session_set_liveness_noops_after_terminal_transition() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 session_insert_tx(&mut tx, seeded)
                     .await
                     .expect("insert session");
@@ -188,7 +188,7 @@ async fn session_set_liveness_noops_after_terminal_transition() {
                 assert_eq!(active_write.liveness, LivenessTag::Idle);
                 assert_eq!(active_write.liveness_probed_at_ms, Some(active_probe_ms));
 
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let terminal =
                     session_state_transition_tx(&mut tx, &id, WorkerSessionState::Exited)
                         .await

@@ -126,7 +126,7 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let pruned = track_vcs::prune_track_history_tx(&mut tx, track_id, keep).await?;
                     if dry_run {
                         tx.rollback().await?;
@@ -136,7 +136,8 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
                     Ok(pruned)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn sweep_unreferenced_objects(&self) -> Result<u64> {

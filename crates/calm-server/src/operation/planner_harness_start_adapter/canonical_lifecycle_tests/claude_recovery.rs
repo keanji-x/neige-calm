@@ -252,26 +252,40 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
                 .shutdown_and_remove(&fx.worker)
                 .await
                 .unwrap();
-            let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-            let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
-                &mut tx,
-                fx.card.as_str(),
-                &fx.worker,
-            )
-            .await
-            .unwrap();
-            crate::conversation_inputs::accept_human_tx(
-                &mut tx,
-                &source.current_principal().unwrap(),
-                &mut carrier,
-                HumanPayload {
-                    text: "second original input".into(),
-                    bound_attachments: vec![],
-                },
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
+            {
+                let write_db = (fx.repo.db()).clone();
+                let fx = &fx;
+                let source = &source;
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            let mut carrier =
+                                crate::db::sqlite::conversation::current_input_carrier_tx(
+                                    &mut tx,
+                                    fx.card.as_str(),
+                                    &fx.worker,
+                                )
+                                .await
+                                .unwrap();
+                            crate::conversation_inputs::accept_human_tx(
+                                &mut tx,
+                                &source.current_principal().unwrap(),
+                                &mut carrier,
+                                HumanPayload {
+                                    text: "second original input".into(),
+                                    bound_attachments: vec![],
+                                },
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
             std::fs::write(fx._dir.path().join("scenario"), "hold-input-replay").unwrap();
         } else {
             let scenario = if crossing { "undecodable" } else { "stall" };
@@ -350,15 +364,28 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
                 .unwrap();
         }
         // Lose only the END checkpoint, as at a host crash after process settlement.
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        session_set_handle_state_tx(
-            &mut tx,
-            &fx.worker,
-            Some(serde_json::to_value(&saved).unwrap()),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
+        {
+            let write_db = (fx.repo.db()).clone();
+            let fx = &fx;
+            let saved = &saved;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        session_set_handle_state_tx(
+                            &mut tx,
+                            &fx.worker,
+                            Some(serde_json::to_value(&saved).unwrap()),
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         let reopened = SqlxRepo::open(&format!(
             "sqlite://{}",
             fx._dir.path().join("canonical.sqlite").display()
@@ -562,7 +589,11 @@ async fn canonical_claude_recovery_workspace_rechecks_membership_owner_and_carri
                     auth.sessions.remove(&token).unwrap();
                 }
                 Change::Membership => {
-                    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
+                    {
+                        let write_db = (fx.repo.db()).clone();
+                        let fx = &fx;
+                        write_db.writer().with_writer(|write_session| Box::pin(async move {
+let mut tx = write_session.begin_immediate().await.unwrap();
                     let area = crate::db::sqlite::conversation::conversation_area_tx(
                         &mut tx,
                         fx.card.as_str(),
@@ -590,16 +621,30 @@ async fn canonical_claude_recovery_workspace_rechecks_membership_owner_and_carri
                         .await
                         .unwrap();
                     tx.commit().await.unwrap();
+})).await.expect("independent write operation")
+                    };
                 }
                 Change::OperationOwner => {
                     (fx.repo.db()).writer().execute(sqlx::query("UPDATE operations SET lease_owner='replacement' WHERE phase='app_server_interact'")).await.unwrap();
                 }
                 Change::Carrier => {
-                    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-                    session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
-                        .await
-                        .unwrap();
-                    tx.commit().await.unwrap();
+                    {
+                        let write_db = (fx.repo.db()).clone();
+                        let fx = &fx;
+                        write_db
+                            .writer()
+                            .with_writer(|write_session| {
+                                Box::pin(async move {
+                                    let mut tx = write_session.begin_immediate().await.unwrap();
+                                    session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
+                                        .await
+                                        .unwrap();
+                                    tx.commit().await.unwrap();
+                                })
+                            })
+                            .await
+                            .expect("independent write operation")
+                    };
                 }
             }
             pause.release.notify_one();
@@ -706,7 +751,7 @@ async fn canonical_claude_compact_route_requires_real_human_and_retained_recover
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
                     &mut tx,
                     fx.card.as_str(),

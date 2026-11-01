@@ -346,17 +346,20 @@ pub(super) async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, &op).await.unwrap()
                 else {
                     panic!("stable preparation became stale");
                 };
                 tx.rollback().await.unwrap();
                 // The same persisted Pending op is retried by the real scheduler; only its lease expires.
-                sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
-                    .bind(calm_server::model::now_ms() - 1)
-                    .bind(&op_id)
-                    .execute(&pool)
+                (fx.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+                            .bind(calm_server::model::now_ms() - 1)
+                            .bind(&op_id),
+                    )
                     .await
                     .unwrap();
                 output.data["target"]["kind"] == "reused"

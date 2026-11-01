@@ -17,7 +17,11 @@ impl Fixture {
         )
         .await
         .unwrap();
-        { let query = sqlx::raw_sql(sql); sqlx::Executor::execute(&mut c, query).await }.unwrap();
+        {
+            let query = sqlx::raw_sql(sql);
+            sqlx::Executor::execute(&mut c, query).await
+        }
+        .unwrap();
         c.close().await.unwrap();
         Self { dir, path }
     }

@@ -122,14 +122,15 @@ impl RepoRead for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let areas =
                         super::area_membership::areas_list_for_member(&mut tx, user_id).await?;
                     tx.commit().await?;
                     Ok(areas)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn area_require_access(
@@ -143,7 +144,7 @@ impl RepoRead for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let area = super::area_membership::area_require_access(
                         &mut tx, area_id, user_id, access,
                     )
@@ -152,7 +153,8 @@ impl RepoRead for SqlxRepo {
                     Ok(area)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn harness_latest_terminal(

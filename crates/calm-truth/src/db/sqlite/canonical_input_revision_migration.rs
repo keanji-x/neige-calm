@@ -6,7 +6,7 @@ use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 pub(super) async fn migrate(db: &super::SqliteDb) -> Result<()> {
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| { Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         // No V1 queue is loaded or adopted. Every retained canonical carrier state,
         // including superseded and failed, is converted in the same transaction.
         let rows: Vec<(String, String)> = sqlx::query_as(

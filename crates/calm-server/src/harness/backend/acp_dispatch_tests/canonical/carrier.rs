@@ -16,27 +16,41 @@ async fn canonical_acp_cancel_before_publication_refuses_park_until_cleanup_fini
             .await
             .unwrap();
         // Revoke must acquire this real writer before it can stop the native process.
-        let tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        dispatch.abort();
-        match dispatch.await {
-            Err(error) => assert!(error.is_cancelled()),
-            Ok(_) => panic!("dispatch survived cancellation"),
-        }
-        assert!(
-            fx.session
-                .active_turn_id_for_thread(&fx.owner.thread)
-                .is_none()
-        );
-        let acquired = fx.session.carrier_idle_for_detach();
-        let acquisition_refused = acquired.is_none();
-        // If acquisition incorrectly succeeds, exercise the actual guard recheck too.
-        let recheck_refused = match acquired {
-            Some(park) => {
-                !crate::harness::backend::CarrierIdleGuard::Acp(&fx.session, park).recheck()
-            }
-            None => !fx.session.carrier_idle(), // Same predicate used by ACP guard recheck.
+        let (acquisition_refused, recheck_refused) = {
+            let write_db = (fx.owner.repo.db()).clone();
+            let fx = &fx;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let tx = write_session.begin_immediate().await.unwrap();
+                        dispatch.abort();
+                        match dispatch.await {
+                            Err(error) => assert!(error.is_cancelled()),
+                            Ok(_) => panic!("dispatch survived cancellation"),
+                        }
+                        assert!(
+                            fx.session
+                                .active_turn_id_for_thread(&fx.owner.thread)
+                                .is_none()
+                        );
+                        let acquired = fx.session.carrier_idle_for_detach();
+                        let acquisition_refused = acquired.is_none();
+                        // If acquisition incorrectly succeeds, exercise the actual guard recheck too.
+                        let recheck_refused = match acquired {
+                            Some(park) => {
+                                !crate::harness::backend::CarrierIdleGuard::Acp(&fx.session, park)
+                                    .recheck()
+                            }
+                            None => !fx.session.carrier_idle(), // Same predicate used by ACP guard recheck.
+                        };
+                        tx.rollback().await.unwrap();
+                        (acquisition_refused, recheck_refused)
+                    })
+                })
+                .await
+                .expect("independent write operation")
         };
-        tx.rollback().await.unwrap();
         // Observe completion without closing the session or joining away the retained slot.
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
@@ -70,7 +84,7 @@ async fn canonical_acp_parked_issue_refuses_before_sql_without_native_effects() 
     let fx = Fixture::new("reply").await;
     let write_db = (fx.owner.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let identity = submission_identity_tx(&mut tx, &fx.submission)
             .await
             .unwrap();
@@ -218,7 +232,7 @@ async fn canonical_acp_end_is_fact_on_failed_current_carrier_and_refuses_retirem
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = crate::harness::input_dispatch::execution_target_tx(
                     &mut tx,
                     &fx.owner.card,
@@ -243,7 +257,7 @@ async fn canonical_acp_end_is_fact_on_failed_current_carrier_and_refuses_retirem
                 .await
                 .unwrap();
                 let park = fx.session.carrier_idle_for_detach().unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.owner.worker)
                     .await
                     .unwrap();

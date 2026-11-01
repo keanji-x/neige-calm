@@ -632,7 +632,7 @@ async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_b
         let roles = boot.state.card_role_cache.clone();
         let write_db = (boot.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             calm_server::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
                 track_id:track.clone().into(),title:None,kind:"codex".into(),sort:None,
                 payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),

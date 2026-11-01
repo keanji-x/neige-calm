@@ -150,7 +150,7 @@ async fn migration_preserves_sessions_and_reads_fail_closed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let healthy = applied(
                     admit(
                         &mut tx,
@@ -169,7 +169,7 @@ async fn migration_preserves_sessions_and_reads_fail_closed() {
                 assert_eq!(inventory[0].1.as_ref().unwrap(), &healthy);
                 assert_eq!(inventory[1].0, "worker");
                 assert!(inventory[1].1.is_err());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     admission(&mut tx, "must-not-adopt").await,
                     Cas::LostOwnership
@@ -203,7 +203,7 @@ async fn cas_transitions_compare_the_whole_record_and_preserve_other_fields() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let held = applied(admission(&mut tx, "first").await);
                 assert_eq!(admission(&mut tx, "second").await, Cas::LostOwnership);
                 assert_eq!(load(&mut **tx, "worker").await.unwrap(), Some(held.clone()));
@@ -324,22 +324,27 @@ async fn concurrent_admission_has_exactly_one_winner() {
                     let db = db.clone();
                     async move {
                         let write_db = (db).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                        let result = admit(
-                            &mut tx,
-                            "worker",
-                            id.into(),
-                            Purpose::Turn { turn_id: id.into() },
-                            InitialRelease::NotRequired,
-                        )
-                        .await
-                        .unwrap();
-                        tx.commit().await.unwrap();
-                        result
-
-        })).await.expect("independent write operation")
-}
+                        write_db
+                            .writer()
+                            .with_writer(|write_session_1| {
+                                Box::pin(async move {
+                                    let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                    let result = admit(
+                                        &mut tx,
+                                        "worker",
+                                        id.into(),
+                                        Purpose::Turn { turn_id: id.into() },
+                                        InitialRelease::NotRequired,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    tx.commit().await.unwrap();
+                                    result
+                                })
+                            })
+                            .await
+                            .expect("independent write operation")
+                    }
                 };
                 let (a, b) = tokio::join!(race("a"), race("b"));
                 let winner = match (a, b) {
@@ -360,7 +365,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                     ))
                     .await
                     .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     clear_on_completion(&mut tx, "worker", &winner)
                         .await
@@ -383,7 +388,7 @@ async fn stale_completion_cannot_clear_a_different_execution() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = applied(admission(&mut tx, "old").await);
                 applied(clear_on_completion(&mut tx, "worker", &old).await.unwrap());
                 let new = applied(admission(&mut tx, "new").await);
@@ -411,7 +416,7 @@ async fn provider_execution_sweep_inventory_finds_orphans_including_settled() {
         .unwrap();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let consumer = "consumer'with-quote";
         for (id, session, settled, retired, selected) in [
             (
@@ -608,12 +613,15 @@ async fn provider_execution_column_decode_errors_are_isolated() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let healthy = applied(admission(&mut tx, "healthy").await);
-                { let query = sqlx::raw_sql(
-                    "INSERT INTO worker_sessions(id, provider_execution_json, state) VALUES
+                {
+                    let query = sqlx::raw_sql(
+                        "INSERT INTO worker_sessions(id, provider_execution_json, state) VALUES
         ('blob', x'FF', 'idle'), ('text', CAST(x'FF' AS TEXT), 'idle');",
-                ); sqlx::Executor::execute(&mut **tx, query).await }
+                    );
+                    sqlx::Executor::execute(&mut **tx, query).await
+                }
                 .unwrap();
                 tx.commit().await.unwrap();
                 let inventory = list(db.read_pool()).await.unwrap();
@@ -700,7 +708,7 @@ async fn c4_admission_refuses_terminal_bound_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query(
                     "UPDATE worker_sessions SET terminal_run_id='terminal' WHERE id='worker'",
                 )
@@ -734,7 +742,7 @@ async fn claim_session_comes_from_its_row_through_admit_load_list_and_replace() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let claim = applied(admission(&mut tx, "exec").await);
                 assert_eq!(claim.session(), "worker");
                 let next = applied(advance_release(&mut tx, "worker", &claim, 7).await.unwrap());

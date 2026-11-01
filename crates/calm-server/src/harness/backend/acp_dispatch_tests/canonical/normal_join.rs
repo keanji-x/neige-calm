@@ -64,7 +64,7 @@ async fn canonical_acp_unchanged_normal_join_and_kept_cleanup_do_not_need_writer
                             .await;
                         assert!(fx.backend.settle_kept_execution().await.unwrap().is_some());
                     }
-                    let writer = write_session.begin().await.unwrap();
+                    let writer = write_session.begin_immediate().await.unwrap();
                     let result = tokio::time::timeout(
                         Duration::from_millis(250),
                         fx.backend.settle_kept_execution(),

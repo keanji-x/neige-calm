@@ -77,7 +77,7 @@ impl Fixture {
             .unwrap();
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let card=card_create_with_id_tx(&mut tx,new_id(),NewCard {
                 track_id:track.id.clone(),kind:"codex".into(),title:None,sort:None,
                 payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
@@ -250,7 +250,7 @@ async fn accepted_canonical_card_cannot_restart_as_legacy_after_failure() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
                     .await
                     .unwrap();
@@ -343,7 +343,7 @@ async fn retained_down_preserves_saveable_original_carrier_and_has_no_native_mar
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
                     &mut tx,
                     fx.card.as_str(),
@@ -407,7 +407,7 @@ async fn retained_live_retry_uses_original_carrier_and_actual_native_start_once(
     assert!(wake(&fx, source.clone()).await.is_err());
     let write_db = (fx.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = crate::db::sqlite::conversation::current_input_content_carrier_tx(
             &mut tx,
             fx.card.as_str(),
@@ -602,7 +602,7 @@ async fn failed_canonical_current_carrier_can_accept_content_but_cannot_claim() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         session_fail_if_active_runtime_tx(&mut tx, &fx.worker)
                             .await
                             .unwrap();

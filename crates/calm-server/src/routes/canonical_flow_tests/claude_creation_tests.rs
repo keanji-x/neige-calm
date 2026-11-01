@@ -114,7 +114,7 @@ async fn canonical_claude_creation_key_replay_preserves_original_ack_and_source(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             use crate::db::sqlite::conversation::*;
                             let mut carrier = current_input_carrier_tx(&mut tx, &card, &origin)
                                 .await
@@ -256,7 +256,7 @@ async fn canonical_claude_creation_shared_member_acceptance_is_not_execution_gra
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             crate::db::sqlite::area_membership::application_user_register(
                                 &mut tx, "alice", "Alice",
                             )

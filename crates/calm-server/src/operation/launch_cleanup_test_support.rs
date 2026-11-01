@@ -170,7 +170,7 @@ pub(crate) async fn claimed_task(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 task_claim_pending_tx(&mut tx, &pending.id, 1, &closure.refs, false)
                     .await
                     .unwrap();
@@ -297,7 +297,7 @@ pub(crate) enum NegativeFault {
 /// This proxy does not reproduce the supervisor's launch policy.
 pub(crate) async fn negative_ack_proxy(
     upstream: &Path,
-    pool: sqlx::SqlitePool,
+    pool: calm_truth::db::sqlite::SqliteDb,
     fault: NegativeFault,
 ) -> AckProxy {
     let dir = calm_test_sockets::socket_dir("negative");
@@ -336,7 +336,7 @@ pub(crate) async fn negative_ack_proxy(
                         NegativeFault::PidConflict => Some("UPDATE terminals SET pid=2147483647 WHERE id=?1"),
                         _ => None,
                     };
-                    if let Some(sql) = sql { sqlx::query(sql).bind(terminal_id).execute(&pool).await.unwrap(); }
+                    if let Some(sql) = sql { pool.writer().execute(sqlx::query(sql).bind(terminal_id)).await.unwrap(); }
                     match fault {
                         NegativeFault::Disconnect => return,
                         NegativeFault::Unknown => {

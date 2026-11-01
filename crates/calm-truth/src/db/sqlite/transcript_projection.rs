@@ -76,7 +76,7 @@ pub(super) async fn restore(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await?;
+                            let mut tx = write_session.begin_immediate().await?;
                             let rows: Vec<TranscriptRow> = sqlx::query_as(concat!(
                     "SELECT id,turn_id,item_uuid,item_type,method,params,input_segments FROM harness_items ",
                     "WHERE worker_session_id=?1 AND card_id=?2 AND thread_id=?3 AND turn_id=?4 ORDER BY id"

@@ -274,7 +274,7 @@ async fn canonical_keep_without_turn_requires_exact_settled_activity_for_next_in
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
                     .await
                     .unwrap();

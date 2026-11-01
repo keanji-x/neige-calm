@@ -112,7 +112,7 @@ async fn delivery_message_is_the_stored_worker_message() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = delivery_by_id_tx(&mut tx, &inserted.delivery_id)
                     .await
                     .unwrap()
@@ -190,7 +190,7 @@ async fn commit_message_is_completed_only_and_immutable() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let refused = insert_initial_delivery_tx(
                                 &mut tx,
                                 "attempt-failed",
@@ -241,7 +241,7 @@ async fn commit_message_is_completed_only_and_immutable() {
                             let failed_row = fx
                                 .insert_delivery_with("attempt-failed-settle", worker("failed settle"))
                                 .await;
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let candidate = fx.candidate_for(&candidate_row, &"c".repeat(40));
                             assert_eq!(
                                 settle_candidate_tx(
@@ -306,13 +306,21 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
 #[tokio::test]
 async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
     let db = SqliteDb::connect("sqlite::memory:").await.unwrap();
-    let pool = db.read_pool().clone();
-    migrator_through(140)
-        .run(&pool)
-        .await
-        .expect("apply migrations through 0140 (4140 production)");
-    { let query = sqlx::raw_sql(
-        "INSERT INTO areas (id, name, color, sort, created_at, updated_at) \
+    {
+        let migrator = migrator_through(140);
+        db.writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                })
+            })
+            .await
+            .unwrap()
+    }
+    .expect("apply migrations through 0140 (4140 production)");
+    {
+        let query = sqlx::raw_sql(
+            "INSERT INTO areas (id, name, color, sort, created_at, updated_at) \
            VALUES ('area-4140', 'a', '#000', 0, 1, 1); \
          INSERT INTO tracks (id, area_id, title, sort, created_at, updated_at) \
            VALUES ('track-4140', 'area-4140', 't', 0, 1, 1); \
@@ -326,12 +334,19 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
            lease_id, ordinal, operation_key, forge_idempotency_key, outcome, created_at_ms) \
            VALUES ('dlv-4140', 'track-4140', 'attempt-4140', 'card-4140', 'lease-4140', 1, \
            'op-key-4140', 'idem-4140', 'completed', 1);",
-    ); sqlx::Executor::execute(&pool, query).await }
+        );
+        db.writer().execute(query).await
+    }
     .expect("seed a 4140-shaped unsettled delivery");
 
-    calm_truth::MIGRATOR
-        .run(&pool)
+    db.writer()
+        .autocommit(|connection| {
+            Box::pin(async move {
+                Ok::<_, sqlx::Error>(calm_truth::MIGRATOR.run_direct(&mut **connection).await)
+            })
+        })
         .await
+        .unwrap()
         .expect("upgrade to head");
 
     let write_db = (db).clone();
@@ -339,7 +354,7 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let row = delivery_by_id_tx(&mut tx, "dlv-4140")
                     .await
                     .unwrap()

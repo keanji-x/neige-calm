@@ -14,7 +14,7 @@ pub(crate) async fn database_except(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let tables: Vec<String> = sqlx::query_scalar(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
                 )

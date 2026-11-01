@@ -78,7 +78,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
         .with_writer(|write_session| {
             Box::pin(async move {
                 let replacement = {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Exited)
                         .await
                         .unwrap();

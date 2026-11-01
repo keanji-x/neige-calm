@@ -140,7 +140,7 @@ async fn child_track_handback_fails_parent_leaves_child_open_and_fences_pending_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, "left", 2, &[], false)
                         .await
@@ -217,7 +217,7 @@ async fn child_track_claim_requires_live_parent_binding() {
                             .await
                             .unwrap();
                     }
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let changed =
                         calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, id, 2, &[], false)
                             .await
@@ -420,22 +420,27 @@ async fn child_track_handback_and_claim_serialize_at_writer() {
                 let claim = async {
                     // Production's claim primitive under the same IMMEDIATE writer fence as scheduler dispatch.
                     let write_db = (db).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                    let changed = calm_truth::db::sqlite::task_claim_pending_tx(
-                        &mut tx,
-                        "race-work",
-                        2,
-                        &[],
-                        false,
-                    )
-                    .await
-                    .unwrap();
-                    tx.commit().await.unwrap();
-                    changed
-
-        })).await.expect("independent write operation")
-};
+                    write_db
+                        .writer()
+                        .with_writer(|write_session_1| {
+                            Box::pin(async move {
+                                let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                let changed = calm_truth::db::sqlite::task_claim_pending_tx(
+                                    &mut tx,
+                                    "race-work",
+                                    2,
+                                    &[],
+                                    false,
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                changed
+                            })
+                        })
+                        .await
+                        .expect("independent write operation")
+                };
                 let (handback, changed) = tokio::join!(
                     call_tool(
                         &boot,
@@ -472,7 +477,7 @@ let mut tx = write_session_1.begin().await.unwrap();
                     }
                 }
                 insert_task(&boot, "race-after", "race-after", "pending", None).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     calm_truth::db::sqlite::task_claim_pending_tx(
                         &mut tx,

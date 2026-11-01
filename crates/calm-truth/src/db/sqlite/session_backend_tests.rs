@@ -70,7 +70,7 @@ async fn bind(repo: &SqlxRepo, session: &str, backend: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 insert_tx(&mut tx, session, "codex", backend).await.unwrap();
                 tx.commit().await.unwrap();
             })
@@ -147,7 +147,7 @@ async fn agent_backend_binding_requires_matching_provider_and_no_thread() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(insert_tx(&mut tx, "a", "codex", "other").await.is_err());
                 assert!(insert_tx(&mut tx, "b", "claude", "other").await.is_err());
                 assert!(
@@ -225,7 +225,7 @@ async fn agent_backend_thread_cannot_cross_bound_or_implicit_default() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     live_bound_counts_tx(&mut tx, "codex").await.unwrap(),
                     vec![("other".into(), 2)]

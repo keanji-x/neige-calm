@@ -34,7 +34,7 @@ async fn persist(fx: &Fx, value: Value) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     session_set_handle_state_tx(
                         &mut tx,

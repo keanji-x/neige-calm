@@ -49,7 +49,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     async fn receipt(
                         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
                         track: &str,

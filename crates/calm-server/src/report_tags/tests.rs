@@ -66,13 +66,14 @@ async fn apply(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let applied = store::apply_tx(&mut tx, track_id, &tags(add), &tags(remove)).await?;
                 tx.commit().await.unwrap();
                 Ok(applied)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn report_updated_at(repo: &SqlxRepo, track_id: &str) -> i64 {

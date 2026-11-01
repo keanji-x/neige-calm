@@ -113,7 +113,7 @@ impl Harness {
         repo.seed_track_area_cache(&areas).await.unwrap();
         let write_db = (sql.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let (card_id, session_id) = (new_id(), new_id());
             card_create_with_id_tx(
                 &mut tx,

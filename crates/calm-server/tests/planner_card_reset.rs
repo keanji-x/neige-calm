@@ -71,7 +71,7 @@ async fn runtime_by_id_tx_snapshot(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
                 tx.commit().await.unwrap();
                 runtime
@@ -499,7 +499,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -637,7 +637,7 @@ async fn seed_live_planner_harness(boot: &Boot) -> (Card, String, PlannerHarness
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -727,7 +727,7 @@ async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, PlannerHarn
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -841,7 +841,7 @@ async fn seed_inactive_planner_runtime(boot: &Boot, card: &Card) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1122,22 +1122,35 @@ async fn send_planner_input_track_missing_returns_404() {
     let (mut card, runtime_id, harness) = seed_live_planner_harness(&boot).await;
     let missing_track_id = format!("missing-track-{}", new_id());
 
-    let mut conn = boot.repo.pool().acquire().await.unwrap();
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
-        .bind(&missing_track_id)
-        .bind(card.id.as_str())
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    drop(conn);
+    {
+        let write_db = (boot.repo.db()).clone();
+        let card = &card;
+        let missing_track_id = &missing_track_id;
+        write_db
+            .writer()
+            .autocommit(|conn| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA foreign_keys = OFF")
+                        .execute(&mut **conn)
+                        .await
+                        .unwrap();
+                    sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
+                        .bind(&missing_track_id)
+                        .bind(card.id.as_str())
+                        .execute(&mut **conn)
+                        .await
+                        .unwrap();
+                    sqlx::query("PRAGMA foreign_keys = ON")
+                        .execute(&mut **conn)
+                        .await
+                        .unwrap();
+
+                    Ok::<_, sqlx::Error>(())
+                })
+            })
+            .await
+            .unwrap()
+    };
     card.track_id = TrackId::from(missing_track_id);
 
     let (status, body) = post_planner_input(
@@ -1438,7 +1451,7 @@ async fn seed_planner_runtime_row_with_status(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -2147,7 +2160,7 @@ async fn reset_planner_card_restarts_terminal_less_harness_card() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -2254,7 +2267,7 @@ async fn assert_corrupt_dormant_snapshot_reset(schema_version: u32, recoverable:
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -2389,7 +2402,7 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
     snapshot.last_thread_id = Some(thread_id.clone());
     let write_db = (boot.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {
@@ -2613,7 +2626,7 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -2825,7 +2838,7 @@ async fn reset_planner_card_failure_keeps_old_runtime_when_shared_daemon_down() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

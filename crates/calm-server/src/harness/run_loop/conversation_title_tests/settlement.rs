@@ -36,7 +36,7 @@ async fn conversation_title_result_missing_row_keeps_its_owner() {
     // actual accepted result or remove its discoverable input owner.
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         crate::db::sqlite::session_delete_tx(&mut tx, &f.harness.inner.worker_session_id)
@@ -228,7 +228,7 @@ async fn conversation_title_owner_release_cancelled_shutdown_retains_quiesce_ret
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut blocker = write_session.begin().await.unwrap();
+                let mut blocker = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
                     .execute(&mut **blocker)
                     .await

@@ -228,7 +228,7 @@ async fn owner_with_plan(
         .unwrap();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let track = crate::db::sqlite::track_create_tx(
             &mut tx,
             NewTrack {

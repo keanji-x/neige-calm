@@ -101,7 +101,7 @@ pub(super) async fn record(params: &SessionParams, receipt: &AcpSubmission) -> R
         .ok_or(CalmError::ExecutionUnavailable)?)
     .clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
         .await?;
         let Some(evidence) = evidence_tx(&mut tx, params, receipt).await? else {
             return Ok(());
@@ -142,7 +142,7 @@ impl AcpPlannerSession {
             .ok_or(CalmError::ExecutionUnavailable)?;
         let write_db = (db).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             let Some((receipt, association)) = super::recovery::canonical_receipt_tx(
                 &mut tx,
                 &params.card_id,
@@ -173,7 +173,7 @@ impl AcpPlannerSession {
             )
             .await?;
             // Recheck the exact witness and current association after fallible cleanup.
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             if evidence_tx(&mut tx, params, &receipt).await?.as_ref() != Some(&expected) {
                 return Err(CalmError::Conflict(
                     "ACP normal join association changed".into(),

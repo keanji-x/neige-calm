@@ -148,7 +148,7 @@ async fn supersede_both_doors_roll_back_with_session_and_compensation_requires_r
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     if tolerant {
                         session_mark_superseded_runtime_tx(&mut tx, &session)
                             .await
@@ -175,7 +175,7 @@ async fn supersede_both_doors_roll_back_with_session_and_compensation_requires_r
                         .unwrap(),
                         before
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     if tolerant {
                         session_mark_superseded_runtime_tx(&mut tx, &session)
                             .await
@@ -192,7 +192,7 @@ async fn supersede_both_doors_roll_back_with_session_and_compensation_requires_r
                             .is_err(),
                         "superseded identity cannot read to regain authority"
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     session_restore_from_superseded_runtime_tx(
                         &mut tx,
                         &session,
@@ -250,7 +250,7 @@ async fn transactional_failure_rolls_back_report_tasks_events_and_history() {
         let mut receiver = b.ctx.events.subscribe();
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                     .await
                     .unwrap();
                 let trigger = match failure {
@@ -338,7 +338,7 @@ async fn deletion_cascades_for_session_report_track_and_area() {
         let pool = b.repo.sqlite_db().unwrap();
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             match target {
@@ -475,7 +475,7 @@ async fn read_save_failure_does_not_return_success_or_replace_knowledge() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query(
                     "CREATE TRIGGER reject_read BEFORE INSERT ON report_read_ledger_blocks
          BEGIN SELECT RAISE(ABORT, 'read ledger failure'); END",
@@ -514,7 +514,7 @@ async fn corrupt_history_ref_is_an_error_instead_of_never_read() {
     let pool = b.repo.sqlite_db().unwrap();
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         sqlx::query("UPDATE report_read_ledger_blocks SET history_ref='{}' WHERE worker_session_id=?")

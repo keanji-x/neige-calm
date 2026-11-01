@@ -6,7 +6,7 @@ async fn receipt_rejects_contradictory_original_acceptance() {
     let f = Fixture::new().await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
             .await
             .unwrap();
@@ -98,7 +98,7 @@ async fn entry_derives_floor_and_refuses_occupied_or_nonempty_original() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut last = 0;
                 for _ in 0..10 {
                     last = f.append(&mut tx, &f.event("bootstrap", "original")).await;
@@ -132,7 +132,7 @@ async fn entry_derives_floor_and_refuses_occupied_or_nonempty_original() {
                     Err(CalmError::IdempotencyKeyExhausted(_))
                 ));
                 tx.rollback().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 f.accept_raw(&mut tx, &f.event("ordinary", "body")).await;
                 assert!(
                     system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
@@ -153,7 +153,7 @@ async fn watcher_source_upgrade_preserves_summary_bytes_spent_keys_and_constrain
         let f = Fixture::new().await;
         let write_db = (f.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             // Install the actual released source schema before producing real Summary
             // acceptance. No copied receipt writer or historical JSON fixture.
             { let query = sqlx::raw_sql("DROP TRIGGER assistant_creation_system_namespace; DROP TABLE conversation_system_assistant_receipts; DROP TABLE conversation_system_assistant_entries;"); sqlx::Executor::execute(&mut **tx, query).await }.unwrap();

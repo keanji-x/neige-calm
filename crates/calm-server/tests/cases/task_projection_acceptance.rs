@@ -184,7 +184,7 @@ async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let outcome = tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
                     .await
                     .unwrap();
@@ -213,14 +213,14 @@ async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut rebuild_tx = write_session.begin().await.unwrap();
+                let mut rebuild_tx = write_session.begin_immediate().await.unwrap();
                 let _: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE track_id=?1")
                     .bind(boot.track_id.as_str())
                     .fetch_one(&mut **rebuild_tx)
                     .await
                     .unwrap();
 
-                let mut waiting_writer = Box::pin(write_session.begin());
+                let mut waiting_writer = Box::pin(write_session.begin_immediate());
                 std::future::poll_fn(|cx| match waiting_writer.as_mut().poll(cx) {
                     Poll::Pending => Poll::Ready(()),
                     Poll::Ready(_) => {
@@ -464,23 +464,29 @@ async fn syntactically_invalid_persisted_dependencies_also_degrade_to_empty() {
     let boot = new_boot().await;
     upsert(&boot, None, task("corrupt-dependencies")).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut connection = pool.read_pool().acquire().await.unwrap();
+    {
+        let write_db = (pool).clone();
+        let boot = &boot;
+        write_db.writer().autocommit(|connection| Box::pin(async move {
     sqlx::query("PRAGMA ignore_check_constraints=ON")
-        .execute(&mut *connection)
+        .execute(&mut **connection)
         .await
         .unwrap();
     sqlx::query(
         "UPDATE tasks SET depends_on_json='not-json' WHERE track_id=?1 AND key='corrupt-dependencies'",
     )
     .bind(boot.track_id.as_str())
-    .execute(&mut *connection)
+    .execute(&mut **connection)
     .await
     .unwrap();
     sqlx::query("PRAGMA ignore_check_constraints=OFF")
-        .execute(&mut *connection)
+        .execute(&mut **connection)
         .await
         .unwrap();
-    drop(connection);
+
+Ok::<_, sqlx::Error>(())
+})).await.unwrap()
+    };
 
     assert!(verdicts(&read(&boot).await).is_empty());
     {
@@ -926,7 +932,7 @@ async fn production_reads_attach_task_state_and_read_time_diagnostics() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &task_id, 42, &context, true)
                         .await
@@ -1793,7 +1799,7 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
                     .await
                     .unwrap();
@@ -1860,7 +1866,7 @@ async fn rebuild_matches_incremental_withdrawal_outcomes_and_exactly_once_events
             calm_types::report_blocks::tasks::project_task_declarations(&[block]);
         let write_db = (boot.repo.sqlite_db().unwrap()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             let incremental =

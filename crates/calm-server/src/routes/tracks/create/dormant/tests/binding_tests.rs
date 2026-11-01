@@ -6,23 +6,35 @@ async fn mutation_is_refused(sql: &str) {
     let fx = Fixture::new().await;
     let key = "immutable-binding";
     let accepted = fx.accept(key, FIRST).await.unwrap().ack;
-    let mut connection = fx.repo.pool().acquire().await.unwrap();
-    let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
-        .fetch_one(&mut *connection)
-        .await
-        .unwrap();
-    assert_eq!(foreign_keys, 1);
-    // REPLACE must not rely on SQLite firing recursive DELETE triggers.
-    sqlx::query("PRAGMA recursive_triggers=OFF")
-        .execute(&mut *connection)
-        .await
-        .unwrap();
-    let changed = sqlx::query(sql)
-        .bind(&fx.area)
-        .bind(key)
-        .execute(&mut *connection)
-        .await;
-    drop(connection);
+    let changed = {
+        let write_db = (fx.repo.db()).clone();
+        let fx = &fx;
+        write_db
+            .writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+                        .fetch_one(&mut **connection)
+                        .await
+                        .unwrap();
+                    assert_eq!(foreign_keys, 1);
+                    // REPLACE must not rely on SQLite firing recursive DELETE triggers.
+                    sqlx::query("PRAGMA recursive_triggers=OFF")
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    let changed = sqlx::query(sql)
+                        .bind(&fx.area)
+                        .bind(key)
+                        .execute(&mut **connection)
+                        .await;
+
+                    Ok::<_, sqlx::Error>(changed)
+                })
+            })
+            .await
+            .unwrap()
+    };
     assert!(
         changed.is_err(),
         "a referenced creation binding changed: {sql}"

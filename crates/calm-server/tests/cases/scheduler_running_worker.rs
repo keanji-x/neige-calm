@@ -621,7 +621,7 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_truth::db::sqlite::card_with_claude_worker_create_tx(
                     &mut tx,
                     card_id.clone(),

@@ -381,7 +381,7 @@ mod tests {
         let track = track(&repo).await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let mut arbitrary_report = new_card(track.id.as_str(), "track-report");
             arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
             let error = card_create_with_id_tx(
@@ -412,7 +412,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let canonical_report = new_card(track.id.as_str(), "track-report");
                     let accepted = card_create_with_id_tx(
                         &mut tx,
@@ -440,7 +440,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut canonical_report = new_card(track.id.as_str(), "track-report");
                     canonical_report.payload["blocks"] = serde_json::Value::Null;
                     card_create_with_id_tx(
@@ -465,7 +465,7 @@ mod tests {
         let track = track(&repo).await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let error = card_create_with_id_tx(
                 &mut tx,
                 "bad_role".into(),
@@ -541,7 +541,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let non_report = card_update_with_crdt_tx(
                         &mut tx,
                         worker.id.as_str(),

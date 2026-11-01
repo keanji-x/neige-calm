@@ -1546,7 +1546,7 @@ impl OperationRuntime {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     match complete_parked_tx(&mut tx, op_id, outcome).await? {
                         ParkedCompletion::Completed(result) => {
                             tx.commit().await?;
@@ -1560,7 +1560,8 @@ impl OperationRuntime {
                     }
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn kill_recheck_then_fail_parked(

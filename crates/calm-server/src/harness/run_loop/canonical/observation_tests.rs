@@ -13,7 +13,7 @@ async fn fixture() -> Fixture {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     session_set_handle_state_tx(
                         &mut tx,
@@ -41,7 +41,7 @@ async fn canonical_observation_does_not_acquire_the_writer() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 let observed =
                     tokio::time::timeout(Duration::from_secs(1), read_current(inner)).await;
                 writer.rollback().await.unwrap();
@@ -77,7 +77,7 @@ async fn canonical_observation_cannot_commit_after_carrier_replacement() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let result = persist_runtime_frame_tx(
                     &mut tx,
                     inner.card_id.as_str(),
@@ -106,7 +106,7 @@ async fn canonical_observation_of_no_completed_execution_does_not_acquire_the_wr
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 let observed = tokio::time::timeout(
                     Duration::from_secs(1),
                     crate::harness::input_dispatch::complete_once(

@@ -35,7 +35,7 @@ async fn original_facts(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let identity = submission_identity_tx(&mut tx, submission).await.unwrap();
                             let facts = OriginalFacts {
                     message: message_tx(&mut tx, &message.message_id).await.unwrap(),

@@ -23,7 +23,7 @@ async fn seed_area(repo: &SqlxRepo) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -49,7 +49,7 @@ async fn seed_track(repo: &SqlxRepo, area_id: &str, title: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let track = track_create_tx(
                     &mut tx,
                     NewTrack {
@@ -122,7 +122,7 @@ async fn set_tree_budget(repo: &SqlxRepo, root: &str, budget: i64) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_update_tx(
                     &mut tx,
                     root,
@@ -179,7 +179,7 @@ async fn project(repo: &SqlxRepo, track: &str, keys: &[&str]) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 project_tasks_tx(&mut tx, track, &declarations, &diags)
                     .await
                     .unwrap();
@@ -266,7 +266,7 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = track_update_tx(
                     &mut tx,
                     &child,
@@ -299,7 +299,7 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
                         .await
                         .unwrap();
                 assert_eq!(budget, Some(4));
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_update_tx(
                     &mut tx,
                     &root,
@@ -319,7 +319,7 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
                         .unwrap();
                 assert_eq!(budget, None);
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = track_update_tx(
                     &mut tx,
                     &root,
@@ -442,7 +442,7 @@ async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let rowids: Vec<i64> = sqlx::query_scalar(
                     "SELECT rowid FROM tracks WHERE id IN (?1,?2,?3) ORDER BY rowid",
                 )
@@ -585,14 +585,14 @@ async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first = project_tasks_tx(&mut tx, &root, &decls, &diags)
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
                 let after_first = task_bytes(&repo).await;
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let second = project_tasks_tx(&mut tx, &root, &decls, &diags)
                     .await
                     .unwrap();
@@ -732,7 +732,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let outcome =
                         project_tasks_tx(&mut tx, track, &decls, &vec![Vec::new(); decls.len()])
                             .await
@@ -1255,7 +1255,7 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_update_tx(
                     &mut tx,
                     &lonely,
@@ -1780,7 +1780,7 @@ async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_update_tx(
                     &mut tx,
                     &lonely,

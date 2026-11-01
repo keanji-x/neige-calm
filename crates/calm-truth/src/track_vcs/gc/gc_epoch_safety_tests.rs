@@ -70,7 +70,7 @@ async fn gc_epoch_nondirect_same_tree_ref_target_protects_unseen_ancestor() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query(
                     "UPDATE track_vcs_refs SET head_hash='nondirect-child' WHERE track_id=?1",
                 )
@@ -157,7 +157,7 @@ async fn gc_epoch_replacing_another_root_uses_global_tree_coverage() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                     "INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('second-root','second-root-head')",
                 )

@@ -281,7 +281,7 @@ async fn accepted_foreign_target_uses_the_prefix_writer_snapshot() {
     let db = fixture.repo.db();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let before = crate::db::sqlite::conversation::current_input_content_carrier_tx(
             &mut tx,
             &original.card_id,

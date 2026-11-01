@@ -229,7 +229,7 @@ async fn terminal_presentation_protected_replacements_and_placement_writer_prese
     assert!(original.in_workbench);
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let moved = set_workbench_tx(&mut tx, card.id.as_str(), false)
             .await
             .unwrap();
@@ -281,7 +281,7 @@ async fn terminal_presentation_protected_replacements_and_placement_writer_prese
             .await
             .is_err()
         );
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let restored = set_workbench_tx(&mut tx, card.id.as_str(), true)
             .await
             .unwrap();
@@ -372,7 +372,7 @@ async fn terminal_presentation_corrupt_provenance_cannot_be_erased_or_repaired()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     set_workbench_tx(&mut tx, card.id.as_str(), true)
                         .await

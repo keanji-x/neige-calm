@@ -106,7 +106,7 @@ async fn boot_with_registry(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (_card, _term, mcp_token) = card_with_codex_create_tx(
                     &mut tx,
                     card_id.clone(),
@@ -174,7 +174,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime_id = if let Some(runtime) =
                     session_projection_active_for_card_tx(&mut tx, card_id)
                         .await
@@ -231,7 +231,7 @@ async fn supersede_runtime_session(repo: &SqlxRepo, card_id: &str, thread_id: &s
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let existing = session_projection_active_for_card_tx(&mut tx, card_id)
                     .await
                     .unwrap()
@@ -790,7 +790,7 @@ async fn seed_sessions(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (id, card, contract, track, state) in sessions {
                     session_insert_tx(
                         &mut tx,
@@ -920,7 +920,7 @@ async fn run_principal_delta_vector(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let recorder = if v.recorder_gate {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let grant = PrincipalDecisionGate::new(principal)
                         .recorder_grant(&mut tx, &fx.home_track)
                         .await
@@ -976,7 +976,8 @@ async fn run_principal_delta_vector(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 #[tokio::test]

@@ -225,7 +225,7 @@ async fn can_admin_detail_reads_while_write_transaction_is_held() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let tx = write_session.begin().await.unwrap();
+                let tx = write_session.begin_immediate().await.unwrap();
                 let response = tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     app(state).oneshot(

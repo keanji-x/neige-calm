@@ -72,7 +72,7 @@ async fn harness_drops_foreign_thread_notifications() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -189,7 +189,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -236,7 +236,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
                 let mut snapshot = HarnessSnapshot::initial(0, vec![]);
                 snapshot.phase = HarnessPhaseTag::Idle;
                 snapshot.last_thread_id = Some(thread_id.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -400,7 +400,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -447,7 +447,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
                 let mut snapshot = HarnessSnapshot::initial(0, vec![]);
                 snapshot.phase = HarnessPhaseTag::Idle;
                 snapshot.last_thread_id = Some(thread_id.clone());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

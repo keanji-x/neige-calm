@@ -21,13 +21,16 @@ async fn migrated_schema(before_0182: bool) -> SqliteConnection {
     } else {
         crate::MIGRATOR.run(&mut db).await.unwrap();
     }
-    { let query = sqlx::raw_sql(
-        "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF;
+    {
+        let query = sqlx::raw_sql(
+            "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=OFF;
          INSERT INTO areas(id,name,color,sort,created_at,updated_at)
          VALUES('area','a','#000',0,1,1);
          INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at)
          VALUES('t','area','t',0,1,1),('other','area','other',1,2,2);",
-    ); sqlx::Executor::execute(&mut db, query).await }
+        );
+        sqlx::Executor::execute(&mut db, query).await
+    }
     .unwrap();
     for (pragma, expected) in [("foreign_keys", 1_i64), ("recursive_triggers", 0)] {
         let actual: i64 = sqlx::query_scalar(&format!("PRAGMA {pragma}"))
@@ -58,13 +61,16 @@ async fn rebuild_preserves_events_states_intents() {
     let mut db = migrated_schema(true).await;
     sqlx::query("UPDATE objective_intents SET status='settled',dispatched_at_ms=7,settled_at_ms=8,settlement_json='{}'")
         .execute(&mut db).await.unwrap();
-    { let query = sqlx::raw_sql(
-        "INSERT INTO objective_intents(track_id,event_seq,ordinal,kind,intent_json,effect_key,
+    {
+        let query = sqlx::raw_sql(
+            "INSERT INTO objective_intents(track_id,event_seq,ordinal,kind,intent_json,effect_key,
          standard_hash,target_session_id,created_at_ms)
          VALUES('t',2,1,'run_check','{\"intent\":\"run_check\"}','[\"pending\"]','hash',NULL,9),
          ('other',1,0,'execute','{\"intent\":\"execute\"}','[\"other\"]',NULL,'session',10);
          INSERT INTO objective_states VALUES('other',1,3,'{\"snapshot\":1}');",
-    ); sqlx::Executor::execute(&mut db, query).await }
+        );
+        sqlx::Executor::execute(&mut db, query).await
+    }
     .unwrap();
     let before = contents(&mut db).await;
     let tracks_before: Vec<(String, String)> =

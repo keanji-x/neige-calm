@@ -131,7 +131,7 @@ pub async fn create(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = loop {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     if let Some(idempotency_key) = &key.idempotency_key {
                         let existing: Option<(String, String)> = sqlx::query_as(
                     "SELECT id, payload_hash FROM operations WHERE kind IN ('terminal-create', \
@@ -269,7 +269,8 @@ pub async fn create(
                 })
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Both fresh commits and replays carry the durable execution identity in their result.

@@ -95,7 +95,7 @@ async fn stale_probe(change: Change) {
         match change {
             Change::LegacyRestart => legacy_restart(&repo, &card).await,
             Change::AttemptReplaced => {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = 'old'")
                     .execute(&mut **tx)
                     .await
@@ -174,7 +174,7 @@ async fn replace_attempt(repo: &SqlxRepo, task: &crate::model::Task, card: &Card
     };
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("UPDATE tasks SET status = 'failed', finished_at_ms = ? WHERE id = ?")
             .bind(now_ms())
             .bind(&task.id)
@@ -238,7 +238,7 @@ async fn legacy_restart(repo: &Arc<SqlxRepo>, card: &Card) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_complete_tx(
                     &mut tx,
                     &"old".to_owned(),
@@ -257,7 +257,7 @@ async fn legacy_restart(repo: &Arc<SqlxRepo>, card: &Card) {
                 let operations = SqlxOperationRepo::new(repo.db().clone());
                 let id = insert_spawn_operation(repo, None, None).await;
                 let op = operations.get_operation(&id).await.unwrap().unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let payload =
                     crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload {
                         actor: ActorId::KernelDispatcher,
@@ -335,7 +335,7 @@ async fn w_reaper_nonterminal_task_race_releases_nothing() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let (lease, _) =
                         crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
                             &mut tx,

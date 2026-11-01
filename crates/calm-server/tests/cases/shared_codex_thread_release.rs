@@ -133,7 +133,7 @@ async fn the_sweep_releases_only_threads_whose_session_positively_ended() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_card_tx(&mut tx, &ended, WorkerSessionState::Exited)
                     .await
                     .unwrap();

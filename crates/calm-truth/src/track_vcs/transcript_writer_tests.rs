@@ -252,19 +252,25 @@ async fn transcript_refresh_allows_unrelated_writer_during_hook_interpretation()
     let pool = repo.db().clone();
 
     {
-
         let mut writer = tokio::spawn(async move {
             let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
-            sqlx::query("INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)")
-                .execute(&mut **tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, crate::error::TruthError>(())
-
-        })).await.expect("independent write operation")
-});
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query(
+                            "INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)",
+                        )
+                        .execute(&mut **tx)
+                        .await?;
+                        tx.commit().await?;
+                        Ok::<_, crate::error::TruthError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
         let before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         // Always release and drain, including the expected old-code timeout.
         pause.release.notify_one();
@@ -305,7 +311,5 @@ let mut tx = write_session_1.begin().await?;
             writer_completed,
             "unrelated writer could not commit before transcript interpretation was released"
         );
-
-
-}
+    }
 }

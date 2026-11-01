@@ -87,7 +87,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let card = crate::db::sqlite::card_create_with_id_tx(
                         &mut tx,
                         new_id(),
@@ -217,7 +217,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_carrier_tx(&mut tx, &self.card, &self.runtime)
                         .await
                         .unwrap();
@@ -240,7 +240,7 @@ async fn initial_keeps_pending_history_replacement_held_without_an_attempt() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                         .await
                         .unwrap();
@@ -316,7 +316,7 @@ async fn accepted_input_survives_execution_cleanup_error_and_cannot_dispatch_aga
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();
@@ -419,7 +419,7 @@ async fn human_only_erasure_is_rechecked_in_the_marker_transaction_before_native
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let plan = submission_plan_tx(&mut tx, &fx.submission).await.unwrap();
                 let proof_before = plan.original_digest.clone();
                 // Model an already-persisted erasure fact; there is no canonical erase command.
@@ -511,7 +511,7 @@ async fn fresh_crossing_rechecks_actual_area_owner_instead_of_stored_provenance(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let area: String = sqlx::query_scalar(
                                 "SELECT t.area_id FROM tracks t JOIN cards c ON c.track_id=t.id WHERE c.id=?1",
                             )
@@ -569,7 +569,7 @@ async fn sharing_before_a_fresh_crossing_holds_the_original_claim() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = conversation_area_tx(&mut tx, &fx.card).await.unwrap();
                 sqlx::query(
                     "UPDATE areas SET conversation_history_contract='shared_history' WHERE id=?1",

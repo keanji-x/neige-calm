@@ -18,7 +18,7 @@ pub(super) async fn held(repo: &SqlxRepo) -> (String, String, InputAttempt) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -110,7 +110,7 @@ async fn canonical_held_projection_survives_failed_and_dormant_reload() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 super::super::session_fail_if_active_runtime_tx(&mut tx, &worker)
                     .await
                     .unwrap();
@@ -138,7 +138,7 @@ async fn runtime_frame_cannot_erase_same_phase_attempt_revision() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();

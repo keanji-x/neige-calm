@@ -8,7 +8,7 @@ async fn seed_area(repo: &SqlxRepo, suffix: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -34,7 +34,7 @@ async fn seed_track(repo: &SqlxRepo, area_id: &str, suffix: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let track = track_create_tx(
                     &mut tx,
                     NewTrack {
@@ -127,7 +127,7 @@ async fn acceptance_21b_area_delete_removes_a_same_area_track_tree() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 area_delete_tx(&mut tx, &area).await.unwrap();
                 tx.commit().await.unwrap();
                 let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE area_id=?1")
@@ -174,7 +174,7 @@ async fn acceptance_21c_cross_area_edge_is_a_loud_delete_tripwire() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = area_delete_tx(&mut tx, &area_a).await.unwrap_err();
                 assert!(
                     error.to_string().contains("FOREIGN KEY"),
@@ -220,7 +220,7 @@ async fn acceptance_17_track_writer_refuses_reopen_of_referenced_child() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = track_update_tx(
                     &mut tx,
                     &child,

@@ -148,7 +148,7 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
                     .await
                     .unwrap();

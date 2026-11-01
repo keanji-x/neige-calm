@@ -2443,7 +2443,7 @@ async fn child_track_config_mcp_declaration_reaches_claim_and_operation_payload(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     calm_server::db::sqlite::task_claim_pending_tx(
                         &mut tx,

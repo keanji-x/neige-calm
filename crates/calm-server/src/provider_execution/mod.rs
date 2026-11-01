@@ -279,14 +279,15 @@ impl ProviderExecution {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let tx = write_session.begin().await?;
+                    let tx = write_session.begin_immediate().await?;
                     self.admit_tx(tx, engine, session, admission, purpose, fence)
                         .await?
                         .commit()
                         .await
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
     /// ③ Re-read on CAS loss; never adopt another execution or overwrite Stopping.
     pub async fn stop(
@@ -302,7 +303,7 @@ impl ProviderExecution {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let Some(id) = request_stop_tx(&mut tx, session, claimed, reason).await? else {
                         return Ok(());
                     };
@@ -313,7 +314,8 @@ impl ProviderExecution {
                     Ok(())
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
     /// Owner confirmation precedes ④. Re-check settlement and exact claim in its transaction.
     pub async fn finish(
@@ -351,7 +353,7 @@ impl ProviderExecution {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let Some(current) = sql::load(&mut **tx, session)
                         .await?
                         .filter(|c| c.record().execution_id == id.as_str())
@@ -375,7 +377,8 @@ impl ProviderExecution {
                     Ok(())
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }
 

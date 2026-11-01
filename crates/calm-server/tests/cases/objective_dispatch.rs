@@ -9,7 +9,7 @@ async fn setup() -> Boot {
     let db = boot.repo.sqlite_db().unwrap();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         calm_server::db::sqlite::track_capabilities::stamp_tx(

@@ -95,7 +95,7 @@ impl WriteManager {
     /// use calm_truth::{TruthError, db::sqlite::WriteManager};
     /// async fn write(manager: &WriteManager) -> Result<(), TruthError> {
     ///     manager.with_writer(|writer| Box::pin(async move {
-    ///         let transaction = writer.begin().await?;
+    ///         let transaction = writer.begin_immediate().await?;
     ///         transaction.commit().await?;
     ///         Ok::<_, TruthError>(())
     ///     })).await??;
@@ -107,7 +107,7 @@ impl WriteManager {
     /// use calm_truth::db::sqlite::WriteManager;
     /// async fn escape(manager: &WriteManager) {
     ///     let transaction = manager.with_writer(|writer| Box::pin(async move {
-    ///         writer.begin().await.unwrap()
+    ///         writer.begin_immediate().await.unwrap()
     ///     })).await.unwrap();
     ///     transaction.commit().await.unwrap();
     /// }
@@ -213,8 +213,8 @@ pub fn inherit_write_scope<F: Future + 'static>(future: F) -> impl Future<Output
 /// ```compile_fail
 /// use calm_truth::db::sqlite::WriteSession;
 /// async fn overlap(session: &mut WriteSession<'_>) {
-///     let _first = session.begin().await.unwrap();
-///     let second = session.begin().await.unwrap();
+///     let _first = session.begin_immediate().await.unwrap();
+///     let second = session.begin_immediate().await.unwrap();
 ///     second.commit().await.unwrap();
 /// }
 /// ```
@@ -226,10 +226,10 @@ pub struct WriteSession<'m> {
 impl<'m> WriteSession<'m> {
     /// Preserve bounded BEGIN retry ownership and original caller attribution.
     #[track_caller]
-    pub fn begin(&mut self) -> impl Future<Output = Result<WriteTx<'_>>> + Send + '_ {
+    pub fn begin_immediate(&mut self) -> impl Future<Output = Result<WriteTx<'_>>> + Send + '_ {
         let caller = Location::caller();
         async move {
-            self.begin_with(caller, RetryPolicy::Bounded)
+            self.begin_transaction(caller, RetryPolicy::Bounded)
                 .await
                 .map_err(Into::into)
         }
@@ -237,16 +237,18 @@ impl<'m> WriteSession<'m> {
 
     /// One BEGIN attempt; capture/replay owners retain their retry policy.
     #[track_caller]
-    pub fn begin_once(&mut self) -> impl Future<Output = sqlx::Result<WriteTx<'_>>> + Send + '_ {
+    pub fn begin_immediate_once(
+        &mut self,
+    ) -> impl Future<Output = sqlx::Result<WriteTx<'_>>> + Send + '_ {
         let caller = Location::caller();
         async move {
-            self.begin_with(caller, RetryPolicy::Once)
+            self.begin_transaction(caller, RetryPolicy::Once)
                 .await
                 .map_err(Into::into)
         }
     }
 
-    async fn begin_with(
+    async fn begin_transaction(
         &mut self,
         caller: &'static Location<'static>,
         retry: RetryPolicy,

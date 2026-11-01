@@ -46,7 +46,7 @@ async fn c3_completion_rechecks_record_and_retires_in_same_tx() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     ForgeActionAdapter::new()
                         .complete_owned_parked_tx(&mut tx, &stale)
@@ -68,7 +68,7 @@ async fn c3_completion_rechecks_record_and_retires_in_same_tx() {
                     serde_json::from_value(latest["probes"]["verdict"]["execution_id"].clone())
                         .unwrap();
                 let engine = boot.spawn_ctx.execution.engine().unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = engine
                     .request(&mut tx, &probe, Desired::Stop)
                     .await

@@ -39,7 +39,7 @@ async fn agent_token_provider(
     let (card, session) = (new_id(), new_id());
     let write_db = (h.sql.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let token = if role == CardRole::Assistant {
             calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card.clone(), calm_server::model::NewCard {
                 track_id:track.into(),title:None,kind:"codex".into(),sort:None,
@@ -106,7 +106,7 @@ async fn terminal_card(h: &Harness, track: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (_, terminal) = card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -401,7 +401,7 @@ async fn manual_claude_card(h: &Harness) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (_, terminal) = card_with_claude_create_tx(
                     &mut tx,
                     new_id(),

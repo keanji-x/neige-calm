@@ -17,7 +17,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -122,7 +122,7 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
                                 (2, "assistant_message"),
                                 (3, "tool_call"),
                             ] {
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let id = worker_flow_item_insert_tx(
                                     &mut tx,
                                     Some(&card_id),
@@ -165,7 +165,7 @@ async fn insert_list_paging_delete_and_set_null_on_card_delete() {
                             );
 
                             {
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 super::card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
                                     .await
                                     .unwrap();
@@ -204,7 +204,7 @@ async fn delete_by_card_tx_purges_rows() {
         .with_writer(|write_session| {
             Box::pin(async move {
                 for n in 1..=2 {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     worker_flow_item_insert_tx(
                         &mut tx,
                         Some(&card_id),
@@ -219,7 +219,7 @@ async fn delete_by_card_tx_purges_rows() {
                     .unwrap();
                     tx.commit().await.unwrap();
                 }
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 worker_flow_items_delete_by_card_tx(&mut tx, &card_id)
                     .await
                     .unwrap();

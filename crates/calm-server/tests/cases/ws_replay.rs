@@ -887,13 +887,19 @@ async fn stale_cursor_over_cap_gets_snapshot_required() {
 
 /// Insert a raw `events` row whose `kind` matches no `Event` variant; `events_since` drops it at deserialization, the raw-count probe must still see it.
 async fn seed_unknown_kind_row(repo: &SqlxRepo) -> i64 {
-    let row: (i64,) = sqlx::query_as(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    let row: (i64,) = {
+        let query = sqlx::query_as(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
            RETURNING id"#,
-    )
-    .fetch_one(repo.pool())
-    .await
+        );
+        (repo.db())
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_one(&mut **connection).await })
+            })
+            .await
+    }
     .expect("insert unknown-kind events row");
     row.0
 }
@@ -999,9 +1005,9 @@ async fn seed_retired_ratify_rows(repo: &SqlxRepo) -> Vec<i64> {
             r#"{"track_id":"track","decision":"deny","message":"Hold"}"#,
         ),
     ] {
-        let id: i64 = sqlx::query_scalar(
+        let id: i64 = { let query = sqlx::query_scalar(
             "INSERT INTO events(kind,payload,actor,at,event_version) VALUES(?,?,'user',0,1) RETURNING id",
-        ).bind(kind).bind(payload).fetch_one(repo.pool()).await.unwrap();
+        ).bind(kind).bind(payload); (repo.db()).writer().autocommit(move |connection| Box::pin(async move { query.fetch_one(&mut **connection).await })).await }.unwrap();
         ids.push(id);
     }
     ids

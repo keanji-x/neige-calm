@@ -1,5 +1,5 @@
 use super::gc_writer_tests::{Fixture, Phase, finish, start};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::model::now_ms;
 use crate::track_vcs;
 use std::time::Duration;
@@ -49,7 +49,7 @@ async fn object_sweep_restored_ancestor_without_head_change_preserves_objects() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let restored = commit_tree_at_tx(
                     &mut tx,
                     &f.track,
@@ -181,7 +181,7 @@ async fn object_sweep_without_candidates_never_waits_for_writer() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let tx = write_session.begin().await.unwrap();
+                let tx = write_session.begin_immediate().await.unwrap();
                 let pool = f.repo.db().clone();
                 let mut sweep =
                     tokio::spawn(
@@ -255,9 +255,15 @@ async fn object_sweep_large_delta_count_and_bytes_are_observed_outside_writer() 
         pause.entered().await;
         let pool = f.repo.db().clone();
         let mut writer = tokio::spawn(async move {
-            let tx = begin_immediate_tx(&pool).await?;
-            tx.rollback().await?;
-            Ok::<_, crate::error::CalmError>(())
+            pool.writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let tx = write_session.begin_immediate().await?;
+                        tx.rollback().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await?
         });
         let released = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         pause.release();
@@ -346,30 +352,32 @@ async fn object_sweep_frontier_compressed_tree_budget_stays_outside_writer() {
     let db = f.repo.db().clone();
 
     {
-
-                let mut writer = tokio::spawn(async move {
-                    let write_db = (db).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let tx = write_session_1.begin().await?;
-                    tx.rollback().await?;
-                    Ok::<_, crate::error::CalmError>(())
-
-        })).await.expect("independent write operation")
-});
-                let released =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), &mut writer).await;
-                pause.release();
-                assert_eq!(finish(sweep).await.unwrap(), 1);
-                if released.is_err() {
-                    writer.await.unwrap().unwrap();
-                }
-                assert!(
-                    matches!(released, Ok(Ok(Ok(())))),
-                    "frontier decoded work retained writer: {released:?}"
-                );
-                assert!(!f.exists(&orphan).await);
-
-}
+        let mut writer = tokio::spawn(async move {
+            let write_db = (db).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let tx = write_session_1.begin_immediate().await?;
+                        tx.rollback().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
+        let released = tokio::time::timeout(std::time::Duration::from_secs(1), &mut writer).await;
+        pause.release();
+        assert_eq!(finish(sweep).await.unwrap(), 1);
+        if released.is_err() {
+            writer.await.unwrap().unwrap();
+        }
+        assert!(
+            matches!(released, Ok(Ok(Ok(())))),
+            "frontier decoded work retained writer: {released:?}"
+        );
+        assert!(!f.exists(&orphan).await);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -459,7 +467,7 @@ async fn object_sweep_restored_cycle_and_duplicate_states_keep_reachable_objects
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let restored = commit_tree_at_tx(
                     &mut tx,
                     &f.track,
@@ -516,7 +524,7 @@ async fn object_sweep_sparse_orphans_share_one_candidate_validation_batch() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut entries = BTreeMap::new();
                 for n in 0..1024 {
                     let text = format!("retained sparse-GC document {n}");

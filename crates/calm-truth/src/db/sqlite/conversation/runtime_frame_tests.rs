@@ -16,7 +16,7 @@ async fn runtime_frame_preserves_later_accepted_input_and_its_queue_counter() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -70,7 +70,7 @@ async fn runtime_frame_cas_does_not_restore_a_same_phase_once_only_budget_marker
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -120,7 +120,7 @@ async fn runtime_frame_cas_rejects_changed_dispatch_attempt_without_a_phase_chan
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -203,7 +203,7 @@ async fn runtime_frame_rejects_a_copied_input_checkpoint_as_runtime_authority() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -242,7 +242,7 @@ async fn runtime_frame_writer_rejects_missing_required_turn_budget() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -276,7 +276,7 @@ async fn runtime_frame_writer_rejects_unknown_runtime_field() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();

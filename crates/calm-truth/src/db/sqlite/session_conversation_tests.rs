@@ -13,7 +13,7 @@ pub(super) async fn card(repo: &SqlxRepo) -> (String, String) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -144,7 +144,7 @@ async fn only_completed_failed_starts_or_nothing_at_all_leave_no_conversation() 
         .unwrap();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         crate::db::sqlite::session_start_runtime_tx(
             &mut tx,
             crate::session_projection_repo::WorkerSessionInit::shared_planner(
@@ -161,8 +161,8 @@ async fn only_completed_failed_starts_or_nothing_at_all_leave_no_conversation() 
         .unwrap();
         tx.commit().await.unwrap();
         let shape = |sql: &'static str| {
-            let pool = repo.pool().clone();
-            async move { sqlx::query(sql).execute(&pool).await.unwrap() }
+            let pool = repo.db().clone();
+            async move { (pool).writer().execute(sqlx::query(sql)).await.unwrap() }
         };
         assert_eq!(
             conversation(&repo, &card_id).await,
@@ -204,7 +204,7 @@ async fn only_completed_failed_starts_or_nothing_at_all_leave_no_conversation() 
             );
         }
         // The same completed failed row on the card that has a transcript is a conversation.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         crate::db::sqlite::session_start_runtime_tx(
             &mut tx,
             crate::session_projection_repo::WorkerSessionInit::shared_planner(
@@ -274,7 +274,7 @@ async fn assistant_provider_persistence_managed_identity_never_inherits_token_or
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         for provider in AgentProvider::ALL {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1")
                 .bind(&card_id).bind(json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}).to_string())
                 .execute(&mut **tx).await.unwrap();
@@ -432,7 +432,7 @@ async fn assistant_provider_managed_actor_uses_live_binding_and_has_no_planner_a
             .unwrap();
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1").bind(&assistant)
             .bind(json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}).to_string()).execute(&mut **tx).await.unwrap();
             session_start_runtime_tx(
@@ -586,7 +586,7 @@ async fn assistant_provider_projection_preserves_shared_codex_without_mislabelin
             let (_, track) = card(&repo).await;
             let id = format!("assistant-{}", provider.wire_name());
             let thread = format!("thread-{}", provider.wire_name());
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             crate::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
                 track_id:track.into(),title:None,kind:"codex".into(),sort:None,
                 payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
@@ -639,7 +639,7 @@ async fn assistant_provider_storage_rejects_terminal_and_nonresumable_managed_id
     let (_, track) = card(&repo).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let card = "storage-assistant".to_owned();
         crate::db::sqlite::card_create_with_id_tx(&mut tx,card.clone(),NewCard {
             track_id:track.into(),title:None,kind:"codex".into(),sort:None,
@@ -697,7 +697,7 @@ async fn assistant_provider_schema_is_extensible_but_unknown_typed_identity_is_r
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1")
                 .bind(&id)
                 .bind(
@@ -757,7 +757,7 @@ async fn session_mirror_supersede_revokes_a_non_codex_planner_token() {
             Box::pin(async move {
                         for provider in AgentProvider::ALL {
                             let (_, track_id) = card(&repo).await;
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let planner = format!("planner-{}", provider.wire_name());
                             crate::db::sqlite::card_create_with_id_tx(&mut tx, planner.clone(), NewCard {
                     track_id:track_id.clone().into(),title:None,kind:"codex".into(),sort:None,

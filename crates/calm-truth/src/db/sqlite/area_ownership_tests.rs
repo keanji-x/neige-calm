@@ -114,7 +114,7 @@ async fn area_ownership_migration_adopts_live_and_deleted_keys_once_and_preserve
     );
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut replay_tx = write_session.begin().await.unwrap();
+        let mut replay_tx = write_session.begin_immediate().await.unwrap();
         assert_eq!(
             area_create_replay_tx(
                 &mut replay_tx,
@@ -178,7 +178,7 @@ async fn area_ownership_requires_registered_creator_and_commits_exactly_one_owne
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 application_user_register(&mut tx, "alice", "Alice")
                     .await
                     .unwrap();
@@ -192,9 +192,13 @@ async fn area_ownership_requires_registered_creator_and_commits_exactly_one_owne
                         .unwrap();
                 assert_eq!(owners, vec![("alice".into(), "owner".into())]);
                 assert!(
-                    (repo.db()).writer().execute(sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
-                        .bind(area.id.as_str())
-                        .bind(LEGACY_OWNER_USER_ID))
+                    (repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
+                                .bind(area.id.as_str())
+                                .bind(LEGACY_OWNER_USER_ID)
+                        )
                         .await
                         .is_err()
                 );
@@ -212,7 +216,7 @@ async fn area_ownership_members_collaborate_owner_deletes_and_system_has_no_memb
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 application_user_register(&mut tx, "alice", "Alice")
                     .await
                     .unwrap();
@@ -311,7 +315,7 @@ async fn area_ownership_creator_keys_are_independent_permanent_and_replay_checks
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 application_user_register(&mut tx, "alice", "Alice")
                     .await
                     .unwrap();

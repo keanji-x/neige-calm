@@ -21,7 +21,7 @@ async fn canonical_retry_old_invocation_or_inherited_selection_is_keep_only() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         resolve_retry_tx(
                             &mut tx,
@@ -106,7 +106,7 @@ async fn canonical_retry_unavailable_inputs_keep_typed_reasons_and_no_writes() {
         .await;
         let write_db = (s.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let mut execution = provenance();
             let expected = match case {
                 Case::Old => {
@@ -219,7 +219,7 @@ async fn canonical_retry_queue_exhaustion_has_zero_resolution_writes() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &s.card, &s.carrier)
                     .await
                     .unwrap();
@@ -309,7 +309,7 @@ async fn binding_availability(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 if mismatch {
                     sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
                         .bind(uuid::Uuid::new_v4().to_string())

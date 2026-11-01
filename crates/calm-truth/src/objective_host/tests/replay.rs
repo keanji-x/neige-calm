@@ -111,7 +111,7 @@ async fn snapshot_seq_tracks_log_tip() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     snapshot::store_tx(
                         &mut tx,
@@ -124,7 +124,7 @@ async fn snapshot_seq_tracks_log_tip() {
                     .is_err()
                 );
                 tx.rollback().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     snapshot::store_tx(
                         &mut tx,
@@ -216,7 +216,7 @@ async fn snapshot_corruption_and_unknown_event_version_fail_closed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("PRAGMA ignore_check_constraints=ON")
                     .execute(&mut **tx)
                     .await
@@ -258,7 +258,7 @@ async fn track_delete_cascades_both_paths() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     if area {
                         area_delete_tx(&mut tx, "a").await.unwrap();
                     } else {

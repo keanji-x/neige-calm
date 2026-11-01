@@ -344,7 +344,7 @@ async fn replace_session(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_supersede_and_start_tx(
                     &mut tx,
                     &session.to_owned(),

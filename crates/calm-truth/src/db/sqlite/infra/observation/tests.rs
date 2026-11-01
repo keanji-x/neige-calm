@@ -137,28 +137,34 @@ async fn observation_commit_rollback_and_active_drop_have_one_truthful_terminal_
     let fx = Fixture::new().await;
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
-    async {
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('private-observation-sentinel')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('rolled back')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.rollback().await.unwrap();
-        let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-        sqlx::query("INSERT INTO observation_probe VALUES('dropped')")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        drop(tx);
-    }
-    .with_subscriber(dispatch)
-    .await;
+    fx.repo
+        .db()
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('private-observation-sentinel')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('rolled back')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query("INSERT INTO observation_probe VALUES('dropped')")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                drop(tx);
+            })
+        })
+        .with_subscriber(dispatch)
+        .await
+        .unwrap();
     assert_eq!(fx.values().await, vec!["private-observation-sentinel"]);
     let records = recorder.records();
     assert_eq!(records.len(), 3);
@@ -432,7 +438,7 @@ async fn observation_interrupted_commit_can_persist_and_must_report_unknown() {
     task.abort();
     let aborted = task.await;
     // The cancelled COMMIT still occupies its worker. Capacity must not be reused early.
-    let writer_pool = fx.repo.db().writer().pool;
+    let writer_pool = &fx.repo.db().writer().pool;
     let capacity_held = writer_pool.size() == 1 && writer_pool.num_idle() == 0;
     let mut next_lease = Box::pin(writer_pool.acquire());
     let next_result = poll_fn(|cx| std::task::Poll::Ready(next_lease.as_mut().poll(cx))).await;

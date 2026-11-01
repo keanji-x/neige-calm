@@ -18,7 +18,7 @@ pub(super) async fn runtime(repo: &SqlxRepo, card: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     crate::session_projection_repo::WorkerSessionInit::shared_planner(
@@ -79,7 +79,7 @@ async fn canonical_claim_uses_exact_current_pending_revision_and_source() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -186,7 +186,7 @@ async fn canonical_initial_non_delivery_release_preserves_pending_and_newer_queu
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -230,7 +230,7 @@ async fn canonical_initial_non_delivery_release_preserves_pending_and_newer_queu
                 .unwrap();
                 tx.commit().await.unwrap();
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -309,7 +309,7 @@ async fn canonical_reported_unknown_and_stale_attempts_cannot_release_or_requeue
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -418,7 +418,7 @@ async fn canonical_release_requires_persisted_non_delivery_not_an_uncommitted_ca
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();

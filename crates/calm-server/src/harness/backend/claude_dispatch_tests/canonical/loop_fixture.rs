@@ -28,7 +28,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
                             .await
@@ -98,7 +98,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_fact_carrier_tx(
                         &mut tx,
                         &self.owner.card,

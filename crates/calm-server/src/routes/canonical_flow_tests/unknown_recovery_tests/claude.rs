@@ -389,7 +389,7 @@ async fn add_unproven_execution(fixture: &Fixture, worker: &str, track: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::workspace_execution::insert(
                     &mut tx,
                     id.as_str(),

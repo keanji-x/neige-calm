@@ -1588,7 +1588,7 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter
                     .prepare_tx(&mut tx, &payload, &operation)
                     .await

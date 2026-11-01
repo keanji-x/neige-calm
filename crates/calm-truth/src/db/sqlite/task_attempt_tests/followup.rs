@@ -31,7 +31,7 @@ async fn task_recovery_allocation_inventory_includes_missing_rows_and_pages_by_k
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let second = task_attempt_current_by_track_tx(&mut tx, "w", Some(&first[1].key), 2)
                     .await
                     .unwrap();
@@ -82,7 +82,7 @@ async fn task_recovery_allocation_inventory_caps_page_size_without_silent_miss()
     let repo = setup().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         for index in 0..501 {
             // Exercise the production initial-registration trigger. Admission policy
             // is independent of this storage pagination boundary.
@@ -115,7 +115,7 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
     project(&repo, std::slice::from_ref(&b)).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         task_claim_pending_tx(&mut tx, "w:b", 1, constraint(&b).refs(), false)
             .await
             .unwrap();
@@ -134,7 +134,7 @@ async fn task_recovery_historical_gate_log_retains_execution_and_gate_identity()
         tx.commit().await.unwrap();
         let attempt_id = recover(&repo, &b).await;
         project(&repo, std::slice::from_ref(&b)).await;
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         task_claim_pending_tx(&mut tx, &attempt_id, 6, constraint(&b).refs(), false)
             .await
             .unwrap();

@@ -15,7 +15,7 @@ async fn cards(repo: &SqlxRepo, role_cache: &CardRoleCache, n: usize) -> Vec<Str
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -86,7 +86,7 @@ async fn bind(repo: &SqlxRepo, card: &str, key: &str, value: &PlannerInputBindin
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 planner_input_bind_tx(&mut tx, card, key, value)
                     .await
                     .expect("bind");
@@ -108,7 +108,7 @@ async fn a_second_binding_for_one_key_fails_its_transaction() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 assert!(matches!(
                     planner_input_bind_tx(&mut tx, &ids[0], "key", &binding(1)).await,
                     Err(crate::error::TruthError::IdempotencyKeyConcurrent(_))
@@ -137,7 +137,7 @@ async fn deleting_the_card_deletes_its_bindings() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 card_delete_tx(&mut tx, &ids[0], &role_cache)
                     .await
                     .expect("delete card");

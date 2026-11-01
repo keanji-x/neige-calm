@@ -107,7 +107,7 @@ async fn configure_default_effort(repo: &crate::db::sqlite::SqlxRepo, card_id: &
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut payload =
                     crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card_id)
                         .await
@@ -215,7 +215,7 @@ async fn bound_admission(fx: &Fixture) -> crate::conversation_inputs::SelectionR
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(
                     &mut tx,
                     fx.harness.inner.card_id.as_str(),
@@ -258,7 +258,7 @@ async fn sqlite_admission_under_sink_yields_before_server_reply_timeout() {
     let before = fx.frame().await;
     let write_db = (fx.original.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let writer = write_session.begin().await.unwrap();
+        let writer = write_session.begin_immediate().await.unwrap();
         let entered = tokio::sync::Notify::new();
         let gate = PreSendGate::new(|| {
             Box::pin(async {
@@ -443,7 +443,7 @@ async fn canonical_selection_read_preserves_appended_pending_while_issuing_origi
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let mut carrier = current_input_carrier_tx(
                                 &mut tx,
                                 fx.harness.inner.card_id.as_str(),

@@ -127,7 +127,7 @@ async fn object_sweep_metadata_bracket_observes_committed_head_aba() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE track_vcs_refs SET head_hash=?1 WHERE track_id=?2")
                     .bind(&f.commit)
                     .bind(f.track.as_str())

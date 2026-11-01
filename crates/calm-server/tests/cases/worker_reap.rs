@@ -372,7 +372,7 @@ async fn worker_reap_planner_harness_untouched() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     planner_card.clone(),

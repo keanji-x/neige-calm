@@ -85,7 +85,7 @@ async fn additional_owner(h: &Harness, track: &str) -> (String, ExecutionMetadat
     let execution = record(CONFIG, &op).unwrap().execution_id;
     let write_db = (h.db.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let metadata: ExecutionMetadata = serde_json::from_str(
@@ -125,7 +125,7 @@ async fn finish_owner(h: &Harness, id: &str, metadata: &ExecutionMetadata) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
                     .await
                     .unwrap();

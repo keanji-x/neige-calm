@@ -37,7 +37,7 @@ async fn rejects_prepared_cwd(source: Source) {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let track = crate::db::sqlite::track_create_tx(
                         &mut tx,
                         crate::model::NewTrack {
@@ -121,7 +121,7 @@ async fn rejects_prepared_cwd(source: Source) {
                         .into_iter()
                         .find(|op| op.id == op_id)
                         .unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                     tx.commit().await.unwrap();
                     assert_eq!(output.data["cwd"], invalid);
@@ -267,7 +267,7 @@ async fn isolation_none_non_git_terminal_launch_skips_observation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
                 let supervisor =

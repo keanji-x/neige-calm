@@ -271,9 +271,8 @@ async fn u9_canonical_creator_cap_cross_instance() {
 async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
     let mut flow = Flow::running_with_admission(false, true).await;
     flow.state.dispatcher.abort_event_listener_for_test();
-    // Keep the DDL lifecycle on one connection: another pooled connection can
-    // still cache the dropped trigger's schema when preparing the next CREATE.
-    let mut ddl = flow.fixture.repo.pool().acquire().await.unwrap();
+    // All DDL and route writes use the same singleton writer, avoiding stale
+    // trigger schemas across independently pooled write connections.
     for (table, condition) in [
         ("mails", "1"),
         ("events", "NEW.kind='track.wake_requested'"),
@@ -282,11 +281,10 @@ async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
             worker_sessions),(SELECT count(*) FROM track_create_idempotency),(SELECT count(*) FROM \
             mails),(SELECT count(*) FROM events WHERE scope_track<>?1)")
             .bind(&flow.track).fetch_one(flow.fixture.repo.pool()).await.unwrap();
-        sqlx::query(&format!(
+        flow.fixture.repo.db().writer().execute(sqlx::query(&format!(
             "CREATE TRIGGER fail_creator BEFORE INSERT ON {table} WHEN {condition} BEGIN SELECT \
             RAISE(ABORT,'{table} injected fault'); END"
-        ))
-        .execute(&mut *ddl)
+        )))
         .await
         .unwrap();
         let request = input(&flow, table);
@@ -302,12 +300,14 @@ async fn u9_canonical_creator_mail_and_event_failure_roll_back() {
             mails),(SELECT count(*) FROM events WHERE scope_track<>?1)")
             .bind(&flow.track).fetch_one(flow.fixture.repo.pool()).await.unwrap();
         assert_eq!(before, after);
-        sqlx::query("DROP TRIGGER fail_creator")
-            .execute(&mut *ddl)
+        flow.fixture
+            .repo
+            .db()
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_creator"))
             .await
             .unwrap();
     }
-    drop(ddl);
     for key in ["mails", "events"] {
         let track = route(&flow, 2).add(input(&flow, key)).await.unwrap();
         assert_eq!(
@@ -362,7 +362,7 @@ async fn deliver(fixture: &Fixture, state: &AppState, peer: &mut Peer, track: &s
         .submission_ids[0];
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
             .await
             .unwrap();

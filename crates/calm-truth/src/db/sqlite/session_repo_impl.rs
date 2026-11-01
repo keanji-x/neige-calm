@@ -80,13 +80,14 @@ impl SessionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = session_set_liveness_tx(&mut tx, id, liveness, probed_at_ms).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_record_activity(
@@ -100,14 +101,15 @@ impl SessionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     session_record_activity_tx(&mut tx, id, last_activity_ms, last_thread_status)
                         .await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_record_activity_by_thread(
@@ -123,7 +125,7 @@ impl SessionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     session_record_activity_by_thread_tx(
                         &mut tx,
                         thread_id,
@@ -137,7 +139,8 @@ impl SessionRepo for SqlxRepo {
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_state_transition_tx(
@@ -162,7 +165,7 @@ impl SessionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let session = match session_commit_exit_tx(
                         &mut tx,
                         id,
@@ -184,7 +187,8 @@ impl SessionRepo for SqlxRepo {
                     Ok(CommitExitOutcome::Committed(session))
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_list_by_track(&self, track_id: &TrackId) -> Result<Vec<WorkerSession>> {
@@ -242,13 +246,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = area_create_tx(&mut tx, owner_user_id, p).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area> {
@@ -257,13 +262,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = area_update_tx(&mut tx, id, p).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn area_delete(&self, id: &str) -> Result<()> {
@@ -272,7 +278,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     overlay_delete_subtree_by_area_tx(&mut tx, id).await?;
                     overlay_delete_by_entity_tx(&mut tx, "area", id).await?;
                     area_delete_tx(&mut tx, id).await?;
@@ -280,7 +286,8 @@ impl RepoSyncDomainRaw for SqlxRepo {
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_create(&self, p: NewTrack) -> Result<Track> {
@@ -289,7 +296,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = track_create_tx(
                         &mut tx,
                         p,
@@ -303,7 +310,8 @@ impl RepoSyncDomainRaw for SqlxRepo {
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_update(&self, id: &str, p: TrackPatch) -> Result<Track> {
@@ -312,13 +320,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = track_update_tx(&mut tx, id, p).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn track_delete(&self, id: &str) -> Result<()> {
@@ -327,7 +336,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     overlay_delete_card_overlays_by_track_tx(&mut tx, id).await?;
                     overlay_delete_by_entity_tx(&mut tx, "track", id).await?;
                     overlay_delete_by_entity_tx(&mut tx, "view", id).await?;
@@ -336,7 +345,8 @@ impl RepoSyncDomainRaw for SqlxRepo {
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn card_create(&self, p: NewCard) -> Result<Card> {
@@ -345,7 +355,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = if p.kind == "track-report" {
                         card_create_with_id_tx(
                             &mut tx,
@@ -363,7 +373,8 @@ impl RepoSyncDomainRaw for SqlxRepo {
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card> {
@@ -372,13 +383,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = card_update_tx(&mut tx, id, p).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn card_delete(&self, id: &str) -> Result<()> {
@@ -387,13 +399,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     card_delete_tx(&mut tx, id, &self.card_role_cache).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay> {
@@ -402,13 +415,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = overlay_upsert_tx(&mut tx, p).await?;
                     tx.commit().await?;
                     Ok(out)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn overlay_delete(
@@ -423,12 +437,13 @@ impl RepoSyncDomainRaw for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     overlay_delete_tx(&mut tx, plugin_id, entity_kind, entity_id, kind).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 }

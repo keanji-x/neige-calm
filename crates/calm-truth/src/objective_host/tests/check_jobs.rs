@@ -62,7 +62,7 @@ async fn check_jobs_bind_pending_and_stale_current_standard_admission() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         assert!(
                             check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
                                 .await
@@ -75,7 +75,7 @@ async fn check_jobs_bind_pending_and_stale_current_standard_admission() {
                 .into_iter()
                 .find(|r| matches!(&r.intent,Intent::RunCheck{revision,..} if revision.as_str()=="r1"))
                 .unwrap();
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         check_jobs::bind_tx(&mut tx, &current.id, "objcheck-test", &block().payload)
                             .await
                             .unwrap();
@@ -107,14 +107,14 @@ async fn check_jobs_guard_payload_hash_and_unrelated_writes() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &b.payload)
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
                 let mut changed = b.clone();
                 changed.payload["goal"] = json!("injected");
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     check_jobs::guard_report_tx(
                         &mut tx,
@@ -156,7 +156,7 @@ async fn check_jobs_migrations_append_only_foreign_key_and_cascade() {
     let job = evaluator_job(&repo).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload)
             .await
             .unwrap();
@@ -176,7 +176,7 @@ async fn check_jobs_migrations_append_only_foreign_key_and_cascade() {
                 .await
                 .is_err()
         );
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         track_delete_tx(
             &mut tx,
             "t",
@@ -266,7 +266,7 @@ async fn check_jobs_bind_changed_standard_rejects_unbound_pending_intent() {
     );
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(matches!(
             check_jobs::bind_tx(&mut tx, &job.id, "objcheck-test", &block().payload).await,
             Err(error) if error.to_string().contains("objective check binding is no longer current")

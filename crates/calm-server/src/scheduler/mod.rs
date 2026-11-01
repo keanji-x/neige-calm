@@ -1357,13 +1357,14 @@ impl Scheduler {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     task_mark_sub_track_running_tx(&mut tx, task_id, now_ms()).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn fail_child_track_task(
@@ -1517,7 +1518,7 @@ impl Scheduler {
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             let rows = mark_acknowledged_running_tx(
                 &mut tx,
                 task_id,
@@ -1729,7 +1730,7 @@ impl Scheduler {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let now = now_ms();
                     let deadline = now.saturating_add(self.worker_liveness.cap_ms());
                     task_stamp_missing_running_liveness_tx(&mut tx, task_id, now, deadline).await?;
@@ -1738,7 +1739,8 @@ impl Scheduler {
                     Ok(facts)
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     pub(crate) fn bind_child_dispatcher(&self, dispatcher: Weak<crate::dispatcher::Dispatcher>) {
@@ -1989,7 +1991,7 @@ impl Scheduler {
         };
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             // P9 / P9b / P10: the verdict with its target (frozen, or derived from the rows).
             let verdict = crate::operation::task_verify_adapter::target::reconcile_result_tx(
                 &mut tx, task, attempt, log_path, outcome,

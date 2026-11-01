@@ -61,7 +61,7 @@ async fn historical_edit_capability_uses_current_private_source_and_actual_backe
     );
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")

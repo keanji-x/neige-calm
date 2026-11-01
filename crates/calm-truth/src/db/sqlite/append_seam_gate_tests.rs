@@ -34,7 +34,10 @@ async fn seed(repo: &SqlxRepo, label: &str, role: CardRole) -> Home {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed tx");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -176,7 +179,7 @@ async fn append_seam_refuses_every_triple_the_role_gate_refuses() {
             Box::pin(async move {
                 for (label, actor, scope, event, expected) in cases {
                     let before = events_row_count(&repo).await;
-                    let mut tx = write_session.begin().await.expect("begin tx");
+                    let mut tx = write_session.begin_immediate().await.expect("begin tx");
                     let err = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
                         .await
                         .expect_err(&format!("{label}: seam must refuse"));
@@ -218,7 +221,7 @@ async fn batch_append_seam_gates_each_event_and_writes_none_on_refusal() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let err = append_decision_events_in_tx(
                     &mut tx,
                     &ActorId::User,
@@ -271,7 +274,7 @@ async fn append_seam_admits_the_actor_shapes_production_call_sites_use() {
         .with_writer(|write_session| {
             Box::pin(async move {
                 for actor in [ActorId::KernelDispatcher, ActorId::Kernel, ActorId::User] {
-                    let mut tx = write_session.begin().await.expect("begin tx");
+                    let mut tx = write_session.begin_immediate().await.expect("begin tx");
                     let event = codex_hook(&worker.card, &format!("s3-seam-admit-{actor:?}"));
                     let id =
                         append_decision_event_in_tx(&mut tx, &actor, &worker.scope(), None, &event)

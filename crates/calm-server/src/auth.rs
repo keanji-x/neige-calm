@@ -82,7 +82,7 @@ pub(crate) async fn initialize_owner_profile(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 crate::db::sqlite::area_membership::application_user_register(
                     &mut tx,
                     OWNER_USER_ID,
@@ -93,7 +93,8 @@ pub(crate) async fn initialize_owner_profile(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 impl AuthConfig {

@@ -225,3 +225,6 @@ mod tests;
 
 #[cfg(test)]
 mod read_only_tests;
+
+#[cfg(test)]
+mod deadlock_semantics_tests;

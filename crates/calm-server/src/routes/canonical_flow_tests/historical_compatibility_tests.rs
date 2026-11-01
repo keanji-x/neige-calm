@@ -380,7 +380,7 @@ async fn historical_admission_rejects_another_real_user_even_with_owner_profile_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::area_membership::application_user_register(
                     &mut tx, "alice", "Owner",
                 )
@@ -516,7 +516,7 @@ async fn canonical_collaborator_content_is_accepted_independently_of_private_exe
     let area_id = area["id"].as_str().unwrap();
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
             .await
             .unwrap();
@@ -551,7 +551,7 @@ async fn canonical_collaborator_content_is_accepted_independently_of_private_exe
             let created = post(&app, &alice, "/api/tracks", key, body.clone()).await;
             let replayed = post(&app, &alice, "/api/tracks", key, body).await;
             assert_eq!(created["id"], replayed["id"]);
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let receipt =
                 crate::db::sqlite::conversation::human_track_creation_get_tx(&mut tx, area_id, key)
                     .await
@@ -759,7 +759,7 @@ async fn human_private_fence_keeps_http_save_accepted() {
         let area_id = area["id"].as_str().unwrap();
         let write_db = (fixture.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
                 .await
                 .unwrap();
@@ -776,7 +776,7 @@ async fn human_private_fence_keeps_http_save_accepted() {
             )
             .await;
             let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             if case == 1 {
                 sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)")
                     .bind(area_id).execute(&mut **tx).await.unwrap();

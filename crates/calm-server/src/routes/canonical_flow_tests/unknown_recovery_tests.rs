@@ -137,7 +137,7 @@ async fn acp_recovery(scenario: &str) {
     let (state, app, cookie) = fixture.application().await;
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut token_tx = write_session.begin()
+        let mut token_tx = write_session.begin_immediate()
             .await
             .unwrap();
         let old_token =
@@ -184,7 +184,7 @@ async fn acp_recovery(scenario: &str) {
                 .unwrap();
         if scenario == "watermark" {
             state.dispatcher.retire();
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             append_pending_event(&mut tx, &track, area["id"].as_str().unwrap()).await;
@@ -316,7 +316,7 @@ async fn acp_recovery(scenario: &str) {
             let id = workspace_runtime::execution::ExecutionId::fresh().unwrap();
             metadata.id = id.clone();
             metadata.alias.0 = format!("planner:{worker}:{}", id.as_str());
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             crate::db::sqlite::workspace_execution::insert(
@@ -678,7 +678,7 @@ async fn accept_worker_bound_observation(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let id = append_pending_event(&mut tx, track, area).await;
                 let event = crate::db::sqlite::event_inputs::event_input_tx(&mut tx, id)
                     .await

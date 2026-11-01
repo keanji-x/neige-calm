@@ -296,14 +296,14 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     store.insert(&mut tx, &intent).await.unwrap();
                     assert!(matches!(
                         require_safe_tx(&mut tx, &scope).await,
                         Err(CalmError::Conflict(_))
                     ));
                     tx.rollback().await.unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     require_safe_tx(&mut tx, &scope).await.unwrap();
                 })
             })

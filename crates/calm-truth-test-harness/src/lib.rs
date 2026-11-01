@@ -222,7 +222,10 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin saga tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin saga tx");
                 let inserted = session_insert_tx(&mut tx, state)
                     .await
                     .expect("insert session in saga tx");

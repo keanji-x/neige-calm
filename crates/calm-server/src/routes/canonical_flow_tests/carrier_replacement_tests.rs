@@ -149,7 +149,7 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
     };
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let carrier = conversation::current_input_carrier_tx(&mut tx, &card, &worker)
@@ -326,7 +326,7 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
                 .await
                 .unwrap();
         assert_eq!(new_hash, mirror);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(
             crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(worker.clone()))
                 .await

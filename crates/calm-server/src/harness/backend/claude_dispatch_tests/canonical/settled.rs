@@ -287,7 +287,7 @@ async fn kept_sequence(sequence: Sequence) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
@@ -434,7 +434,7 @@ async fn kept_sequence(sequence: Sequence) {
                     .expect("qualified maintenance must settle kept conversation");
                     std::fs::write(fx.dir.path().join("scenario"), "exit").unwrap();
                     pause.release.notify_one();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier =
                         current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await

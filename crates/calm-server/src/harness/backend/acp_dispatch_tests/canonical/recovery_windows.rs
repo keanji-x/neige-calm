@@ -137,7 +137,7 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await
@@ -245,7 +245,7 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await

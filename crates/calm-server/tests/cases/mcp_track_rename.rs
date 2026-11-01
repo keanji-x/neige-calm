@@ -91,7 +91,7 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
             Box::pin(async move {
                 let track = {
                     let cache = track_area_cache.clone();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let track = track_create_tx(
                         &mut tx,
                         new_track,

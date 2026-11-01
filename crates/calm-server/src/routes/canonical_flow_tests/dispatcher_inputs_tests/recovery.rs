@@ -14,7 +14,7 @@ async fn original(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let identity = conversation::submission_identity_tx(&mut tx, id)
                     .await
                     .unwrap();
@@ -31,7 +31,7 @@ async fn legacy_task_report(flow: &Flow, reason: &str) -> i64 {
     use crate::event::{Event, EventScope};
     let write_db = (flow.fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let event = Event::TaskFailed {

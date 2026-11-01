@@ -17,13 +17,13 @@ async fn rollback_repro(cross_transaction: bool) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
                     .await
                     .unwrap();
                 let id = f.append(&mut tx, &f.event("input", "body")).await;
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("SAVEPOINT before_a")
                     .execute(&mut **tx)
                     .await
@@ -33,7 +33,7 @@ async fn rollback_repro(cross_transaction: bool) {
                     .unwrap();
                 if cross_transaction {
                     tx.rollback().await.unwrap();
-                    tx = write_session.begin().await.unwrap();
+                    tx = write_session.begin_immediate().await.unwrap();
                 } else {
                     sqlx::query("ROLLBACK TO before_a")
                         .execute(&mut **tx)
@@ -74,7 +74,7 @@ async fn rollback_repro(cross_transaction: bool) {
                     b_receipt
                 );
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     system_assistant_receipt_tx(&mut tx, &f.card, SOURCE, "input")
                         .await
@@ -105,7 +105,7 @@ async fn entry_event_acceptance_and_receipt_commit_together() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
                     .await
                     .unwrap();
@@ -142,7 +142,7 @@ async fn entry_event_acceptance_and_receipt_commit_together() {
                     }
                 );
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     replay(&mut tx, &f, "bootstrap", id, &accepted)
                         .await
@@ -176,7 +176,7 @@ async fn exact_ack_checks_identity_fingerprint_and_survives_resource_deletion() 
     let f = Fixture::new().await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
             .await
             .unwrap();
@@ -297,7 +297,7 @@ async fn acceptance_qualifies_current_event_and_carrier_without_residue() {
         let f = Fixture::new().await;
         let write_db = (f.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
                 .await
                 .unwrap();
@@ -351,7 +351,7 @@ async fn acceptance_qualifies_current_event_and_carrier_without_residue() {
             };
             assert!(rejected, "{change}: {result:?}");
             tx.commit().await.unwrap();
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             assert_eq!(
                 db::session_handle_state_by_id_tx(&mut tx, &f.worker)
                     .await
@@ -383,7 +383,7 @@ async fn receipt_insert_failure_rolls_back_acceptance_when_outer_commits() {
     let f = Fixture::new().await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
             .await
             .unwrap();
@@ -399,7 +399,7 @@ async fn receipt_insert_failure_rolls_back_acceptance_when_outer_commits() {
             Err(CalmError::Db(sqlx::Error::Database(_)))
         ));
         tx.commit().await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert_eq!(
             current_input_carrier_tx(&mut tx, &f.card, &f.worker)
                 .await

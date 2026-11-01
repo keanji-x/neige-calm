@@ -156,7 +156,7 @@ async fn add_tags(fx: &Fixture, track_id: &str, tags: &[&str]) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::report_tags::store::apply_tx(&mut tx, track_id, &add, &[])
                     .await
                     .unwrap();

@@ -239,7 +239,10 @@ async fn the_backfill_stamps_never_on_exactly_the_cards_from_shape_binds_as_a_pl
         .iter()
         .find(|migration| migration.version == BACKFILL)
         .expect("the backfill is embedded");
-    { let query = sqlx::raw_sql(&backfill.sql); sqlx::Executor::execute(&pool, query).await }
-        .expect("rerun the backfill");
+    {
+        let query = sqlx::raw_sql(&backfill.sql);
+        sqlx::Executor::execute(&pool, query).await
+    }
+    .expect("rerun the backfill");
     assert_eq!(payloads(&pool).await, after);
 }

@@ -914,7 +914,7 @@ async fn mint_card_with_thread(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.expect("begin card tx");
+                        let mut tx = write_session.begin_immediate().await.expect("begin card tx");
                         if role == CardRole::Assistant {
                             use calm_server::session_projection_repo::{
                                 AgentProvider, WorkerSessionInit, WorkerSessionState,
@@ -1160,7 +1160,10 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) ->
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime tx");
                 let runtime_id = if let Some(runtime) =
                     session_projection_active_for_card_tx(&mut tx, card_id)
                         .await

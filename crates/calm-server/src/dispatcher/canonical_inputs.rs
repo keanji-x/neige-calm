@@ -473,7 +473,13 @@ impl Inner {
             return Err(CalmError::Conflict("event target changed".into()));
         }
         for fact in facts {
-            let Some(observation) = admission.qualify_tx(tx, self.repo.as_ref(), &fact).await?
+            let Some(observation) = admission
+                .qualify_tx(
+                    tx,
+                    &super::observation_reads::ObservationReads::new(self.repo.as_ref()),
+                    &fact,
+                )
+                .await?
             else {
                 continue;
             };
@@ -634,8 +640,15 @@ impl Inner {
                                 "accepted System source event is unavailable".into(),
                             )
                         })?;
-                        let Some(observation) =
-                            admission.qualify_tx(tx, inner.repo.as_ref(), &fact).await?
+                        let Some(observation) = admission
+                            .qualify_tx(
+                                tx,
+                                &super::observation_reads::ObservationReads::new(
+                                    inner.repo.as_ref(),
+                                ),
+                                &fact,
+                            )
+                            .await?
                         else {
                             return Err(CalmError::Forbidden(
                                 "accepted event no longer qualifies this producer".into(),

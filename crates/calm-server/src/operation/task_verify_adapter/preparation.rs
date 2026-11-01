@@ -58,13 +58,13 @@ pub(super) async fn collect(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 // Reuse the kernel's exact original-input, phase, owner and expiry predicate before I/O.
                 let live = super::super::repo_sqlite::has_live_claim_tx(&mut tx, op).await?;
                 if !live {
                     tx.rollback().await?;
                     // Let the repository report ClaimLost, without observing or modifying external state.
-                    return Ok(Some(Box::new(LostClaim)));
+                    return Ok(Some(Box::new(LostClaim) as Box<dyn PreparedTx>));
                 }
                 let facts = read_facts(&mut tx, input, op).await;
                 tx.rollback().await?;
@@ -112,7 +112,7 @@ pub(super) async fn collect(
                     sampled,
                     refs,
                     logs: adapter.gate_logs_dir.clone(),
-                })))
+                }) as Box<dyn PreparedTx>))
             })
         })
         .await

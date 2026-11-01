@@ -274,14 +274,15 @@ impl SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let authorized = gated::ungated_fixture_replay(&actor, &scope, event);
                     let id = Self::event_append_in_tx(&mut tx, &authorized, correlation).await?;
                     tx.commit().await?;
                     Ok(id)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 }
 
@@ -363,7 +364,7 @@ impl RepoEventWrite for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
                     let event = match fut.await {
                         Ok(ev) => ev,
@@ -423,7 +424,8 @@ impl RepoEventWrite for SqlxRepo {
                     Ok(event_id)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn write_with_events(
@@ -440,7 +442,7 @@ impl RepoEventWrite for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
                     let events = match fut.await {
                         Ok(v) => v,
@@ -525,7 +527,8 @@ impl RepoEventWrite for SqlxRepo {
                     Ok(event_ids)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn write_with_actor_events(
@@ -541,7 +544,7 @@ impl RepoEventWrite for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
                     let events = match fut.await {
                         Ok(v) => v,
@@ -564,7 +567,8 @@ impl RepoEventWrite for SqlxRepo {
                     Ok(event_ids)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn log_pure_event(
@@ -583,7 +587,7 @@ impl RepoEventWrite for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
                     let authorized = match gated::authorize_with_caches(
                         &mut tx,
@@ -634,7 +638,8 @@ impl RepoEventWrite for SqlxRepo {
                     Ok(event_id)
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     /// Event-less tx wrapper: commits on `Ok(())`, rolls back on `Err(_)`; no event row, no broadcast.
@@ -645,7 +650,7 @@ impl RepoEventWrite for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
                     match fut.await {
                         Ok(()) => {}
@@ -658,7 +663,8 @@ impl RepoEventWrite for SqlxRepo {
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn events_since(

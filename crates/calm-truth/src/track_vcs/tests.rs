@@ -186,7 +186,10 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin transaction");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin transaction");
                 let committed = commit_events_with_author_in_tx(
                     &mut tx,
                     &track.id,
@@ -261,7 +264,10 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin transaction");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin transaction");
                 let committed = commit_events_with_author_in_tx(
                     &mut tx,
                     &track.id,
@@ -350,7 +356,10 @@ async fn ask_batch_does_not_advance_head() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin transaction");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin transaction");
                 let committed = commit_events_with_author_in_tx(
                     &mut tx,
                     &track.id,
@@ -482,7 +491,7 @@ async fn unchanged_public_snapshot_does_not_attempt_existing_cas_object_inserts(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let warm = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
                     .await
                     .unwrap();
@@ -492,7 +501,7 @@ async fn unchanged_public_snapshot_does_not_attempt_existing_cas_object_inserts(
                 assert!(!before.commits.is_empty());
                 assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "tree"));
                 assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "blob"));
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 // This isolated test trigger observes actual source-row attempts, including ignored
                 // existing hashes. It does not replace the owner or reproduce its insertion policy.
                 sqlx::query("CREATE TABLE cas_insert_probe (kind TEXT NOT NULL)")
@@ -537,7 +546,7 @@ async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let hash = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
             .await
             .unwrap();
@@ -547,7 +556,7 @@ async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
             .bind(&hash))
             .await
             .unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let again = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
             .await
             .unwrap();
@@ -561,7 +570,7 @@ async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
                 .unwrap();
         assert_eq!(facts, ("tree".into(), vec![0], 17));
         // Isolated fault injection: supported DML cannot delete required epoch state.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("DROP TRIGGER frontier_state_no_delete")
             .execute(&mut **tx)
             .await
@@ -571,7 +580,7 @@ async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(
             put_blob(&mut tx, "blob", b"actual new CAS fact")
                 .await

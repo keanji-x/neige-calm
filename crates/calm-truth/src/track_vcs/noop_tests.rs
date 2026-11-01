@@ -51,7 +51,7 @@ async fn unprojected_event_does_not_bootstrap_a_history_tree() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?1")
                     .bind(f.track.id.as_str())
                     .execute(&mut **tx)
@@ -89,7 +89,7 @@ async fn mixed_event_batch_keeps_the_projected_change_and_hook() {
     let previous = head(f.repo.pool(), &f.track.id).await.unwrap();
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let updated = card_update_tx(
             &mut tx,
             f.card.id.as_str(),

@@ -34,7 +34,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     area_membership::application_user_register(&mut tx, "alice", "Owner")
                         .await
                         .unwrap();
@@ -130,19 +130,21 @@ impl Fixture {
     }
 
     async fn add_alice(&self) {
-        sqlx::query(
+        (self.state.sqlite_db().unwrap()).writer().execute(sqlx::query(
             "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES (?1,'alice','member',0)",
         )
-        .bind(&self.area_id)
-        .execute(&self.pool)
+        .bind(&self.area_id))
         .await
         .unwrap();
     }
 
     async fn revoke_alice(&self) {
-        sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
-            .bind(&self.area_id)
-            .execute(&self.pool)
+        (self.state.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
+                    .bind(&self.area_id),
+            )
             .await
             .unwrap();
     }
@@ -220,10 +222,13 @@ async fn track_detail_nonmember_cannot_read_private_cards_or_overlays() {
 #[tokio::test]
 async fn track_detail_nonmember_is_denied_before_private_template_input_decode() {
     let fixture = Fixture::new().await;
-    sqlx::query("UPDATE tracks SET template_input=?2 WHERE id=?1")
-        .bind(&fixture.track_id)
-        .bind("private-malformed-template-input{")
-        .execute(&fixture.pool)
+    (fixture.state.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET template_input=?2 WHERE id=?1")
+                .bind(&fixture.track_id)
+                .bind("private-malformed-template-input{"),
+        )
         .await
         .unwrap();
 
@@ -271,10 +276,13 @@ async fn track_detail_uses_actual_membership_and_deployment_owner_has_no_user_ar
             .0,
         StatusCode::FORBIDDEN
     );
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
-        .bind(&f.area_id)
-        .bind(OWNER_USER_ID)
-        .execute(&f.pool)
+    (f.state.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
+                .bind(&f.area_id)
+                .bind(OWNER_USER_ID),
+        )
         .await
         .unwrap();
     assert_eq!(f.get(&f.owner_cookie).await.0, StatusCode::FORBIDDEN);
@@ -419,10 +427,13 @@ async fn track_detail_rechecks_expected_area_even_when_both_areas_are_accessible
     let f = Fixture::new().await;
     f.add_alice().await;
     let (release, task) = park_detail(&f).await;
-    sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
-        .bind(&f.track_id)
-        .bind(&f.alice_area_id)
-        .execute(&f.pool)
+    (f.state.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                .bind(&f.track_id)
+                .bind(&f.alice_area_id),
+        )
         .await
         .unwrap();
     let (status, body) = finish_detail(release, task).await;

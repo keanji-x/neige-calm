@@ -26,7 +26,7 @@ pub(super) async fn ensure_planner_card(repo: &SqlxRepo, track_id: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -119,7 +119,7 @@ async fn a_parent_planner_without_a_provider_refuses_the_child() {
     );
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let error = adapter
             .prepare_tx(&mut tx, &input, &operation(input.clone()))
             .await
@@ -373,7 +373,7 @@ async fn parent_with_plan(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = crate::db::sqlite::area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -707,7 +707,7 @@ async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let plan = crate::operation::workspace_lease::worker::prepare_worker_lease_tx(
                         &mut tx,
                         &child,

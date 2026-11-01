@@ -7,7 +7,7 @@ use sqlx::Connection;
 use sqlx::SqlitePool;
 use sqlx::pool::PoolConnection;
 
-use super::SqlxRepo;
+use super::super::SqlxRepo;
 
 const STALL_BOUND: Duration = Duration::from_secs(30);
 
@@ -30,11 +30,18 @@ async fn wait_for_pool_settled(pool: &SqlitePool) {
 
 /// Leave a pooled connection inside a leaked `BEGIN IMMEDIATE` (depth bumped,
 /// no live guard) and return it to the pool poisoned.
-async fn poison_one_connection(pool: &SqlitePool, extra_sql: Option<&str>) {
+async fn poison_one_connection(pool: &SqlitePool, writer_role: bool, extra_sql: Option<&str>) {
     let mut conn = pool.acquire().await.unwrap();
-    let mut tx = Connection::begin_with(&mut *conn, "BEGIN IMMEDIATE")
-        .await
-        .unwrap();
+    let mut tx = Connection::begin_with(
+        &mut *conn,
+        if writer_role {
+            "BEGIN IMMEDIATE"
+        } else {
+            "BEGIN"
+        },
+    )
+    .await
+    .unwrap();
     if let Some(sql) = extra_sql {
         sqlx::query(sql).execute(&mut *tx).await.unwrap();
     }
@@ -47,12 +54,12 @@ async fn pool_repairs_leaked_open_transaction_on_release() {
     for writer_role in [false, true] {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let pool = if writer_role {
-            repo.db().writer_pool()
+            &repo.db().writer().pool
         } else {
             repo.pool()
         };
 
-        poison_one_connection(pool, None).await;
+        poison_one_connection(pool, writer_role, None).await;
         wait_for_pool_settled(pool).await;
 
         let write_db = (repo.db()).clone();
@@ -60,7 +67,7 @@ async fn pool_repairs_leaked_open_transaction_on_release() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let tx = tokio::time::timeout(STALL_BOUND, write_session.begin())
+                    let tx = tokio::time::timeout(STALL_BOUND, write_session.begin_immediate())
                         .await
                         .expect(
                             "BEGIN IMMEDIATE must not stall on a leaked transaction's write lock",
@@ -77,9 +84,16 @@ async fn pool_repairs_leaked_open_transaction_on_release() {
                         held.push(pool.acquire().await.unwrap());
                     }
                     for conn in &mut held {
-                        let tx = Connection::begin_with(&mut **conn, "BEGIN IMMEDIATE")
-                            .await
-                            .expect("every pooled connection must accept begin_with after repair");
+                        let tx = Connection::begin_with(
+                            &mut **conn,
+                            if writer_role {
+                                "BEGIN IMMEDIATE"
+                            } else {
+                                "BEGIN"
+                            },
+                        )
+                        .await
+                        .expect("every pooled connection must accept begin_with after repair");
                         tx.rollback().await.unwrap();
                     }
                 })
@@ -91,16 +105,13 @@ async fn pool_repairs_leaked_open_transaction_on_release() {
 
 #[tokio::test]
 async fn pool_repair_rolls_back_leaked_uncommitted_writes() {
-    for writer_role in [false, true] {
+    {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let pool = if writer_role {
-            repo.db().writer_pool()
-        } else {
-            repo.pool()
-        };
+        let pool = &repo.db().writer().pool;
 
         poison_one_connection(
             pool,
+            true,
             Some("INSERT INTO settings (key, value, updated_at) VALUES ('leaked', 'x', 0)"),
         )
         .await;
@@ -130,7 +141,7 @@ async fn pool_repair_rolls_back_leaked_uncommitted_writes() {
 
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = tokio::time::timeout(STALL_BOUND, write_session.begin())
+            let mut tx = tokio::time::timeout(STALL_BOUND, write_session.begin_immediate())
                 .await
                 .expect("BEGIN IMMEDIATE must not stall on a leaked transaction's write lock")
                 .unwrap();

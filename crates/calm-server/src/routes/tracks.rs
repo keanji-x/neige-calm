@@ -2922,7 +2922,7 @@ async fn preflight_track_deletion_reprojection(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await?
                 {
                     let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
@@ -2940,7 +2940,8 @@ async fn preflight_track_deletion_reprojection(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 #[allow(deprecated)]
@@ -3985,7 +3986,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let (updated, projection) = structural_init_report_tx(
                         &mut tx,
                         InitialReportTarget {

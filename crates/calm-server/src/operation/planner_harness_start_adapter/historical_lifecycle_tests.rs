@@ -24,7 +24,7 @@ impl Fixture {
         let track = super::tests::make_track(&repo, None, None, None).await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let card = card_create_with_id_tx(
                 &mut tx, new_id(), NewCard {
                     track_id: track.id.clone(), kind: "codex".into(), sort: None, title: None,
@@ -72,7 +72,7 @@ impl Fixture {
                 .await
                 .unwrap();
             let pending = operations.get_operation(&id).await.unwrap().unwrap();
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let output = adapter
                 .prepare_tx(&mut tx, &payload, &pending)
                 .await
@@ -210,7 +210,7 @@ async fn historical_acp_displaced_stop_failure_keeps_committed_output() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             session_supersede_and_start_tx(
                                 &mut tx,
                                 &worker,
@@ -439,7 +439,7 @@ async fn corrupt_predecessor(fx: &Fixture, predecessor: &str) {
                     let card_id = fx.output.output_string("card_id", "test").unwrap();
                     let card = fx.repo.card_get(&card_id).await.unwrap().unwrap();
                     let provider = startable_provider(HarnessProfile::Planner, &card).unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut init = starting_runtime_init(
                         HarnessProfile::Planner,
                         provider,

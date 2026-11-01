@@ -152,14 +152,15 @@ pub async fn react(db: &SqliteDb, input: ObjectiveInput) -> Result<CommittedReac
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let at_ms = now_ms()?;
                 let reaction = react_tx(&mut tx, &input, at_ms).await?;
                 tx.commit().await?;
                 Ok(CommittedReaction { reaction })
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 fn now_ms() -> Result<i64> {
@@ -226,13 +227,14 @@ pub async fn load_state(db: &SqliteDb, track: &TrackId) -> Result<(LogSeq, State
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let result = load_state_tx(&mut tx, track).await?;
                 tx.commit().await?;
                 Ok(result)
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 /// Read the engine state under the caller's writer admission, so an executor
@@ -254,14 +256,15 @@ pub async fn replay_log(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let rows = log::read_tx(&mut tx, track).await?;
                 let result = fold_log(&rows);
                 tx.commit().await?;
                 Ok(result)
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 fn fold_log(rows: &[LoggedEvent]) -> (State, Vec<(IntentId, Intent)>) {

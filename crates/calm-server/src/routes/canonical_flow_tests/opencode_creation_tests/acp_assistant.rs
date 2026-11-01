@@ -454,7 +454,7 @@ async fn historical_creation_key_replays_original_evidence(provider: AgentProvid
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     !crate::db::sqlite::conversation::card_has_canonical_storage(&mut tx, card)
                         .await

@@ -167,7 +167,7 @@ impl Pair {
         fixture.wait_for_stored_reply(&planner).await;
         let write_db = (fixture.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
                 &mut tx,
                 area["id"].as_str().unwrap(),
@@ -569,7 +569,7 @@ async fn planner_switch_open_wake_refused_before_revoke() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (scope, event) = crate::ask::ask_requested_tx(
                     &mut tx,
                     &p.cards[0].clone().into(),

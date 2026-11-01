@@ -82,7 +82,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
                     frame.header.last_thread_id = Some(owner.thread.clone());
                     crate::db::sqlite::session_set_handle_state_tx(
@@ -526,7 +526,7 @@ async fn canonical_acp_receipt_revalidates_claim_and_final_source_after_commit()
                     if after_receipt {
                         fx.auth.sessions.remove(&fx.login).unwrap();
                     } else {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let mut carrier =
                             current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                                 .await
@@ -710,7 +710,7 @@ async fn canonical_acp_rejects_wrong_owner_proof_local_turn_and_native_session()
     fx.wait_idle().await;
     let write_db = (fx.owner.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let target = crate::harness::input_dispatch::execution_target_tx(
             &mut tx,
             &fx.owner.card,

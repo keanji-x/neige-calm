@@ -38,7 +38,7 @@ async fn ordinary_turn_wakes_from_idle_and_returns_without_fifty_ms_probes() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
                         .await
@@ -336,7 +336,7 @@ async fn compact_completion_wakes_queued_input_and_returns_to_stable_idle() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, card, &fx.harness.inner.worker_session_id)
                         .await

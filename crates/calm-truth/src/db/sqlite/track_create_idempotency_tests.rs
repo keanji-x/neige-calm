@@ -61,7 +61,7 @@ async fn the_binding_and_the_track_commit_together() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin tx");
+        let mut tx = write_session.begin_immediate().await.expect("begin tx");
         let area = area_create_tx(
             &mut tx,
             calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -75,7 +75,7 @@ async fn the_binding_and_the_track_commit_together() {
         .expect("create area");
         tx.commit().await.expect("commit the area");
 
-        let mut tx = write_session.begin().await.expect("begin the create tx");
+        let mut tx = write_session.begin_immediate().await.expect("begin the create tx");
         let track = track_create_tx(
             &mut tx,
             new_track(&area.id, "rolled back"),
@@ -123,7 +123,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.expect("begin tx");
+                            let mut tx = write_session.begin_immediate().await.expect("begin tx");
                             let area = area_create_tx(
                                 &mut tx,
                                 calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -184,7 +184,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
                             );
 
                             drop(tx);
-                            let mut tx = write_session.begin().await.expect("begin a clean tx");
+                            let mut tx = write_session.begin_immediate().await.expect("begin a clean tx");
                             let area2 = area_create_tx(
                                 &mut tx,
                                 calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -247,7 +247,7 @@ async fn a_message_less_claim_round_trips_as_its_own_fingerprint_variant() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -299,7 +299,7 @@ async fn a_message_less_claim_round_trips_as_its_own_fingerprint_variant() {
          fabricated message digest — the route's create-shape check compares exactly this"
                 );
 
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let second = track_create_tx(
                     &mut tx,
                     new_track(&area.id, "second"),

@@ -78,7 +78,7 @@ impl Fixture {
         areas.insert(track.id.clone(), area.id);
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             let card = card_create_with_id_tx(
@@ -206,7 +206,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let id = append_decision_event_in_tx(
                         &mut tx,
                         &ActorId::KernelDispatcher,

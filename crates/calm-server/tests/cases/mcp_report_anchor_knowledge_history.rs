@@ -119,7 +119,7 @@ async fn old_partial_knowledge_survives_history_prune() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         sqlx::query(
                             "UPDATE worker_sessions SET handle_state_json=? WHERE track_id=?",
                         )
@@ -138,7 +138,7 @@ async fn old_partial_knowledge_survives_history_prune() {
         // Release the seeding/writing assistant's knowledge through its actual lifecycle door.
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             session_mark_superseded_runtime_tx(&mut tx, &assistant_identity(&b).session_id)
                 .await
                 .unwrap();
@@ -158,7 +158,7 @@ async fn old_partial_knowledge_survives_history_prune() {
             assert!(vcs::cat_at(pool.read_pool(), &old, &path).await.is_ok());
             let retained = counts(&b).await;
             assert!(retained.0 >= 66);
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("UPDATE worker_sessions SET state='running' WHERE id=?")
                 .bind(planner_identity(&b).session_id)
                 .execute(&mut **tx)
@@ -250,7 +250,7 @@ async fn divergent_history(b: &crate::mcp_track_report::Boot, value: serde_json:
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE cards SET payload=? WHERE id=?")
                     .bind(value.to_string())
                     .bind(b.report_card_id.as_str())
@@ -356,7 +356,7 @@ async fn absent_history_preserves_read_authority_and_can_be_replaced_by_own_writ
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     match missing {
                         "head" => {
                             sqlx::query("DELETE FROM track_vcs_refs WHERE track_id=?")
@@ -486,7 +486,7 @@ async fn mismatched_final_history_rolls_back_truth_history_knowledge_and_broadca
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 // Poison only the VCS input after the row was written and its event serialized.
                 sqlx::query(&format!(
                     "CREATE TRIGGER divergent_history AFTER INSERT ON events \
@@ -543,7 +543,7 @@ async fn corrupt_or_missing_knowledge_commit_skips_prune_for_inactive_sessions()
             serde_json::json!({}),
             serde_json::json!({"commit":"absent"}),
         ] {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             sqlx::query(

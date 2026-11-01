@@ -127,7 +127,7 @@ async fn capability_stamped_only_for_template_init() {
     .await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let recipe =
@@ -151,7 +151,7 @@ async fn capability_stamped_only_for_template_init() {
         for track in [&blank, &fork, &recipe, &builtin] {
             assert!(capabilities(&repo, track).await.is_empty(), "{}", track.id);
         }
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let subtrack = track_create_tx(

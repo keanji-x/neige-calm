@@ -109,7 +109,7 @@ impl Fixture {
                                     })
                                     .await
                                     .unwrap();
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 let planner = new_id();
                                 crate::track_creation::initialize_track_tx(
                         &mut tx,
@@ -139,7 +139,7 @@ impl Fixture {
                                     .id
                             } else {
                                 let runtime = new_id();
-                                let mut tx = write_session.begin().await.unwrap();
+                                let mut tx = write_session.begin_immediate().await.unwrap();
                                 crate::db::sqlite::session_start_runtime_tx(
                                     &mut tx,
                                     WorkerSessionInit::shared_planner(
@@ -231,7 +231,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     area_membership::application_user_register(&mut tx, user, user)
                         .await
                         .unwrap();
@@ -316,7 +316,7 @@ async fn existing_session_rechecks_current_area_membership_in_the_acceptance_tra
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
                                 .await
                                 .unwrap();
@@ -330,7 +330,7 @@ async fn existing_session_rechecks_current_area_membership_in_the_acceptance_tra
                             tx.commit().await.unwrap();
                             let session = fx.session("alice", "owner");
                             assert_eq!(fx.send(Some(&session)).await.status(), StatusCode::OK);
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
                                 .bind(area.id.as_str())
                                 .execute(&mut **tx)

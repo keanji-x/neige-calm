@@ -41,11 +41,17 @@ async fn nested_alias_transaction_and_autocommit_reject_before_queueing() {
         LIMIT,
         manager.with_writer(|session| {
             Box::pin(async {
-                let tx = session.begin().await.unwrap();
+                let tx = session.begin_immediate().await.unwrap();
                 let nested = manager
                     .with_writer(|other| {
                         Box::pin(async {
-                            other.begin().await.unwrap().commit().await.unwrap();
+                            other
+                                .begin_immediate()
+                                .await
+                                .unwrap()
+                                .commit()
+                                .await
+                                .unwrap();
                         })
                     })
                     .await;
@@ -76,7 +82,7 @@ async fn sibling_operation_futures_on_one_task_queue_without_false_reentry() {
     let queued = Arc::new(Notify::new());
     let first = manager.with_writer(|session| {
         Box::pin(async {
-            let mut tx = session.begin().await.unwrap();
+            let mut tx = session.begin_immediate().await.unwrap();
             sqlx::query("INSERT INTO probe VALUES('first')")
                 .execute(&mut **tx)
                 .await
@@ -91,7 +97,7 @@ async fn sibling_operation_futures_on_one_task_queue_without_false_reentry() {
         manager
             .with_writer(|session| {
                 Box::pin(async {
-                    let begin = session.begin();
+                    let begin = session.begin_immediate();
                     tokio::pin!(begin);
                     let mut notified = false;
                     let mut tx = poll_fn(|cx| {
@@ -123,13 +129,62 @@ async fn sibling_operation_futures_on_one_task_queue_without_false_reentry() {
 }
 
 #[tokio::test]
+async fn cancelled_queued_operation_does_not_block_the_next_writer() {
+    let manager = manager().await;
+    let entered = Notify::new();
+    let release = Notify::new();
+    let holder = manager.with_writer(|session| {
+        Box::pin(async {
+            let tx = session.begin_immediate().await.unwrap();
+            entered.notify_one();
+            release.notified().await;
+            tx.commit().await.unwrap();
+        })
+    });
+    let queued = async {
+        entered.notified().await;
+        let mut cancelled = Box::pin(manager.with_writer(|session| {
+            Box::pin(async {
+                session
+                    .begin_immediate()
+                    .await
+                    .unwrap()
+                    .commit()
+                    .await
+                    .unwrap();
+            })
+        }));
+        poll_fn(|cx| {
+            assert!(cancelled.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(cancelled);
+        let mut successor =
+            Box::pin(manager.execute(sqlx::query("INSERT INTO probe VALUES('successor')")));
+        poll_fn(|cx| {
+            assert!(successor.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        release.notify_one();
+        successor.await.unwrap();
+    };
+    let (holder, ()) = timeout(LIMIT, async { tokio::join!(holder, queued) })
+        .await
+        .unwrap();
+    holder.unwrap();
+    assert_eq!(values(&manager).await, ["successor"]);
+}
+
+#[tokio::test]
 async fn propagated_child_writer_rejects_parent_dependency() {
     let manager = manager().await;
     timeout(
         LIMIT,
         manager.with_writer(|session| {
             Box::pin(async {
-                let tx = session.begin().await.unwrap();
+                let tx = session.begin_immediate().await.unwrap();
                 let alias = manager.clone();
                 let child = tokio::spawn(inherit_write_scope(async move {
                     alias
@@ -157,7 +212,7 @@ async fn distinct_managers_can_write_within_one_operation() {
     first
         .with_writer(|session| {
             Box::pin(async {
-                let tx = session.begin().await.unwrap();
+                let tx = session.begin_immediate().await.unwrap();
                 second
                     .execute(sqlx::query("INSERT INTO probe VALUES('independent')"))
                     .await
@@ -179,7 +234,7 @@ async fn cancellation_rolls_back_and_releases_scope_and_admission() {
         alias
             .with_writer(|session| {
                 Box::pin(async move {
-                    let mut tx = session.begin().await.unwrap();
+                    let mut tx = session.begin_immediate().await.unwrap();
                     sqlx::query("INSERT INTO probe VALUES('cancelled')")
                         .execute(&mut **tx)
                         .await
@@ -211,12 +266,12 @@ async fn active_drop_and_callback_error_preserve_rollback_and_session_reuse() {
     let result: Result<()> = manager
         .with_writer(|session| {
             Box::pin(async {
-                let mut tx = session.begin().await?;
+                let mut tx = session.begin_immediate().await?;
                 sqlx::query("INSERT INTO probe VALUES('dropped')")
                     .execute(&mut **tx)
                     .await?;
                 drop(tx);
-                let tx = session.begin_once().await?;
+                let tx = session.begin_immediate_once().await?;
                 tx.rollback().await?;
                 Err(TruthError::Forbidden("fixture rejection".into()))
             })
@@ -241,9 +296,9 @@ async fn session_from_an_earlier_root_cannot_begin_under_an_active_alias() {
                 manager
                     .with_writer(|inner| {
                         Box::pin(async {
-                            let tx = inner.begin().await.unwrap();
+                            let tx = inner.begin_immediate().await.unwrap();
                             assert!(matches!(
-                                outer.begin().await,
+                                outer.begin_immediate().await,
                                 Err(TruthError::NestedWrite(_))
                             ));
                             tx.rollback().await.unwrap();
@@ -266,7 +321,7 @@ async fn inherited_context_does_not_follow_later_transactions_of_the_parent() {
         LIMIT,
         manager.with_writer(|session| {
             Box::pin(async {
-                let first = session.begin().await.unwrap();
+                let first = session.begin_immediate().await.unwrap();
                 let alias = manager.clone();
                 let child = inherit_write_scope(async move {
                     alias
@@ -276,7 +331,7 @@ async fn inherited_context_does_not_follow_later_transactions_of_the_parent() {
                         .await
                 });
                 first.rollback().await.unwrap();
-                let second = session.begin().await.unwrap();
+                let second = session.begin_immediate().await.unwrap();
                 tokio::pin!(child);
                 assert!(
                     futures::poll!(child.as_mut()).is_pending(),

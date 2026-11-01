@@ -260,7 +260,7 @@ async fn bind_claude_runtime_session(repo: &SqlxRepo, card_id: &str, session_id:
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -298,7 +298,7 @@ async fn bind_superseded_claude_runtime_session(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

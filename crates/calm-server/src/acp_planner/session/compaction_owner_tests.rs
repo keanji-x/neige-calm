@@ -12,7 +12,7 @@ async fn admitted(session: &AcpPlannerSession, purpose: Purpose) -> claims::Clai
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let claims::Cas::Applied(claim) = claims::admit(
                     &mut tx,
                     &params.worker_session_id,

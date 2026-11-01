@@ -156,7 +156,7 @@ async fn expired_claim_rejects_provider_checkpoint() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     checkpoint_app_server_interact_tx(
                         &mut tx,
@@ -264,7 +264,7 @@ async fn original_identity_phase_owner_and_completion_are_claim_fences() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(
                         checkpoint_app_server_interact_tx(
                             &mut tx,
@@ -299,7 +299,7 @@ async fn sequential_provider_checkpoints_use_explicit_previous_output() {
                 for (expected, output, thread) in
                     [(original, &first, "first"), (&first, &second, "second")]
                 {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     checkpoint_app_server_interact_tx(
                         &mut tx,
                         &op,
@@ -345,7 +345,7 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 checkpoint_app_server_interact_tx(
                     &mut tx,
                     &op,
@@ -356,7 +356,7 @@ async fn stale_same_claim_output_cannot_overwrite_a_committed_checkpoint() {
                 .await
                 .unwrap();
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     checkpoint_app_server_interact_tx(
                         &mut tx,
@@ -399,7 +399,7 @@ async fn phase_only_settlement_preserves_a_provider_checkpoint() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 checkpoint_app_server_interact_tx(
                     &mut tx,
                     &op,
@@ -441,7 +441,7 @@ async fn failed_later_checkpoint_can_compensate_without_replacing_committed_outp
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         checkpoint_app_server_interact_tx(
                             &mut tx,
                             &op,
@@ -469,7 +469,7 @@ async fn failed_later_checkpoint_can_compensate_without_replacing_committed_outp
                             ))
                             .await
                             .unwrap();
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let error = checkpoint_app_server_interact_tx(
                             &mut tx,
                             &op,
@@ -613,7 +613,7 @@ async fn expired_claim_cannot_use_the_inserted_transaction_branch() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     write_phase_and_tx_output(
                         &mut tx,

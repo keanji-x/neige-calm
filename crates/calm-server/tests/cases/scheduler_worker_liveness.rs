@@ -36,7 +36,7 @@ async fn seed_worker_started_at(boot: &Boot, label: &str, started_ms: i64) -> Li
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let deadline = started_ms + WorkerLiveness::DEFAULT.cap.as_millis() as i64;
                 let rows = calm_truth::db::sqlite::task_mark_running_tx(
                     &mut tx,

@@ -19,7 +19,7 @@ impl OperationRuntime {
         setup: F,
     ) -> Result<()>
     where
-        F: for<'a, 'tx> FnOnce(&'a mut Tx<'tx>) -> BoxFuture<'a, Result<()>>,
+        F: for<'a, 'tx> FnOnce(&'a mut Tx<'tx>) -> BoxFuture<'a, Result<()>> + Send,
     {
         let adapter = self.adapter(kind)?;
         adapter.validate(payload).await?;
@@ -29,7 +29,7 @@ impl OperationRuntime {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let verdict = match setup(&mut tx).await {
                         Ok(()) => adapter
                             .prepare_tx(&mut tx, payload, &dry_run_operation(kind, payload))
@@ -41,7 +41,8 @@ impl OperationRuntime {
                     verdict
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }
 

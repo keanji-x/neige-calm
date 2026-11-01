@@ -200,7 +200,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = super::read_receipt::read_receipt_mark_read_tx(
                         &mut tx,
                         kind,
@@ -226,7 +226,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out =
                         super::read_receipt::read_receipt_mark_unread_tx(&mut tx, kind, target_id)
                             .await?;
@@ -246,7 +246,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out =
                         super::track_recipe::track_recipe_create_tx(&mut tx, &p.title, &p.body)
                             .await?;
@@ -269,7 +269,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let out = super::track_recipe::track_recipe_update_tx(
                         &mut tx,
                         id,
@@ -325,7 +325,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     super::track_recipe::track_recipe_delete_tx(&mut tx, id).await?;
                     tx.commit().await?;
                     Ok(())
@@ -491,7 +491,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let _deleted = super::terminal_delete_tx(&mut tx, id).await?;
                     tx.commit().await?;
                     Ok(())
@@ -621,7 +621,7 @@ impl RepoOutOfDomain for SqlxRepo {
     ) -> Result<i64> {
         let write_db = (self.db).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             let mut carrier =
                 super::conversation::current_native_fact_tx(&mut tx, card_id, worker_session_id, true)
                     .await?;
@@ -688,7 +688,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     // `LIMIT 1` is not available on UPDATE in the bundled sqlite build, so the
                     // subquery chooses the row: the newest projection with this key.
                     let row = sqlx::query(
@@ -723,7 +723,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let deleted =
                         transcript_projection_delete_tx(&mut tx, card_id, client_id).await?;
                     tx.commit().await?;
@@ -1034,7 +1034,7 @@ impl RepoOutOfDomain for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let existing = super::area_folders_list_all_tx(&mut tx).await?;
                     if let Some(conflict) =
                         crate::area_folder_claim::classify_conflict(&existing, path)

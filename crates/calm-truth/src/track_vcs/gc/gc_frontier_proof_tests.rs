@@ -26,7 +26,7 @@ async fn object_sweep_frontier_same_tree_head_aba_cannot_hide_restored_cycle_tre
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(&mut tx, &f, "cycle-C", Some(&f.commit), &restored.tree_hash).await;
                 raw_head(&mut tx, &f, "cycle-C").await;
                 raw_commit(&mut tx, &f, "cycle-D", Some("cycle-C"), &f.tree.tree_hash).await;
@@ -69,19 +69,28 @@ async fn object_sweep_frontier_missing_raw_head_is_not_an_old_covered_cut() {
     f.age(&restored).await;
     let orphan = f.orphan("missing root independent garbage").await;
     {
-        let mut connection = f.repo.pool().acquire().await.unwrap();
-        sqlx::query("PRAGMA foreign_keys=OFF")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
-        sqlx::query(
+        f.repo
+            .db()
+            .writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA foreign_keys=OFF")
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    sqlx::query(
             "INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('missing-root','restored-H')",
         )
-        .execute(&mut *connection)
+        .execute(&mut **connection)
         .await
         .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&mut *connection)
+                    sqlx::query("PRAGMA foreign_keys=ON")
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    Ok::<_, sqlx::Error>(())
+                })
+            })
             .await
             .unwrap();
     }
@@ -93,7 +102,7 @@ async fn object_sweep_frontier_missing_raw_head_is_not_an_old_covered_cut() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(
                     &mut tx,
                     &f,
@@ -130,7 +139,7 @@ async fn object_sweep_frontier_detached_pending_is_not_a_root_or_current_parent_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(&mut tx, &f, "other-head", None, &f.tree.tree_hash).await;
                 raw_commit(
                     &mut tx,
@@ -166,18 +175,27 @@ async fn object_sweep_frontier_invalid_fk_disabled_pointer_fails_closed() {
     let f = Fixture::new().await;
     let orphan = f.orphan("retain when pending pointer absent").await;
     {
-        let mut connection = f.repo.pool().acquire().await.unwrap();
-        sqlx::query("PRAGMA foreign_keys=OFF")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO track_vcs_gc_pending VALUES(1,'missing-pointer',?1)")
-            .bind(f.track.as_str())
-            .execute(&mut *connection)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&mut *connection)
+        f.repo
+            .db()
+            .writer()
+            .autocommit(|connection| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA foreign_keys=OFF")
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    sqlx::query("INSERT INTO track_vcs_gc_pending VALUES(1,'missing-pointer',?1)")
+                        .bind(f.track.as_str())
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    sqlx::query("PRAGMA foreign_keys=ON")
+                        .execute(&mut **connection)
+                        .await
+                        .unwrap();
+                    Ok::<_, sqlx::Error>(())
+                })
+            })
             .await
             .unwrap();
     }
@@ -231,7 +249,7 @@ async fn object_sweep_frontier_prefix_round_overflow_rebaselines_outside_and_pro
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut parent = f.commit.clone();
                 for event in 0..34 {
                     parent = track_vcs::commit_tree(

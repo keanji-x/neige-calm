@@ -28,7 +28,7 @@ async fn refusal_across_spawn(stage: Stage) {
     let id = intent.metadata.id.clone();
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
         tx.commit().await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

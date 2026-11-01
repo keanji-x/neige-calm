@@ -1057,7 +1057,7 @@ pub trait OperationRepo: Send + Sync {
         let db = self.sqlite_db();
         let write_db = (db).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
                 .bind(id).execute(&mut **tx).await?;
             tx.commit().await?;

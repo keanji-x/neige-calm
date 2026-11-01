@@ -44,7 +44,7 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

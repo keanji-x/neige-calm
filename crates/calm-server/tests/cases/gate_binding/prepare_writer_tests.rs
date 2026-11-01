@@ -52,22 +52,27 @@ async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
     let pool = fx.db();
 
     {
-
         let mut writer = tokio::spawn(async move {
             let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
-            sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")
-                .execute(&mut **tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, calm_server::error::CalmError>(())
-
-        })).await.expect("independent write operation")
-});
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, calm_server::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
         // The explicit release barrier is the ordering oracle. This bound is below SAMPLE_TIMEOUT;
         // otherwise the old writer-held sampling could pass after the filter was killed on timeout.
-        let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        let committed_before_release =
+            tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         let filter_still_running = !live_processes_naming(&hook.display().to_string()).is_empty();
         assert!(!release.exists());
         // Always release before reporting the assertion so a red run drains its real subprocesses.
@@ -98,9 +103,7 @@ let mut tx = write_session_1.begin().await?;
             .await
             .unwrap();
         assert_eq!(rows, 1);
-
-
-}
+    }
 }
 
 struct FilterBarrier {

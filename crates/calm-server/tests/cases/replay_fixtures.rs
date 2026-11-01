@@ -80,7 +80,10 @@ async fn seed_rooted_track(repo: &SqlxRepo) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime tx");
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

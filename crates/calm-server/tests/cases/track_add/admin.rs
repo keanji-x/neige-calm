@@ -86,7 +86,7 @@ async fn track_add_admits_an_admin_planner() {
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
     let write_db = (boot.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &planner.identity.session_id, &hash)
             .await
             .unwrap();

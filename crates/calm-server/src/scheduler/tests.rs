@@ -480,7 +480,10 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed tx");
                 let (card, _term) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
                     &mut tx,
                     "card-claude-timeout".into(),
@@ -516,31 +519,37 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
                     .expect("insert running claude task");
                 tx.commit().await.expect("commit seed tx");
 
-                sqlx::query(
-                    r#"UPDATE worker_sessions
+                (concrete.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            r#"UPDATE worker_sessions
                SET state = 'running',
                    updated_at_ms = ?1
                WHERE id = 'runtime-claude-timeout'"#,
-                )
-                .bind(now)
-                .execute(&pool)
-                .await
-                .expect("mark claude session running");
-                sqlx::query(
-                    r#"INSERT INTO workspace_leases (
+                        )
+                        .bind(now),
+                    )
+                    .await
+                    .expect("mark claude session running");
+                (concrete.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-claude-timeout', ?1, ?2, '/tmp/neige-claude-timeout-lease',
                        'held', 'test-owner', ?3, NULL, ?4, ?4)"#,
-                )
-                .bind(card.id.as_ref())
-                .bind(track.id.as_str())
-                .bind(now + 60_000)
-                .bind(now)
-                .execute(&pool)
-                .await
-                .expect("insert held lease");
+                        )
+                        .bind(card.id.as_ref())
+                        .bind(track.id.as_str())
+                        .bind(now + 60_000)
+                        .bind(now),
+                    )
+                    .await
+                    .expect("insert held lease");
 
                 let events = EventBus::new();
                 let write = WriteContext::new(
@@ -672,40 +681,49 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin task tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin task tx");
                 crate::test_support::insert_task_tx(&mut tx, &stored)
                     .await
                     .expect("insert done task");
                 tx.commit().await.expect("commit task tx");
 
                 let now = now_ms();
-                sqlx::query(
-                    r#"INSERT INTO workspace_leases (
+                (concrete.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-race', 'card-race', ?1, '/tmp/neige-timeout-race',
                        'held', 'test-owner', ?2, NULL, ?3, ?3)"#,
-                )
-                .bind(track.id.as_str())
-                .bind(now + 60_000)
-                .bind(now)
-                .execute(&pool)
-                .await
-                .expect("insert held lease");
-                sqlx::query(
-                    r#"INSERT INTO worker_sessions (
+                        )
+                        .bind(track.id.as_str())
+                        .bind(now + 60_000)
+                        .bind(now),
+                    )
+                    .await
+                    .expect("insert held lease");
+                (concrete.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            r#"INSERT INTO worker_sessions (
                    id, track_id, provider, mode, contract, state, card_id,
                    created_at_ms, updated_at_ms
                )
                VALUES ('runtime-race', ?1, 'codex', 'resumable', 'executor',
                        'running', 'card-race', ?2, ?2)"#,
-                )
-                .bind(track.id.as_str())
-                .bind(now)
-                .execute(&pool)
-                .await
-                .expect("insert worker session");
+                        )
+                        .bind(track.id.as_str())
+                        .bind(now),
+                    )
+                    .await
+                    .expect("insert worker session");
 
                 let events = EventBus::new();
                 let write = WriteContext::new(

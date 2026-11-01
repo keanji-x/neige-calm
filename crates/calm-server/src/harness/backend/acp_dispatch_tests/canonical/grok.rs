@@ -56,7 +56,7 @@ async fn canonical_grok_declined_request_ends_failed_and_settles_its_receipt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let carrier =
                                 current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                                     .await

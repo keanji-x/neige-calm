@@ -67,16 +67,22 @@ async fn agent_backend_registry_rejects_alias_protocol_removal_and_reuse() {
     ));
     // SQL cannot erase an identity to make its id reusable.
     assert!(
-        (repo.db()).writer().execute(sqlx::query("DELETE FROM agent_backend_registry WHERE backend_id='other'"))
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "DELETE FROM agent_backend_registry WHERE backend_id='other'"
+            ))
             .await
             .is_err()
     );
     assert!(
-        (repo.db()).writer().execute(sqlx::query(
-            "UPDATE agent_backend_registry SET canonical_home='/new' WHERE backend_id='other'"
-        ))
-        .await
-        .is_err()
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE agent_backend_registry SET canonical_home='/new' WHERE backend_id='other'"
+            ))
+            .await
+            .is_err()
     );
 }
 

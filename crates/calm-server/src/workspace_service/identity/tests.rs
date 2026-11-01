@@ -47,7 +47,7 @@ pub(super) async fn track(repo: &SqlxRepo, cwd: &Path, plan: TrackWorkspacePlan)
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -248,7 +248,7 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_workspace_write_tx(
                     &mut tx,
                     track.id.as_str(),
@@ -262,7 +262,7 @@ async fn workspace_identity_registration_cas_refuses_stale_selection() {
                 .await
                 .unwrap();
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     workspace_observe_tx(&mut tx, &snapshot, &identity)
                         .await

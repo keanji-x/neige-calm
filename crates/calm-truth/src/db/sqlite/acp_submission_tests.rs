@@ -118,10 +118,12 @@ async fn receipt_bytes(pool: &SqliteDb) -> Vec<String> {
 async fn acp_cleanup_rejects_insert_collisions_without_changing_receipt_bytes() {
     let pool = released_receipt().await;
     let cases = collision_inventory(&pool).await;
-    let mut db = pool.writer_pool().acquire().await.unwrap();
+    let pool_ref = &pool;
+    pool.writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|db| Box::pin(async move {
+            let pool = pool_ref;
     // REPLACE must be fenced even when SQLite does not run recursive delete triggers.
-    sqlx::query("PRAGMA recursive_triggers=OFF")
-        .execute(&mut *db)
+    sqlx::query("PRAGMA recursive_triggers=OFF").execute(&mut **db)
         .await
         .unwrap();
     let before = receipt_bytes(&pool).await;
@@ -149,7 +151,7 @@ async fn acp_cleanup_rejects_insert_collisions_without_changing_receipt_bytes() 
                             .bind(worker)
                             .bind(client)
                             .bind(turn)
-                            .execute(&mut *db)
+                            .execute(&mut **db)
                             .await
                             .is_err(),
                         "{sql}"
@@ -159,6 +161,9 @@ async fn acp_cleanup_rejects_insert_collisions_without_changing_receipt_bytes() 
             }
         }
     }
+            Ok::<_, sqlx::Error>(())
+        })).await.unwrap();
+    })).await.unwrap();
 }
 
 #[tokio::test]
@@ -294,7 +299,7 @@ async fn collision_inventory(
                         indexed, 0,
                         "released receipt must not occupy admission index"
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     sqlx::query(concat!("INSERT INTO acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,inp","ut_json,state,created_at_ms) VALUES('worker','successor','successor','thread','native','{}','se","nding',9)"))
                         .execute(&mut **tx).await.unwrap();
                     tx.rollback().await.unwrap();

@@ -29,10 +29,13 @@ async fn report(f: &Fx, track: &str, author: EditAuthor, at: i64) {
     .await
     .unwrap();
     // Pin time only; event serialization and scope columns come from the production writer.
-    sqlx::query("UPDATE events SET at = ? WHERE id = ?")
-        .bind(at)
-        .bind(id)
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE events SET at = ? WHERE id = ?")
+                .bind(at)
+                .bind(id),
+        )
         .await
         .unwrap();
 }

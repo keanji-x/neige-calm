@@ -92,7 +92,7 @@ async fn resolve_active_thread_for_card_prefers_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -132,7 +132,7 @@ async fn resolve_card_for_thread_prefers_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -177,7 +177,7 @@ async fn resolve_claude_session_for_card_prefers_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(&mut tx, init).await.unwrap();
                 tx.commit().await.unwrap();
 

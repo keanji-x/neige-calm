@@ -287,7 +287,7 @@ async fn exercise(history: History, disposal: Disposal) {
         .unwrap();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert_eq!(
             crate::db::sqlite::task_claim_pending_tx(
                 &mut tx,

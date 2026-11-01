@@ -39,7 +39,7 @@ async fn admit(f: &Fixture, script: &str) -> (ExecutionId, Terminal) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                 tx.commit().await.unwrap();
                 f.engine.drive(ticket.committed());
@@ -113,7 +113,7 @@ async fn c4_recovery_tick_retries_after_pending_read_error() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _lost = f.engine.admit(&mut tx, intent).await.unwrap();
                 tx.commit().await.unwrap();
                 wait(|| async { faults.failures.load(SeqCst) == 1 }).await;

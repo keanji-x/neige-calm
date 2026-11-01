@@ -223,7 +223,7 @@ pub(super) async fn c3_settle_held(boot: &TestBoot, id: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = engine
                     .request(&mut tx, &execution, Desired::Stop)
                     .await
@@ -376,7 +376,7 @@ async fn c3_probe_admission_is_durably_exclusive() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         assert!(
                             boot.spawn_ctx
                                 .execution
@@ -507,7 +507,7 @@ pub(super) async fn c3_stop_execution(boot: &TestBoot, id: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = engine
                     .request(&mut tx, &execution, Desired::Stop)
                     .await

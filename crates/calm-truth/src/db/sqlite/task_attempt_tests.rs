@@ -34,7 +34,7 @@ async fn project(repo: &SqlxRepo, blocks: &[ReportBlock]) -> Vec<TaskDeclaration
     // Invalid edits must reach the real projector with their parser diagnostics.
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) VALUES('report','w','track-report',0,?1,'report',0,0,0,'reportcard') ON CONFLICT(id) DO UPDATE SET payload=excluded.payload")
             .bind(json!({"blocks":blocks,"docRev":0}).to_string()).execute(&mut **tx).await.unwrap();
         project_tasks_tx(&mut tx, "w", &declarations, &diagnostics)
@@ -134,7 +134,7 @@ async fn fail(repo: &SqlxRepo, block: &ReportBlock) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let id =
                     task_attempt_current_tx(&mut tx, "w", block.payload["key"].as_str().unwrap())
                         .await
@@ -208,7 +208,7 @@ async fn task_recovery_gate_log_reads_the_recovered_attempt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 task_claim_pending_tx(&mut tx, &attempt_id, 3, constraint(&b).refs(), false)
                     .await
                     .unwrap();
@@ -268,7 +268,7 @@ async fn task_recovery_domain_deletion_removes_allocations_after_rows() {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     if delete_area {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         area_delete_tx(&mut tx, "area").await.unwrap();
                         tx.commit().await.unwrap();
                     } else {

@@ -55,7 +55,7 @@ pub(crate) async fn worker_running(
         .unwrap();
     let write_db = (h.sql.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         // The server's own cache, as the production create path writes through it: the hook ingest's
@@ -556,7 +556,7 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
                 .unwrap()
                 .unwrap();
             let next = new_id();
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             session_supersede_and_start_tx(
                 &mut tx,
                 &w.session,
@@ -621,7 +621,7 @@ async fn recovered_task_cannot_be_followed_through_an_old_task_or_terminal_id() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE tasks SET status='failed',finished_at_ms=?2 WHERE id=?1")
                     .bind(&w.task)
                     .bind(now_ms())
@@ -772,7 +772,7 @@ async fn manual_codex_and_claude_workers_are_controllable_without_a_task() {
                     let roles = CardRoleCache::new();
                     let theme = calm_server::routes::theme::RequestTheme::default_dark();
                     let cwd = h.root.path().to_str().unwrap().to_owned();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let terminal = if kind == "codex" {
                         card_with_codex_create_tx(
                             &mut tx,

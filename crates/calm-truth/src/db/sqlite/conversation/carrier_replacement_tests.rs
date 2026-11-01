@@ -1,4 +1,4 @@
-use super::super::{SqlxRepo, begin_immediate_tx, session_get_tx};
+use super::super::{SqlxRepo, session_get_tx};
 use super::tests::{body, fixture};
 use super::transaction_tests::runtime;
 use super::*;
@@ -60,7 +60,7 @@ async fn row(repo: &SqlxRepo, worker: &str) -> WorkerSession {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_get_tx(&mut tx, &WorkerSessionId(worker.into()))
                     .await
                     .unwrap()
@@ -80,7 +80,7 @@ async fn carrier_replacement_twice_in_one_transaction_and_rollback() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let first_expected = expected(&mut tx, &card, &worker, &Protected).await;
                 let first = replace_idle_carrier_tx(
                     &mut tx,
@@ -150,7 +150,7 @@ async fn carrier_replacement_full_snapshot_prefix_binding_and_pointer_cas() {
                     "pointer",
                     "execution",
                 ] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut stale = expected(&mut tx, &card, &worker, &Protected).await;
                     match kind {
                         "snapshot" => stale.original_snapshot.push(' '),
@@ -218,7 +218,7 @@ async fn carrier_replacement_caller_revision_hook_runs_in_supplied_transaction()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let revision: i64 = sqlx::query_scalar("SELECT updated_at FROM cards WHERE id=?1")
                     .bind(&card)
                     .fetch_one(&mut **tx)
@@ -260,7 +260,7 @@ async fn carrier_replacement_revokes_both_stores_including_retired_mirrors() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             super::super::card_mcp_token_set_tx(&mut tx, &card, "card-hash")
                                 .await
                                 .unwrap();
@@ -278,7 +278,7 @@ async fn carrier_replacement_revokes_both_stores_including_retired_mirrors() {
                                 .await
                                 .unwrap();
                             tx.commit().await.unwrap();
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let before = expected(&mut tx, &card, &worker, &Protected).await;
                             let rolled_back = replace_idle_carrier_tx(&mut tx, before, binding())
                                 .await
@@ -300,7 +300,7 @@ async fn carrier_replacement_revokes_both_stores_including_retired_mirrors() {
                                     .await
                                     .unwrap();
                             assert_eq!(count, 1);
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let before = expected(&mut tx, &card, &worker, &Protected).await;
                             let changed = replace_idle_carrier_tx(&mut tx, before, binding())
                                 .await
@@ -327,7 +327,7 @@ async fn carrier_replacement_revokes_both_stores_including_retired_mirrors() {
                                 row(&repo, &worker).await.state,
                                 WorkerSessionState::Superseded
                             );
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert!(
                                 current_input_carrier_tx(&mut tx, &card, &worker)
                                     .await
@@ -365,7 +365,7 @@ async fn carrier_replacement_refuses_pending_active_malformed_and_unavailable() 
                     "malformed",
                     "historical",
                 ] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut before = expected(&mut tx, &card, &worker, &Protected).await;
                     match kind {
                         "pending" => {
@@ -459,7 +459,7 @@ async fn carrier_replacement_ingress_revision_cas() {
             "UPDATE worker_sessions SET agent_session_id='new-native' WHERE id=?1",
             "UPDATE worker_sessions SET parent_session_id=id WHERE id=?1",
         ] {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let before = expected(&mut tx, &card, &worker, &Protected).await;
             sqlx::query(statement)
                 .bind(&worker)
@@ -474,7 +474,7 @@ async fn carrier_replacement_ingress_revision_cas() {
             );
             tx.rollback().await.unwrap();
         }
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let before = expected(&mut tx, &card, &worker, &Protected).await;
         let mut proof = current_native_fact_tx(&mut tx, &card, &worker, false)
             .await
@@ -504,34 +504,52 @@ async fn carrier_replacement_ingress_revision_cas() {
 #[tokio::test]
 async fn carrier_replacement_refuses_unresolved_native_and_retry_work() {
     let s = super::retry_storage_tests::seed().await;
-    let mut tx = begin_immediate_tx(s.repo.db()).await.unwrap();
-    let before = expected(&mut tx, &s.card, &s.carrier, &Protected).await;
-    assert!(
-        replace_idle_carrier_tx(&mut tx, before, binding())
+    {
+        let write_db = (s.repo.db()).clone();
+        let s = &s;
+
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    let before = expected(&mut tx, &s.card, &s.carrier, &Protected).await;
+                    assert!(
+                        replace_idle_carrier_tx(&mut tx, before, binding())
+                            .await
+                            .is_err()
+                    );
+                    super::retry::resolve_retry_tx(
+                        &mut tx,
+                        &s.card,
+                        calm_types::organization::LEGACY_OWNER_USER_ID,
+                        "replacement-refusal",
+                        &super::retry_storage_tests::request(&s),
+                        &super::transaction_tests::provenance(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    let before = expected(&mut tx, &s.card, &s.carrier, &Protected).await;
+                    assert!(
+                        replace_idle_carrier_tx(&mut tx, before, binding())
+                            .await
+                            .is_err()
+                    );
+                    tx.rollback().await.unwrap();
+                })
+            })
             .await
-            .is_err()
-    );
-    super::retry::resolve_retry_tx(
-        &mut tx,
-        &s.card,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        "replacement-refusal",
-        &super::retry_storage_tests::request(&s),
-        &super::transaction_tests::provenance(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let before = expected(&mut tx, &s.card, &s.carrier, &Protected).await;
-    assert!(
-        replace_idle_carrier_tx(&mut tx, before, binding())
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
+            .expect("independent write operation")
+    };
     let (repo, _, card) = fixture().await;
     let worker = runtime(&repo, &card).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+    {
+        let write_db = (repo.db()).clone();
+        let card = &card;
+        let worker = &worker;
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+let mut tx = write_session.begin_immediate().await.unwrap();
     sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json,state,created_","at_ms) VALUES(?1,'client','turn','thread','native','{}','unknown',0)"))
         .bind(&worker).execute(&mut **tx).await.unwrap();
     let before = expected(&mut tx, &card, &worker, &Protected).await;
@@ -541,6 +559,8 @@ async fn carrier_replacement_refuses_unresolved_native_and_retry_work() {
             .is_err()
     );
     tx.rollback().await.unwrap();
+})).await.expect("independent write operation")
+    };
 }
 
 #[tokio::test]
@@ -553,7 +573,7 @@ async fn c4_carrier_replacement_refuses_retained_claim_then_allows_completion() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let owner::Cas::Applied(claim) = owner::admit(
                     &mut tx,
                     &worker,
@@ -620,7 +640,7 @@ async fn c4_admission_cannot_attach_to_a_replaced_carrier() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let before = expected(&mut tx, &card, &worker, &Protected).await;
                 replace_idle_carrier_tx(&mut tx, before, binding())
                     .await

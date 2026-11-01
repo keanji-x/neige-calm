@@ -243,7 +243,7 @@ async fn child_track_continue_planner_receives_new_seed_on_original_session() {
     let db = crate::db::Repo::sqlite_db(flow.fixture.repo.as_ref()).unwrap();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         calm_truth::db::sqlite::task_mark_sub_track_running_tx(
             &mut tx,
             &assignment,

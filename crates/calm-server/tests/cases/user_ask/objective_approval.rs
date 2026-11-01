@@ -32,7 +32,7 @@ pub(super) async fn setup_on(boot: Boot) -> (Boot, Value) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::track_capabilities::stamp_tx(
                     &mut tx,
                     &boot.track_id,

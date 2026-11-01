@@ -11,7 +11,7 @@ async fn canonical_turn_initial_relationship_rejects_foreign_initial_same_and_cr
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let human = insert_message_tx(
             &mut tx,
             &card,
@@ -30,7 +30,7 @@ async fn canonical_turn_initial_relationship_rejects_foreign_initial_same_and_cr
         // A second Card from the real persistent creator, on this same database.
         let (_, other_card) = super::tests::fixture_card(&repo).await;
         for target in [&card, &other_card] {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let inserted=sqlx::query("INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,execution_kind,
          deployment_owner_user_id,provider,profile,created_at_ms)
          VALUES('44444444444444444444444444444444',?1,'runtime',?2,'legacy_single_user_deployment',?3,'codex',
@@ -47,7 +47,7 @@ async fn canonical_turn_initial_relationship_rejects_foreign_initial_same_and_cr
                 "a Turn must not commit using another Turn/Card's Initial as its Initial"
             );
         }
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let other_human = insert_message_tx(
             &mut tx,
             &other_card,
@@ -76,7 +76,7 @@ async fn canonical_turn_initial_relationship_checks_kind_with_deferred_child_fir
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let human = insert_message_tx(
             &mut tx,
             &card,
@@ -90,7 +90,7 @@ async fn canonical_turn_initial_relationship_checks_kind_with_deferred_child_fir
         tx.commit().await.unwrap();
         let render = plan(human.reference);
         for (kind, ordinal, accept) in [("supplemental", 1, false), ("initial", 0, true)] {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("PRAGMA defer_foreign_keys=ON")
                 .execute(&mut **tx)
                 .await
@@ -154,7 +154,7 @@ async fn canonical_native_presentation_repairs_real_receipt_restore_without_chan
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let sequence = allocate_presentation_tx(
                     &mut tx,
                     &card,
@@ -190,7 +190,7 @@ async fn canonical_native_presentation_repairs_real_receipt_restore_without_chan
                     restored, started,
                     "real receipt owner must rebuild this started row"
                 );
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     allocate_presentation_tx(
                         &mut tx,
@@ -235,7 +235,7 @@ async fn canonical_native_presentation_refuses_erased_identity_resurrection() {
     let (repo, card, _, row) = native_fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let sequence = allocate_presentation_tx(
             &mut tx,
             &card,
@@ -284,7 +284,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let human = insert_message_tx(
                                 &mut tx,
                                 &card,
@@ -318,7 +318,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
                     )
                     .await
                     .unwrap();
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert!(
                                 allocate_presentation_tx(
                                     &mut tx,
@@ -342,7 +342,7 @@ async fn canonical_native_presentation_excludes_input_projection_and_its_native_
                     .unwrap(),
                     Some(projection)
                 );
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert!(
                                 allocate_presentation_tx(
                                     &mut tx,
@@ -388,7 +388,7 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let sequence = allocate_presentation_tx(
                                 &mut tx,
                                 &card,
@@ -412,7 +412,7 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
                                 )
                                 .await
                                 .unwrap();
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert_eq!(
                                 allocate_presentation_tx(
                                     &mut tx,
@@ -439,7 +439,7 @@ async fn canonical_native_presentation_keeps_completed_item_when_started_arrives
                                 )
                                 .await
                                 .unwrap();
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert_eq!(
                                 allocate_presentation_tx(
                                     &mut tx,

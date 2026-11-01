@@ -32,7 +32,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
     seed_assistant_card(&repo, &role_cache, &track, &card_id).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let report = card_create_with_id_tx(
             &mut tx,
             new_id(),
@@ -113,7 +113,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
             None,
             vec![],
         )]);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_set_handle_state_tx(
             &mut tx,
             &old.id,
@@ -244,7 +244,7 @@ async fn assistant_provider_failed_native_start_restores_only_predecessor_creden
             .await
             .unwrap();
         // Revocation after undo is not another permission to resurrect the journalled token.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
             .bind(&old.id)
             .execute(&mut **tx)

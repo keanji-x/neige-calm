@@ -19,7 +19,10 @@ async fn worker_sessions_card_id_dual_write_on_runtime_start() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime start tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime start tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -59,7 +62,10 @@ async fn worker_sessions_card_id_dual_write_on_deferred_planner_placeholder() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin deferred placeholder tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin deferred placeholder tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -96,7 +102,7 @@ async fn card_delete_removes_placeholder_worker_session() {
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = write_session
-                    .begin()
+                    .begin_immediate()
                     .await
                     .expect("begin card delete placeholder tx");
                 let card_id = create_card_in_tx(
@@ -138,7 +144,7 @@ async fn card_delete_removes_placeholder_worker_session() {
                 assert_eq!(seeded_ws, 2);
 
                 let mut tx = write_session
-                    .begin()
+                    .begin_immediate()
                     .await
                     .expect("begin card delete placeholder delete tx");
                 card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
@@ -227,7 +233,10 @@ async fn runtime_current_status_tx_matches_runtimes_backed_start_for_all_kinds()
             Box::pin(async move {
                 for (index, case) in runtime_read_cases().into_iter().enumerate() {
                     let runtime = seed_runtime(&repo, case, 1_000 + index as i64).await;
-                    let mut tx = write_session.begin().await.expect("begin read tx");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin read tx");
                     let actual = runtime_current_status_tx(&mut tx, &runtime.id)
                         .await
                         .expect("status from worker_sessions");
@@ -250,7 +259,10 @@ async fn runtime_get_by_id_from_pool_matches_runtimes_backed_for_all_kinds() {
             Box::pin(async move {
                 for (index, case) in runtime_read_cases().into_iter().enumerate() {
                     let runtime = seed_runtime(&repo, case, 2_000 + index as i64).await;
-                    let mut tx = write_session.begin().await.expect("begin reference tx");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin reference tx");
                     let expected = session_projection_by_id_tx(&mut tx, &runtime.id)
                         .await
                         .expect("reference by-id read")
@@ -279,7 +291,10 @@ async fn runtime_get_active_for_card_from_pool_matches_runtimes_backed_for_all_k
             Box::pin(async move {
                 for (index, case) in runtime_read_cases().into_iter().enumerate() {
                     let runtime = seed_runtime(&repo, case, 3_000 + index as i64).await;
-                    let mut tx = write_session.begin().await.expect("begin reference tx");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin reference tx");
                     let expected = session_projection_active_for_card_tx(&mut tx, &runtime.card_id)
                         .await
                         .expect("reference active-for-card read")
@@ -309,7 +324,10 @@ async fn runtime_get_active_for_card_tx_matches_runtimes_backed_for_all_kinds() 
             Box::pin(async move {
                 for (index, case) in runtime_read_cases().into_iter().enumerate() {
                     let runtime = seed_runtime(&repo, case, 3_500 + index as i64).await;
-                    let mut tx = write_session.begin().await.expect("begin active read tx");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin active read tx");
                     let actual = session_projection_active_for_card_tx(&mut tx, &runtime.card_id)
                         .await
                         .expect("worker-session active-for-card tx read")
@@ -333,7 +351,10 @@ async fn runtime_get_by_id_tx_returns_superseded_runtime_by_id() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin supersede tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin supersede tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -377,7 +398,10 @@ async fn runtime_get_by_id_tx_returns_superseded_runtime_by_id() {
                         .expect("read card session pointer");
                 assert_eq!(card_session_id.as_deref(), Some(newer.id.as_str()));
 
-                let mut tx = write_session.begin().await.expect("begin by-id read tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin by-id read tx");
                 let actual = session_projection_by_id_tx(&mut tx, &older.id)
                     .await
                     .expect("worker-session by-id tx read")
@@ -406,7 +430,10 @@ async fn runtime_get_active_for_card_tx_returns_placeholder_during_deferred_plan
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin deferred gap tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin deferred gap tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,

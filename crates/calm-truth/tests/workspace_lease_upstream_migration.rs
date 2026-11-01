@@ -77,7 +77,11 @@ async fn index_sql(db: &mut SqliteConnection) -> Vec<(String, Option<String>)> {
 }
 
 async fn exec(db: &mut SqliteConnection, sql: &str) -> Result<(), sqlx::Error> {
-    { let query = sqlx::raw_sql(sql); sqlx::Executor::execute(db, query).await }.map(|_| ())
+    {
+        let query = sqlx::raw_sql(sql);
+        sqlx::Executor::execute(db, query).await
+    }
+    .map(|_| ())
 }
 
 fn lease(id: &str, path: &str, state: &str, base: &str, policy: &str) -> String {

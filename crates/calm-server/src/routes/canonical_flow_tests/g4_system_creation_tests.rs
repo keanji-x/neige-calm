@@ -82,7 +82,7 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let message = crate::db::sqlite::conversation::message_tx(
                         &mut tx,
                         &first_message.message_id,
@@ -174,7 +174,7 @@ async fn g4_system_creation_refuses_non_owner_and_unregistered_owner() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::area_membership::application_user_register(
                     &mut tx, "alice", "Alice",
                 )

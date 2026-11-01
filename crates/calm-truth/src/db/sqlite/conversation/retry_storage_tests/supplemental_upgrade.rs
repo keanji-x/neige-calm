@@ -7,19 +7,31 @@ async fn pending_controls_migration_preserves_retries_claims_and_imported_presen
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/supplemental.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    { let migrator = &(through(201));
-    (db).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(through(201));
+        (db).writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     let repo = repo_on(db);
     let (_, card) = super::super::tests::fixture_card(&repo).await;
     let s = seed_repo(repo, card, false).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         tx.commit().await.unwrap();
         let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
@@ -43,7 +55,7 @@ async fn pending_controls_migration_preserves_retries_claims_and_imported_presen
             )
             .await
             .unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let boundary: i64 = sqlx::query_scalar(
             "SELECT COALESCE(max(sequence),0) FROM conversation_presentations WHERE card_id=?1",
         )
@@ -113,7 +125,7 @@ async fn pending_controls_migration_preserves_retries_claims_and_imported_presen
         );
         // The old Initial remains unique; an inline positive-ordinal supplement is now representable.
         let id = crate::model::new_id();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let turn: String = sqlx::query_scalar(
             "SELECT logical_turn_id FROM conversation_input_submissions WHERE id=?1",
         )

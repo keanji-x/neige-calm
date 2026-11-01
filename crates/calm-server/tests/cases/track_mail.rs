@@ -459,24 +459,29 @@ async fn mail_send_refusals_follow_the_table() {
         )
         .await;
     let pool = w.repo.pool();
-    sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
-        .bind(now_ms())
-        .bind(closed.as_str())
-        .execute(pool)
+    (w.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
+                .bind(now_ms())
+                .bind(closed.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(chat.as_str())
-        .execute(pool)
+    (w.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+                .bind(chat.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query(
+    (w.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO managed_track_identities (owner, identity, track_id, report_read_scope, \
          report_time_zone, tool_policy, kernel_controls_lifecycle) \
          VALUES ('test', 'daily', ?1, 'area', 'UTC', 'reports', 1)",
     )
-    .bind(daily.track_id.as_str())
-    .execute(pool)
+    .bind(daily.track_id.as_str()))
     .await
     .unwrap();
     let not_mine = w.seed_mail(&n.track_id, &closed, 1).await;

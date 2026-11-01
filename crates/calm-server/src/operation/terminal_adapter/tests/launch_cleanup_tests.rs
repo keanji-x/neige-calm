@@ -133,7 +133,7 @@ async fn exercise(fault: Fault) {
         Some(
             negative_ack_proxy(
                 supervisor.sock(),
-                harness.repo.pool().clone(),
+                harness.repo.db().clone(),
                 match fault {
                     Fault::UnknownAck => NegativeFault::Unknown,
                     Fault::Disconnect => NegativeFault::Disconnect,

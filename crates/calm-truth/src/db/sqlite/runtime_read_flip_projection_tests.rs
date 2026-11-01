@@ -98,7 +98,10 @@ async fn runtime_get_active_for_terminal_tx_reads_active_terminal_session_inside
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin terminal read tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin terminal read tx");
                 let actual = session_projection_active_for_terminal_tx(&mut tx, &terminal_id)
                     .await
                     .expect("worker-session terminal read");
@@ -157,7 +160,7 @@ async fn projectable_deferred_planner_gap_with_active_runtime_returns_placeholde
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin gap tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin gap tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -225,7 +228,10 @@ async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeh
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin #744 seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin #744 seed tx");
                 session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
                     .await
                     .expect("complete initial codex runtime");
@@ -288,7 +294,7 @@ async fn terminals_orphaned_reaps_terminal_when_card_has_no_active_session() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin no-active seed tx");
+        let mut tx = write_session.begin_immediate().await.expect("begin no-active seed tx");
         session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
             .await
             .expect("complete initial codex runtime");
@@ -326,7 +332,7 @@ async fn terminals_orphaned_keeps_exited_terminal_card_with_recorded_exit() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin #1701 seed tx");
+        let mut tx = write_session.begin_immediate().await.expect("begin #1701 seed tx");
         session_complete_tx(&mut tx, &by_code.id, WorkerSessionState::Exited)
             .await
             .expect("complete terminal session (exit code)");
@@ -364,7 +370,7 @@ async fn terminals_orphaned_reaps_exited_terminal_card_without_recorded_exit() {
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .expect("begin #1701 no-exit seed tx");
         session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
@@ -393,7 +399,7 @@ async fn terminals_orphaned_reaps_exited_non_terminal_card_with_recorded_exit() 
 
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .expect("begin #1701 codex seed tx");
         session_complete_tx(&mut tx, &initial_session, WorkerSessionState::Exited)
@@ -483,7 +489,10 @@ async fn worker_session_backed_reads_return_deferred_planner_placeholder() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin placeholder tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin placeholder tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -534,7 +543,10 @@ async fn worker_session_backed_reads_return_deferred_planner_placeholder() {
                 assert_eq!(active_for_kind.len(), 1);
                 assert_eq!(active_for_kind[0].id, placeholder_id);
 
-                let mut tx = write_session.begin().await.expect("begin status tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin status tx");
                 let status = runtime_current_status_tx(&mut tx, &placeholder_id)
                     .await
                     .expect("placeholder status read");
@@ -552,7 +564,7 @@ async fn deferred_planner_placeholder_rejects_non_null_session_id() {
     let placeholder_id = format!("rt-placeholder-session-key-{}", new_id());
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin placeholder tx");
+        let mut tx = write_session.begin_immediate().await.expect("begin placeholder tx");
         let card_id = create_card_in_tx(
             &repo,
             &mut tx,
@@ -589,7 +601,10 @@ async fn cohort_b_reads_exclude_deferred_planner_placeholder_by_null_keys() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin placeholder tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin placeholder tx");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -654,7 +669,10 @@ async fn cohort_b_reads_exclude_deferred_planner_placeholder_by_null_keys() {
                     .expect("attribution read");
                 assert_eq!(attribution, Vec::<(String, String)>::new());
 
-                let mut tx = write_session.begin().await.expect("begin terminal placeholder tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin terminal placeholder tx");
                 let by_terminal = session_projection_active_for_terminal_tx(
                     &mut tx,
                     "missing-placeholder-terminal",

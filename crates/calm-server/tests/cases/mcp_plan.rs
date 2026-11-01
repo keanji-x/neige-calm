@@ -203,7 +203,7 @@ async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -851,7 +851,7 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)
                         .await

@@ -364,7 +364,7 @@ async fn admit(
     let db = ctx.operation_repo.sqlite_db();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         crate::operation::require_live_claim_tx(&mut tx, op).await?;
         location.recheck(&mut tx).await?;
         let occupants = calm_truth::db::sqlite::workspace_execution::location_occupancy(
@@ -421,7 +421,7 @@ async fn wait(ctx: &SpawnCtx, op: &Operation, id: &ExecutionId) -> Result<()> {
         db.writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     crate::operation::require_live_claim_tx(&mut tx, op).await?;
                     calm_truth::db::sqlite::workspace_execution::request(
                         &mut tx,

@@ -546,7 +546,7 @@ async fn run_stats_and_planner_context_live_slot_resolve_kernel_projector_data()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     calm_server::db::sqlite::session_set_handle_state_tx(
                         &mut tx,
@@ -602,7 +602,7 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
     let db = boot.repo.sqlite_db().unwrap();
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         calm_server::db::sqlite::track_capabilities::stamp_tx(
@@ -772,7 +772,7 @@ async fn objective_close_tool_requires_planner_and_capability() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::track_capabilities::stamp_tx(
                     &mut tx,
                     &boot.track_id,

@@ -124,7 +124,7 @@ pub(super) async fn context(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let sources = sources_on_connection(&mut tx, ids).await?;
                 let runtimes =
                     super::session_projection::runtime_get_projectable_for_cards_on_connection(
@@ -135,7 +135,8 @@ pub(super) async fn context(
                 Ok(crate::conversation_title::ConversationTitleContext { sources, runtimes })
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 #[cfg(test)]
@@ -339,7 +340,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         super::super::transcript_delete_thread_suffix_tx(
                             &mut tx,

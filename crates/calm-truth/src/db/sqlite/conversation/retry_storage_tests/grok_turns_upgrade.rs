@@ -70,7 +70,7 @@ async fn turn_admits(repo: &SqlxRepo, card: &str, provider: &str) -> bool {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let admitted = sqlx::query(
                     "INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,
          execution_kind,deployment_owner_user_id,provider,profile,created_at_ms)
@@ -100,7 +100,7 @@ async fn assistant_creation_refusal(repo: &SqlxRepo, card: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = sqlx::query(
                     "INSERT INTO conversation_assistant_creations
          VALUES(?1,'track',?2,?3,'carrier','message',1,'{}')",
@@ -139,13 +139,25 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
     let old = through(189);
-    { let migrator = &(old);
-    (db).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(old);
+        (db).writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     let repo = repo_on(db);
     let (_, card) = super::super::tests::fixture_card(&repo).await;
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
@@ -153,7 +165,7 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     let s = seed_repo(repo, card, false).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         tx.commit().await.unwrap();
         assert!(turn_admits(&s.repo, &s.card, "codex").await);

@@ -149,7 +149,7 @@ async fn c5d_engine_loss_during_writer_wait_keeps_fence_refusal() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 let admit = owner.admit(
                     repo.db(),
                     &engine,

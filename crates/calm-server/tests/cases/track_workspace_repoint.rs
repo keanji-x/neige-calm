@@ -825,7 +825,7 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::track_workspace_write_tx(
                     &mut tx,
                     &track,
@@ -1290,7 +1290,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = calm_server::test_seams::prepare_worker_lease_for_test(
                     &mut tx,
                     &track,
@@ -1388,7 +1388,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = calm_server::test_seams::prepare_worker_lease_for_test(
                     &mut tx,
                     &track,

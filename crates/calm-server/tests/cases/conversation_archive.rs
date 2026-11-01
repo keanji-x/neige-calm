@@ -6,7 +6,7 @@ async fn assistant(b: &Boot, track: &str, provider: &str) -> String {
     let id = calm_server::model::new_id();
     let write_db = (b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         card_create_with_id_tx(&mut tx, id.clone(), calm_server::model::NewCard {
             track_id: track.to_string().into(), title: Some("Saved discussion".into()),
             kind: "codex".into(), sort: None,
@@ -421,7 +421,7 @@ async fn archive_refuses_an_unconfirmed_wedged_provider() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_set_handle_state_of_any_runtime_tx(
                     &mut tx,
                     &runtime.id,
@@ -616,7 +616,7 @@ async fn archive_checks_actual_area_membership_and_system_authority() {
     let card = assistant(&b, &track, "codex").await;
     let write_db = (b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         application_user_register(&mut tx, "alice", "Alice")
             .await
             .unwrap();
@@ -645,7 +645,7 @@ async fn archive_checks_actual_area_membership_and_system_authority() {
             alice.archive(&track, &card, false).await,
             StatusCode::NO_CONTENT
         );
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         calm_server::db::sqlite::area_create_system_tx(&mut tx)
             .await
             .unwrap();

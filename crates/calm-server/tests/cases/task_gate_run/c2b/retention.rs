@@ -218,7 +218,7 @@ async fn c2b_owned_park_requires_decodable_record() {
         assert!(before.lease_until_ms.is_none());
         let write_db = (fx.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             let changed = sqlx::query(

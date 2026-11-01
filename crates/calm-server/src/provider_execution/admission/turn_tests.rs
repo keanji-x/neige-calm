@@ -81,7 +81,7 @@ async fn w_turn_admission_rolls_back_with_phase() {
                         )
                         .await,
                     );
-                    let tx = write_session.begin().await.unwrap();
+                    let tx = write_session.begin_immediate().await.unwrap();
                     // Authorization and admission run first, while the op claim may still be live
                     // (design §3.3); the phase CAS follows in the same transaction.
                     let mut admitted = owner
@@ -116,7 +116,7 @@ async fn w_turn_admission_rolls_back_with_phase() {
                             "rollback releases the driver"
                         );
                         // The writer is free again, and nothing the admission wrote committed.
-                        let mut next = write_session.begin().await.unwrap();
+                        let mut next = write_session.begin_immediate().await.unwrap();
                         let tag: String =
                             sqlx::query_scalar("SELECT phase FROM operations WHERE id = ?1")
                                 .bind(&op_id)

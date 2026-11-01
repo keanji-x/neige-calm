@@ -225,7 +225,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     operation::register(&mut tx, &target, true).await.unwrap();
                     tx.commit().await.unwrap();
                     let admission = LocationAdmission {
@@ -242,7 +242,7 @@ mod tests {
                         .try_fence(&mut conn, &target.request.repo, Some(&target.track_id))
                         .await
                         .unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     fence.recheck(&mut tx).await.unwrap();
                     tx.rollback().await.unwrap();
                     // Before execution admission, the teardown registry supplies the track owner.

@@ -301,7 +301,7 @@ async fn carrier_quiescence_acp_issuance_before_active_turn_publication() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     crate::db::sqlite::acp_submission_unresolved_tx(&mut tx, &row.worker)
                         .await
@@ -493,7 +493,7 @@ async fn carrier_quiescence_retained_completed_start_is_not_pending() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     crate::operation::planner_start_fence::CardStartFence::require_settled_tx(
                         &mut tx, &row.card

@@ -142,7 +142,7 @@ impl Native<'_> {
         assert_eq!(claimed.0, worker);
         let write_db = (fixture.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let plan = crate::db::sqlite::conversation::submission_plan_tx(
                 &mut tx,
                 &original_attempt.attempt.submission_id,

@@ -1440,20 +1440,24 @@ async fn gate_prepare_times_out_as_stuck_not_hang() {
     let writer_started = std::time::Instant::now();
 
     {
-
         let writer = tokio::spawn(async move {
             let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
-            sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
-                .bind(&task_id)
-                .execute(&mut **tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())
-
-        })).await.expect("independent write operation")
-});
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("UPDATE tasks SET updated_at_ms = updated_at_ms WHERE id = ?1")
+                            .bind(&task_id)
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, calm_server::error::CalmError>(writer_started.elapsed())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
         let writer_elapsed = tokio::time::timeout(Duration::from_secs(30), writer)
             .await
             .expect("the write slot was released by the sample bound (30 s)")
@@ -1506,9 +1510,7 @@ let mut tx = write_session_1.begin().await?;
         }
         git(&lease.path, &["config", "--unset", "filter.slow.clean"]);
         let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
-
-
-}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2285,7 +2287,7 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
     let pool = fx.db();
     let write_db = (fx.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         assert_eq!(

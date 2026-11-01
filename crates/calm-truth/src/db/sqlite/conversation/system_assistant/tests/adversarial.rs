@@ -10,7 +10,7 @@ async fn public_snapshot_setter_cannot_forge_creation_floor() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     db::session_set_handle_state_tx(
                         &mut tx,
@@ -41,7 +41,7 @@ async fn public_snapshot_setter_cannot_change_original_acceptance_time() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
                     .await
                     .unwrap();
@@ -77,7 +77,7 @@ async fn exact_record_replays_after_only_event_deletion() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
                     .await
                     .unwrap();
@@ -110,7 +110,7 @@ async fn replace_cannot_overwrite_original_facts_with_recursive_triggers_off() {
     let f = Fixture::new().await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("PRAGMA recursive_triggers=OFF")
             .execute(&mut **tx)
             .await
@@ -167,7 +167,7 @@ async fn entry_replace_fences_each_unique_identity_even_after_carrier_moves() {
     let (_, other_card) = super::super::super::tests::fixture_card(&f.repo).await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("PRAGMA recursive_triggers=OFF")
             .execute(&mut **tx)
             .await
@@ -283,82 +283,115 @@ async fn entry_replace_fences_each_unique_identity_even_after_carrier_moves() {
 #[tokio::test]
 async fn replay_rejects_cross_event_worker_card_and_database() {
     let f = Fixture::new().await;
-    let mut tx = db::begin_immediate_tx(f.repo.db()).await.unwrap();
-    system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
+    let write_db = f.repo.db().clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
+                    .await
+                    .unwrap();
+                let (id, accepted) = f.accept(&mut tx, &f.event("input", "body")).await;
+                let (other_id, other) = f.accept(&mut tx, &f.event("other", "body")).await;
+                assert!(replay(&mut tx, &f, "input", id, &other).await.is_err());
+                assert!(
+                    replay(&mut tx, &f, "input", other_id, &accepted)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    system_assistant_receipt_replay_tx(
+                        &mut tx,
+                        "other-card",
+                        SOURCE,
+                        "input",
+                        id,
+                        &accepted.input_ref
+                    )
+                    .await
+                    .is_err()
+                );
+                let g = Fixture::new().await;
+                {
+                    let g = &g;
+                    let f = &f;
+                    let mut tx = &mut tx;
+                    let accepted = &accepted;
+                    g.repo
+                        .db()
+                        .writer()
+                        .with_writer(|other_session| {
+                            Box::pin(async move {
+                                let mut other_tx = other_session.begin_immediate().await.unwrap();
+                                system_assistant_entry_insert_tx(
+                                    &mut other_tx,
+                                    &g.card,
+                                    SOURCE,
+                                    "opening",
+                                )
+                                .await
+                                .unwrap();
+                                let (g_id, g_accepted) =
+                                    g.accept(&mut other_tx, &g.event("input", "body")).await;
+                                assert!(
+                                    replay(&mut tx, &f, "input", id, &g_accepted).await.is_err()
+                                );
+                                assert!(
+                                    replay(&mut other_tx, &g, "input", g_id, &accepted)
+                                        .await
+                                        .is_err()
+                                );
+                                other_tx.rollback().await.unwrap();
+                            })
+                        })
+                        .await
+                        .unwrap();
+                }
+
+                let original = replay(&mut tx, &f, "input", id, &accepted).await.unwrap();
+                sqlx::query("DELETE FROM events WHERE id=?1")
+                    .bind(id)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                let before = current_input_carrier_tx(&mut tx, &f.card, &f.worker)
+                    .await
+                    .unwrap()
+                    .snapshot()
+                    .clone();
+                assert_eq!(
+                    replay(&mut tx, &f, "input", id, &accepted).await.unwrap(),
+                    original
+                );
+                assert_eq!(
+                    current_input_carrier_tx(&mut tx, &f.card, &f.worker)
+                        .await
+                        .unwrap()
+                        .snapshot(),
+                    &before
+                );
+                assert!(replay(&mut tx, &f, "input", id, &other).await.is_err());
+                // A new original worker cannot accept into the old permanent entry.
+                db::session_supersede_active_tx(&mut tx, &f.worker, 0)
+                    .await
+                    .unwrap();
+                Fixture::start_worker(&mut tx, &f.card, "replacement").await;
+                let event = f.append(&mut tx, &f.event("later", "body")).await;
+                assert!(
+                    system_assistant_accept_tx(&mut tx, &f.card, event)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    replay(&mut tx, &f, "input", id, &accepted).await.unwrap(),
+                    original
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
         .unwrap();
-    let (id, accepted) = f.accept(&mut tx, &f.event("input", "body")).await;
-    let (other_id, other) = f.accept(&mut tx, &f.event("other", "body")).await;
-    assert!(replay(&mut tx, &f, "input", id, &other).await.is_err());
-    assert!(
-        replay(&mut tx, &f, "input", other_id, &accepted)
-            .await
-            .is_err()
-    );
-    assert!(
-        system_assistant_receipt_replay_tx(
-            &mut tx,
-            "other-card",
-            SOURCE,
-            "input",
-            id,
-            &accepted.input_ref
-        )
-        .await
-        .is_err()
-    );
-    let g = Fixture::new().await;
-    let mut other_tx = db::begin_immediate_tx(g.repo.db()).await.unwrap();
-    system_assistant_entry_insert_tx(&mut other_tx, &g.card, SOURCE, "opening")
-        .await
-        .unwrap();
-    let (g_id, g_accepted) = g.accept(&mut other_tx, &g.event("input", "body")).await;
-    assert!(replay(&mut tx, &f, "input", id, &g_accepted).await.is_err());
-    assert!(
-        replay(&mut other_tx, &g, "input", g_id, &accepted)
-            .await
-            .is_err()
-    );
-    other_tx.rollback().await.unwrap();
-    let original = replay(&mut tx, &f, "input", id, &accepted).await.unwrap();
-    sqlx::query("DELETE FROM events WHERE id=?1")
-        .bind(id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    let before = current_input_carrier_tx(&mut tx, &f.card, &f.worker)
-        .await
-        .unwrap()
-        .snapshot()
-        .clone();
-    assert_eq!(
-        replay(&mut tx, &f, "input", id, &accepted).await.unwrap(),
-        original
-    );
-    assert_eq!(
-        current_input_carrier_tx(&mut tx, &f.card, &f.worker)
-            .await
-            .unwrap()
-            .snapshot(),
-        &before
-    );
-    assert!(replay(&mut tx, &f, "input", id, &other).await.is_err());
-    // A new original worker cannot accept into the old permanent entry.
-    db::session_supersede_active_tx(&mut tx, &f.worker, 0)
-        .await
-        .unwrap();
-    Fixture::start_worker(&mut tx, &f.card, "replacement").await;
-    let event = f.append(&mut tx, &f.event("later", "body")).await;
-    assert!(
-        system_assistant_accept_tx(&mut tx, &f.card, event)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        replay(&mut tx, &f, "input", id, &accepted).await.unwrap(),
-        original
-    );
-    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -369,7 +402,7 @@ async fn event_creation_floor_survives_pruning_and_requires_exact_empty_cutoff()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (id, _) = f.accept_raw(&mut tx, &f.event("prior", "body")).await;
                 sqlx::query("DELETE FROM events")
                     .execute(&mut **tx)
@@ -466,7 +499,7 @@ async fn receipt_replace_fences_key_event_observation_and_bootstrap_with_legal_c
         let f = Fixture::new().await;
         let write_db = (f.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("PRAGMA recursive_triggers=OFF")
                 .execute(&mut **tx)
                 .await
@@ -587,7 +620,7 @@ async fn synthetic_pending_cannot_create_receipt_through_replay() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "opening")
                     .await
                     .unwrap();

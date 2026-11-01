@@ -13,7 +13,7 @@ async fn committed_retry() -> (Seed, InputSubmissionId) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let decision = super::retry::resolve_retry_tx(
                     &mut tx,
                     &s.card,
@@ -55,12 +55,12 @@ async fn canonical_retry_survives_session_owner_delete() {
     let (s, successor) = committed_retry().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_delete_tx(&mut tx, &s.carrier).await.unwrap();
         tx.commit()
             .await
             .expect("runtime deletion must not depend on retained retry facts");
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert_eq!(
             submission_plan_tx(&mut tx, &s.root).await.unwrap().plan,
             s.render
@@ -121,7 +121,7 @@ async fn assert_owner_delete(owner: Owner) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let (track, area): (String, String) = sqlx::query_as(
                     "SELECT c.track_id,t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1",
                 )
@@ -141,7 +141,7 @@ async fn assert_owner_delete(owner: Owner) {
                             tx.commit()
                                 .await
                                 .expect("owner deletion must cascade all canonical retry facts");
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             for table in [
                                 "conversation_input_retry_relations",
                                 "conversation_turns",

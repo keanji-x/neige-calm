@@ -25,7 +25,7 @@ async fn seed_track_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<S
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,

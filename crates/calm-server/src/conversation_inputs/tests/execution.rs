@@ -62,7 +62,7 @@ async fn claim(fx: &Fixture, source: &HumanInputSource) -> Result<ClaimedSubmiss
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime).await?;
                 let plan = first_plan(&mut tx, &carrier).await;
@@ -75,7 +75,8 @@ async fn claim(fx: &Fixture, source: &HumanInputSource) -> Result<ClaimedSubmiss
                 result
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn accept_owner(fx: &Fixture) -> (String, HumanInputSource) {
@@ -92,7 +93,7 @@ async fn transfer_area_to_alice(fx: &Fixture) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
                                 .await
                                 .unwrap();
@@ -158,7 +159,7 @@ async fn human_source_cannot_authorize_a_machine_observation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
                     .await
                     .unwrap();
@@ -205,7 +206,7 @@ async fn real_owner_source_claims_initial_in_the_actual_scope() {
     let initial = claim(&fx, &source).await.unwrap();
     let write_db = (fx.input.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let identity = submission_identity_tx(&mut tx, &initial.submission_id)
             .await
             .unwrap();
@@ -251,7 +252,7 @@ async fn current_session_revocation_holds_accepted_work_before_claim() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.input.card, &fx.input.runtime)
                     .await
                     .unwrap();
@@ -273,7 +274,7 @@ async fn operator_source_cannot_claim_another_humans_input_even_in_owned_private
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let area = conversation::conversation_area_tx(&mut tx, &fx.input.card)
                                 .await
                                 .unwrap();

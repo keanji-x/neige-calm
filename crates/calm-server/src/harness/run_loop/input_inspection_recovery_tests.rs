@@ -168,7 +168,7 @@ pub(super) async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
                 let id = output.data["runtime_id"].as_str().unwrap().to_string();

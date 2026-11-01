@@ -188,7 +188,7 @@ pub async fn reset_from_fixture(
     // Writing transactions always BEGIN IMMEDIATE.
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let retained: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider_execution_json IS NOT NULL)",
         )

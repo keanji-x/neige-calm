@@ -109,7 +109,7 @@ async fn workspace_identity_managed_preflight_does_not_create_or_repair() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
                         &mut tx,
                         current.id.as_str(),

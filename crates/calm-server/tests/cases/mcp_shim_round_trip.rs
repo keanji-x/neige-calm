@@ -106,7 +106,7 @@ async fn boot() -> Boot {
 
     let write_db = (sqlx_repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let raw_token = crate::support::planner::mint_tx(
             &mut tx,
             card_id.clone(),
@@ -163,7 +163,7 @@ async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
                     .await
                     .unwrap()

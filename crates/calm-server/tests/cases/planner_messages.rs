@@ -108,9 +108,13 @@ async fn planner_message_is_readable_by_its_attempt_worker() {
             .unwrap();
     for value in [None, Some(before + 1)] {
         assert!(
-            (h.sql.db()).writer().execute(sqlx::query("UPDATE task_planner_messages SET read_at_ms=? WHERE message_id=?")
-                .bind(value)
-                .bind(receipt["message_id"].as_str().unwrap()))
+            (h.sql.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE task_planner_messages SET read_at_ms=? WHERE message_id=?")
+                        .bind(value)
+                        .bind(receipt["message_id"].as_str().unwrap())
+                )
                 .await
                 .is_err()
         );
@@ -264,12 +268,18 @@ async fn planner_message_records_are_append_only_until_the_owning_track_is_delet
     let f = running(&h, "claude", true, false).await;
     written(&message(&h, json!({"attempt_id":f.worker.task}), "one", "audit").await);
     assert!(
-        (h.sql.db()).writer().execute(sqlx::query("UPDATE task_planner_messages SET text='forged'"))
+        (h.sql.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE task_planner_messages SET text='forged'"
+            ))
             .await
             .is_err()
     );
     assert!(
-        (h.sql.db()).writer().execute(sqlx::query("DELETE FROM task_planner_messages"))
+        (h.sql.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM task_planner_messages"))
             .await
             .is_err()
     );
@@ -355,7 +365,7 @@ async fn planner_message_audit_refuses_a_foreign_attempt_from_editable_card_meta
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::planner_message_insert_tx(
                     &mut tx,
                     &owner.task,
@@ -425,15 +435,15 @@ async fn stale_planner_record(no_renderer: bool, demoted: bool) {
             .terminal_renderer
             .forget_entry_for_test(&f.worker.terminal);
     }
-    let pool = h.sql.pool().clone();
+    let pool = h.sql.db().clone();
     let session = h.session_id.clone();
     h.interaction().set_message_record_seam(Box::new(move |_| Box::pin(async move {
         if demoted {
-            sqlx::query("UPDATE cards SET role='assistant' WHERE id=(SELECT card_id FROM worker_sessions WHERE id=?)")
-                .bind(session).execute(&pool).await.unwrap();
+            (pool).writer().execute(sqlx::query("UPDATE cards SET role='assistant' WHERE id=(SELECT card_id FROM worker_sessions WHERE id=?)")
+                .bind(session)).await.unwrap();
         } else {
-            sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
-                .bind(session).execute(&pool).await.unwrap();
+            (pool).writer().execute(sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+                .bind(session)).await.unwrap();
         }
     })));
     let reply = message(

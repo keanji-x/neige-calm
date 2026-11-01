@@ -73,7 +73,7 @@ async fn mails_rows_cascade_with_either_track() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_delete_tx(&mut tx, n.as_str(), &cache).await.unwrap();
                 tx.commit().await.unwrap();
 

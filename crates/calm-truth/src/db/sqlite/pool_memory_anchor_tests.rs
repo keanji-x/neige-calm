@@ -70,7 +70,9 @@ async fn in_memory_db_survives_closing_every_pool_connection() {
 
     close_all_pool_connections(pool).await;
     db.writer()
-        .with_writer(|write_session| Box::pin(async move { write_session.retire_connection_for_test().await }))
+        .with_writer(|write_session| {
+            Box::pin(async move { write_session.retire_connection_for_test().await })
+        })
         .await
         .unwrap()
         .unwrap();
@@ -112,7 +114,9 @@ async fn on_disk_db_unaffected_by_closing_every_pool_connection() {
 
     close_all_pool_connections(pool).await;
     db.writer()
-        .with_writer(|write_session| Box::pin(async move { write_session.retire_connection_for_test().await }))
+        .with_writer(|write_session| {
+            Box::pin(async move { write_session.retire_connection_for_test().await })
+        })
         .await
         .unwrap()
         .unwrap();

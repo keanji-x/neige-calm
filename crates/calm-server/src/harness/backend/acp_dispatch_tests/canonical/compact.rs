@@ -209,7 +209,7 @@ async fn retained_loss_for(case: LossCase, grok: bool) {
         if !matches!(case, LossCase::Failed { issue_next: true }) {
             frame["phase"] = json!("compacting");
             frame["compact_outcome"] = json!({"operation_id":target.operation_id,"thread_id":target.thread_id,"turn_id":turn_id,"status":"started"});
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             crate::db::sqlite::session_set_handle_state_tx(
                 &mut tx,
                 &fx.owner.worker,
@@ -501,7 +501,7 @@ async fn acp_compact_absent_driver_restart_still_projects_unconfirmed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_set_handle_state_tx(
                     &mut tx,
                     &fx.owner.worker,

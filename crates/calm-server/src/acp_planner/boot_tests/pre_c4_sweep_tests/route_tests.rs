@@ -186,7 +186,7 @@ async fn area_delete(proven: bool) {
             Box::pin(async move {
                 if !proven {
                     // A generic unsettled execution exposes a Stop committed before the ACP sweep.
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     calm_truth::db::sqlite::workspace_execution::insert(
                         &mut tx,
                         &execution,

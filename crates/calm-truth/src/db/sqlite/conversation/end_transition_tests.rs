@@ -16,7 +16,7 @@ async fn original(repo: &SqlxRepo, card: &str, runtime: &str) -> InputAttempt {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, card, runtime)
                     .await
                     .unwrap();
@@ -96,7 +96,7 @@ async fn original_end_preserves_claims_and_pending_when_closing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -166,7 +166,7 @@ async fn original_end_refuses_missing_and_ambiguous_committed_execution_tuples()
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     // A raw historical fact can be incomplete/ambiguous; it is never repaired
                     // from current last_turn_id or another native slot by the END getter.
                     let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
@@ -238,7 +238,7 @@ async fn original_end_keeps_independent_runtime_transitions_for_their_own_owners
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                         .await
                         .unwrap();
@@ -289,7 +289,7 @@ async fn canonical_claude_original_local_execution_needs_no_native_session() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 super::super::session_start_runtime_tx(
                     &mut tx,
                     crate::session_projection_repo::WorkerSessionInit::shared_planner(
@@ -403,7 +403,7 @@ async fn wedged_after_stop(repo: &SqlxRepo, card: &str, runtime: &str, reason: &
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let track: String =
                     sqlx::query_scalar("SELECT track_id FROM worker_sessions WHERE id=?1")
                         .bind(runtime)
@@ -461,7 +461,7 @@ async fn late_end(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_fact_carrier_tx(&mut tx, card, runtime)
                     .await
                     .unwrap();
@@ -480,7 +480,8 @@ async fn late_end(
                 (result, carrier)
             })
         })
-        .await.expect("independent write operation")
+        .await
+        .expect("independent write operation")
 }
 
 async fn row_state(repo: &SqlxRepo, runtime: &str) -> String {
@@ -549,7 +550,7 @@ async fn stop_deadline_late_end_refuses_a_terminated_failed_carrier_whole() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let after = current_input_fact_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -581,7 +582,7 @@ async fn stop_deadline_late_end_after_successor_carrier_changes_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_fact_carrier_tx(&mut tx, &card, &old)
                     .await
                     .unwrap();
@@ -599,7 +600,7 @@ async fn stop_deadline_late_end_after_successor_carrier_changes_nothing() {
                 .fetch_one(repo.pool())
                 .await
                 .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     complete_input_execution_tx(&mut tx, &card, &old, &fence, &original)
                         .await

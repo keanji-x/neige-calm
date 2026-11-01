@@ -59,7 +59,7 @@ pub(super) async fn accepted_initial(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();
@@ -131,7 +131,7 @@ async fn retired_native_source_cannot_requalify_but_observed_end_uses_current_he
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let accepted_watermark =
                     current_input_fact_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                         .await

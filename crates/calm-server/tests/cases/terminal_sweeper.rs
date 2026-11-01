@@ -105,7 +105,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -173,7 +173,7 @@ async fn seed_shared_planner_pair(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term, _mcp_token) = card_with_codex_create_tx(
                     &mut tx,
                     new_id(),
@@ -261,7 +261,7 @@ async fn seed_migrated_shared_planner_pair(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term, _mcp_token) = card_with_codex_create_tx(
                     &mut tx,
                     new_id(),

@@ -50,7 +50,7 @@ pub(super) async fn queued_restore_reopen(flow: Flow, id: RetryIntentId, display
     let write_db = (flow.fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             let mut carrier = storage::current_input_carrier_tx(&mut tx, &flow.card, &flow.worker)
@@ -165,7 +165,7 @@ async fn canonical_retry_http_mixed_queued_restore_reopen_is_readable() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let mut carrier =
                             storage::current_input_carrier_tx(&mut tx, &flow.card, &flow.worker)
                                 .await

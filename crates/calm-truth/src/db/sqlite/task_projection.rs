@@ -1842,7 +1842,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     crate::db::sqlite::track_workspace::track_workspace_write_tx(
                         &mut tx,
                         &track,
@@ -1893,7 +1893,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -1943,7 +1943,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -1988,7 +1988,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -2032,7 +2032,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -2084,7 +2084,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -2127,7 +2127,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let verdicts = evaluate_schedulability(
                         &mut tx,
                         &track,
@@ -2159,7 +2159,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let first =
                         project_tasks_tx(&mut tx, &track, &[declaration.clone()], &[vec![]])
                             .await
@@ -2167,7 +2167,7 @@ mod tests {
                     tx.commit().await.unwrap();
                     assert_eq!(first.changed_keys, ["route"]);
                     declaration.spawn = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE.into();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
                         .await
                         .unwrap();
@@ -2216,7 +2216,7 @@ mod tests {
         let declarations = vec![declaration(0, "k2"), declaration(1, "k1")];
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let outcome = project_tasks_tx(&mut tx, &track, &declarations, &[vec![], vec![]])
                 .await
                 .unwrap();
@@ -2257,7 +2257,7 @@ mod tests {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     for _ in 0..2 {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let outcome = project_tasks_tx(&mut tx, &track, &declarations, &local)
                             .await
                             .unwrap();
@@ -2287,7 +2287,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let events = mark_context_material_tx(
                         &mut tx,
                         &format!("{track}:rollback"),
@@ -2545,7 +2545,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let outcome =
                         project_tasks_tx(&mut tx, track, &declarations, &block_local_diags)
                             .await
@@ -2726,7 +2726,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         crate::db::sqlite::task_claim_pending_tx(&mut tx, &id, 1, &[], false)
                             .await
@@ -2735,11 +2735,13 @@ mod tests {
                     );
                     tx.commit().await.unwrap();
                     project_blocks(&repo, &track, &[block("later")]).await;
-                    let task =
-                        crate::db::sqlite::task_get_tx(&mut write_session.begin().await.unwrap(), &id)
-                            .await
-                            .unwrap()
-                            .unwrap();
+                    let task = crate::db::sqlite::task_get_tx(
+                        &mut write_session.begin_immediate().await.unwrap(),
+                        &id,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
                     assert_eq!(
                         serde_json::from_str::<serde_json::Value>(
                             task.child_track_json.as_deref().unwrap()
@@ -2784,7 +2786,7 @@ mod tests {
                     .unwrap();
                                 assert_eq!(row, ("pending".into(), contract.map(str::to_string)));
                                 let task = crate::db::sqlite::task_get_tx(
-                                    &mut write_session.begin().await.unwrap(),
+                                    &mut write_session.begin_immediate().await.unwrap(),
                                     &format!("{track}:review"),
                                 )
                                 .await

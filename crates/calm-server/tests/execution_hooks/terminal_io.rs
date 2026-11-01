@@ -310,7 +310,7 @@ async fn renderer_drained_waits_for_output_eof_and_feeds_tail_before_exit() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
                 tx.commit().await.unwrap();
                 f.engine.drive(ticket.committed());
@@ -493,7 +493,7 @@ async fn settled_worker_stopped_typed_survives_orphan_tick_and_mcp_reads_tail() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlite::session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -599,7 +599,7 @@ async fn delete_rollback_retains_renderer_and_recover_retires_committed_delete()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
                 assert_eq!(deleted.retire, Some(id.clone()));
                 tx.rollback().await.unwrap();
@@ -620,7 +620,7 @@ async fn delete_rollback_retains_renderer_and_recover_retires_committed_delete()
                 );
                 assert!(entry.exit.lock().unwrap().is_none());
                 // Commit the authoritative deletion but lose its ticket, as a crash at commit would.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _deleted = sqlite::terminal_delete_tx(&mut tx, &term.id).await.unwrap();
                 tx.commit().await.unwrap();
                 assert!(f.repo.terminal_get(&term.id).await.unwrap().is_none());

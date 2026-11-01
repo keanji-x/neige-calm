@@ -37,16 +37,6 @@ fn begin_immediate_tx<'a>(
     }
 }
 
-/// One observed BEGIN attempt; the caller retains ownership of retry and cancellation policy.
-#[cfg(test)]
-#[track_caller]
-fn begin_immediate_tx_once<'a>(
-    pool: &'a SqliteDb,
-) -> impl std::future::Future<Output = sqlx::Result<ObservedTransaction<'static>>> + Send + 'a {
-    let caller = std::panic::Location::caller();
-    begin_observed(&pool.writer().pool, caller, RetryPolicy::Once)
-}
-
 enum RetryPolicy {
     Once,
     Bounded,
@@ -181,3 +171,6 @@ pub(super) async fn next_sort_scoped_in_tx(
     let row = q.fetch_one(&mut **tx).await?;
     Ok(row.try_get::<f64, _>("s")?)
 }
+
+#[cfg(test)]
+mod pool_tx_repair_tests;

@@ -21,8 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::sqlite::{
-    append_decision_events_in_tx, begin_immediate_tx, task_apply_gate_result_tx,
-    task_gate_attempt_bump_tx, task_get_tx,
+    append_decision_events_in_tx, task_apply_gate_result_tx, task_gate_attempt_bump_tx, task_get_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
@@ -475,7 +474,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     .writer()
                     .with_writer(|write_session| {
                         Box::pin(async move {
-                            let mut tx = write_session.begin().await?;
+                            let mut tx = write_session.begin_immediate().await?;
                             let envelopes =
                                 apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
                             tx.commit().await?;

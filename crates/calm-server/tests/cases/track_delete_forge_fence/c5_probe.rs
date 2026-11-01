@@ -104,7 +104,7 @@ pub(super) async fn settle_action(boot: &Boot, id: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = engine
                     .request(&mut tx, &execution, Desired::Stop)
                     .await
@@ -232,7 +232,7 @@ async fn probe_ready(boot: &Boot, track: &str, output_probe: bool) -> (String, O
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let ticket = engine
                                 .request(&mut tx, &execution, Desired::Stop)
                                 .await

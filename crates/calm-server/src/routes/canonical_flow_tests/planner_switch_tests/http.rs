@@ -350,7 +350,7 @@ async fn planner_switch_http_open_wake_refused_before_revoke() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (scope, event) = crate::ask::ask_requested_tx(
                     &mut tx,
                     &p.cards[0].clone().into(),
@@ -443,7 +443,7 @@ async fn planner_switch_http_pending_refused() {
         let mut p = Pair::new().await;
         let write_db = (p.fixture.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             match kind {

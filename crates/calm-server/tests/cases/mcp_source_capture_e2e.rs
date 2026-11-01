@@ -119,7 +119,10 @@ async fn mint_card_with_thread(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin card tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin card tx");
                 let mcp_token = if role == CardRole::Planner {
                     Some(
                         crate::support::planner::mint_tx(
@@ -170,7 +173,10 @@ async fn mint_card_with_thread(
                 };
                 tx.commit().await.expect("commit card tx");
                 let thread_id = format!("thread-{card_id}");
-                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime tx");
                 if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, &card_id)
                     .await
                     .expect("active runtime lookup")

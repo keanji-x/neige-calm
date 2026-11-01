@@ -247,7 +247,7 @@ impl RegisteredRig {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.expect("tx");
+                    let mut tx = write_session.begin_immediate().await.expect("tx");
                     session_set_harness_observation_runtime_tx(
                         &mut tx,
                         &self.worker_session_id,
@@ -362,7 +362,7 @@ pub(super) async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
         .expect("track");
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("tx");
+        let mut tx = write_session.begin_immediate().await.expect("tx");
         let card = card_create_with_id_tx(
             &mut tx,
             new_id(),
@@ -398,7 +398,7 @@ pub(super) async fn worker_session_row(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("tx");
+                let mut tx = write_session.begin_immediate().await.expect("tx");
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

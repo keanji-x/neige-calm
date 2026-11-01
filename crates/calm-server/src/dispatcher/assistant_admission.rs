@@ -118,7 +118,7 @@ impl EventAdmission {
     pub(super) async fn qualify_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        repo: &dyn Repo,
+        repo: &observation_reads::ObservationReads<'_>,
         fact: &calm_truth::db::sqlite::event_inputs::EventInputFact,
     ) -> Result<Option<HarnessObservation>> {
         match self {

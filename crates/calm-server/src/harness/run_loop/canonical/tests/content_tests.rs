@@ -111,7 +111,7 @@ pub(super) async fn accept(fx: &Fixture, body: &str) -> MessageRevisionRef {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(
                     &mut tx,
                     fx.harness.inner.card_id.as_str(),
@@ -161,7 +161,7 @@ async fn objective_canonical_reply_and_end_before_start_ack_persist_without_acce
     let fx = Fixture::new().await;
     let write_db = (fx.original.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         crate::db::sqlite::track_capabilities::stamp_tx(
             &mut tx,
             &fx.harness.inner.track_id,
@@ -319,7 +319,7 @@ async fn canonical_erased_native_reply_cannot_leave_a_raw_body_on_late_repeat() 
     // as its storage tests do. No synthetic END, delivery or runtime transition.
     let write_db = (fx.original.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let changed = sqlx::query(
             "UPDATE conversation_presentations
          SET erased_by_operation_id=?1,native_item_row_id=NULL

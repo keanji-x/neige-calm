@@ -105,7 +105,7 @@ pub(crate) async fn settlement(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let value = sql::settlement(&mut tx, execution_id.as_str()).await?;
                 tx.commit().await?;
                 value
@@ -137,7 +137,7 @@ pub(crate) async fn drain_exited(
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                     let ticket = engine
                         .request(&mut tx, execution_id, Desired::Stop)

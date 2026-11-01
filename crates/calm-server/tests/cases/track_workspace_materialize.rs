@@ -141,7 +141,7 @@ async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
                     &mut tx,
                     track_id,
@@ -288,7 +288,7 @@ async fn template_create_without_cwd_materializes_a_managed_workspace_on_first_l
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
                     &mut tx,
                     track_id,
@@ -435,7 +435,7 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
                     &mut tx,
                     &track_id,

@@ -138,10 +138,13 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
     f.plan_tasks(&parent, &[("sub", "codex", TASK_CHILD_TRACK_ROUTE, None)])
         .await;
     f.claim(&parent, "sub", 2_000).await;
-    sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
-        .bind(&child)
-        .bind(Fx::task_id(&parent, "sub"))
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
+                .bind(&child)
+                .bind(Fx::task_id(&parent, "sub")),
+        )
         .await
         .unwrap();
     let write_db = (f.db()).clone();
@@ -149,7 +152,7 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let n =
                     task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
                         .await
@@ -182,10 +185,13 @@ async fn sub_track_child_deleted_marks_parent_failed() {
     f.plan_tasks(&parent, &[("sub", "codex", TASK_CHILD_TRACK_ROUTE, None)])
         .await;
     f.claim(&parent, "sub", 2_000).await;
-    sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
-        .bind(&child)
-        .bind(Fx::task_id(&parent, "sub"))
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
+                .bind(&child)
+                .bind(Fx::task_id(&parent, "sub")),
+        )
         .await
         .unwrap();
     let write_db = (f.db()).clone();
@@ -193,14 +199,14 @@ async fn sub_track_child_deleted_marks_parent_failed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
-                sqlx::query("DELETE FROM tracks WHERE id = ?1")
-                    .bind(&child)
-                    .execute(&f.pool)
+                (f.db())
+                    .writer()
+                    .execute(sqlx::query("DELETE FROM tracks WHERE id = ?1").bind(&child))
                     .await
                     .unwrap();
                 let (_runtime, scheduler) = f.scheduler();
@@ -237,10 +243,13 @@ async fn parent_gate_verifying_is_working() {
     )
     .await;
     f.claim(&parent, "sub", 2_000).await;
-    sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
-        .bind(&child)
-        .bind(Fx::task_id(&parent, "sub"))
-        .execute(&f.pool)
+    (f.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id = ?1 WHERE id = ?2")
+                .bind(&child)
+                .bind(Fx::task_id(&parent, "sub")),
+        )
         .await
         .unwrap();
     let write_db = (f.db()).clone();
@@ -248,7 +257,7 @@ async fn parent_gate_verifying_is_working() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
                     .await
                     .unwrap();
@@ -503,7 +512,7 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     task_mark_running_tx(&mut tx, &attempt_b, Some(&card_b), 7_000, i64::MAX)
                         .await
@@ -1706,7 +1715,7 @@ async fn track_activity_materializes_every_persisted_resource_kind() {
                     let card = f
                         .card(&t, &format!("resource-{name}"), "codex", CardRole::Worker)
                         .await;
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let terminal = terminal_create_tx(
                         &mut tx,
                         calm_server::model::NewTerminal {

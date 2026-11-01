@@ -91,7 +91,7 @@ async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = card_update_tx(
                     &mut tx,
                     seed.card.id.as_str(),
@@ -189,7 +189,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_bind_attribution_tx(
                     &mut tx,
                     &seed.runtime.id,
@@ -253,7 +253,7 @@ async fn worker_flow_driver_captures_legacy_claude_card_from_hook_transcript_pat
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let term = terminal_create_tx(
                     &mut tx,
                     NewTerminal {

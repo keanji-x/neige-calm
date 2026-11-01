@@ -28,23 +28,25 @@ async fn git_settlement_canonical_acceptance_replay_and_writer_progress() {
     }
 
     {
-
         {
             let writer = async {
                 let write_db = (flow.fixture.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin()
+                write_db
+                    .writer()
+                    .with_writer(|write_session_1| {
+                        Box::pin(async move {
+                            let mut tx = write_session_1.begin_immediate().await.unwrap();
+                            sqlx::query("UPDATE tracks SET title='writer progressed' WHERE id=?1")
+                                .bind(&flow.track)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
                     .await
-                    .unwrap();
-                sqlx::query("UPDATE tracks SET title='writer progressed' WHERE id=?1")
-                    .bind(&flow.track)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
-
-        })).await.expect("independent write operation")
-};
+                    .expect("independent write operation")
+            };
             tokio::pin!(writer);
             assert!(
                 futures::poll!(writer.as_mut()).is_pending(),
@@ -55,7 +57,9 @@ let mut tx = write_session_1.begin()
                 tokio::join!(async { accepting.await.unwrap() }, writer.as_mut());
             })
             .await
-            .expect("acceptance and the queued short writer must progress without acquisition timeout");
+            .expect(
+                "acceptance and the queued short writer must progress without acquisition timeout",
+            );
         }
         let before = flow.fixture.carrier(&flow.track).await.2;
         assert_eq!(before.header.push_watermark, id);
@@ -109,14 +113,14 @@ let mut tx = write_session_1.begin()
             .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
             .await;
         flow.close().await;
-
-
-}
+    }
 }
 
 async fn settlement(flow: &Flow) -> (String, Event, i64, std::path::PathBuf, DeliverySettlement) {
     let task = crate::model::new_id();
-    (flow.fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,created_at_ms,updated_at_ms) VALUES(?1,?2,'deliver','codex','Deliver','{}','done','delivery-worker',1,1)")
+    (flow.fixture.repo.db()).writer().execute(sqlx::query(concat!(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,created_at_ms,updated_at_ms) ",
+        "VALUES(?1,?2,'deliver','codex','Deliver','{}','done','delivery-worker',1,1)"))
         .bind(&task).bind(&flow.track)).await.unwrap();
     let retained_path = flow.fixture.root.path().join("retained-worker");
     let write_db = (flow.fixture.repo.db()).clone();
@@ -124,7 +128,7 @@ async fn settlement(flow: &Flow) -> (String, Event, i64, std::path::PathBuf, Del
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
                     &mut tx,
                     "delivery-worker",
@@ -183,7 +187,7 @@ async fn git_settlement_canonical_qualification_and_watermark_share_outer_transa
     let before = flow.fixture.carrier(&flow.track).await.2;
     let write_db = (flow.fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         sqlx::query("UPDATE tasks SET worker_card_id='uncommitted-worker' WHERE id=?1")

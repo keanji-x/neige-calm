@@ -5,8 +5,9 @@ pub type StoreWrite<'a, S> = Box<
     dyn for<'tx, 'db> FnOnce(
             &'tx S,
             &'tx mut <S as Store>::Tx<'db>,
-        ) -> futures::future::BoxFuture<'tx, ()>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ()> + Send + 'tx>,
+        > + Send
         + 'a,
 >;
 

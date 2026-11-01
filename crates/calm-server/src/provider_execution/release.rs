@@ -30,7 +30,7 @@ pub async fn send(
                 tokio::time::timeout(Duration::from_secs(10), async {
                     wait_spawned(engine, &id).await?;
                     let at = crate::model::now_ms();
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let current = sql::load(&mut **tx, session)
                         .await?
                         .filter(|c| {
@@ -78,7 +78,7 @@ pub async fn send(
                             tokio::task::yield_now().await;
                         }
                     }
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let sql::Cas::Applied(_) =
                         sql::advance_release(&mut tx, session, &releasing, at).await?
                     else {
@@ -94,7 +94,8 @@ pub async fn send(
                 // No retry after transport failure or cancellation. RAII/sweep sends Stop.
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Wait for the Engine's Spawned receipt without releasing a single payload byte.

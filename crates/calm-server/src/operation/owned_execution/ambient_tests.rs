@@ -112,7 +112,7 @@ impl Fixture {
             .unwrap();
         let write_db = (self.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let _ticket = engine.admit(&mut tx, intent.clone()).await.unwrap();
             tx.commit().await.unwrap();
             assert!(matches!(
@@ -303,7 +303,7 @@ async fn w_owned_secret_proxy_refused_before_prepare_and_admit() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
                     tx.rollback().await.unwrap();
                     assert!(store.load(&intent.metadata.id).await.unwrap().is_none());
@@ -363,7 +363,7 @@ async fn w_owned_secret_proxy_refused_before_prepare_and_admit() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(engine.admit(&mut tx, intent.clone()).await.is_err());
                     tx.rollback().await.unwrap();
                     assert!(f.store.load(&intent.metadata.id).await.unwrap().is_none());
@@ -468,7 +468,7 @@ async fn w_owned_unsupported_peer_refused_before_intent() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     adapter
                         .preflight_environment(&intent.metadata.program)

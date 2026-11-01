@@ -27,7 +27,7 @@ pub(super) async fn dispatch(
     crate::test_seams::pause_point("objective-command-snapshot", &row.id.to_string()).await;
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         // Authorization, retry history and track occupancy must describe one writer
         // snapshot; completion atomically changes all three. Submit only after commit.
         let current = objective_host::current_check_tx(&mut tx, &row.id).await?;

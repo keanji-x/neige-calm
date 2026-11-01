@@ -558,7 +558,7 @@ async fn c4_track_stop_settles_within_quiesce_deadline_and_record_dies_with_row(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_truth::db::sqlite::track_delete_tx(
                     &mut tx,
                     row.track_id.as_str(),

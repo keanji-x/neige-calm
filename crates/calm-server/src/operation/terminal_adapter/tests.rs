@@ -138,7 +138,7 @@ async fn prepare_terminal_worker_with_cwd(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = harness
                     .adapter
                     .prepare_tx(&mut tx, &payload, &op)
@@ -336,7 +336,7 @@ async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
                 tx.commit().await.unwrap();
 
@@ -400,7 +400,7 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = harness
                     .adapter
                     .prepare_tx(&mut tx, &payload, &op)
@@ -523,7 +523,7 @@ async fn terminal_presentation_legacy_recovery_preserves_real_claim_cas_and_hash
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let output = adapter.prepare_tx(&mut tx, &op.payload, &op).await.unwrap();
                     tx.commit().await.unwrap();
                     assert_eq!(
@@ -556,7 +556,7 @@ async fn terminal_presentation_legacy_recovery_preserves_real_claim_cas_and_hash
                     assert_eq!(after, before);
                     let mut invalid = input.clone();
                     invalid["source"] = Value::Null;
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(
                         adapter.prepare_tx(&mut tx, &invalid, &op).await.is_err(),
                         "present invalid source is not a legacy record"
@@ -614,7 +614,7 @@ async fn terminal_presentation_legacy_generic_pending_input_cannot_mint_provenan
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let output = TxOnlyAdapter::prepare_tx(&adapter, &mut tx, &op.payload, &op)
                         .await
                         .unwrap();

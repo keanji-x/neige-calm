@@ -82,7 +82,10 @@ async fn planner_caller(fx: &Fixture, track_id: &str) -> (String, String) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin token tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin token tx");
                 card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
                     .await
                     .expect("mint card MCP token");

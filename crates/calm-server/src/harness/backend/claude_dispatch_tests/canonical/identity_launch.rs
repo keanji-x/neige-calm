@@ -115,7 +115,7 @@ async fn canonical_claude_identity_launch_crossing_its_owner_refuses_and_holds()
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert!(
                         crate::claude_planner::recovery::identity_unconfirmed_tx(
                             &mut tx,
@@ -144,7 +144,7 @@ async fn canonical_claude_identity_launch_for_another_thread_is_stale() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     !crate::claude_planner::recovery::identity_unconfirmed_tx(
                         &mut tx,
@@ -209,7 +209,7 @@ async fn held(fx: &Fixture) -> bool {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let held = crate::claude_planner::recovery::identity_unconfirmed_tx(
                     &mut tx,
                     &fx.owner.worker,
@@ -365,7 +365,7 @@ async fn canonical_claude_identity_stale_completion_cannot_retire_newer_launch()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     !crate::db::sqlite::claude_session_launch::retire(
                         &mut tx,

@@ -52,7 +52,7 @@ impl Fixture {
         crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let (card, _) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
                 &mut tx,
                 "card-timeout".into(),
@@ -108,7 +108,7 @@ impl Fixture {
                 .bind(&op))
                 .await
                 .unwrap();
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
                 &mut tx,
                 &task.track_id,
@@ -265,7 +265,7 @@ async fn w_timeout_cleanup_spares_successor_attempt() {
                     .writer()
                     .with_writer(|write_session| {
                         Box::pin(async move {
-                                    let mut tx = write_session.begin().await.unwrap();
+                                    let mut tx = write_session.begin_immediate().await.unwrap();
                                     crate::operation::workspace_lease::release_workspace_lease_for_card_tx(
                                         &mut tx,
                                         f.card.id.as_str(),
@@ -294,7 +294,7 @@ async fn w_timeout_cleanup_spares_successor_attempt() {
                                         )
                                         .await
                                         .unwrap();
-                                    let mut tx = write_session.begin().await.unwrap();
+                                    let mut tx = write_session.begin_immediate().await.unwrap();
                                     if same_session {
                                         // A stale marker on a current carrier must not authorize B's spawn op.
                                         sqlx::query(
@@ -395,7 +395,7 @@ async fn w_timeout_cleanup_spares_successor_attempt() {
                                         )
                                         .await
                                         .unwrap();
-                                    let mut tx = write_session.begin().await.unwrap();
+                                    let mut tx = write_session.begin_immediate().await.unwrap();
                                     let mark = mark_running_timeout_cleanup_tx(
                                         &mut tx,
                                         f.card.id.as_str(),
@@ -528,7 +528,7 @@ async fn w_timeout_cleanup_already_ended_session_converges() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     calm_truth::db::sqlite::session_complete_tx(
                         &mut tx,
                         &"session-a".to_owned(),

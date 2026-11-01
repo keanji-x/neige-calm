@@ -122,7 +122,7 @@ async fn canonical_acp_completed_receipt_cannot_bypass_failed_canonical_report_c
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
@@ -138,7 +138,7 @@ async fn canonical_acp_completed_receipt_cannot_bypass_failed_canonical_report_c
                     "END must not bypass the canonical fact owner"
                 );
                 assert!(fx.dispatch().await.is_err());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

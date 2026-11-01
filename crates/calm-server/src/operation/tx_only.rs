@@ -149,7 +149,7 @@ pub(super) async fn commit_tx_only(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 match commit_in_tx(&mut tx, adapter, key, payload).await {
                     Ok(commit @ KeyedCommit::Committed { .. }) => {
                         tx.commit().await?;
@@ -166,7 +166,8 @@ pub(super) async fn commit_tx_only(
                 }
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 async fn commit_in_tx(

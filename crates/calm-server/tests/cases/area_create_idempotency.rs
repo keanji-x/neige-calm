@@ -198,7 +198,13 @@ async fn area_create_idempotency_deleted_area_and_binding_tampering_fail_closed(
         "DELETE FROM area_create_idempotency",
         "UPDATE area_create_idempotency SET area_id = 'other'",
     ] {
-        assert!((boot.repo.db()).writer().execute(sqlx::query(query)).await.is_err());
+        assert!(
+            (boot.repo.db())
+                .writer()
+                .execute(sqlx::query(query))
+                .await
+                .is_err()
+        );
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM area_create_idempotency")
         .fetch_one(boot.repo.pool())
@@ -378,7 +384,7 @@ async fn managed_bytes(boot: &Boot, area_id: &str) -> PathBuf {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let track = track_create_tx(
                     &mut tx,
                     calm_server::model::NewTrack {
@@ -422,7 +428,7 @@ async fn registered_session(boot: &Boot, user_id: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::area_membership::application_user_register(
                     &mut tx, user_id, user_id,
                 )

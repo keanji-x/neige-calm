@@ -8,13 +8,7 @@ async fn current_owner_checkpoint_prunes_only_before_oldest_endpoint() {
     frame.header.last_seen_head = Some(fixture.commits[3].hash.clone());
     frame.header.issued_turn_head = Some(fixture.commits[1].hash.clone());
     let snapshot = serde_json::to_string(&frame).unwrap();
-    insert_active_session(
-        fixture.pool(),
-        &fixture.track_id,
-        "current",
-        Some(&snapshot),
-    )
-    .await;
+    insert_active_session(fixture.db(), &fixture.track_id, "current", Some(&snapshot)).await;
     let before = track_vcs::diff(
         fixture.pool(),
         &fixture.commits[1].hash,
@@ -91,7 +85,7 @@ async fn released_owner_checkpoints_preserve_either_endpoint_and_keep_n() {
             // The declared owner conversion, never a second codec in this fixture.
             CanonicalHarnessSnapshot::from_released(value.clone()).unwrap();
             insert_active_session(
-                fixture.pool(),
+                fixture.db(),
                 &fixture.track_id,
                 "released",
                 Some(&value.to_string()),
@@ -138,7 +132,7 @@ async fn invalid_owner_checkpoints_and_missing_endpoints_skip_prune() {
         for (index, value) in cases.into_iter().enumerate() {
             let fixture = fixture_with_commits(5).await;
             insert_active_session(
-                fixture.pool(),
+                fixture.db(),
                 &fixture.track_id,
                 "invalid",
                 Some(&value.to_string()),
@@ -159,7 +153,7 @@ async fn current_checkpoint_prune_dry_run_rolls_back_before_reclamation() {
     let fixture = fixture_with_commits(6).await;
     let value = released_frame(5, None, None);
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "dry-run",
         Some(&value.to_string()),
@@ -171,7 +165,7 @@ async fn current_checkpoint_prune_dry_run_rolls_back_before_reclamation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     track_vcs::prune_track_history_tx(&mut tx, &fixture.track_id, 2)
                         .await

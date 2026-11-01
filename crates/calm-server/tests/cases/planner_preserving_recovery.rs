@@ -139,7 +139,7 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     // Start in the state immediately before the production notification sequence.
     let write_db = (boot.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("UPDATE worker_sessions SET state='turn_pending' WHERE id=?")
             .bind(&runtime)
             .execute(&mut **tx)

@@ -14,13 +14,25 @@ async fn canonical_retry_storage_inline_upgrade_preserves_populated_graph() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/empty.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    { let migrator = &(through(183));
-    (db).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(through(183));
+        (db).writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     let before: Vec<(String, i64)> =
         sqlx::query_as("SELECT name,seq FROM sqlite_sequence ORDER BY name")
             .fetch_all(db.read_pool())
@@ -56,13 +68,25 @@ async fn populated_upgrade(empty_presentations: bool) {
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
     let old = through(183);
-    { let migrator = &(old);
-    (db).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(old);
+        (db).writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     let repo = SqlxRepo {
         db,
         card_role_cache: super::super::super::CardRoleCache::new(),
@@ -198,13 +222,26 @@ async fn populated_upgrade(empty_presentations: bool) {
     super::super::super::infra::check_no_unknown_future_migrations(s.repo.pool(), &with_0184)
         .await
         .unwrap();
-    { let migrator = &(with_0184);
-    (s.repo.db()).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+    {
+        let migrator = &(with_0184);
+        (s.repo.db())
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+                            })
+                        })
+                        .await
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    .unwrap();
     for (name, sql) in objects {
         // 0184 changes the creation fence from V4 to V5.
         let sql = if name == "conversation_human_track_creation_fact_scope" {
@@ -273,7 +310,7 @@ async fn populated_upgrade(empty_presentations: bool) {
     );
     let write_db = (upgraded.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(submission_plan_tx(&mut tx, &root).await.is_ok());
         let row = sqlx::query("SELECT retirement_reason,released_by_attempt_id FROM conversation_submission_inputs WHERE input_kind='human'").fetch_one(&mut **tx).await.unwrap();
         assert_eq!(row.get::<String, _>("retirement_reason"), "not_dispatched");

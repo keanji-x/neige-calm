@@ -382,7 +382,7 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::track_workspace_write_tx(
                     &mut tx,
                     &track_id,
@@ -758,7 +758,7 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter
                     .prepare_tx(&mut tx, &payload, &operation)
                     .await
@@ -887,7 +887,7 @@ async fn shared_managed_path_is_reported_as_a_violation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::track_workspace_write_tx(
                     &mut tx,
                     &second_id,

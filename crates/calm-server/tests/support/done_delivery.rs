@@ -250,7 +250,7 @@ pub async fn planner(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -388,7 +388,7 @@ pub async fn start(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card, &hash).await.unwrap();
                 session_mcp_token_set_tx(&mut tx, &session, &hash)
                     .await

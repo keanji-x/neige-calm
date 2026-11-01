@@ -26,7 +26,7 @@ impl RetryFixture {
         let inner = &fx.harness.inner;
         let write_db = (fx.original.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let mut carrier =
                 current_input_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
                     .await
@@ -196,7 +196,7 @@ impl RetryFixture {
             if !system {
                 assert_eq!(original_call["method"], "turn/start");
             }
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let carrier =
                 current_input_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
                     .await

@@ -16,7 +16,7 @@ async fn empty_track(repo: &SqlxRepo) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -64,7 +64,7 @@ async fn seed_tie_group(repo: &SqlxRepo, sort: f64, n: usize) -> (String, Vec<St
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let mut ids = Vec::with_capacity(n);
                 for i in 0..n {
                     let card = card_create_tx(
@@ -124,7 +124,7 @@ async fn track_detail_order_survives_a_plan_change() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let mut card_ids = Vec::new();
                 for sort in [5.0_f64, 4.0, 3.0, 3.0, 2.0, 1.0] {
                     let card = card_create_tx(
@@ -231,7 +231,7 @@ async fn track_detail_orders_cards_by_sort_then_id() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let mut seeded: Vec<(f64, String)> = Vec::new();
                 for sort in [3.0_f64, 2.0, 2.0, 2.0, 1.0] {
                     let card = card_create_tx(
@@ -285,7 +285,7 @@ async fn track_detail_orders_overlays_by_unique_key() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let mut card_ids = Vec::new();
                 for i in 0..2 {
                     let card = card_create_tx(
@@ -319,7 +319,7 @@ async fn track_detail_orders_overlays_by_unique_key() {
                     ("card", card_ids[0].clone(), "alpha", "a-kind"),
                 ];
 
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 for (entity_kind, entity_id, plugin_id, kind) in &rows {
                     overlay_upsert_tx(
                         &mut tx,

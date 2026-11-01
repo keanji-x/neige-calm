@@ -12,7 +12,7 @@ use sqlx::pool::PoolConnection;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
-use super::{SqlxRepo, is_sqlite_busy};
+use super::super::super::{SqliteDb, SqlxRepo, is_sqlite_busy};
 
 /// Bound for statements that must complete promptly once unblocked; far below the pool reaper's 600 s idle_timeout.
 const STALL_BOUND: Duration = Duration::from_secs(30);
@@ -20,9 +20,35 @@ const STALL_BOUND: Duration = Duration::from_secs(30);
 /// Grace period after the peer signalled "about to issue the parking statement"; the park itself is sub-millisecond.
 const PARK_GRACE: Duration = Duration::from_millis(300);
 
-/// Open the app's real repo (pool + pragmas + after_release hook) and add two scratch tables, one seed row each.
-async fn open_semantics_repo() -> SqlxRepo {
+/// Negative controls deliberately allow deferred writes through an infrastructure-only
+/// pool. It shares SQLx options and cleanup hooks with the real role, while published
+/// application readers remain read-only. The managed handle exercises the safe path.
+struct SemanticsRepo {
+    repo: SqlxRepo,
+    unsafe_pool: SqlitePool,
+}
+impl SemanticsRepo {
+    fn pool(&self) -> &SqlitePool {
+        &self.unsafe_pool
+    }
+    fn db(&self) -> &SqliteDb {
+        self.repo.db()
+    }
+}
+async fn open_semantics_repo() -> SemanticsRepo {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let options = repo
+        .pool()
+        .connect_options()
+        .as_ref()
+        .clone()
+        .read_only(false);
+    let unsafe_pool = super::pool_options(super::PoolRole::Writer)
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let repo = SemanticsRepo { repo, unsafe_pool };
     let pool = repo.pool();
     // Plain rowid tables — no AUTOINCREMENT so inserts don't drag the sqlite_sequence table's locks into the picture.
     sqlx::query("CREATE TABLE deadlock_x (id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
@@ -474,7 +500,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx_a = write_session.begin().await.unwrap();
+                let mut tx_a = write_session.begin_immediate().await.unwrap();
                 sqlx::query("INSERT INTO deadlock_x (v) VALUES ('a')")
                     .execute(&mut **tx_a)
                     .await
@@ -515,7 +541,7 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
                 drop(held);
                 wait_for_pool_settled(&pool).await;
 
-                let mut tx_retry = timeout(STALL_BOUND, write_session.begin())
+                let mut tx_retry = timeout(STALL_BOUND, write_session.begin_immediate())
                     .await
                     .expect("begin_immediate_tx must not stall after the deadlock")
                     .expect("begin_immediate_tx must succeed on the healed pool");

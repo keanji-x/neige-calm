@@ -138,7 +138,7 @@ pub(super) async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let session_id = session.id.clone();
                 session.card_id = Some(CardId(card.id.to_string()));
                 session_insert_tx(&mut tx, session)
@@ -236,7 +236,7 @@ pub(super) async fn insert_task(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 crate::test_support::insert_task_tx(&mut tx, &task)
                     .await
                     .expect("insert task");
@@ -316,7 +316,7 @@ pub(super) async fn acquire_test_workspace_lease_as(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin tx");
+                let mut tx = write_session.begin_immediate().await.expect("begin tx");
                 let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
                     &mut tx,
                     track_id.as_str(),

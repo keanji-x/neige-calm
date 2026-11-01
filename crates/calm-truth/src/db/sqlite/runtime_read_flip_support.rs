@@ -143,7 +143,10 @@ pub(super) async fn seed_runtime(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed tx");
                 let card_id =
                     create_card_in_tx(repo, &mut tx, case.label, case.card_kind, case.card_payload)
                         .await;
@@ -183,7 +186,10 @@ pub(super) async fn seed_runtime_with_keys(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin keyed seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin keyed seed tx");
                 let card_id =
                     create_card_in_tx(repo, &mut tx, seed.label, seed.card_kind, seed.card_payload)
                         .await;
@@ -223,7 +229,10 @@ pub(super) async fn seed_terminal_runtime(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin terminal seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin terminal seed tx");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -297,7 +306,10 @@ pub(super) async fn seed_codex_terminal_card(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin codex terminal seed tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin codex terminal seed tx");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -428,7 +440,10 @@ pub(super) async fn seed_projectable_history(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin projectable tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin projectable tx");
                 let card_id =
                     create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1}))
                         .await;
@@ -503,7 +518,10 @@ pub(super) async fn seed_deferred_projectable_placeholder(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin placeholder tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin placeholder tx");
                 let card_id =
                     create_card_in_tx(repo, &mut tx, label, "codex", json!({"schemaVersion":1}))
                         .await;

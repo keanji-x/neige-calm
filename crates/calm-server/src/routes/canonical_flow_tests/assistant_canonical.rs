@@ -326,7 +326,11 @@ async fn receipt_failure_rolls_back_card_carrier_and_input() {
         "DELETE FROM conversation_assistant_creations",
     ] {
         assert!(
-            (fixture.repo.db()).writer().execute(sqlx::query(sql)).await.is_err(),
+            (fixture.repo.db())
+                .writer()
+                .execute(sqlx::query(sql))
+                .await
+                .is_err(),
             "original receipt is immutable: {sql}"
         );
     }
@@ -380,7 +384,7 @@ async fn followup_binds_attachment_before_canonical_acceptance() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let revision = crate::db::sqlite::conversation::revision_tx(
                     &mut tx,
                     &calm_types::conversation::MessageRevisionRef {
@@ -692,7 +696,7 @@ async fn archived_assistant_refuses_retry_without_changing_history() {
     assert!(held.idle_for_lifecycle());
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         assert!(

@@ -11,7 +11,7 @@ async fn planner_switch_session_projection_requires_role_contract_binding() {
     let repo = fresh_repo().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let card = create_card_in_tx(
             &repo,
             &mut tx,

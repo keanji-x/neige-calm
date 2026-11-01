@@ -56,7 +56,7 @@ async fn human(fixture: &Fixture, card: &str, text: &str) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = insert_message_tx(
                     &mut tx,
                     card,
@@ -93,7 +93,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
     fixture.shutdown_process(&state).await;
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let card = crate::db::sqlite::card_create_with_id_tx(
@@ -152,7 +152,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
                     .unwrap(),
             );
         }
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         for row in rows {

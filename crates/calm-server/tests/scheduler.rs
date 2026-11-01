@@ -2808,7 +2808,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         for (adapter, op) in cases {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             let before: (i64, i64, i64, i64) = sqlx::query_as(
@@ -2843,7 +2843,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
             tx.rollback().await.unwrap();
         }
 
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let missing = calm_server::operation::refuse_if_context_stale(
@@ -2857,7 +2857,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         );
         tx.rollback().await.unwrap();
 
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         calm_server::operation::refuse_if_context_stale(&mut tx, None)
@@ -2957,7 +2957,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut prepare_tx = write_session.begin().await.unwrap();
+                let mut prepare_tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter
                     .prepare_tx(&mut prepare_tx, &payload, &pending_op)
                     .await
@@ -3749,7 +3749,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                                 payload: broken[0].2.clone(),
                             }]),
                         };
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         sqlx::query(
                             "UPDATE cards SET payload = ?1, body_crdt = NULL \
                  WHERE track_id = ?2 AND kind = 'track-report'",
@@ -3910,12 +3910,12 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
 }
 
 /// Deletes the report's third block (`b_dead`), the depth-two target of the head task's context.
-async fn delete_depth_two_target(pool: &sqlx::SqlitePool, track_id: &str) {
-    sqlx::query(
+async fn delete_depth_two_target(pool: &calm_truth::db::sqlite::SqliteDb, track_id: &str) {
+    pool.writer().execute(sqlx::query(
         "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE track_id=?1 AND kind='track-report'",
     )
     .bind(track_id)
-    .execute(pool)
+    )
     .await
     .unwrap();
 }
@@ -3983,7 +3983,7 @@ async fn a_codex_task_stuck_at_claim_does_not_block_the_next_codex_task() {
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    delete_depth_two_target(pool.read_pool(), boot.track_id.as_str()).await;
+    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -4062,7 +4062,7 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    delete_depth_two_target(pool.read_pool(), boot.track_id.as_str()).await;
+    delete_depth_two_target(&pool, boot.track_id.as_str()).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -4484,7 +4484,7 @@ async fn seed_fresh_context_copies(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut tasks = QueryBuilder::<Sqlite>::new(
                     "INSERT INTO tasks \
          (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
@@ -4596,7 +4596,7 @@ async fn seed_stale_context_copies(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (index, clone_track_id) in clone_track_ids.iter().enumerate() {
                     let task_id = format!("{key_prefix}-{index:04}");
                     sqlx::query(
@@ -7920,7 +7920,7 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::task_mark_sub_track_running_tx(
                     &mut tx,
                     &task_id,
@@ -7974,7 +7974,7 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
                             .unwrap();
                     }
                     let pool = boot.repo.sqlite_db().unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let changed = calm_server::db::sqlite::task_mark_sub_track_running_tx(
                         &mut tx,
                         &id,
@@ -8181,7 +8181,7 @@ async fn acceptance_18_success_flip_rechecks_closed_after_its_snapshot() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let observed: bool =
                         sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                             .bind(&child)
@@ -8253,7 +8253,7 @@ async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let observed: bool =
                         sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
                             .bind(&child)
@@ -8311,7 +8311,7 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let observed: Option<String> =
                     sqlx::query_scalar("SELECT id FROM tracks WHERE id=?1")
                         .bind(&child)
@@ -8437,7 +8437,7 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = calm_server::db::sqlite::track_workspace_write_tx(
                     &mut tx, &child_id, &proposed,
                 )

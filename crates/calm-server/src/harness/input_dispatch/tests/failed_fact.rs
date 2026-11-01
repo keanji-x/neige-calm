@@ -25,7 +25,7 @@ async fn fail(fx: &Fixture) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &fx.runtime)
                     .await
                     .unwrap();
@@ -48,7 +48,7 @@ async fn state_and_inputs(fx: &Fixture) -> (WorkerSessionState, ConversationInpu
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_fact_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();

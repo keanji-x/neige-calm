@@ -133,7 +133,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let blob = put_blob(&mut tx, "blob", b"retained document")
                         .await
                         .unwrap();
@@ -174,7 +174,7 @@ impl Fixture {
         // restore the exact real migration-created guard SQL before exercising mutation.
         let write_db = (self.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let guard: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='track_vcs_gc_state_monotonic'")
             .fetch_one(&mut **tx).await.unwrap();
             sqlx::query("DROP TRIGGER track_vcs_gc_state_monotonic")
@@ -199,7 +199,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     sqlx::query("DROP TRIGGER track_vcs_gc_state_no_delete")
                         .execute(&mut **tx)
                         .await
@@ -221,7 +221,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
                     let entries = (0..count)
                         .map(|i| {
@@ -251,7 +251,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let commit =
                         commit_tree(&mut tx, &self.track, parent, tree, None, "published", 1)
                             .await
@@ -269,7 +269,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let blob = put_blob(&mut tx, "blob", label.as_bytes()).await.unwrap();
                     sqlx::query("UPDATE track_vcs_objects SET created_at=?1 WHERE hash=?2")
                         .bind(now_ms() - 7_200_000)
@@ -290,7 +290,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     for hash in std::iter::once(&tree.tree_hash)
                         .chain(tree.manifest.entries.values().map(|entry| &entry.blob_hash))
                     {
@@ -324,19 +324,23 @@ async fn object_sweep_manifest_parsing_does_not_hold_database_writer() {
     let pool = f.repo.db().clone();
 
     {
-
         let mut writer = tokio::spawn(async move {
             let write_db = (pool).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await?;
-            sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")
-                .execute(&mut **tx)
-                .await?;
-            tx.commit().await?;
-            Ok::<_, crate::error::CalmError>(())
-
-        })).await.expect("independent write operation")
-});
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await?;
+                        sqlx::query("INSERT INTO unrelated_gc_writer_probe(value) VALUES (1)")
+                            .execute(&mut **tx)
+                            .await?;
+                        tx.commit().await?;
+                        Ok::<_, crate::error::CalmError>(())
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        });
         let committed_before_parse_release =
             tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
         // Drain both real tasks before reporting the assertion, including an expected red run.
@@ -367,9 +371,7 @@ let mut tx = write_session_1.begin().await?;
                 .content,
             "retained document"
         );
-
-
-}
+    }
 }
 
 #[tokio::test]
@@ -381,7 +383,7 @@ async fn canonical_retry_v5_has_no_history_endpoints() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                     "INSERT INTO worker_sessions(id,track_id,provider,mode,contract,state,handle_state_json,
         created_at_ms,updated_at_ms) VALUES(?1,?2,'codex','resumable','planner','idle',?3,0,0)",

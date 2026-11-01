@@ -301,7 +301,7 @@ async fn rewrite_snapshot(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("tx");
+                let mut tx = write_session.begin_immediate().await.expect("tx");
                 session_set_handle_state_tx(
                     &mut tx,
                     &worker_session_id.to_string(),

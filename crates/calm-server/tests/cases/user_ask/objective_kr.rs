@@ -86,7 +86,7 @@ async fn measure(boot: &Boot, revision: &str, changed: bool) {
                 }
                 _ => json!({"kind":"fact","output":{"holds":!changed}}),
             };
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             objective_host::intent_mark_dispatched_tx(&mut tx, &job.id)

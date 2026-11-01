@@ -114,7 +114,7 @@ async fn seed_task_worker_card(boot: &Boot) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query(
                     "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
            target_type, target_id, target_json, payload_json, phase, created_at_ms, updated_at_ms) \

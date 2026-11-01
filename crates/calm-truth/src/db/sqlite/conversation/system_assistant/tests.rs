@@ -17,7 +17,7 @@ impl Fixture {
         let (repo, area, card) = super::super::tests::fixture().await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             sqlx::query("UPDATE cards SET role='assistant',payload='{\"harness_profile\":\"assistant\",\"assistant_provider\":\"codex\"}' WHERE id=?1")
                 .bind(&card).execute(&mut **tx).await.unwrap();
             let worker = crate::model::new_id();
@@ -211,7 +211,7 @@ async fn human_and_system_creation_share_permanent_namespace_in_both_orders() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     if system_first {
                         system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
                             .await

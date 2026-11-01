@@ -203,7 +203,7 @@ async fn non_finite_metric_is_refused_and_writes_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let result = react_fixture_tx(&mut tx, &planner(event, "nan"), 0).await;
                 assert!(matches!(
                     result,
@@ -301,12 +301,16 @@ async fn log_is_append_only() {
     .await
     .unwrap();
     assert!(
-        (repo.db()).writer().execute(sqlx::query("UPDATE objective_events SET appended_at_ms=1"))
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE objective_events SET appended_at_ms=1"))
             .await
             .is_err()
     );
     assert!(
-        (repo.db()).writer().execute(sqlx::query("DELETE FROM objective_events"))
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM objective_events"))
             .await
             .is_err()
     );
@@ -412,7 +416,11 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
         "SELECT rowid FROM track_capabilities",
     ] {
         assert!(
-            (repo.db()).writer().execute(sqlx::query(sql)).await.is_err(),
+            (repo.db())
+                .writer()
+                .execute(sqlx::query(sql))
+                .await
+                .is_err(),
             "{sql}"
         );
     }
@@ -420,7 +428,11 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
     for verb in ["INSERT", "INSERT OR REPLACE", "INSERT OR IGNORE"] {
         let sql = format!("{verb} INTO track_capabilities VALUES('t','objectives')");
         assert!(
-            (repo.db()).writer().execute(sqlx::query(&sql)).await.is_err(),
+            (repo.db())
+                .writer()
+                .execute(sqlx::query(&sql))
+                .await
+                .is_err(),
             "{sql}"
         );
     }
@@ -429,7 +441,7 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_delete_tx(&mut tx, "t", repo.track_area_cache())
                     .await
                     .unwrap();

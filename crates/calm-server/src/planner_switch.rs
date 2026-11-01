@@ -295,7 +295,7 @@ async fn switch_owned(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut read = write_session.begin().await?;
+                let mut read = write_session.begin_immediate().await?;
                 let mut arrivals: Vec<Vec<calm_truth::db::sqlite::event_inputs::EventInputFact>> =
                     Vec::new();
                 // Freeze the carrier expectations with arrivals. Reading them in the final
@@ -360,7 +360,7 @@ async fn switch_owned(
                 #[cfg(feature = "fixtures")]
                 crate::test_seams::pause_point("planner-switch-before-commit", ids[0].as_str())
                     .await;
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let outcome = async {
                     let principal = human.current_principal()?;
                     let area = crate::track_access::require_detail_access_tx(
@@ -497,5 +497,6 @@ async fn switch_owned(
                 Ok(receipt)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }

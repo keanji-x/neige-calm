@@ -1250,7 +1250,7 @@ async fn kernel_lease(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (lease, _event) =
                     acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
                         .await
@@ -1286,7 +1286,7 @@ impl DbFixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let row = insert_initial_delivery_tx(
                         &mut tx,
                         attempt,
@@ -1560,7 +1560,7 @@ async fn settlement_written_once() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     settle_failed_tx(
                         &mut tx,
@@ -1608,7 +1608,7 @@ async fn settlement_written_once() {
                 }
 
                 // The second settlement of either kind is a guarded no-op, not an error.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     settle_failed_tx(
                         &mut tx,
@@ -1695,7 +1695,7 @@ async fn candidate_row_is_immutable() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 settle_candidate_tx(
                     &mut tx,
                     &delivery.delivery_id,
@@ -1741,7 +1741,7 @@ impl DbFixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     settle_failed_tx(
                         &mut tx,
                         &row.delivery_id,
@@ -1753,10 +1753,13 @@ impl DbFixture {
                     .await
                     .unwrap();
                     tx.commit().await.unwrap();
-                    delivery_by_id_tx(&mut write_session.begin().await.unwrap(), &row.delivery_id)
-                        .await
-                        .unwrap()
-                        .unwrap()
+                    delivery_by_id_tx(
+                        &mut write_session.begin_immediate().await.unwrap(),
+                        &row.delivery_id,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
                 })
             })
             .await
@@ -1779,7 +1782,7 @@ async fn delivery_tables_cascade_on_track_delete() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     settle_candidate_tx(
                         &mut tx,
                         &settled.delivery_id,
@@ -1801,7 +1804,7 @@ async fn delivery_tables_cascade_on_track_delete() {
                     let events_before = count(&fx.repo, "SELECT COUNT(*) FROM events").await;
                     assert!(events_before > 0, "the lease acquisition left an event");
 
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     if delete_area {
                         crate::db::sqlite::area_delete_tx(&mut tx, &fx.area_id)
                             .await
@@ -1920,7 +1923,7 @@ async fn initial_delivery_row_and_readers() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     delivery_latest_for_attempt_tx(&mut tx, "attempt-1")
                         .await
@@ -1972,7 +1975,7 @@ async fn initial_delivery_row_and_readers() {
                     )
                     .await
                     .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let unsettled = unsettled_deliveries_for_track_tx(&mut tx, &fx.track_id)
                     .await
                     .unwrap();
@@ -1983,7 +1986,7 @@ async fn initial_delivery_row_and_readers() {
 
                 // A legacy (plain) lease never gets a delivery row.
                 let plain_card = new_card(&fx.repo, &fx.track_id).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (plain, _event) =
                     crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
                         &mut tx,

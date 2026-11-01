@@ -186,7 +186,7 @@ async fn flush(
             let witness_ids = serde_json::to_string(&witnesses.keys().copied().collect::<Vec<_>>())?;
             #[cfg(test)]
             super::writer_tests::at_phase(super::writer_tests::Phase::BeforeWrite).await;
-            let mut tx = write_session.begin().await?;
+            let mut tx = write_session.begin_immediate().await?;
             *batches += 1;
             if frontier(&mut **tx).await? > observed.frontier {
                 tx.rollback().await?;

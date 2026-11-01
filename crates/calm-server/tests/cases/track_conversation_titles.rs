@@ -215,7 +215,7 @@ async fn conversation_title_assistant_create_replay_pending_and_no_live_session(
     b.shutdown_harnesses().await;
     let write_db = (b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         calm_server::db::sqlite::harness_items_delete_by_card_tx(&mut tx, card)
             .await
             .unwrap();

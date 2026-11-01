@@ -842,13 +842,14 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     session_set_status_for_card_tx(&mut tx, card_id, status).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_complete_for_card(
@@ -861,13 +862,14 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_complete_for_terminal(
@@ -880,13 +882,14 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
                     tx.commit().await?;
                     Ok(())
                 })
             })
-            .await.map_err(crate::TruthError::from)?
+            .await
+            .map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_recover_harnesses_on_boot(

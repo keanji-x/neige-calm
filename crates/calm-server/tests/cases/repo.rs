@@ -91,7 +91,10 @@ async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime tx");
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     runtime_init(
@@ -693,7 +696,7 @@ async fn overlay_sweep_is_idempotent_no_rows() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
 
                 let rows = overlay_delete_by_entity_tx(&mut tx, "card", "missing-card")
                     .await
@@ -1076,7 +1079,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -1156,7 +1159,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = calm_truth::db::sqlite::card_with_terminal_create_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -1209,7 +1212,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -1255,7 +1258,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -1298,7 +1301,7 @@ async fn terminal_create_tx_enforces_unique_card_id() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = calm_truth::db::sqlite::terminal_create_tx(
                     &mut tx,
                     NewTerminal {
@@ -1330,7 +1333,7 @@ async fn terminal_create_tx_rejects_unknown_card_id() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = calm_truth::db::sqlite::terminal_create_tx(
                     &mut tx,
                     NewTerminal {
@@ -1365,7 +1368,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term, mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
                     &mut tx,
                     card_id.clone(),
@@ -1449,7 +1452,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_track() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = calm_truth::db::sqlite::card_with_codex_create_tx(
                     &mut tx,
                     card_id,
@@ -1503,7 +1506,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, _term, _mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
                     &mut tx,
                     card_id,
@@ -1875,7 +1878,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mapped = calm_server::db::sqlite::card_create_with_id_tx(
                     &mut tx,
                     calm_server::model::new_id(),
@@ -1957,7 +1960,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
                 let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
                 let term = make_terminal(&repo, pending.id.as_str()).await;
                 let chat_term = make_terminal(&repo, chat.id.as_str()).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {

@@ -706,12 +706,13 @@ mod tests {
         let pool = repo.pool();
 
         let insert_system_area = |id: &'static str| {
-            sqlx::query(
-                "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
+            (repo.db()).writer().execute(
+                sqlx::query(
+                    "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
                  VALUES(?1,'System','#abc',1,'system',1,1)",
+                )
+                .bind(id),
             )
-            .bind(id)
-            .execute(pool)
         };
         insert_system_area("area-winner").await.unwrap();
         let error: CalmError = insert_system_area("area-loser").await.unwrap_err().into();
@@ -732,12 +733,13 @@ mod tests {
         );
 
         let insert_launchpad = |id: &'static str| {
-            sqlx::query(
-                "INSERT INTO tracks(id,area_id,title,sort,purpose,created_at,updated_at) \
+            (repo.db()).writer().execute(
+                sqlx::query(
+                    "INSERT INTO tracks(id,area_id,title,sort,purpose,created_at,updated_at) \
                  VALUES(?1,'area-winner','Today',1,'launchpad',1,1)",
+                )
+                .bind(id),
             )
-            .bind(id)
-            .execute(pool)
         };
         insert_launchpad("track-winner").await.unwrap();
         let error: CalmError = insert_launchpad("track-loser").await.unwrap_err().into();

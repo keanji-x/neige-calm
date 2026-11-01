@@ -1755,7 +1755,7 @@ async fn codex_worker_card_hooks_are_still_persisted() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term, _token) = calm_truth::db::sqlite::card_with_codex_create_tx(
                     &mut tx,
                     card_id.clone(),
@@ -1840,7 +1840,7 @@ async fn claude_worker_card_hooks_are_still_persisted() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (card, term) = calm_truth::db::sqlite::card_with_claude_create_tx(
                     &mut tx,
                     card_id.clone(),
@@ -3228,7 +3228,7 @@ async fn s0_row_without_terminal_row_decodes_closed() {
     let planner_ws = new_id();
     let write_db = (h.sql.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         card_create_with_id_tx(
             &mut tx,
             planner_card.clone(),
@@ -3297,7 +3297,7 @@ async fn s0_row_without_terminal_row_decodes_closed() {
             })
             .await
             .unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_start_runtime_tx(
             &mut tx,
             WorkerSessionInit {

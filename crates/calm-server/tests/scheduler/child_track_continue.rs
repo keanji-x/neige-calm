@@ -166,7 +166,7 @@ async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attem
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     calm_truth::db::sqlite::task_claim_pending_tx(
                         &mut tx,
@@ -278,7 +278,7 @@ async fn child_track_continue_stamp_rejects_second_active_binding() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = calm_truth::db::sqlite::task_bind_child_track_tx(
                         &mut tx,
                         &id,
@@ -416,7 +416,7 @@ async fn child_track_continue_rejects_dynamic_target_changes_without_effects() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let error = child_adapter(&boot)
                         .prepare_tx(&mut tx, &input, &op)
                         .await

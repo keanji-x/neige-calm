@@ -39,7 +39,7 @@ async fn real_end_preserves_input_accepted_after_its_runtime_sample() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();
@@ -83,7 +83,7 @@ async fn real_end_whole_header_cas_cannot_rollback_same_phase_budget_warning() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();
@@ -106,7 +106,7 @@ async fn real_end_whole_header_cas_cannot_rollback_same_phase_budget_warning() {
                 tx.commit().await.unwrap();
                 let sampled = fx.sample().await;
                 let observed = fx.observe(&sampled).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut header = sampled.fence.header().clone();
                 header["turn_budget"]["warning_attempted"] = json!(true);
                 persist_runtime_frame_tx(&mut tx, &fx.card, &fx.runtime, &sampled.fence, header)
@@ -143,7 +143,7 @@ async fn real_end_and_idle_projection_rollback_together_without_a_publishable_re
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &fx.card, &fx.runtime)
                     .await
                     .unwrap();
@@ -192,7 +192,7 @@ async fn real_end_and_idle_projection_rollback_together_without_a_publishable_re
                     .unwrap();
                 assert_eq!(row.state, WorkerSessionState::Running);
                 assert_eq!(row.active_turn_id.as_deref(), Some(turn.as_str()));
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
                     .await
                     .unwrap();
@@ -269,7 +269,7 @@ async fn end_uses_original_proof_after_private_payload_erasure_without_hydrating
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let operation = PrivateHistoryOperationId::parse(&crate::model::new_id()).unwrap();
                 // Model an already-persisted erasure fact; there is no canonical erase command.
                 sqlx::query(
@@ -322,7 +322,7 @@ async fn end_uses_original_proof_after_private_payload_erasure_without_hydrating
                 assert_eq!(original.proof, sampled.original.proof);
                 tx.commit().await.unwrap();
                 complete(&fx).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     revision_tx(&mut tx, &fx.message).await.unwrap().payload,
                     PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. }
@@ -354,7 +354,7 @@ async fn actual_end_from_another_owner_cannot_close_the_current_logical_executio
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     consume_tx(&mut tx, &b.backend.provider(), &sampled_b, &observed_a)
                         .await

@@ -17,11 +17,18 @@ pub(crate) async fn observation(
     ask_id: i64,
     answers: &[AskAnswer],
 ) -> Result<Option<Observation>> {
-    qualified_observation(repo, track_id, ask_id, answers, false).await
+    qualified_observation(
+        &super::observation_reads::ObservationReads::events_only(repo),
+        track_id,
+        ask_id,
+        answers,
+        false,
+    )
+    .await
 }
 
 pub(super) async fn qualified_observation(
-    repo: &dyn RepoEventWrite,
+    repo: &super::observation_reads::ObservationReads<'_>,
     track_id: &TrackId,
     ask_id: i64,
     answers: &[AskAnswer],

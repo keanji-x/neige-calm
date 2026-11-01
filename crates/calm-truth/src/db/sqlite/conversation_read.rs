@@ -15,7 +15,7 @@ pub(super) async fn current_frame(
     // shared-cache R lock across a waiting writer (#930).
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let row = sqlx::query(
             "SELECT c.session_id, c.track_id, w.track_id AS runtime_track, w.card_id AS runtime_card, w.state, w.handle_state_json,
                 EXISTS(SELECT 1 FROM conversation_presentations WHERE card_id=c.id) AS has_presentations

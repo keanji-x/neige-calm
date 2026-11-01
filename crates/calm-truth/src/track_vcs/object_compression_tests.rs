@@ -92,7 +92,7 @@ async fn object_storage_large_write_defers_cpu_to_outside_writer_conversion() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let hash = put_blob(&mut tx, "blob", &raw).await.unwrap();
                 tx.commit().await.unwrap();
                 let encoding: String =
@@ -134,7 +134,7 @@ async fn object_storage_compresses_repetitive_payload_without_changing_identity(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let hash = put_blob(&mut tx, "blob", &bytes).await.unwrap();
                 tx.commit().await.unwrap();
                 assert_eq!(hash, expected);
@@ -262,7 +262,7 @@ async fn object_storage_history_cat_diff_log_and_gc_preserve_mixed_roots() {
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
         for (n, content) in [&before, &after].into_iter().enumerate() {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let blob = put_blob(&mut tx, "blob", content.as_bytes()).await.unwrap();
             if n == 0 {
                 sqlx::query("UPDATE track_vcs_objects SET bytes=?,encoding='raw',decoded_size=NULL WHERE hash=?")
@@ -328,7 +328,7 @@ async fn object_storage_history_cat_diff_log_and_gc_preserve_mixed_roots() {
             .await
             .unwrap();
         assert_eq!(history.commits.len(), 2);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let orphan = put_blob(&mut tx, "blob", &b"unreferenced diagnostic\n".repeat(4096))
             .await
             .unwrap();

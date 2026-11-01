@@ -133,7 +133,7 @@ async fn canonical_claude_acknowledgement_allows_next_human_input_without_keep()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
@@ -198,7 +198,7 @@ async fn canonical_claude_replay_records_on_failed_current_carrier_without_react
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
@@ -248,7 +248,7 @@ async fn canonical_claude_replay_records_on_failed_current_carrier_without_react
                 tx.commit().await.unwrap();
                 std::fs::write(fx.dir.path().join("release-replay"), "").unwrap();
                 fx.wait_end().await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let facts =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

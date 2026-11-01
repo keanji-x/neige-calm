@@ -23,7 +23,7 @@ pub async fn record_turn_usage(
 ) -> Result<TurnUsageResult> {
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         if !capability::enabled_tx(&mut tx, track).await? {
             tx.commit().await?;
             return Ok(TurnUsageResult::Skipped);

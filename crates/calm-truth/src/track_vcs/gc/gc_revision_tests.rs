@@ -42,7 +42,7 @@ async fn gc_revision_source_rollback_is_atomic_and_ignore_is_a_noop() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query("UPDATE track_vcs_objects SET created_at=created_at WHERE hash=?1")
                                 .bind(&f.tree.tree_hash)
                                 .execute(&mut **tx)
@@ -111,8 +111,9 @@ async fn gc_revision_missing_row_aborts_source_write_even_under_ignore() {
         let sql =
             format!("UPDATE{modifier} track_vcs_objects SET created_at=created_at+1 WHERE hash=?1");
         assert!(
-            (f.repo.db()).writer().execute(sqlx::query(&sql)
-                .bind(&f.tree.tree_hash))
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(&sql).bind(&f.tree.tree_hash))
                 .await
                 .is_err()
         );
@@ -153,8 +154,9 @@ async fn gc_revision_integer_overflow_aborts_the_source_write() {
         "UPDATE OR IGNORE track_vcs_objects SET created_at=created_at+1 WHERE hash=?1",
     ] {
         assert!(
-            (f.repo.db()).writer().execute(sqlx::query(sql)
-                .bind(&f.tree.tree_hash))
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(sql).bind(&f.tree.tree_hash))
                 .await
                 .is_err()
         );
@@ -172,7 +174,6 @@ async fn gc_revision_integer_overflow_aborts_the_source_write() {
 #[tokio::test]
 async fn gc_revision_all_nine_source_operations_are_visible_across_connections() {
     let f = Fixture::new().await;
-    let mut writer = f.repo.pool().acquire().await.unwrap();
     let mut reader = f.repo.pool().acquire().await.unwrap();
     let operations = [
         (
@@ -221,8 +222,11 @@ async fn gc_revision_all_nine_source_operations_are_visible_across_connections()
                     .fetch_one(&mut *reader)
                     .await
                     .unwrap();
-            let affected = sqlx::query(statement)
-                .execute(&mut *writer)
+            let affected = f
+                .repo
+                .db()
+                .writer()
+                .execute(sqlx::query(statement))
                 .await
                 .unwrap()
                 .rows_affected();
@@ -264,7 +268,7 @@ async fn gc_revision_bulk_history_prune_advances_for_every_removed_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let deleted = crate::track_vcs::prune_track_history_tx(&mut tx, &f.track, 1)
                     .await
                     .unwrap();

@@ -116,7 +116,10 @@ async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin mint tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin mint tx");
                 let (card, term, token) = card_with_codex_create_tx(
                     &mut tx,
                     new_id(),
@@ -278,7 +281,7 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let deleted = terminal_delete_tx(&mut tx, &term.id).await.unwrap();
                 assert!(deleted.retire.is_none());
                 card_delete_tx(&mut tx, card.id.as_ref(), boot.repo.card_role_cache())

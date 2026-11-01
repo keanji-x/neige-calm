@@ -84,7 +84,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             crate::db::sqlite::session_complete_for_card_tx(
                                 &mut tx,
                                 &card_id,
@@ -122,7 +122,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
                             })
                             .unwrap();
                             let restart_op = claude_worker_op("op-restart", payload.clone());
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let restart_output = restart
                                 .prepare_tx(&mut tx, &payload, &restart_op)
                                 .await
@@ -186,7 +186,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
                                 (sessions, events)
                             };
                             let before = rows().await;
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let error = restart
                                 .prepare_tx(&mut tx, &payload, &restart_op)
                                 .await

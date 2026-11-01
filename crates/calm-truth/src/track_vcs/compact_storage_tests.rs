@@ -34,7 +34,7 @@ async fn large_tree_keeps_manifest_with_smaller_storage() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let tree = store_tree(&mut tx, MANIFEST_SCHEMA_VERSION, entries, 1)
                     .await
                     .unwrap();
@@ -68,7 +68,7 @@ async fn large_card_event_keeps_replay_content_with_smaller_persisted_payload() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let updated = card_update_tx(
                     &mut tx,
                     f.card.id.as_str(),
@@ -119,7 +119,7 @@ async fn large_card_event_keeps_replay_content_with_smaller_persisted_payload() 
                             let replay = f.repo.events_since(id - 1, 1).await.unwrap();
                             assert_eq!(replay.len(), 1);
                             assert_eq!(serde_json::to_value(&replay[0].3).unwrap(), logical);
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             assert_eq!(
                                 crate::db::sqlite::event_inputs::event_input_tx(&mut tx, id)
                                     .await

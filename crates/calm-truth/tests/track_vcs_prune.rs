@@ -186,7 +186,7 @@ async fn prune_once(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin prune");
+                let mut tx = write_session.begin_immediate().await.expect("begin prune");
                 let deleted = track_vcs::prune_track_history_tx(&mut tx, track_id, keep)
                     .await
                     .expect("prune");
@@ -199,7 +199,7 @@ async fn prune_once(
 }
 
 async fn insert_active_session(
-    pool: &SqlitePool,
+    pool: &calm_truth::db::sqlite::SqliteDb,
     track_id: &TrackId,
     suffix: &str,
     handle_state_json: Option<&str>,
@@ -208,29 +208,31 @@ async fn insert_active_session(
 }
 
 async fn insert_active_provider_session(
-    pool: &SqlitePool,
+    pool: &calm_truth::db::sqlite::SqliteDb,
     track_id: &TrackId,
     suffix: &str,
     provider: &str,
     handle_state_json: Option<&str>,
 ) {
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO worker_sessions (
+    pool.writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO worker_sessions (
                id, track_id, provider, mode, contract, state, handle_state_json,
                created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, 'resumable', 'executor', 'running', ?4, ?5, ?6)"#,
-    )
-    .bind(format!("session-{suffix}"))
-    .bind(track_id.as_str())
-    .bind(provider)
-    .bind(handle_state_json)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await
-    .expect("insert active worker session");
+            )
+            .bind(format!("session-{suffix}"))
+            .bind(track_id.as_str())
+            .bind(provider)
+            .bind(handle_state_json)
+            .bind(now)
+            .bind(now),
+        )
+        .await
+        .expect("insert active worker session");
 }
 
 fn harness_snapshot(last_seen_head: Option<&str>) -> String {
@@ -402,7 +404,7 @@ async fn prune_all_tracks_once_preserves_active_session_last_seen_endpoint() {
     let head = fixture.commits.last().expect("head");
     let snapshot = harness_snapshot(Some(&last_seen.hash));
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "wrapper-last-seen",
         Some(&snapshot),
@@ -511,7 +513,7 @@ async fn default_log_finds_changes_beyond_one_thousand_empty_commits() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.expect("begin empty commits");
+                            let mut tx = write_session.begin_immediate().await.expect("begin empty commits");
                             for index in 0..EMPTY_COMMITS {
                                 let hash = format!("{}-empty-{index:04}", fixture.track_id.as_str());
                                 sqlx::query(
@@ -564,7 +566,7 @@ async fn active_session_last_seen_diff_still_works_after_prune() {
     let head = fixture.commits.last().expect("head");
     let snapshot = harness_snapshot(Some(&last_seen.hash));
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "last-seen",
         Some(&snapshot),
@@ -598,7 +600,7 @@ async fn active_session_issued_turn_head_diff_still_works_after_prune_and_sweep(
     let head = fixture.commits.last().expect("head");
     let snapshot = harness_snapshot_with_heads(None, Some(&issued_turn_head.hash));
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "issued-turn-head",
         Some(&snapshot),
@@ -635,7 +637,7 @@ async fn active_session_protects_distinct_last_seen_and_issued_turn_heads() {
     let snapshot =
         harness_snapshot_with_heads(Some(&last_seen_head.hash), Some(&issued_turn_head.hash));
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "both-endpoints",
         Some(&snapshot),
@@ -672,7 +674,7 @@ async fn prune_keeps_every_commit_at_or_after_oldest_protected_floor() {
     let fixture = fixture_with_commits(7).await;
     let floor_commit = &fixture.commits[2];
     let snapshot = harness_snapshot(Some(&floor_commit.hash));
-    insert_active_session(fixture.pool(), &fixture.track_id, "floor", Some(&snapshot)).await;
+    insert_active_session(fixture.db(), &fixture.track_id, "floor", Some(&snapshot)).await;
 
     let deleted = prune_once(fixture.db(), &fixture.track_id, 2).await;
 
@@ -817,7 +819,10 @@ async fn sweep_preserves_shared_blob_referenced_by_kept_tree() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin seed shared blob");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin seed shared blob");
                 sqlx::query(
                     r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'blob', ?2, ?3)"#,
@@ -896,7 +901,7 @@ async fn sweep_reclaims_only_objects_reachable_from_pruned_commits() {
     let kept_last_seen = &fixture.commits[3];
     let head = fixture.commits.last().expect("head");
     let snapshot = harness_snapshot(Some(&kept_last_seen.hash));
-    insert_active_session(fixture.pool(), &fixture.track_id, "kept", Some(&snapshot)).await;
+    insert_active_session(fixture.db(), &fixture.track_id, "kept", Some(&snapshot)).await;
     let before_objects = object_count(fixture.pool()).await;
 
     let deleted_commits = prune_once(fixture.db(), &fixture.track_id, 1).await;
@@ -919,7 +924,7 @@ async fn sweep_reclaims_only_objects_reachable_from_pruned_commits() {
 async fn unparseable_active_snapshot_keeps_all_commits() {
     let fixture = fixture_with_commits(5).await;
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "garbage",
         Some("{not-json"),
@@ -980,7 +985,7 @@ async fn parseable_rejected_active_snapshots_keep_all_commits() {
         let fixture = fixture_with_commits(5).await;
         let snapshot = snapshot.to_string();
         let before_objects = object_count(fixture.pool()).await;
-        insert_active_session(fixture.pool(), &fixture.track_id, suffix, Some(&snapshot)).await;
+        insert_active_session(fixture.db(), &fixture.track_id, suffix, Some(&snapshot)).await;
 
         let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 
@@ -1013,7 +1018,7 @@ async fn a_claude_card_runtime_version_document_does_not_block_prune() {
 
     let claude = fixture_with_commits(5).await;
     insert_active_provider_session(
-        claude.pool(),
+        claude.db(),
         &claude.track_id,
         "claude",
         "claude",
@@ -1027,7 +1032,7 @@ async fn a_claude_card_runtime_version_document_does_not_block_prune() {
 
     let codex = fixture_with_commits(5).await;
     insert_active_provider_session(
-        codex.pool(),
+        codex.db(),
         &codex.track_id,
         "codex",
         "codex",
@@ -1048,14 +1053,14 @@ async fn null_or_absent_last_seen_head_does_not_block_prune() {
     })
     .to_string();
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "null",
         Some(&null_snapshot),
     )
     .await;
     insert_active_session(
-        fixture.pool(),
+        fixture.db(),
         &fixture.track_id,
         "absent",
         Some(&absent_snapshot),
@@ -1073,13 +1078,7 @@ async fn null_or_absent_last_seen_head_does_not_block_prune() {
 async fn active_last_seen_absent_from_commit_table_keeps_all_commits() {
     let fixture = fixture_with_commits(5).await;
     let snapshot = harness_snapshot(Some("missing-commit"));
-    insert_active_session(
-        fixture.pool(),
-        &fixture.track_id,
-        "missing",
-        Some(&snapshot),
-    )
-    .await;
+    insert_active_session(fixture.db(), &fixture.track_id, "missing", Some(&snapshot)).await;
 
     let deleted = prune_once(fixture.db(), &fixture.track_id, 1).await;
 

@@ -100,7 +100,7 @@ async fn workspace_identity_repeated_selection_writer_preserves_registered_alias
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
                     .await
                     .unwrap();
@@ -111,7 +111,7 @@ async fn workspace_identity_repeated_selection_writer_preserves_registered_alias
                 let before = binding(&repo, &current).await;
                 assert_ne!(before.0, binding(&repo, &first).await.0);
                 assert_eq!(before.1, "subdir");
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
                     .await
                     .unwrap();
@@ -163,7 +163,7 @@ async fn workspace_identity_observation_cas_rejects_older_probe() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     workspace_observe_tx(&mut tx, &before, &probe)
                         .await
@@ -264,7 +264,7 @@ async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let sweep = crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(
                     &mut tx,
                     current.id.as_str(),
@@ -376,7 +376,7 @@ async fn workspace_identity_identical_facts_stale_probe_is_idempotent() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 workspace_observe_tx(&mut tx, &before, &probe)
                     .await
                     .expect("a completed identical observation is not a launch conflict");

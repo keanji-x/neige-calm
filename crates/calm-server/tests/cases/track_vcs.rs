@@ -273,7 +273,10 @@ async fn insert_raw_card(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin raw card insert");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin raw card insert");
                 let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -451,19 +454,24 @@ async fn vcs_object_hashes(pool: &SqlitePool) -> Vec<String> {
         .expect("object hashes")
 }
 
-async fn set_all_vcs_objects_created_at(pool: &SqlitePool, created_at: i64) {
-    sqlx::query("UPDATE track_vcs_objects SET created_at = ?1")
-        .bind(created_at)
-        .execute(pool)
+async fn set_all_vcs_objects_created_at(pool: &calm_truth::db::sqlite::SqliteDb, created_at: i64) {
+    pool.writer()
+        .execute(sqlx::query("UPDATE track_vcs_objects SET created_at = ?1").bind(created_at))
         .await
         .expect("age objects");
 }
 
-async fn set_vcs_object_created_at(pool: &SqlitePool, hash: &str, created_at: i64) {
-    sqlx::query("UPDATE track_vcs_objects SET created_at = ?1 WHERE hash = ?2")
-        .bind(created_at)
-        .bind(hash)
-        .execute(pool)
+async fn set_vcs_object_created_at(
+    pool: &calm_truth::db::sqlite::SqliteDb,
+    hash: &str,
+    created_at: i64,
+) {
+    pool.writer()
+        .execute(
+            sqlx::query("UPDATE track_vcs_objects SET created_at = ?1 WHERE hash = ?2")
+                .bind(created_at)
+                .bind(hash),
+        )
         .await
         .expect("age object");
 }
@@ -718,7 +726,10 @@ async fn seed_head_payload_blob(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin legacy payload seed");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin legacy payload seed");
                 let blob_hash = track_vcs::put_blob(&mut tx, "blob", &payload_bytes)
                     .await
                     .expect("put legacy payload blob");
@@ -798,7 +809,10 @@ async fn seed_legacy_card_lens_manifest(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin legacy manifest seed");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin legacy manifest seed");
                 sqlx::query(
                     r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'tree', ?2, ?3)"#,
@@ -858,7 +872,7 @@ async fn snapshot_tree_hash_is_deterministic_for_same_state() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let first = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
                     .await
                     .expect("snapshot");
@@ -1314,8 +1328,8 @@ async fn object_sweep_deletes_old_orphans_but_keeps_fresh_ones() {
     repo.track_delete(track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
-    set_vcs_object_created_at(repo.pool(), &fresh_hash, now_ms()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
+    set_vcs_object_created_at(repo.db(), &fresh_hash, now_ms()).await;
 
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
@@ -1337,7 +1351,7 @@ async fn object_sweep_keeps_objects_referenced_by_live_commits() {
     let before = count_rows(repo.pool(), "track_vcs_objects").await;
     assert!(before > 0);
 
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
@@ -1419,7 +1433,7 @@ async fn object_sweep_keeps_blob_shared_by_deleted_and_live_tracks() {
     repo.track_delete(deleted_track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
     let deleted = track_vcs::sweep_unreferenced_objects_once(repo.db())
         .await
         .expect("sweep objects");
@@ -1453,7 +1467,7 @@ async fn object_sweep_smoke_serializes_with_concurrent_event_write() {
     repo.track_delete(deleted_track.id.as_str())
         .await
         .expect("delete track");
-    set_all_vcs_objects_created_at(repo.pool(), old_vcs_object_timestamp()).await;
+    set_all_vcs_objects_created_at(repo.db(), old_vcs_object_timestamp()).await;
 
     let sweep_repo = repo.clone();
     let write_repo = repo.clone();
@@ -2330,7 +2344,10 @@ async fn turn_boundary_refresh_tree_hash_matches_full_snapshot_replay() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin replay snapshot");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin replay snapshot");
                 let replayed =
                     track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
                         .await
@@ -2735,7 +2752,10 @@ async fn card_retarget_from_track_report_is_refused_and_preserves_report_blob() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin report retarget");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin report retarget");
                 let error = card_update_tx(
                     &mut tx,
                     report.id.as_str(),
@@ -3062,7 +3082,10 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin snapshot");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin snapshot");
                 let snapshot =
                     track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
                         .await
@@ -3100,7 +3123,10 @@ async fn superseded_only_runtime_payload_matches_live_view_without_runtime_field
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin runtime");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin runtime");
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -3190,7 +3216,10 @@ async fn planner_runtime_payload_blob_matches_live_view_without_projected_fields
         .with_writer(|write_session| {
             Box::pin(async move {
                 let (runtime, terminal_id) = {
-                    let mut tx = write_session.begin().await.expect("begin runtime");
+                    let mut tx = write_session
+                        .begin_immediate()
+                        .await
+                        .expect("begin runtime");
                     let terminal = terminal_create_tx(
                         &mut tx,
                         NewTerminal {
@@ -3623,7 +3652,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
     let hidden_id = new_id();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.expect("begin hidden insert");
+        let mut tx = write_session.begin_immediate().await.expect("begin hidden insert");
         let hidden = card_create_with_id_tx(
             &mut tx,
             hidden_id.clone(),
@@ -3678,7 +3707,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
         assert_eq!(run_json["worker_card_id"], serde_json::Value::Null);
         assert_eq!(run_json["worker_card_payload"], serde_json::Value::Null);
 
-        let mut tx = write_session.begin().await.expect("begin snapshot");
+        let mut tx = write_session.begin_immediate().await.expect("begin snapshot");
         let snapshot = track_vcs::snapshot_tree(&mut tx, &track.id, MANIFEST_SCHEMA_VERSION)
             .await
             .expect("snapshot");

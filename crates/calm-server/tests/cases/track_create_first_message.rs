@@ -2000,7 +2000,7 @@ async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_reposit
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         for (id, role, kind, payload) in [
                             (
                                 &planner,

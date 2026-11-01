@@ -2176,7 +2176,10 @@ async fn fork_creation_events_do_not_cross_the_append_decision_seam() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin probe-liveness tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin probe-liveness tx");
                 calm_server::db::sqlite::append_decision_event_in_tx(
                     &mut tx,
                     &ActorId::Kernel,

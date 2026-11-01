@@ -10,8 +10,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::model::{NewArea, NewTrack};
 use calm_server::track_report::TrackReportPayload;
+use calm_truth::db::sqlite::SqliteDb;
 use serde_json::Value;
-use sqlx::SqlitePool;
 
 /// The verbatim SQL from `migrations/0014_wave_report_card.sql`, replayed against rows minted after the initial migration sweep.
 const MIGRATION_0014_SQL: &str =
@@ -19,7 +19,7 @@ const MIGRATION_0014_SQL: &str =
 
 /// Apply the migration's statements one at a time (sqlx `query()` accepts one statement per call), after
 /// stripping comments so the `;` split cannot land inside a `-- ...` line.
-async fn replay_migration(pool: &SqlitePool) {
+async fn replay_migration(pool: &SqliteDb) {
     let stripped: String = MIGRATION_0014_SQL
         .lines()
         .map(|l| {
@@ -54,17 +54,17 @@ async fn replay_migration(pool: &SqlitePool) {
         if trimmed.is_empty() {
             continue;
         }
-        sqlx::query(trimmed)
-            .execute(pool)
+        pool.writer()
+            .execute(sqlx::query(trimmed))
             .await
             .unwrap_or_else(|e| panic!("replay failed on stmt:\n{trimmed}\nerror: {e}"));
     }
 }
 
-async fn fresh_repo() -> (Arc<dyn Repo>, SqlitePool) {
+async fn fresh_repo() -> (Arc<dyn Repo>, SqliteDb) {
     let url = "sqlite::memory:";
     let repo = SqlxRepo::open(url).await.expect("open");
-    let pool = repo.pool().clone();
+    let pool = repo.db().clone();
     (Arc::new(repo), pool)
 }
 

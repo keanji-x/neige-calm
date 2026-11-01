@@ -79,9 +79,9 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
     for conflict in ["", " OR IGNORE", " OR REPLACE"] {
         let sql = format!("INSERT{conflict} INTO track_vcs_gc_pending VALUES(1,?1,?2)");
         assert!(
-            (f.repo.db()).writer().execute(sqlx::query(&sql)
-                .bind(&f.commit)
-                .bind(f.track.as_str()))
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(&sql).bind(&f.commit).bind(f.track.as_str()))
                 .await
                 .is_err()
         );
@@ -91,7 +91,7 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(
                     &mut tx,
                     &f,
@@ -103,19 +103,26 @@ async fn object_sweep_frontier_fresh_slot_rejects_forgery_and_conflict_bypass() 
                 tx.commit().await.unwrap(); // The deferred pointer now names the source row.
                 for conflict in ["", " OR IGNORE", " OR REPLACE"] {
                     let sql = format!("UPDATE{conflict} track_vcs_gc_pending SET hash='missing'");
-                    assert!((f.repo.db()).writer().execute(sqlx::query(&sql)).await.is_err());
+                    assert!(
+                        (f.repo.db())
+                            .writer()
+                            .execute(sqlx::query(&sql))
+                            .await
+                            .is_err()
+                    );
                     let sql = format!(
                         "INSERT{conflict} INTO track_vcs_gc_pending VALUES(1,'missing',?1)"
                     );
                     assert!(
-                        (f.repo.db()).writer().execute(sqlx::query(&sql)
-                            .bind(f.track.as_str()))
+                        (f.repo.db())
+                            .writer()
+                            .execute(sqlx::query(&sql).bind(f.track.as_str()))
                             .await
                             .is_err()
                     );
                 }
                 let u = unknown(&f).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(
                     &mut tx,
                     &f,
@@ -142,7 +149,7 @@ async fn object_sweep_frontier_source_delete_reincarnation_and_ignore_invalidate
     let f = Fixture::new().await;
     let write_db = (f.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         raw_commit(
             &mut tx,
             &f,
@@ -158,7 +165,7 @@ async fn object_sweep_frontier_source_delete_reincarnation_and_ignore_invalidate
             .unwrap();
         assert!(unknown(&f).await > u);
         no_pending(&f).await;
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         raw_commit(
             &mut tx,
             &f,
@@ -197,7 +204,7 @@ async fn object_sweep_frontier_actual_not_null_admission_preserves_ignored_rows(
                     "created_at",
                     "hash",
                 ] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     sqlx::query(
                         "INSERT OR IGNORE INTO track_vcs_commits
              (hash,track_id,parent_hash,tree_hash,manifest_schema_version,created_at)
@@ -236,7 +243,7 @@ async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source()
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let guard: String = sqlx::query_scalar(
                                 "SELECT sql FROM sqlite_master WHERE name='frontier_state_monotonic'",
                             )
@@ -271,7 +278,7 @@ async fn object_sweep_frontier_required_state_and_overflow_abort_actual_source()
                             // A true positive is permitted at MAX; it does not increment with zero or reset state.
                             f.publish(&f.tree, Some(&f.commit)).await;
                             assert_eq!(unknown(&f).await, i64::MAX);
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query("DROP TRIGGER frontier_state_no_delete")
                                 .execute(&mut **tx)
                                 .await
@@ -305,7 +312,7 @@ async fn object_sweep_frontier_slot_loss_and_epoch_changes_rollback_together() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(
                     &mut tx,
                     &f,
@@ -316,7 +323,7 @@ async fn object_sweep_frontier_slot_loss_and_epoch_changes_rollback_together() {
                 .await;
                 tx.commit().await.unwrap();
                 let u = unknown(&f).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 raw_commit(
                     &mut tx,
                     &f,
@@ -350,7 +357,13 @@ async fn object_sweep_frontier_slot_loss_and_epoch_changes_rollback_together() {
                     "INSERT OR REPLACE INTO track_vcs_gc_frontier_state VALUES(1,0)",
                     "UPDATE OR IGNORE track_vcs_gc_frontier_state SET revision=0",
                 ] {
-                    assert!((f.repo.db()).writer().execute(sqlx::query(sql)).await.is_err());
+                    assert!(
+                        (f.repo.db())
+                            .writer()
+                            .execute(sqlx::query(sql))
+                            .await
+                            .is_err()
+                    );
                     assert_eq!(unknown(&f).await, u);
                 }
             })

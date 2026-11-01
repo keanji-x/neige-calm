@@ -133,7 +133,7 @@ pub(super) async fn exercise_objective_usage(inner: &Arc<Inner>) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::track_capabilities::stamp_tx(
                     &mut tx,
                     &inner.track_id,
@@ -330,7 +330,7 @@ pub(super) async fn enable_objectives(inner: &Inner) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::track_capabilities::stamp_tx(
                     &mut tx,
                     &inner.track_id,

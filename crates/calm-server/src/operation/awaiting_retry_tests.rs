@@ -57,8 +57,9 @@ async fn awaiting_retry_schema_accepts_a_durable_receipt_without_spawn_artifacts
     assert_eq!(stored.idempotency_key.as_deref(), Some("intent"));
     assert!(stored.spawn_artifacts.is_none());
     assert!(
-        (truth.db()).writer().execute(sqlx::query("DELETE FROM operations WHERE id=?1")
-            .bind(&id))
+        (truth.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM operations WHERE id=?1").bind(&id))
             .await
             .is_err(),
         "the retry receipt must keep its permanent deduplication key"

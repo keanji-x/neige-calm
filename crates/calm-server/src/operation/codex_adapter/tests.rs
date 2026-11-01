@@ -457,7 +457,7 @@ async fn task_key_for_card_title_is_fail_soft() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     crate::operation::task_key_for_card_title(&mut tx, "no-such-task").await,
                     None
@@ -482,7 +482,7 @@ async fn task_key_for_card_title_swallows_a_failing_select() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("DROP TABLE tasks")
                     .execute(&mut **tx)
                     .await
@@ -694,7 +694,7 @@ async fn worker_lease_is_kernel_policy() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let lease = crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(
                     &mut tx,
                     &sqlx::query_scalar::<_, String>(
@@ -777,7 +777,7 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     ).fetch_one(harness.repo.pool()).await.unwrap();
     let write_db = (harness.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(prepared.apply(&mut tx, &replacement).await.is_err());
         let after: (i64, i64, i64) = sqlx::query_as(
             "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"

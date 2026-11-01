@@ -124,7 +124,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 fence.recheck(&mut tx).await.unwrap();
                 tx.rollback().await.unwrap();
                 assert!(matches!(
@@ -178,7 +178,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
                 drop(held);
                 assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 1);
                 assert!(targets.snapshot().is_empty());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 fence.recheck(&mut tx).await.unwrap();
                 tx.rollback().await.unwrap();
                 fixture.shutdown_process(&state).await;

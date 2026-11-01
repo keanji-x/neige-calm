@@ -100,7 +100,7 @@ async fn worker(boot: &Boot, key: &str) -> (ToolCallIdentity, String) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::card_create_with_id_tx(
                     &mut tx,
                     id.clone(),
@@ -119,7 +119,7 @@ async fn worker(boot: &Boot, key: &str) -> (ToolCallIdentity, String) {
                 .unwrap();
                 tx.commit().await.unwrap();
                 let session = format!("{id}-session");
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     calm_server::session_projection_repo::WorkerSessionInit {
@@ -488,7 +488,7 @@ async fn objective_evaluator_restarted_planner_repairs_original_binding_identity
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 calm_server::db::sqlite::session_supersede_and_start_tx(
                     &mut tx,
                     &PLANNER_SESSION_ID.to_owned(),

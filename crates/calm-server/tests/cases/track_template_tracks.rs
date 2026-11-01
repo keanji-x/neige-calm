@@ -1640,7 +1640,7 @@ async fn objective_long_term_goal_run_stats_creates_without_template_input_bound
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     calm_truth::objective_host::capability::enabled_tx(&mut tx, &track_id.into())
                         .await

@@ -132,7 +132,7 @@ async fn outer_error_and_cancel_rollback_the_entire_acceptance_before_publicatio
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let tx = write_session.begin().await.unwrap();
+                let tx = write_session.begin_immediate().await.unwrap();
                 tx.rollback().await.unwrap();
                 assert_empty(&fixture, &card).await;
                 while let Ok(event) = events.try_recv() {

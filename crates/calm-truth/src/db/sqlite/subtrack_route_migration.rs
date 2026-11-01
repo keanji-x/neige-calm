@@ -13,7 +13,7 @@ const NAME: &str = "subtrack-route-v1";
 pub(super) async fn migrate(pool: &crate::db::sqlite::SqliteDb) -> Result<()> {
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let applied: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM report_data_migrations WHERE name=?1)")
                 .bind(NAME)

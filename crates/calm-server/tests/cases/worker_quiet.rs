@@ -377,7 +377,7 @@ async fn a_superseded_attempt_is_not_handed_over() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             sqlx::query("UPDATE tasks SET status='failed', finished_at_ms=?2 WHERE id=?1")
                                 .bind(&w.task)
                                 .bind(now_ms())
@@ -445,7 +445,7 @@ async fn manual_terminal(h: &Harness) -> (String, String) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (_, terminal) = card_with_terminal_create_tx(
                     &mut tx,
                     card.clone(),

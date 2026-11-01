@@ -205,7 +205,7 @@ pub(super) async fn projection(f: &Fixture) -> (Terminal, ExecutionId) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let (_, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
                     &mut tx,
                     new_id(),
@@ -508,7 +508,7 @@ async fn typed_replay_while_unavailable_returns_card() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let ticket = f.engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
                 tx.commit().await.unwrap();
                 f.engine.drive(ticket.committed());

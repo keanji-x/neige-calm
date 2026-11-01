@@ -22,7 +22,7 @@ async fn pair() -> Pair {
     runtime(&repo, &a).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
             .bind(&a)
             .fetch_one(&mut **tx)
@@ -82,7 +82,7 @@ async fn switch(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let req = request(p, reverse, revision);
                 let a = expected(&mut tx, req.planner_card_id, &Protected).await;
                 let b = expected(&mut tx, req.target_card_id, &Protected).await;
@@ -98,7 +98,8 @@ async fn switch(
                 }
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 async fn tenure(p: &Pair) -> (i64, i64, i64) {
     sqlx::query_as(concat!("SELECT planner_revision,planner_event_baseline,(SELECT count(*) FROM track_planner_changes WHERE ","track_id=tracks.id) FROM tracks WHERE id=?1"))
@@ -110,7 +111,7 @@ async fn planner_switch_pair_commit_root_history() {
     let p = pair().await;
     let write_db = (p.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         // A pre-existing, owner-qualified event tail: baseline must use the real id.
         let track = db::track_get_tx(&mut tx, &p.track.clone().into())
             .await
@@ -281,12 +282,12 @@ async fn planner_switch_second_replace_failure_rolls_back() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 db::card_mcp_token_set_tx(&mut tx, &p.a, "retained")
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let a = expected(&mut tx, &p.a, &Protected).await;
                 let fail = FailSecond(std::sync::atomic::AtomicUsize::new(0));
                 let b = expected(&mut tx, &p.b, &fail).await;
@@ -328,7 +329,7 @@ async fn planner_switch_second_replace_failure_rolls_back() {
                     .await
                     .unwrap();
                 assert_eq!(count, 2);
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     carrier_ingress_revision_tx(&mut tx, &p.a, &p.track, &worker)
                         .await
@@ -389,7 +390,7 @@ async fn planner_switch_compare_full_ingress() {
         .with_writer(|write_session| {
             Box::pin(async move {
                         for card in [&p.a, &p.b] {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let a = expected(&mut tx, &p.a, &Protected).await;
                             let b = expected(&mut tx, &p.b, &Protected).await;
                             sqlx::query(
@@ -431,7 +432,7 @@ async fn planner_switch_typed_refusals() {
                 ("binding", "planner_binding_unsupported"),
                 ("target", "planner_target_invalid"),
             ] {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut a = expected(&mut tx, &p.a, &Protected).await;
                 let mut b = expected(&mut tx, &p.b, &Protected).await;
                 let worker = if card == &p.a {
@@ -571,7 +572,7 @@ async fn rollback_pair() -> Pair {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         for card in [&p.a, &p.b] {
                             db::card_mcp_token_set_tx(&mut tx, card, &format!("card-secret-{card}"))
                                 .await
@@ -614,7 +615,7 @@ async fn planner_switch_late_sql_failure_rolls_back_full_state() {
     let p = rollback_pair().await;
     let write_db = (p.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let before = switch_state(&mut tx).await;
         let a = expected(&mut tx, &p.a, &Protected).await;
         let b = expected(&mut tx, &p.b, &Protected).await;
@@ -649,7 +650,7 @@ async fn planner_switch_late_sql_failure_rolls_back_full_state() {
         assert_eq!(progress.3, 1);
         assert!(progress.4 > 0);
         tx.rollback().await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert_eq!(switch_state(&mut tx).await, before);
 
     })).await.expect("independent write operation")
@@ -672,7 +673,7 @@ async fn planner_switch_revision_overflow_rolls_back_full_state() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let before = switch_state(&mut tx).await;
                 let a = expected(&mut tx, &p.a, &Protected).await;
                 let b = expected(&mut tx, &p.b, &Protected).await;
@@ -688,7 +689,7 @@ async fn planner_switch_revision_overflow_rolls_back_full_state() {
                     .unwrap();
                 assert_eq!(role, "planner", "overflow occurs after replacements");
                 tx.rollback().await.unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(switch_state(&mut tx).await, before);
             })
         })
@@ -713,7 +714,7 @@ async fn planner_switch_invalid_targets_leave_full_state_unchanged() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let original = switch_state(&mut tx).await;
                     // Observe valid carriers first; malformed target metadata must be refused
                     // by the switch's own admission, before carrier replacement can run.
@@ -783,7 +784,7 @@ async fn planner_switch_invalid_targets_leave_full_state_unchanged() {
                         "{case}: admission wrote state"
                     );
                     tx.rollback().await.unwrap();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         switch_state(&mut tx).await,
                         original,

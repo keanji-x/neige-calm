@@ -174,7 +174,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
     seed_assistant_card(&repo, &roles, &track, &card_id).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let report = card_create_with_id_tx(
             &mut tx,
             new_id(),
@@ -332,7 +332,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
             None,
             vec![],
         )]);
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         session_set_handle_state_tx(
             &mut tx,
             &racer.id,
@@ -547,7 +547,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
             .await
             .unwrap();
         // An explicit rotation invalidates the old journal and native token.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let rotated = calm_server::mcp_server::wiring::mint_and_persist_managed_planner_token(
             &mut tx, &card_id, &racer.id,
         )
@@ -562,7 +562,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
         );
         assert_native_token_rejected(&repo, &token).await;
         // Revocation must not restore even the rotated credential through a stale undo.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
             .bind(&racer.id)
             .execute(&mut **tx)
@@ -615,7 +615,7 @@ async fn raced_start(prepare_checkpoint: bool, postcommit_error: bool, crash: u8
         assert_native_token_rejected(&repo, &token).await;
         // The owner must reject a mint after the earlier live carrier was displaced (N1).
         let active_hash = assert_card_session_mcp_hash_parity(&repo, &card_id, &active.id).await;
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(
             calm_server::mcp_server::wiring::mint_and_persist_managed_planner_token(
                 &mut tx, &card_id, &racer.id

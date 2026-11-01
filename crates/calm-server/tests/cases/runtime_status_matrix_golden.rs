@@ -116,7 +116,10 @@ async fn probe(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin probe tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin probe tx");
                 let runtime = session_start_runtime_tx(
                     &mut tx,
                     terminal_runtime_init(card.id.to_string(), from.1),
@@ -260,7 +263,10 @@ async fn running_codex_fixture() -> (
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin mint tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin mint tx");
                 let (card, term, _token) = card_with_codex_create_tx(
                     &mut tx,
                     new_id(),
@@ -323,7 +329,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
                     .await
                     .expect("first terminal writer succeeds");
@@ -332,7 +338,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
                 assert_eq!(won.0, "exited");
                 assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
                     .await
                     .expect("second terminal writer must no-op, not error");
@@ -343,7 +349,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
                     "second writer must not touch the row (status/updated_at/completed_at)"
                 );
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Failed)
                     .await
                     .expect("third writer (for-card) must no-op, not error");
@@ -351,7 +357,7 @@ async fn terminal_absorption_exited_first_then_failed_noops() {
                 assert_eq!(row_snapshot(&repo, &runtime_id).await, won);
 
                 // The direct by-id path does NOT absorb.
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let err = session_complete_tx(&mut tx, &runtime_id, WorkerSessionState::Failed)
                     .await
                     .expect_err("by-id second terminal write surfaces the conflict");
@@ -383,7 +389,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_terminal_tx(&mut tx, &term.id, WorkerSessionState::Failed)
                     .await
                     .expect("first terminal writer succeeds");
@@ -392,7 +398,7 @@ async fn terminal_absorption_failed_first_then_exited_noops() {
                 assert_eq!(won.0, "failed");
                 assert!(won.2.is_some(), "first writer stamps completed_at_ms");
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_complete_for_card_tx(&mut tx, card.id.as_ref(), WorkerSessionState::Exited)
                     .await
                     .expect("second terminal writer must no-op, not error");

@@ -40,7 +40,7 @@ async fn unchanged_idle_full_reconciliation_does_not_need_the_writer() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let writer = write_session.begin().await.unwrap();
+                let writer = write_session.begin_immediate().await.unwrap();
                 idle.release.notify_one();
                 fx.harness.request_progress();
                 let advanced =

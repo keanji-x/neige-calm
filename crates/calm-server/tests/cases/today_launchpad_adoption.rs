@@ -142,7 +142,7 @@ async fn refusal(mutation: &str, code: &str) {
                 .unwrap()
                 .unwrap();
             track.workspace.path = "/drift".into();
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             calm_server::db::sqlite::track_workspace_write_tx(

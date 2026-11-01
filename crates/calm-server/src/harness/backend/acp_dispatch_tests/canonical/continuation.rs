@@ -8,7 +8,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_fact_carrier_tx(
                         &mut tx,
                         &self.owner.card,
@@ -45,7 +45,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier =
                         current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
                             .await
@@ -349,12 +349,16 @@ async fn canonical_acp_cleanup_commit_reopens_atomically_and_sql_guards_unknown(
         "created_at_ms=0",
     ] {
         assert!(
-            (fx.owner.repo.db()).writer().execute(sqlx::query(&format!(
-                "UPDATE acp_submissions SET {set} WHERE client_id=?1"
-            ))
-            .bind(fx.submission.as_str()))
-            .await
-            .is_err(),
+            (fx.owner.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query(&format!(
+                        "UPDATE acp_submissions SET {set} WHERE client_id=?1"
+                    ))
+                    .bind(fx.submission.as_str())
+                )
+                .await
+                .is_err(),
             "{set}"
         );
     }
@@ -405,7 +409,7 @@ async fn canonical_acp_cleanup_commit_reopens_atomically_and_sql_guards_unknown(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
@@ -469,7 +473,7 @@ async fn canonical_acp_keep_retires_only_its_exact_stop_intent() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await
@@ -508,7 +512,7 @@ async fn canonical_acp_keep_retires_only_its_exact_stop_intent() {
                         fx.backend.settle_kept_execution().await.unwrap().is_some(),
                         exact
                     );
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier =
                         current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await

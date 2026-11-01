@@ -98,7 +98,7 @@ async fn boot_with_registry_and_daemon_hash(
     let planner_card_id = calm_server::model::new_id();
     let write_db = (sqlx_repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let (_planner_card, _term, mcp_token) = card_with_codex_create_tx(
             &mut tx,
             planner_card_id.clone(),
@@ -231,7 +231,7 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
                     .await
                     .unwrap()
@@ -312,7 +312,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     card_id.clone(),
@@ -333,7 +333,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
 
                 let token_a = auth::CardMcpToken::generate();
                 let hash_a = auth::hash_token(token_a.as_str());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &hash_a)
                     .await
                     .unwrap();
@@ -345,7 +345,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
 
                 let token_b = auth::CardMcpToken::generate();
                 let hash_b = auth::hash_token(token_b.as_str());
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &hash_b)
                     .await
                     .unwrap();
@@ -374,7 +374,7 @@ async fn session_mcp_token_set_tx_fails_closed_without_mirror_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let err = session_mcp_token_set_tx(&mut tx, "missing-session", "hash")
                                 .await
                                 .expect_err("missing worker_sessions mirror row must fail closed");
@@ -427,7 +427,7 @@ async fn remint_updates_one_worker_session_hash_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             let (_card, _term, first_token) = card_with_codex_create_tx(
                                 &mut tx,
                                 card_id.clone(),
@@ -465,7 +465,7 @@ async fn remint_updates_one_worker_session_hash_row() {
 
                             let second_token = auth::CardMcpToken::generate();
                             let second_hash = auth::hash_token(second_token.as_str());
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             card_mcp_token_set_tx(&mut tx, &card_id, &second_hash)
                                 .await
                                 .unwrap();
@@ -512,7 +512,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = calm_server::model::NewCard {
                     track_id: boot.track_id.as_str().into(),
                     title: None,
@@ -829,7 +829,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_superseded() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
                     .await
                     .unwrap()
@@ -885,7 +885,7 @@ async fn cardbound_without_thread_id_rejects_after_bound_session_failed() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_projection_active_for_card_tx(&mut tx, &boot.planner_card_id)
                     .await
                     .unwrap()

@@ -595,7 +595,7 @@ async fn a_publish_over_a_foreign_commit_fails_and_leaves_the_remote() {
 async fn candidate_of_another_track(fx: &Fx, attempt: &str, commit: &str) -> String {
     let other = format!("{}-other", fx.track());
     let other_attempt = format!("{other}:copied");
-    let mut conn = fx.pool().acquire().await.unwrap();
+    let result = fx.db().writer().autocommit(|conn| Box::pin(async move {
     for (sql, binds) in [
         (
             "CREATE TEMP TABLE r5_track AS SELECT * FROM tracks WHERE id = ?1",
@@ -647,11 +647,13 @@ async fn candidate_of_another_track(fx: &Fx, attempt: &str, commit: &str) -> Str
             query = query.bind(bind);
         }
         query
-            .execute(&mut *conn)
+            .execute(&mut **conn)
             .await
             .unwrap_or_else(|e| panic!("{sql}: {e}"));
     }
-    other
+    Ok::<_, sqlx::Error>(other)
+    })).await.unwrap();
+    result
 }
 
 /// R5 (#2058 D1) — the remote branch is at X, the done candidate of ANOTHER track: the lease list

@@ -56,7 +56,7 @@ impl ProviderExecution {
                         }
                     } else {
                         // (a) Absent or mismatched claim, including a deleted owner.
-                        let mut tx = write_session.begin().await?;
+                        let mut tx = write_session.begin_immediate().await?;
                         // Re-read under the writer lock: admission and owner deletion may
                         // race the inventory. A fresh exact claim always wins.
                         for (session, row) in sql::list(&mut **tx).await? {

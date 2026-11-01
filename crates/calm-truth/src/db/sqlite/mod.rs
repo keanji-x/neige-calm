@@ -133,8 +133,8 @@ pub use events::{
 #[cfg(any(test, feature = "fixtures"))]
 pub use infra::{HeldWriter, WriterPoolState};
 pub use infra::{
-    NestedWrite, SqliteDb, WriteConnection, WriteManager, WriteSession,
-    WriteTx, inherit_write_scope, is_sqlite_busy,
+    NestedWrite, SqliteDb, WriteConnection, WriteManager, WriteSession, WriteTx,
+    inherit_write_scope, is_sqlite_busy,
 };
 #[cfg(test)]
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;
@@ -261,12 +261,21 @@ impl SqlxRepo {
         // about, before sqlx can apply any pending known migration.
         check_no_unknown_future_migrations(pool, &crate::MIGRATOR).await?;
 
-        db.writer().with_writer(|write_session| Box::pin(async move {
-            write_session.autocommit(|connection| Box::pin(async move {
-                crate::MIGRATOR.run_direct(&mut **connection).await
-                    .map_err(|error| CalmError::Internal(format!("migrate: {error}")))
-            })).await
-        })).await??;
+        db.writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    write_session
+                        .autocommit(|connection| {
+                            Box::pin(async move {
+                                crate::MIGRATOR.run_direct(&mut **connection).await.map_err(
+                                    |error| CalmError::Internal(format!("migrate: {error}")),
+                                )
+                            })
+                        })
+                        .await
+                })
+            })
+            .await??;
 
         canonical_input_revision_migration::migrate(&db).await?;
         subtrack_route_migration::migrate(&db).await?;
@@ -277,11 +286,22 @@ impl SqlxRepo {
         let track_area_cache = TrackAreaCache::new();
         track_area_cache.seed_from_db(pool).await?;
 
-        let database_id = Arc::new(db.writer().with_writer(|write_session| Box::pin(async move {
-            write_session.autocommit(|connection| Box::pin(async move {
-                database_identity::ensure_database_identity(&mut **connection).await
-            })).await
-        })).await??);
+        let database_id = Arc::new(
+            db.writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        write_session
+                            .autocommit(|connection| {
+                                Box::pin(async move {
+                                    database_identity::ensure_database_identity(&mut **connection)
+                                        .await
+                                })
+                            })
+                            .await
+                    })
+                })
+                .await??,
+        );
 
         Ok(Self {
             db,
@@ -439,12 +459,6 @@ mod track_create_idempotency_tests;
 
 #[cfg(test)]
 mod track_closed_at_migration_tests;
-
-#[cfg(test)]
-mod pool_tx_repair_tests;
-
-#[cfg(test)]
-mod deadlock_semantics_tests;
 
 #[cfg(test)]
 mod pool_memory_anchor_tests;

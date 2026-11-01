@@ -2946,7 +2946,7 @@ mod tests {
         let mut expected = Vec::new();
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.expect("begin tx");
+            let mut tx = write_session.begin_immediate().await.expect("begin tx");
             for profile in [HarnessProfile::Assistant, HarnessProfile::PlainChat] {
                 let (minted_role, minted_marker) =
                     minted_card_shape(profile).expect("conversation profile mints a card");

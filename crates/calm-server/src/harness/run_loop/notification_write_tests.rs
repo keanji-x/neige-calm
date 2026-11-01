@@ -181,7 +181,7 @@ async fn carrier_quiescence_historical_plan_dispatch_refuses_committed_replaceme
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_supersede_and_start_tx(
                     &mut tx,
                     &inner.worker_session_id,

@@ -548,7 +548,7 @@ mod tests {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.expect("begin tx");
+                    let mut tx = write_session.begin_immediate().await.expect("begin tx");
                     let plan = prepare_worker_lease_as_tx(
                         &mut tx,
                         track.id.as_str(),

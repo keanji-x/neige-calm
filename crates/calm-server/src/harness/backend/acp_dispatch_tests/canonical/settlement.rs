@@ -42,7 +42,7 @@ async fn acp_assistant_end_settles_native_items_before_idle_and_late_event_repla
                     if let provider::events::PlannerEventKind::Item { phase, params, .. } =
                         event.kind
                     {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let carrier = current_input_fact_carrier_tx(
                             &mut tx,
                             &fx.owner.card,
@@ -116,7 +116,7 @@ async fn acp_assistant_end_retries_item_persistence_without_reprompting() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let carrier =
                     current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

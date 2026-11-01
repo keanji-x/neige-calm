@@ -61,7 +61,7 @@ async fn fixture(enabled: bool) -> (Arc<SqlxRepo>, EventBus, WriteContext, Strin
         .with_writer(|write_session| {
             Box::pin(async move {
                 if enabled {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     calm_truth::db::sqlite::track_capabilities::stamp_tx(
                         &mut tx,
                         &track.id,

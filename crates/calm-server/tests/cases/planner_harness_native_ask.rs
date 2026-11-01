@@ -132,7 +132,7 @@ async fn rig(profile: Profile) -> Rig {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = card_create_with_id_tx(
                     &mut tx,
                     new_id(),
@@ -477,7 +477,7 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 for (item, expect_ask) in [(ITEM_ID, false), ("call-another-item", true)] {
                     let asked = calm_server::ask::provider_ask_requested_tx(
                         &mut tx,
@@ -507,7 +507,7 @@ async fn a_superseded_session_asks_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_prepare_deferred_planner_tx(
                     &mut tx,
                     &WorkerSessionInit {

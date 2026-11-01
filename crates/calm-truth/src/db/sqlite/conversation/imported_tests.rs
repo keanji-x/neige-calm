@@ -1,4 +1,4 @@
-use super::super::{SqlxRepo, begin_immediate_tx};
+use super::super::SqlxRepo;
 use super::tests::{body, fixture};
 use super::*;
 use crate::error::TruthError::Core;
@@ -45,13 +45,14 @@ async fn import(repo: &SqlxRepo, card: &str, id: i64, boundary: i64) -> Result<O
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let result = import_item_tx(&mut tx, card, id, boundary).await?;
                 tx.commit().await?;
                 Ok(result)
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 async fn page(repo: &SqlxRepo, card: &str, after: i64, limit: i64, desc: bool) -> ConversationPage {
     super::super::conversation_read::page(repo.pool(), card, after, limit, desc)
@@ -127,7 +128,7 @@ async fn u2_imported_excludes_indexed_native_identity() {
     .await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let seq = allocate_presentation_tx(
             &mut tx,
             &card,
@@ -166,7 +167,7 @@ async fn u2_imported_excludes_indexed_native_identity() {
         .await;
         let imported = import(&repo, &card, distinct, seq).await.unwrap().unwrap();
         // Defensive read exclusion happens before LIMIT even when native indexing is later.
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         allocate_presentation_tx(
             &mut tx,
             &card,
@@ -191,7 +192,7 @@ async fn u2_imported_mixed_boundary_order_pagination_and_identity_erasure() {
     let (repo, _, card) = fixture().await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let human = insert_message_tx(
             &mut tx,
             &card,
@@ -290,13 +291,12 @@ async fn u2_imported_mixed_boundary_order_pagination_and_identity_erasure() {
             ConversationDisplaySource::ImportedItem { .. }
         ));
         assert!(matches!(
-            sqlx::query(
+            (repo.db()).writer().execute(sqlx::query(
                 "UPDATE conversation_presentations SET imported_provenance_json='{}' WHERE sequence=?1"
             )
-            .bind(sa)
-            .execute(repo.pool())
+            .bind(sa))
             .await,
-            Err(Database(ref db)) if db.code().as_deref() == Some("1811")
+            Err(crate::error::TruthError::Db(Database(ref db))) if db.code().as_deref() == Some("1811")
         ));
         (repo.db()).writer().execute(sqlx::query("UPDATE harness_items SET params='{}' WHERE id=?1")
             .bind(b))
@@ -331,13 +331,27 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
             ),
             ..sqlx::migrate::Migrator::DEFAULT
         };
-        { let migrator = &(old);
-    (db).writer().with_writer(|write_session| Box::pin(async move {
-        write_session.autocommit(|connection| Box::pin(async move {
-            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
-        })).await
-    })).await.unwrap().unwrap()
-}.unwrap();
+        {
+            let migrator = &(old);
+            (db).writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        write_session
+                            .autocommit(|connection| {
+                                Box::pin(async move {
+                                    Ok::<_, sqlx::Error>(
+                                        migrator.run_direct(&mut **connection).await,
+                                    )
+                                })
+                            })
+                            .await
+                    })
+                })
+                .await
+                .unwrap()
+                .unwrap()
+        }
+        .unwrap();
         let repo = SqlxRepo {
             db,
             card_role_cache: super::super::CardRoleCache::new(),
@@ -357,7 +371,7 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
         .await;
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let h = insert_message_tx(
                 &mut tx,
                 &card,
@@ -627,15 +641,27 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
             .unwrap()
             .unwrap();
         if native_first {
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            allocate_presentation_tx(
-                &mut tx,
-                &card,
-                PresentationSource::NativeItem { row_id: row },
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
+            {
+                let write_db = (repo.db()).clone();
+                let card = &card;
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            allocate_presentation_tx(
+                                &mut tx,
+                                &card,
+                                PresentationSource::NativeItem { row_id: row },
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
         }
         (repo.db()).writer().execute(sqlx::query(
             "UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE sequence=?2",
@@ -666,7 +692,12 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
             import(&repo, &card, replacement, boundary).await.unwrap(),
             None
         );
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
+        {
+            let write_db = (repo.db()).clone();
+            let card = &card;
+            let worker = &worker;
+            write_db.writer().with_writer(|write_session| Box::pin(async move {
+let mut tx = write_session.begin_immediate().await.unwrap();
         assert!(matches!(
             allocate_presentation_tx(
                 &mut tx,
@@ -684,6 +715,8 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
         assert!(observe_native_item_tx(&mut tx, &carrier, "thread", Some("turn"), "item/completed",
         &serde_json::json!({"item":{"id":"erased","type":"agentMessage","text":"same words"}})).await.unwrap().is_none());
         tx.commit().await.unwrap();
+})).await.expect("independent write operation")
+        };
         let result = page(&repo, &card, boundary, 20, false).await;
         assert_eq!(result.items.len(), 1);
         assert_eq!(
@@ -713,7 +746,7 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
                 .writer()
                 .with_writer(|write_session| {
                     Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         allocate_presentation_tx(
                             &mut tx,
                             &card,

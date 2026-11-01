@@ -24,7 +24,7 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
                     let existing = seed_card(&repo, i).await;
                     let track = repo.card_get(&existing).await.unwrap().unwrap().track_id;
                     let card = new_id();
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     calm_server::db::sqlite::card_create_with_id_tx(
                         &mut tx,
                         card.clone(),

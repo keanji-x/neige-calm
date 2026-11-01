@@ -963,7 +963,7 @@ mod tests {
 
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let planner_card = card_create_with_id_tx(
                 &mut tx,
                 new_id(),
@@ -1154,7 +1154,7 @@ mod tests {
             let mut expected_ids = Vec::new();
             let mut last_id = 0;
             for (actor, scope, event, replays) in &rows {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let id = append_decision_event_in_tx(&mut tx, actor, scope, None, event)
                     .await
                     .unwrap();
@@ -1170,7 +1170,7 @@ mod tests {
             let mut snapshot = HarnessSnapshot::initial(0, vec![]);
             snapshot.phase = HarnessPhaseTag::Idle;
             snapshot.last_thread_id = Some(thread_id.clone());
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let worker_session = session_start_runtime_tx(
                 &mut tx,
                 WorkerSessionInit {

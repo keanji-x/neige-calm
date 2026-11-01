@@ -345,7 +345,7 @@ async fn terminal_presentation_retry_refreshes_live_membership_for_atomic_and_ge
         old["result"]["payload"] = Value::Null;
         let write_db = (pool).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin()
+            let mut tx = write_session.begin_immediate()
                 .await
                 .unwrap();
             sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE idempotency_key=?2")
@@ -452,16 +452,27 @@ async fn terminal_presentation_replay_refuses_a_card_retargeted_out_of_terminal(
             json!({}),
         ] {
             // Both post-upgrade sticky metadata and an old retargeted card with no new metadata.
-            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-                .await
-                .unwrap();
-            sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
-                .bind(payload.to_string())
-                .bind(card["id"].as_str().unwrap())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
+            {
+                let write_db = (&pool).clone();
+                let card = &card;
+                let payload = &payload;
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            sqlx::query("UPDATE cards SET kind='codex',payload=?1 WHERE id=?2")
+                                .bind(payload.to_string())
+                                .bind(card["id"].as_str().unwrap())
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
             let (status, replay) = post_with_idempotency(
                 boot.app.clone(),
                 uri.clone(),

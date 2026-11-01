@@ -25,7 +25,7 @@ async fn c5_location_occupancy_foreign_execution_keeps_track_without_stop() {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                     tx.commit().await.unwrap();
                     let (status, body) = f
@@ -108,7 +108,7 @@ async fn c5_location_repoint_foreign_without_stop() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                         tx.commit().await.unwrap();
                         let target = f._temp.path().join("attached");
@@ -179,7 +179,7 @@ async fn c5_location_ancestor_root_does_not_block_delete() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                 tx.commit().await.unwrap();
                 let (status, body) = f
@@ -205,36 +205,39 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
     );
 
     {
-
-                let insert = async {
-                    tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
-                        .await
-                        .unwrap();
-                    let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-                    intent.metadata.track = exec::TrackId(f.track.clone());
-                    let id = intent.metadata.id.clone();
-                    let write_db = (f.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                    let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-                    tx.commit().await.unwrap();
-                    pause.release.notify_one();
-                    id
-
-        })).await.expect("independent write operation")
-};
-                let url = format!("/api/tracks/{}", f.track);
-                let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
-                assert_eq!(status, StatusCode::CONFLICT, "{body}");
-                assert!(f.root.is_dir());
-                assert!(
-                    !f.state.workspace_root().join(".trash").exists(),
-                    "positive proof must prevent the move, rather than restore it"
-                );
-                assert_eq!(f.desired(&id).await, "run");
-                f.stop(&id).await;
-
-}
+        let insert = async {
+            tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
+                .await
+                .unwrap();
+            let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
+            intent.metadata.track = exec::TrackId(f.track.clone());
+            let id = intent.metadata.id.clone();
+            let write_db = (f.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        pause.release.notify_one();
+                        id
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        let url = format!("/api/tracks/{}", f.track);
+        let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(f.root.is_dir());
+        assert!(
+            !f.state.workspace_root().join(".trash").exists(),
+            "positive proof must prevent the move, rather than restore it"
+        );
+        assert_eq!(f.desired(&id).await, "run");
+        f.stop(&id).await;
+    }
 }
 
 #[tokio::test]
@@ -248,34 +251,37 @@ async fn c5_track_writer_rechecks_foreign_location() {
     calm_server::routes::tracks::install_track_delete_commit_hook_for_test(&f.track, hook.clone());
 
     {
-
-                let insert = async {
-                    tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
-                        .await
-                        .unwrap();
-                    assert!(!f.root.exists());
-                    let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-                    intent.metadata.track = exec::TrackId("foreign-owner".into());
-                    let id = intent.metadata.id.clone();
-                    let write_db = (f.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                    let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-                    tx.commit().await.unwrap();
-                    hook.release.notify_one();
-                    id
-
-        })).await.expect("independent write operation")
-};
-                let url = format!("/api/tracks/{}", f.track);
-                let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
-                assert_eq!(status, StatusCode::CONFLICT, "{body}");
-                assert!(f.root.is_dir());
-                assert!(f.repo.track_get(&f.track).await.unwrap().is_some());
-                assert_eq!(f.desired(&id).await, "run");
-                f.stop(&id).await;
-
-}
+        let insert = async {
+            tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
+                .await
+                .unwrap();
+            assert!(!f.root.exists());
+            let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
+            intent.metadata.track = exec::TrackId("foreign-owner".into());
+            let id = intent.metadata.id.clone();
+            let write_db = (f.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        hook.release.notify_one();
+                        id
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        let url = format!("/api/tracks/{}", f.track);
+        let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(f.root.is_dir());
+        assert!(f.repo.track_get(&f.track).await.unwrap().is_some());
+        assert_eq!(f.desired(&id).await, "run");
+        f.stop(&id).await;
+    }
 }
 
 #[tokio::test]
@@ -291,48 +297,51 @@ async fn c5_repoint_writer_rechecks_foreign_location_without_stop() {
     );
 
     {
-
-                            let insert = async {
-                                tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
-                                    .await
-                                    .unwrap();
-                                let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
-                                intent.metadata.track = exec::TrackId("foreign-owner".into());
-                                let id = intent.metadata.id.clone();
-                                let write_db = (f.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-let mut tx = write_session_1.begin().await.unwrap();
-                                let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-                                tx.commit().await.unwrap();
-                                hook.release.notify_one();
-                                id
-
-        })).await.expect("independent write operation")
-};
-                            let target = f._temp.path().join("attached");
-                            std::fs::create_dir(&target).unwrap();
-                            git(&target, &["init", "-q"]);
-                            let before = f.repo.track_get(&f.track).await.unwrap().unwrap().workspace;
-                            let url = format!("/api/tracks/{}", f.track);
-                            let ((status, body), id) = tokio::join!(
-                    f.request(
-                        "PATCH",
-                        &url,
-                        Some(json!({"workspace":{"kind":"attached","path":target,"attach_folder":true}}))
-                    ),
-                    insert
-                );
-                            assert_eq!(status, StatusCode::CONFLICT, "{body}");
-                            assert_eq!(
-                                f.repo.track_get(&f.track).await.unwrap().unwrap().workspace,
-                                before
-                            );
-                            assert!(f.root.is_dir());
-                            assert!(!f.state.workspace_root().join(".trash").exists());
-                            assert_eq!(f.desired(&id).await, "run");
-                            f.stop(&id).await;
-
-}
+        let insert = async {
+            tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
+                .await
+                .unwrap();
+            let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
+            intent.metadata.track = exec::TrackId("foreign-owner".into());
+            let id = intent.metadata.id.clone();
+            let write_db = (f.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session_1| {
+                    Box::pin(async move {
+                        let mut tx = write_session_1.begin_immediate().await.unwrap();
+                        let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        hook.release.notify_one();
+                        id
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
+        let target = f._temp.path().join("attached");
+        std::fs::create_dir(&target).unwrap();
+        git(&target, &["init", "-q"]);
+        let before = f.repo.track_get(&f.track).await.unwrap().unwrap().workspace;
+        let url = format!("/api/tracks/{}", f.track);
+        let ((status, body), id) = tokio::join!(
+            f.request(
+                "PATCH",
+                &url,
+                Some(json!({"workspace":{"kind":"attached","path":target,"attach_folder":true}}))
+            ),
+            insert
+        );
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(
+            f.repo.track_get(&f.track).await.unwrap().unwrap().workspace,
+            before
+        );
+        assert!(f.root.is_dir());
+        assert!(!f.state.workspace_root().join(".trash").exists());
+        assert_eq!(f.desired(&id).await, "run");
+        f.stop(&id).await;
+    }
 }
 
 #[tokio::test]

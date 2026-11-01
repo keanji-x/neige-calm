@@ -42,7 +42,7 @@ pub(super) async fn replacement(claude: bool, card: &str) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let replacement = calm_server::db::sqlite::session_supersede_and_start_tx(
                     &mut tx,
                     &case.seed.runtime.id,

@@ -100,13 +100,14 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let targets = super::reclaim::snapshot(&mut tx, track, &[]).await?;
                     tx.commit().await?;
                     Ok(targets)
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>> {

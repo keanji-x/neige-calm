@@ -460,7 +460,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     card_create_with_id_tx(
                         &mut tx,
                         card_id.clone(),
@@ -958,7 +958,7 @@ impl Fx {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     session_start_runtime_tx(
                         &mut tx,
                         WorkerSessionInit {
@@ -2602,7 +2602,7 @@ async fn settlement_wake_is_replay_stable() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_set_handle_state_tx(
                     &mut tx,
                     &planner_session,

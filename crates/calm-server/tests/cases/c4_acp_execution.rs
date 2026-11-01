@@ -453,7 +453,7 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     if releasing {
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         assert!(matches!(
                             sql::advance_release(&mut tx, &worker, &admitted, 1)
                                 .await

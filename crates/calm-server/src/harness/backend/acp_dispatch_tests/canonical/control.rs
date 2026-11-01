@@ -11,7 +11,7 @@ async fn canonical_acp_stop_rechecks_source_at_writer_and_signals_one_exact_driv
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = crate::harness::input_dispatch::execution_target_tx(
                     &mut tx,
                     &fx.owner.card,
@@ -170,7 +170,7 @@ async fn canonical_acp_prepared_stop_never_cancels_a_successor_reusing_native_se
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = crate::harness::input_dispatch::execution_target_tx(
                     &mut tx,
                     &fx.owner.card,
@@ -244,7 +244,7 @@ async fn canonical_acp_prepared_stop_allows_concurrent_driver_observation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let target = crate::harness::input_dispatch::execution_target_tx(
                     &mut tx,
                     &fx.owner.card,
@@ -298,7 +298,7 @@ pub(super) async fn started(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let refs = submission_plan_tx(&mut tx, &fx.submission)
                     .await
                     .unwrap()
@@ -315,27 +315,32 @@ pub(super) async fn started(
                     .unwrap();
                 tokio::time::timeout(Duration::from_secs(25), async {
                     let write_db = (fx.owner.repo.db()).clone();
-        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
-loop {
-                        let mut tx = write_session_1.begin().await.unwrap();
-                        let carrier = current_input_fact_carrier_tx(
-                            &mut tx,
-                            &fx.owner.card,
-                            &fx.owner.worker,
-                        )
+                    write_db
+                        .writer()
+                        .with_writer(|write_session_1| {
+                            Box::pin(async move {
+                                loop {
+                                    let mut tx = write_session_1.begin_immediate().await.unwrap();
+                                    let carrier = current_input_fact_carrier_tx(
+                                        &mut tx,
+                                        &fx.owner.card,
+                                        &fx.owner.worker,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    let running = carrier.phase().unwrap()
+                                        == calm_types::harness::HarnessPhaseTag::TurnRunning;
+                                    tx.commit().await.unwrap();
+                                    if running {
+                                        break;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                }
+                            })
+                        })
                         .await
-                        .unwrap();
-                        let running = carrier.phase().unwrap()
-                            == calm_types::harness::HarnessPhaseTag::TurnRunning;
-                        tx.commit().await.unwrap();
-                        if running {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-
-        })).await.expect("independent write operation")
-})
+                        .expect("independent write operation")
+                })
                 .await
                 .expect("real canonical loop must dispatch and publish the running execution");
                 harness

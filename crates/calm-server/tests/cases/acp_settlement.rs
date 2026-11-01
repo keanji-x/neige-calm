@@ -92,7 +92,7 @@ async fn contention(exhaust: bool) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let lock = write_session.begin().await.unwrap();
+                let lock = write_session.begin_immediate().await.unwrap();
                 pause.release.notify_one();
                 // A retry signal proves real settlement exhausted write admission. Within this
                 // shared handle it waits on the writer pool; keep ownership until that signal.

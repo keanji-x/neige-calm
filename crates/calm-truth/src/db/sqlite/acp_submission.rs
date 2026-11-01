@@ -71,7 +71,7 @@ pub async fn acp_registration_claim(
 ) -> std::result::Result<(), AcpRegistrationError> {
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         use crate::decision_gate::{PrincipalDecisionGate, WriteTx};
         let id = crate::worker::WorkerSessionId::from(worker);
         let session = tx
@@ -151,7 +151,7 @@ pub async fn acp_submission_recover_turn(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let Some(mut receipt) = acp_submission_for_turn(&mut **tx, worker, turn).await?
                 else {
                     return Ok(None);
@@ -238,7 +238,7 @@ pub async fn acp_submission_prepare(
         .with_writer(|write_session| {
             Box::pin(async move {
                 let mut tx = write_session
-                    .begin()
+                    .begin_immediate()
                     .await
                     .map_err(AcpPrepareError::BeforeReceipt)?;
                 prepare_tx(&mut tx, receipt, at_ms)
@@ -299,7 +299,7 @@ pub async fn acp_submission_finish(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 finish_tx(&mut tx, worker, client, outcome).await?;
                 tx.commit().await?;
                 Ok(())

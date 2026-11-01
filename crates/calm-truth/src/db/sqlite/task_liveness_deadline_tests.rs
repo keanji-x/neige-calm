@@ -117,7 +117,10 @@ async fn migration_adds_task_running_liveness_column_and_task_round_trips_it() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin insert tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
                 insert_task(&mut tx, &row).await;
                 let read = task_get_tx(&mut tx, &id)
                     .await
@@ -144,7 +147,10 @@ async fn mark_running_stamps_running_liveness_deadline() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin insert tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
                 insert_task(&mut tx, &row).await;
                 let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
                     .await
@@ -199,7 +205,10 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin insert tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
                 insert_task(&mut tx, &row).await;
                 task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
                     .await
@@ -229,7 +238,10 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
                         .await
                         .expect("set cursor");
                 }
-                let mut tx = write_session.begin().await.expect("begin read tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin read tx");
                 let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
                     .await
                     .expect("read facts")
@@ -263,7 +275,10 @@ async fn stamp_missing_running_liveness_includes_claude_and_excludes_terminal() 
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin insert tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
                 insert_task(&mut tx, &claude).await;
                 insert_task(&mut tx, &terminal).await;
 
@@ -319,7 +334,10 @@ async fn stamp_missing_running_liveness_keeps_an_existing_deadline_once() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin insert tx");
+                let mut tx = write_session
+                    .begin_immediate()
+                    .await
+                    .expect("begin insert tx");
                 insert_task(&mut tx, &legacy).await;
                 assert_eq!(
                     task_running_liveness_tx(&mut tx, &id, None)

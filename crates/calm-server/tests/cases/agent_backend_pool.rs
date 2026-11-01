@@ -166,7 +166,7 @@ async fn agent_backend_b7_explicit_bindings_restore_only_their_own_instance() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
                     .bind(&session)
                     .execute(&mut **tx)
@@ -213,7 +213,7 @@ pub(super) async fn bind_fixture(repo: &SqlxRepo, session: &str, thread: &str, b
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
                     .bind(session)
                     .execute(&mut **tx)
@@ -419,7 +419,7 @@ async fn agent_backend_production_settings_respawns_each_daemon_and_sweeper_rele
         .with_writer(|write_session| {
             Box::pin(async move {
                 for card in &fx.cards {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     calm_server::db::sqlite::session_complete_for_card_tx(
                         &mut tx,
                         card,

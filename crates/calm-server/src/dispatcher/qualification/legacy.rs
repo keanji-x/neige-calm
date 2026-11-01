@@ -3,7 +3,7 @@ use super::*;
 
 /// Only immutable pre-v31 reports lack the owner's declaration.
 pub(super) async fn deferred_self_report(
-    repo: &dyn Repo,
+    repo: &ObservationReads<'_>,
     event: &Event,
     reads: FactReads,
 ) -> Result<bool> {
@@ -16,13 +16,8 @@ pub(super) async fn deferred_self_report(
         } => (idempotency_key, true),
         _ => return Ok(false),
     };
-    if !is_failure && let Some(pool) = repo.sqlite_db() {
-        match crate::git_candidate::delivery::attempt_has_delivery(
-            pool.read_pool(),
-            idempotency_key,
-        )
-        .await
-        {
+    if !is_failure {
+        match repo.attempt_has_delivery(idempotency_key).await {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(error) => {

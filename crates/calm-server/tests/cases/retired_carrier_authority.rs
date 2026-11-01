@@ -49,7 +49,7 @@ async fn retired_carrier_authority_current_pointer_and_contract() {
                     "UPDATE cards SET session_id=NULL WHERE id=?1",
                     "UPDATE worker_sessions SET contract='executor' WHERE card_id=?1",
                 ] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     sqlx::query(mutation)
                         .bind(&identity.card_id)
                         .execute(&mut **tx)
@@ -142,7 +142,7 @@ async fn retired_carrier_authority_requires_card_link() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let worker = calm_types::worker::WorkerSessionId::from(identity.session_id);
                 sqlx::query("UPDATE worker_sessions SET card_id=NULL WHERE id=?1")
                     .bind(worker.as_str())

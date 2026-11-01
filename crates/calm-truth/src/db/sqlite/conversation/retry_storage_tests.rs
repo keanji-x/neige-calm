@@ -73,7 +73,7 @@ pub(super) async fn seed_repo_binding(
     let carrier = runtime(&repo, &card).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query(
             "UPDATE worker_sessions SET provider=?1, thread_id=?2,
         handle_state_json=json_set(handle_state_json, '$.last_thread_id', ?2) WHERE id=?3",
@@ -329,7 +329,7 @@ async fn canonical_retry_storage_reference_reads_root_and_system_provenance() {
     let s = seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("SAVEPOINT inline_successor")
             .execute(&mut **tx)
             .await
@@ -385,7 +385,7 @@ async fn canonical_retry_storage_rejects_foreign_chain_and_mutable_reference() {
     let (_, other) = super::tests::fixture_card(&s.repo).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         for (id, turn, root, card) in [
             (
@@ -437,7 +437,7 @@ async fn canonical_retry_storage_root_erasure_propagates_to_all_references() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 successor(&mut tx, &s).await;
                 let mut erased = s.render.clone();
                 let SubmissionRenderPlan::V1 { segments } = &mut erased;
@@ -516,7 +516,7 @@ async fn canonical_retry_storage_retirement_requires_linked_receipt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(retire(&mut tx, &s).await.is_err());
                 assert!(relation(&mut tx, &s).await.is_err());
                 receipt(&mut tx, &s).await;
@@ -587,7 +587,7 @@ async fn canonical_retry_storage_not_dispatched_and_human_retirement_are_distinc
     let s = seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         for sql in [
             "UPDATE conversation_submission_inputs SET effective=0,retirement_reason='not_dispatched' WHERE submission_id=?1",
             "UPDATE conversation_submission_inputs SET effective=0,released_by_attempt_id=?2 WHERE submission_id=?1",
@@ -627,7 +627,7 @@ async fn canonical_retry_storage_not_dispatched_and_human_retirement_are_distinc
             );
         }
         tx.rollback().await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         let row = sqlx::query(
             "SELECT retirement_reason, released_by_attempt_id, retired_by_retry_intent_id FROM
@@ -664,7 +664,7 @@ async fn canonical_retry_storage_rollback_second_consumer_and_card_delete() {
     let s = seed().await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         assert!(sqlx::query("INSERT INTO conversation_submission_inputs SELECT submission_id, input_position+10, input_kind,
             message_id, revision, observation_id, queue_position, queued_at_ms, envelope_id,
@@ -702,7 +702,7 @@ async fn canonical_retry_storage_rollback_second_consumer_and_card_delete() {
             .unwrap(),
             2
         );
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         successor(&mut tx, &s).await;
         tx.commit().await.unwrap();
         assert!(

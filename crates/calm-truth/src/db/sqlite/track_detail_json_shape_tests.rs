@@ -17,7 +17,7 @@ async fn empty_track(repo: &SqlxRepo) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let area = area_create_tx(
                     &mut tx,
                     calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -63,7 +63,7 @@ async fn add_card(repo: &SqlxRepo, track_id: &str, card: NewCard) -> String {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let created = card_create_tx(&mut tx, card, &CardRoleCache::new())
                     .await
                     .expect("card");
@@ -117,7 +117,7 @@ async fn track_detail_round_trips_hostile_text_in_every_string_column() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 overlay_upsert_tx(
                     &mut tx,
                     NewOverlay {

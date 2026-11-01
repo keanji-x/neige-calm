@@ -302,7 +302,7 @@ async fn actual_session_authors_bind_plain_send_keys_and_recheck_revocation() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                            let mut tx = write_session.begin().await.unwrap();
+                            let mut tx = write_session.begin_immediate().await.unwrap();
                             calm_server::db::sqlite::area_membership::application_user_register(
                                 &mut tx, "alice", "Alice",
                             )
@@ -480,7 +480,7 @@ async fn canonical_send_replay_does_not_restore_its_original_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
                     .bind(&original)
                     .execute(&mut **tx)

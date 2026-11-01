@@ -26,7 +26,7 @@ async fn insert(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = conversation::insert_message_tx(
                     &mut tx,
                     card,
@@ -108,7 +108,7 @@ async fn conversation_title_human_current_revision_tombstones_and_empty_first_so
     let payload = serde_json::to_string(&PrivateHistoryPayload::Present { value: &body }).unwrap();
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("INSERT INTO conversation_message_revisions(message_id,revision,body_sha256,payload_json,created_at_ms)
         VALUES(?1,2,?2,?3,2)")
             .bind(first.reference.message_id.as_str()).bind(conversation::digest(&body).unwrap())
@@ -174,7 +174,7 @@ async fn conversation_title_human_missing_revision_fails_like_display() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("DELETE FROM conversation_message_revisions WHERE message_id=?1")
                     .bind(first.reference.message_id.as_str())
                     .execute(&mut **tx)
@@ -203,7 +203,7 @@ async fn conversation_title_human_image_only_first_source_blocks_later_title() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = conversation::insert_message_tx(
                     &mut tx,
                     &card,

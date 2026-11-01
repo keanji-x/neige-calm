@@ -39,7 +39,7 @@ pub async fn reconcile(
 ) -> Result<(), RegistryError> {
     let write_db = (db).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         let stored = sqlx::query_as::<_, BackendIdentity>("SELECT * FROM agent_backend_registry")
             .fetch_all(&mut **tx)
             .await?;

@@ -26,13 +26,14 @@ async fn keep(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 let result = keep_conversation_input_tx(&mut tx, card, human, key, &args).await?;
                 tx.commit().await?;
                 Ok(result)
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }
 
 #[tokio::test]
@@ -44,7 +45,7 @@ async fn canonical_keep_preserves_delivery_and_original_end_target() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut before = current_input_fact_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -67,7 +68,7 @@ async fn canonical_keep_preserves_delivery_and_original_end_target() {
                 args.revision = "2".into();
                 let result = keep(&repo, &card, "human", "keep", args).await.unwrap();
                 assert_eq!(result.revision, "3");
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let after = current_input_fact_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -161,7 +162,7 @@ async fn canonical_keep_racing_keys_resolves_once() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert_eq!(
                     current_input_fact_carrier_tx(&mut tx, &card, &worker)
                         .await
@@ -187,7 +188,7 @@ async fn canonical_keep_stale_or_overflow_writes_nothing() {
         .with_writer(|write_session| {
             Box::pin(async move {
                 for revision in [0, u64::MAX] {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier = current_input_fact_carrier_tx(&mut tx, &card, &worker)
                         .await
                         .unwrap();
@@ -202,7 +203,7 @@ async fn canonical_keep_stale_or_overflow_writes_nothing() {
                         args.revision = revision.to_string();
                     }
                     assert!(keep(&repo, &card, "human", "keep", args).await.is_err());
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     assert_eq!(
                         *current_input_fact_carrier_tx(&mut tx, &card, &worker)
                             .await
@@ -250,7 +251,7 @@ async fn canonical_keep_runtime_frame_cannot_erase_receipt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let before = current_input_fact_carrier_tx(&mut tx, &card, &worker)
                     .await
                     .unwrap();
@@ -259,7 +260,7 @@ async fn canonical_keep_runtime_frame_cannot_erase_receipt() {
                 keep(&repo, &card, "human", "keep", request(&worker, &attempt))
                     .await
                     .unwrap();
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(
                     persist_runtime_frame_tx(
                         &mut tx,
@@ -292,7 +293,7 @@ async fn canonical_keep_prevents_late_non_dispatch_from_requeueing_the_input() {
     let (card, worker, attempt) = held(&repo).await;
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = current_input_fact_carrier_tx(&mut tx, &card, &worker)
             .await
             .unwrap();
@@ -306,7 +307,7 @@ async fn canonical_keep_prevents_late_non_dispatch_from_requeueing_the_input() {
         let mut args = request(&worker, &attempt);
         args.revision = "0".into();
         keep(&repo, &card, "human", "keep", args).await.unwrap();
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = current_input_fact_carrier_tx(&mut tx, &card, &worker)
             .await
             .unwrap();
@@ -361,7 +362,7 @@ async fn canonical_keep_reopen_v5_preserves_original_receipt() {
     );
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let mut carrier = current_input_fact_carrier_tx(&mut tx, &card, &worker)
             .await
             .unwrap();

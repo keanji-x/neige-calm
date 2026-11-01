@@ -333,7 +333,7 @@ async fn delete_validated_batch(
                     #[cfg(test)]
                     super::gc_writer_tests::at_phase(super::gc_writer_tests::Phase::BeforeDelete)
                         .await;
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     let locked = frontier::locked_epochs(&mut tx).await?;
                     let snapshot = frontier::snapshot(&mut tx).await?;
                     let (current, reuse_parsed) = if observed.proof.legacy == Some(locked.legacy) {
@@ -405,5 +405,6 @@ async fn delete_validated_batch(
                 unreachable!("bounded validation either deletes or defers")
             })
         })
-        .await.map_err(crate::TruthError::from)?
+        .await
+        .map_err(crate::TruthError::from)?
 }

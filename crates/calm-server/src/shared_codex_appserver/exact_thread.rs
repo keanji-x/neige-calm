@@ -398,7 +398,7 @@ impl RecoveryThread<'_> {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await?;
+                    let mut tx = write_session.begin_immediate().await?;
                     admission.validate_tx(&mut tx).await?;
                     accepted.validate_tx(&mut tx).await?;
                     admission.check_current()?;
@@ -435,7 +435,8 @@ impl RecoveryThread<'_> {
                     Ok(())
                 })
             })
-            .await.map_err(calm_truth::TruthError::from)?
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 }
 

@@ -100,7 +100,7 @@ async fn page(pool: &SqlitePool, db: Option<&SqliteDb>, after: &str) -> Result<C
                             .writer()
                             .with_writer(|write_session| {
                                 Box::pin(async move {
-                                    let mut tx = write_session.begin().await?;
+                                    let mut tx = write_session.begin_immediate().await?;
                                     let updated = sqlx::query(
                                 "UPDATE track_vcs_objects SET bytes=?, encoding=?, decoded_size=?
                              WHERE hash=? AND kind=? AND encoding='raw'

@@ -4,7 +4,7 @@ use sqlx::{QueryBuilder, Sqlite};
 
 use super::{SqlxOperationRepo, operation_from_row, optional_json_text};
 use crate::{
-    db::sqlite::error::{CalmError, Result},
+    error::{CalmError, Result},
     model::now_ms,
     operation::{
         AppServerInteractKind, Operation, OperationId, ParkedCompletion, ParkedOutcome, Phase,
@@ -125,7 +125,7 @@ pub(in crate::operation) async fn record_spawn_artifacts(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 require_live_claim_tx(&mut tx, op).await?;
                 if !matches!(op.phase, Phase::SpawnStarted) {
                     return Err(CalmError::Conflict(
@@ -144,7 +144,8 @@ pub(in crate::operation) async fn record_spawn_artifacts(
                 Ok(())
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 pub(in crate::operation) async fn set_parked(
@@ -155,7 +156,7 @@ pub(in crate::operation) async fn set_parked(
 ) -> Result<Option<Operation>> {
     let write_db = (pool).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await?;
+        let mut tx = write_session.begin_immediate().await?;
         if !matches!(op.phase, Phase::SpawnStarted) || !has_live_claim_tx(&mut tx, op).await? {
             return Ok(None);
         }

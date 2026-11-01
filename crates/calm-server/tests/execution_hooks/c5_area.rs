@@ -22,7 +22,7 @@ async fn admit(f: &Fixture, owner: &str, root: std::path::PathBuf) -> ExecutionI
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
                 tx.commit().await.unwrap();
                 id

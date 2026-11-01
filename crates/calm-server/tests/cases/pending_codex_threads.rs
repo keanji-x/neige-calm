@@ -41,7 +41,7 @@ async fn runtime_by_id_tx_snapshot(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let runtime = session_projection_by_id_tx(&mut tx, &id).await.unwrap();
                 tx.commit().await.unwrap();
                 runtime
@@ -172,7 +172,7 @@ async fn start_runtime_for_card_with_thread(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -214,7 +214,7 @@ async fn supersede_runtime_for_card(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_supersede_and_start_tx(
                     &mut tx,
                     &old_runtime_id,
@@ -765,7 +765,7 @@ async fn on_thread_started_same_card_respawn_drops_old_runtime_without_cross_att
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_supersede_and_start_tx(
                     &mut tx,
                     &r1,
@@ -857,7 +857,7 @@ async fn on_thread_started_same_card_respawn_queues_and_binds_replacement_runtim
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_supersede_and_start_tx(
                     &mut tx,
                     &r1,

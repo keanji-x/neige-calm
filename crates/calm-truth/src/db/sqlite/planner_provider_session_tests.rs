@@ -30,7 +30,7 @@ async fn a_planner_mint_persists_the_provider_it_names() {
                     ("planner-claude", AgentProvider::Claude, "claude"),
                     ("planner-codex", AgentProvider::Codex, "codex"),
                 ] {
-                    let mut tx = write_session.begin().await.expect("begin");
+                    let mut tx = write_session.begin_immediate().await.expect("begin");
                     let card_id = create_card_in_tx(
                         &repo,
                         &mut tx,
@@ -93,7 +93,7 @@ async fn a_deferred_claude_placeholder_is_a_claude_row() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -135,7 +135,7 @@ async fn a_planner_init_without_a_provider_writes_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -197,7 +197,7 @@ async fn assistant_provider_init_without_a_provider_writes_nothing() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.expect("begin");
+                let mut tx = write_session.begin_immediate().await.expect("begin");
                 let card_id = create_card_in_tx(
                     &repo,
                     &mut tx,
@@ -270,7 +270,7 @@ async fn an_acp_provider_session_is_only_a_resumable_planner_or_assistant() {
             Box::pin(async move {
                 for provider in acp {
                     let label = format!("acp-{}", provider.wire_name());
-                    let mut tx = write_session.begin().await.expect("begin");
+                    let mut tx = write_session.begin_immediate().await.expect("begin");
                     let card_id = create_card_in_tx(
                         &repo,
                         &mut tx,

@@ -42,7 +42,7 @@ async fn canonical_retry_uses_frozen_model_permission_after_selection_change() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let card = r.fx.harness.inner.card_id.as_str();
                 let mut payload =
                     crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card)
@@ -133,7 +133,7 @@ async fn canonical_retry_erasure_between_resolve_and_send_has_zero_effects() {
     assert_eq!(call["method"], "thread/read");
     let write_db = (r.fx.original.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         sqlx::query("UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2")
             .bind(
                 serde_json::to_string(
@@ -467,7 +467,7 @@ async fn canonical_retry_system_plan_retains_provenance_under_human_repeat() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, &id)
                     .await
                     .unwrap();
@@ -533,7 +533,7 @@ async fn canonical_retry_recovery_qualifies_intent_and_resumes_mixed_unattempted
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier = current_input_carrier_tx(
                     &mut tx,
                     inner.card_id.as_str(),

@@ -196,7 +196,7 @@ async fn seed_planner_card(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     card_id.to_string(),
@@ -236,7 +236,7 @@ async fn seed_plain_chat_card(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     card_id.to_string(),
@@ -269,7 +269,7 @@ async fn seed_assistant_card(
 ) {
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         card_create_with_id_tx(
             &mut tx,
             card_id.to_string(),
@@ -657,7 +657,7 @@ async fn shutdown_replay_after_crash_falls_back_to_thread_interrupt() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1206,7 +1206,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_mcp_token_set_tx(&mut tx, &card_id, &old_hash)
                     .await
                     .unwrap();
@@ -1344,7 +1344,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1472,7 +1472,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 session_start_runtime_tx(
                     &mut tx,
                     WorkerSessionInit {
@@ -1568,7 +1568,7 @@ async fn fresh_start_supersedes_existing_shared_planner_runtime() {
                 assert_eq!(active.status, WorkerSessionState::Idle);
                 assert_eq!(active.thread_id.as_deref(), Some("fake-thread-0001"));
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let old = session_projection_by_id_tx(&mut tx, &old_worker_session_id)
                     .await
                     .unwrap()
@@ -1742,7 +1742,7 @@ async fn recovery_writeback_keeps_payload_keys_written_after_the_snapshot() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_update_tx(
                     &mut tx,
                     &card_id,
@@ -2056,7 +2056,7 @@ async fn lazy_mint_refuses_to_adopt_an_existing_card() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 card_create_with_id_tx(
                     &mut tx,
                     "conv-existing".into(),

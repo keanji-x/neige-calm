@@ -157,7 +157,7 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
                         .bind(&fx.owner.card)).await.unwrap();
                 }
                 "membership" => {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let area = conversation_area_tx(&mut tx, &fx.owner.card).await.unwrap();
                     sqlx::query(
                         "UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2",
@@ -184,7 +184,7 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
                         .unwrap();
                 }
                 "frame" => {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await
                         .unwrap();
@@ -204,7 +204,7 @@ async fn canonical_claude_compact_rechecks_after_writer_wait() {
                     tx.commit().await.unwrap();
                 }
                 "pending" => {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let mut carrier =
                         current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                             .await
@@ -365,7 +365,7 @@ async fn canonical_claude_compact_restart_never_reissues() {
         // Crash-window seed uses the real protected writer, not a maintenance reducer copy.
         let write_db = (fx.owner.repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin().await.unwrap();
+            let mut tx = write_session.begin_immediate().await.unwrap();
             let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                 .await
                 .unwrap();
@@ -484,7 +484,7 @@ async fn canonical_claude_compact_bad_session_and_failed_cleanup_cannot_complete
                 Box::pin(async move {
                     if failure == "turn" {
                         entered(&blocked).await;
-                        let mut tx = write_session.begin().await.unwrap();
+                        let mut tx = write_session.begin_immediate().await.unwrap();
                         let carrier =
                             current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                                 .await
@@ -573,7 +573,7 @@ async fn canonical_claude_compact_start_without_end_expires() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let mut carrier =
                     current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
                         .await

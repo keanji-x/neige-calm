@@ -376,9 +376,11 @@ async fn terminal_error(scenario: &str) {
                 _ = pause.entered.notified(), if races => {
                     match scenario {
                         "event" => {
-                            let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db()).await.unwrap();
-                            append_pending_event(&mut tx, track, area["id"].as_str().unwrap()).await;
-                            tx.commit().await.unwrap();
+                            fixture.repo.db().writer().with_writer(|write_session| Box::pin(async {
+                                let mut tx = write_session.begin_immediate().await.unwrap();
+                                append_pending_event(&mut tx, track, area["id"].as_str().unwrap()).await;
+                                tx.commit().await.unwrap();
+                            })).await.unwrap();
                         }
                         "native-source" => { replacement_native = Some(connect(&state.shared_codex_appserver).await); }
                         "revoke" => { post(&app,&cookie,"/api/auth/logout","logout",json!({})).await; }

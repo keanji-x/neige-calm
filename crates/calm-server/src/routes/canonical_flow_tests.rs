@@ -245,7 +245,7 @@ impl Fixture {
             .writer()
             .with_writer(|write_session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin().await.unwrap();
+                    let mut tx = write_session.begin_immediate().await.unwrap();
                     let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
                         &mut tx, area, "first",
                     )
@@ -483,7 +483,7 @@ async fn original_input_flow_for_area(
         .collect::<Vec<_>>();
     let write_db = (fixture.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin().await.unwrap();
+        let mut tx = write_session.begin_immediate().await.unwrap();
         let submission = crate::db::sqlite::conversation::submission_plan_tx(
             &mut tx,
             &crossing.2.canonical_inputs.attempts[0]

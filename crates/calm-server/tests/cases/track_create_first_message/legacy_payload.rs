@@ -75,7 +75,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
     );
     let write_db = (b.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let original = calm_server::db::sqlite::conversation::human_track_creation_get_tx(
@@ -129,7 +129,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
             ..
         } = &original.acknowledgement;
         assert_eq!(track_id, body["id"].as_str().unwrap());
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let author =
@@ -160,7 +160,7 @@ async fn a_message_less_create_writes_byte_identical_payload_json() {
             replayed, payloads,
             "Human replay must also leave V1 bytes unchanged"
         );
-        let mut tx = write_session.begin()
+        let mut tx = write_session.begin_immediate()
             .await
             .unwrap();
         let retained = calm_server::db::sqlite::conversation::human_track_creation_get_tx(

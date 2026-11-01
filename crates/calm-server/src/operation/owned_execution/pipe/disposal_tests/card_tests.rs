@@ -155,7 +155,7 @@ async fn complete(h: &Harness) {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
                     .await
                     .unwrap();
@@ -262,16 +262,26 @@ async fn w_owned_disposal_records_failed_task_once() {
         let h = Harness::with_card(true).await;
         task(&h, "worker", stamped, true).await;
         // Rolling back the owner's stop also rolls back its task outcome and event.
-        let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-            .await
-            .unwrap();
-        WorkerProjection
-            .disposal()
-            .unwrap()
-            .stop_tx(&mut tx, &h.metadata)
-            .await
-            .unwrap();
-        tx.rollback().await.unwrap();
+        {
+            let write_db = (h.db.db()).clone();
+            let h = &h;
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin_immediate().await.unwrap();
+                        WorkerProjection
+                            .disposal()
+                            .unwrap()
+                            .stop_tx(&mut tx, &h.metadata)
+                            .await
+                            .unwrap();
+                        tx.rollback().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
+        };
         assert_eq!(task_status(&h, "worker").await.0, "running");
         assert_eq!(failed_events(&h).await, 0);
         assert_eq!(
@@ -311,22 +321,32 @@ async fn w_owned_disposal_records_failed_task_once() {
                 "worker-card-deleted"
             );
             // A late successful worker report cannot mark Done or start a gate.
-            let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-                .await
-                .unwrap();
-            assert_eq!(
-                crate::db::sqlite::task_report_success_from_worker_tx(
-                    &mut tx,
-                    "worker",
-                    &h.metadata.track.0,
-                    crate::db::sqlite::TaskReporter::Kernel,
-                    crate::model::now_ms()
-                )
-                .await
-                .unwrap(),
-                crate::db::sqlite::SuccessReportFlip::None
-            );
-            tx.commit().await.unwrap();
+            {
+                let write_db = (h.db.db()).clone();
+                let h = &h;
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin_immediate().await.unwrap();
+                            assert_eq!(
+                                crate::db::sqlite::task_report_success_from_worker_tx(
+                                    &mut tx,
+                                    "worker",
+                                    &h.metadata.track.0,
+                                    crate::db::sqlite::TaskReporter::Kernel,
+                                    crate::model::now_ms()
+                                )
+                                .await
+                                .unwrap(),
+                                crate::db::sqlite::SuccessReportFlip::None
+                            );
+                            tx.commit().await.unwrap();
+                        })
+                    })
+                    .await
+                    .expect("independent write operation")
+            };
             assert_eq!(failed_events(&h).await, 1);
             complete(&h).await;
         };
@@ -339,22 +359,32 @@ async fn w_owned_disposal_records_failed_task_once() {
     // Natural completion and its task CAS win before deletion.
     let h = Harness::with_card(true).await;
     task(&h, "natural", true, false).await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    assert_eq!(
-        crate::db::sqlite::task_report_success_from_worker_tx(
-            &mut tx,
-            "natural",
-            &h.metadata.track.0,
-            crate::db::sqlite::TaskReporter::Kernel,
-            crate::model::now_ms()
-        )
-        .await
-        .unwrap(),
-        crate::db::sqlite::SuccessReportFlip::Done
-    );
-    tx.commit().await.unwrap();
+    {
+        let write_db = (h.db.db()).clone();
+        let h = &h;
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await.unwrap();
+                    assert_eq!(
+                        crate::db::sqlite::task_report_success_from_worker_tx(
+                            &mut tx,
+                            "natural",
+                            &h.metadata.track.0,
+                            crate::db::sqlite::TaskReporter::Kernel,
+                            crate::model::now_ms()
+                        )
+                        .await
+                        .unwrap(),
+                        crate::db::sqlite::SuccessReportFlip::Done
+                    );
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
+    };
     super::super::super::send_release(&h.ctx, &h.metadata.id, b"go\n")
         .await
         .unwrap();

@@ -32,7 +32,7 @@ async fn partial_receipt_recovery_restores_native_item_order() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND item_uuid=?2")
                     .bind(&card)
                     .bind(first)

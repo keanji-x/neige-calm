@@ -66,7 +66,7 @@ async fn legacy_compensation_harness(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 crate::db::sqlite::session_start_runtime_tx(
                     &mut tx,
                     crate::session_projection_repo::WorkerSessionInit {
@@ -351,7 +351,7 @@ async fn complete_parked_tx_splices_result_and_double_complete_is_resolved() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let completion = complete_parked_tx(
                     &mut tx,
                     &op.id,
@@ -371,7 +371,7 @@ async fn complete_parked_tx_splices_result_and_double_complete_is_resolved() {
                         if result == &json!({ "parked": "done" })
                 ));
 
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let second = complete_parked_tx(
                     &mut tx,
                     &op.id,
@@ -420,7 +420,7 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let completion = complete_parked_tx(
                     &mut tx,
                     &op.id,
@@ -440,7 +440,7 @@ async fn complete_after_compensating_and_cancel_after_complete_are_noops() {
                 ));
 
                 let op = parked_operation(&repo, now_ms() + 10_000).await;
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     complete_parked_tx(
                         &mut tx,
@@ -559,7 +559,7 @@ async fn operation_event_append_creates_track_vcs_commit() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 let report = card_create_with_id_tx(
                     &mut tx,
                     card_id.clone(),
@@ -954,7 +954,7 @@ async fn claim_parked_fetch_misses_when_completion_wins_after_update() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     complete_parked_tx(
                         &mut tx,
@@ -997,7 +997,7 @@ async fn completion_clears_lease_so_claimed_deadline_write_loses_ordering_b() {
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await.unwrap();
+                let mut tx = write_session.begin_immediate().await.unwrap();
                 assert!(matches!(
                     complete_parked_tx(
                         &mut tx,
@@ -2199,7 +2199,7 @@ pub(super) async fn prepare_claimed_adapter(
         .writer()
         .with_writer(|write_session| {
             Box::pin(async move {
-                let mut tx = write_session.begin().await?;
+                let mut tx = write_session.begin_immediate().await?;
                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
                 let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, op).await? else {
                     panic!("stable fixture facts became stale");
@@ -2208,5 +2208,6 @@ pub(super) async fn prepare_claimed_adapter(
                 Ok(output)
             })
         })
-        .await.map_err(calm_truth::TruthError::from)?
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
