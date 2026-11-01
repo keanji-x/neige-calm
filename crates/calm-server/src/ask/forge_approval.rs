@@ -80,6 +80,7 @@ pub async fn forge_approval_tx(
             tx,
             card,
             vec![AskQuestion {
+                detail: None,
                 title: title.to_string(),
                 options: OPTIONS.iter().map(|value| (*value).into()).collect(),
             }],
@@ -169,6 +170,7 @@ mod tests {
 
     fn question(options: &[&str]) -> AskQuestion {
         AskQuestion {
+            detail: None,
             title: "Re-run?".into(),
             options: options.iter().map(|option| (*option).into()).collect(),
         }

@@ -66,6 +66,7 @@ const OPTIONS: [&str; 3] = ["Allow", "Allow for this session", "Deny"];
 
 fn command_question() -> AskQuestion {
     AskQuestion {
+        detail: None,
         title: "Run `cargo test --workspace`?\nIn /work\nReason: needs the network".into(),
         options: OPTIONS.iter().map(|option| (*option).into()).collect(),
     }

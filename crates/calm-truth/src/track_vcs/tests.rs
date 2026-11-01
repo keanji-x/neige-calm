@@ -312,6 +312,7 @@ async fn ask_batch_does_not_advance_head() {
             action: None,
             track_id: track.id.clone(),
             questions: vec![calm_types::event::AskQuestion {
+                detail: None,
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],

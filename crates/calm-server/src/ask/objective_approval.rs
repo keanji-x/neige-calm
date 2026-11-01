@@ -48,7 +48,7 @@ pub(crate) async fn request_tx(
     let hash = standard_hash(&objective.definition);
     let pending: Option<i64> = sqlx::query_scalar(concat!(
         "SELECT r.id FROM events r WHERE r.scope_track=?1 AND r.kind='ask.requested' \
-           AND json_extract(r.payload,'$.action.kind')='objective_approval' \
+           AND json_extract(r.payload,'$.action.kind') IN ('objective_approval','objective_approval_v2') \
            AND json_extract(r.payload,'$.action.objective')=?2 \
            AND json_extract(r.payload,'$.action.standard_hash')=?3 \
            AND json_extract(r.actor,'$.kind')='AiPlanner' \
@@ -67,24 +67,22 @@ pub(crate) async fn request_tx(
         require_contract(&ask)?;
         return Ok(ObjectiveApprovalRead::Awaiting(id));
     }
-    // Show the complete standard being approved; never truncate a criterion into a different
-    // question. Oversized standards are refused by the shared ask bounds.
-    let title = format!(
-        "批准 KR {}「{}」的细则？\n{}",
-        key,
-        objective.definition.title,
-        serde_json::to_string_pretty(&objective.definition)?
-    );
+    // Freeze the complete definition with the ask; presentation bounds must not limit the
+    // standard. User-supplied names may themselves exhaust the title budget.
+    let detail = serde_json::to_string_pretty(&objective.definition)?;
     let (scope, event) = super::requested_tx(
         tx,
         card,
         vec![AskQuestion {
-            title,
+            detail: Some(detail),
+            title: include_str!("../../prompts/objective_approval_title.md")
+                .trim_end()
+                .into(),
             options: OPTIONS.iter().map(|v| (*v).into()).collect(),
         }],
         AskDelivery::Wake,
         None,
-        Some(AskAction::ObjectiveApproval {
+        Some(AskAction::ObjectiveApprovalV2 {
             objective: key.as_str().into(),
             standard_hash: hash.as_str().into(),
         }),
@@ -93,10 +91,52 @@ pub(crate) async fn request_tx(
     Ok(ObjectiveApprovalRead::Ask(scope, Box::new(event)))
 }
 fn require_contract(ask: &StoredAsk) -> Result<()> {
+    let invalid = || CalmError::BadRequest("invalid objective approval question contract".into());
     if !forge_approval::is_approval_contract(&ask.questions, ask.delivery, &OPTIONS) {
-        return Err(CalmError::BadRequest(
-            "invalid objective approval question contract".into(),
-        ));
+        return Err(invalid());
+    }
+    let (key, hash, versioned) = match &ask.action {
+        Some(AskAction::ObjectiveApprovalV2 {
+            objective,
+            standard_hash,
+        }) => (objective, standard_hash, true),
+        Some(AskAction::ObjectiveApproval {
+            objective,
+            standard_hash,
+        }) => (objective, standard_hash, false),
+        _ => return Err(invalid()),
+    };
+    let question = &ask.questions[0];
+    let legacy_json;
+    let snapshot = if versioned {
+        question.detail.as_deref().ok_or_else(invalid)?
+    } else {
+        // The original writer put pretty JSON after a heading. Names may themselves
+        // contain newlines; the final unindented object start is the snapshot delimiter.
+        if question.detail.is_some() {
+            return Err(invalid());
+        }
+        let (_, json) = question.title.rsplit_once("\n{").ok_or_else(invalid)?;
+        legacy_json = format!("{{{json}");
+        &legacy_json
+    };
+    let value = serde_json::from_str(snapshot).map_err(|_| invalid())?;
+    let definition =
+        calm_types::report_blocks::objectives::parse_objective(&value).map_err(|_| invalid())?;
+    if definition.key.as_str() != key || standard_hash(&definition).as_str() != hash {
+        return Err(invalid());
+    }
+    if !versioned
+        && question.title
+            != format!(
+                include_str!("../../prompts/objective_approval_legacy_title.md"),
+                definition.key,
+                definition.title,
+                serde_json::to_string_pretty(&definition)?
+            )
+            .trim_end()
+    {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -110,10 +150,16 @@ pub(super) async fn answer_events_tx(
     ask: &StoredAsk,
     answers: &[AskAnswer],
 ) -> Result<()> {
-    let Some(AskAction::ObjectiveApproval {
-        objective,
-        standard_hash,
-    }) = &ask.action
+    let Some(
+        AskAction::ObjectiveApproval {
+            objective,
+            standard_hash,
+        }
+        | AskAction::ObjectiveApprovalV2 {
+            objective,
+            standard_hash,
+        },
+    ) = &ask.action
     else {
         return Ok(());
     };

@@ -113,6 +113,7 @@ pub(crate) fn question(request: &CanUseTool) -> AskQuestion {
         title.push_str(reason);
     }
     AskQuestion {
+        detail: None,
         title: crate::ask::clip_title(&title),
         options: OPTIONS.map(String::from).to_vec(),
     }
@@ -231,6 +232,7 @@ mod tests {
         assert_eq!(
             asked,
             AskQuestion {
+                detail: None,
                 title: "Bash: cargo test\nBlocked path: /home/owner/.cargo\nReason: needs to leave the sandbox".into(),
                 options: vec!["Allow".into(), "Deny".into()],
             }

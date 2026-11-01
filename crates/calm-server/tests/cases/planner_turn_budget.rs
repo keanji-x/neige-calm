@@ -289,6 +289,7 @@ async fn planner_turn_budget_hold_pauses_warning_and_hard_stop() {
             request_key: RequestKey("budget-hold".into()),
             connection: ConnectionId("budget".into()),
             questions: vec![AskQuestion {
+                detail: None,
                 title: "Continue?".into(),
                 options: vec!["yes".into(), "no".into()],
             }],

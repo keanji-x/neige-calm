@@ -1085,6 +1085,7 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
             ));
         }
         crate::ask::validate_questions(vec![crate::event::AskQuestion {
+            detail: None,
             title: request.title.clone(),
             options: Vec::new(),
         }])

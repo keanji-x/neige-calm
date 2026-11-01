@@ -57,10 +57,16 @@ pub(super) async fn verify_source_tx(
         TrackEvent::AskRequested {
             track_id,
             action:
-                Some(AskAction::ObjectiveApproval {
-                    objective: key,
-                    standard_hash,
-                }),
+                Some(
+                    AskAction::ObjectiveApproval {
+                        objective: key,
+                        standard_hash,
+                    }
+                    | AskAction::ObjectiveApprovalV2 {
+                        objective: key,
+                        standard_hash,
+                    },
+                ),
             ..
         } if track_id == input.track_id
             && key == objective.as_str()

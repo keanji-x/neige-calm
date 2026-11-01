@@ -114,6 +114,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
         isDisabled={busy} onClick={() => { feedback.clear(); onChange({ drafts, page: page - 1 }); }} />}
     </HStack>}
     <h3 className={styles.title}>{question.title}</h3>
+    {question.detail !== undefined && <pre className={styles.detail} aria-label="Question details">{question.detail}</pre>}
     <div className={styles.questions} data-nc-ask-questions="">
       {question.options.map((option, index) => <Button key={index} ref={index === 0 ? firstOption : undefined} label={option} variant="secondary"
         className={`${styles.option} ${draft.choice === index && draft.own.trim() === '' ? styles.optionSelected : ''}`}

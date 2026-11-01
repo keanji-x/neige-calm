@@ -922,10 +922,12 @@ golden_test!(
         track_id: TrackId::from("track-01"),
         questions: vec![
             AskQuestion {
+                detail: None,
                 title: "Merge PR #7 (head abc)?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             },
             AskQuestion {
+                detail: None,
                 title: "Which region?".into(),
                 options: Vec::new(),
             },
@@ -942,6 +944,7 @@ golden_test!(
         action: None,
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
+            detail: None,
             title: "Run `cargo test` (cwd /work)?".into(),
             options: vec![
                 "Allow".into(),
@@ -961,6 +964,7 @@ golden_test!(
         action: None,
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
+            detail: None,
             title: "Which region?".into(),
             options: Vec::new(),
         }],
@@ -980,6 +984,7 @@ golden_test!(
         }),
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
+            detail: None,
             title: "Re-run failed jobs of run 100 attempt 1, o/r PR #7 head abc? Reason: flaky"
                 .into(),
             options: vec!["Approve".into(), "Decline".into()],
@@ -1676,6 +1681,26 @@ golden_test!(
         }),
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
+            detail: None,
+            title: "批准 KR 细则？".into(),
+            options: vec!["批准".into(), "不批准".into()],
+        }],
+        delivery: AskDelivery::Wake,
+        source_item_id: None,
+    }
+);
+
+golden_test!(
+    ask_requested_objective_approval_v2,
+    "ask.requested.objective_approval_v2.json",
+    Event::AskRequested {
+        action: Some(AskAction::ObjectiveApprovalV2 {
+            objective: "kr".into(),
+            standard_hash: "sha256:standard".into(),
+        }),
+        track_id: TrackId::from("track-01"),
+        questions: vec![AskQuestion {
+            detail: Some("complete standard".into()),
             title: "批准 KR 细则？".into(),
             options: vec!["批准".into(), "不批准".into()],
         }],

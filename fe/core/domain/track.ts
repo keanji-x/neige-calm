@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 
-import { agentProviderSchema, askActionSchema, cardSchema, overlaySchema, trackWorkspaceSchema } from '../api/schemas.js';
+import { agentProviderSchema, askActionSchema, askQuestionSchema, cardSchema, overlaySchema, trackWorkspaceSchema } from '../api/schemas.js';
 import type { AgentProvider, WorkspaceIsolation } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import {
@@ -143,7 +143,7 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     text: z.string(),
     at_ms: z.number(),
     ask_id: z.number(),
-    questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
+    questions: z.array(askQuestionSchema),
     delivery: z.enum(['wake', 'hold']),
     action: askActionSchema.optional(),
   }),

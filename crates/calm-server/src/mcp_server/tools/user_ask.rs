@@ -101,6 +101,7 @@ fn parse_questions(args: &Value) -> Result<Vec<AskQuestion>, RpcError> {
                     })?,
             };
             Ok(AskQuestion {
+                detail: None,
                 title: title.to_string(),
                 options,
             })

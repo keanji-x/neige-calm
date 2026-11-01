@@ -144,6 +144,7 @@ fn a_native_question_carries_its_questions_and_keeps_its_params() {
     // Read straight from the captured JSON, not through the mapping under test.
     let wire_question = &params["item"]["questions"][0];
     let expected = vec![AskQuestion {
+        detail: None,
         title: wire_question["title"].as_str().unwrap().into(),
         options: wire_question["options"]
             .as_array()
@@ -175,6 +176,7 @@ fn only_an_agent_message_with_parsable_questions_asks() {
     assert_eq!(
         asked(json!({ "id": "a", "type": "agentMessage", "questions": [{ "title": "Free?" }] })),
         vec![AskQuestion {
+            detail: None,
             title: "Free?".into(),
             options: Vec::new()
         }],
@@ -184,6 +186,7 @@ fn only_an_agent_message_with_parsable_questions_asks() {
         asked(json!({ "id": "a", "type": "agentMessage",
             "questions": [{ "title": "Free?", "options": null }] })),
         vec![AskQuestion {
+            detail: None,
             title: "Free?".into(),
             options: Vec::new()
         }],

@@ -742,3 +742,15 @@ it('accepts objective approval asks and requires the objective and exact standar
     expect(wireEventSchema.safeParse({ ...ask, data: { ...ask.data, action } }).success).toBe(false);
   }
 });
+
+// A new action kind prevents older clients from offering approval while dropping detail.
+it('preserves complete question detail and recognizes versioned objective approvals', () => {
+  const detail = `${'验收标准'.repeat(800)} LAST CRITERION`;
+  const ask = { ev: 'ask.requested', data: {
+    track_id: 't', questions: [{ title: '批准此 KR 的验收标准？', detail, options: ['批准', '不批准'] }],
+    delivery: 'wake', action: { kind: 'objective_approval_v2', objective: 'kr', standard_hash: 'hash' },
+  } };
+  expect(wireEventSchema.parse(ask)).toEqual(ask);
+  expect(wireEventSchema.safeParse({ ...ask, data: { ...ask.data,
+    questions: [{ ...ask.data.questions[0], detail: 42 }] } }).success).toBe(false);
+});

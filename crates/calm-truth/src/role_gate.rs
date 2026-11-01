@@ -1329,6 +1329,7 @@ mod tests {
             action: None,
             track_id: TrackId::from("w"),
             questions: vec![calm_types::event::AskQuestion {
+                detail: None,
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],

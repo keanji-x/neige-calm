@@ -223,10 +223,12 @@ async fn open_ask_is_one_item_with_its_questions() {
             ask_id: id,
             questions: vec![
                 AskQuestion {
+                    detail: None,
                     title: "Merge PR #1811 now?".into(),
                     options: Vec::new(),
                 },
                 AskQuestion {
+                    detail: None,
                     title: "Which region?".into(),
                     options: Vec::new(),
                 },

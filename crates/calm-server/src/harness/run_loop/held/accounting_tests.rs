@@ -16,6 +16,7 @@ async fn open(inner: &Inner, key: &str) -> i64 {
             request_key: RequestKey(key.into()),
             connection: ConnectionId("accounting".into()),
             questions: vec![AskQuestion {
+                detail: None,
                 title: "Continue?".into(),
                 options: vec!["Yes".into(), "No".into()],
             }],

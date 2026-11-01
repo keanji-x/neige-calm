@@ -1,0 +1,25 @@
+{
+  "description": "Versioned objective approval preserves its complete detail separately from the bounded title.",
+  "wire": {
+    "data": {
+      "action": {
+        "kind": "objective_approval_v2",
+        "objective": "kr",
+        "standard_hash": "sha256:standard"
+      },
+      "delivery": "wake",
+      "questions": [
+        {
+          "options": [
+            "批准",
+            "不批准"
+          ],
+          "title": "批准 KR 细则？",
+          "detail": "complete standard"
+        }
+      ],
+      "track_id": "track-01"
+    },
+    "ev": "ask.requested"
+  }
+}

@@ -221,6 +221,7 @@ async fn planner_switch_ask_after_capture_refused() {
         &mut tx,
         &p.cards[0].clone().into(),
         vec![crate::event::AskQuestion {
+            detail: None,
             title: "Overlapping ask".into(),
             options: vec!["Yes".into()],
         }],

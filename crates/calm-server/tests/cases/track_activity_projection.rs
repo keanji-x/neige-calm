@@ -1468,6 +1468,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                 action: None,
                 track_id: tid.clone(),
                 questions: vec![calm_server::event::AskQuestion {
+                    detail: None,
                     title: "Merge?".into(),
                     options: Vec::new(),
                 }],

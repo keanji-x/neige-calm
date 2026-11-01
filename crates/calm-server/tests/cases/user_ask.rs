@@ -410,10 +410,12 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
 
     let questions = vec![
         AskQuestion {
+            detail: None,
             title: "Merge PR #7 (head abc)?".into(),
             options: vec!["Merge".into(), "Hold".into()],
         },
         AskQuestion {
+            detail: None,
             title: "Which region?".into(),
             options: Vec::new(),
         },

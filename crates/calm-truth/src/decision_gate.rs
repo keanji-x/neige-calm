@@ -1558,6 +1558,7 @@ mod tests {
                     action: None,
                     track_id: TrackId::from("w"),
                     questions: vec![calm_types::event::AskQuestion {
+                        detail: None,
                         title: "Merge?".into(),
                         options: Vec::new(),
                     }],

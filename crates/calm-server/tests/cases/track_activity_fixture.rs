@@ -707,6 +707,7 @@ impl Fx {
         let questions: Vec<calm_server::event::AskQuestion> = titles
             .iter()
             .map(|title| calm_server::event::AskQuestion {
+                detail: None,
                 title: (*title).to_string(),
                 options: Vec::new(),
             })

@@ -93,6 +93,7 @@ fn shell() -> Value {
 
 fn shell_question() -> AskQuestion {
     AskQuestion {
+        detail: None,
         title: "Run: echo one > one.txt".into(),
         options: vec!["Allow once".into(), "Always allow".into(), "Reject".into()],
     }

@@ -166,6 +166,7 @@ async fn carrier_replacement_codex_next_send_history_credentials_and_cold_boot()
                 .execute(&mut **tx).await.unwrap();
         } else {
             let questions = vec![crate::event::AskQuestion {
+                detail: None,
                 title: "Still open".into(),
                 options: vec!["Yes".into()],
             }];

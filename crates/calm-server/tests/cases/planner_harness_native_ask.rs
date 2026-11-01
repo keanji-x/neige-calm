@@ -50,6 +50,7 @@ fn captured_params() -> Value {
 fn captured_questions() -> Vec<AskQuestion> {
     let question = &captured_params()["item"]["questions"][0];
     vec![AskQuestion {
+        detail: None,
         title: question["title"].as_str().unwrap().into(),
         options: question["options"]
             .as_array()

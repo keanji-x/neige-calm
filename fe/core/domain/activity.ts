@@ -21,7 +21,7 @@ export type CardActivity = 'working' | 'input' | 'failed';
 export type NotificationSource = 'ask' | 'planner_down' | 'planner_turn_timeout';
 
 /** One question of an ask: the first option is the recommended one; none means a free answer. */
-export type AskQuestion = Readonly<{ title: string; options: readonly string[] }>;
+export type AskQuestion = Readonly<{ title: string; detail?: string; options: readonly string[] }>;
 
 /**
  * Where an ask's answer goes: `wake` starts a new Planner turn; `hold` goes to a provider request

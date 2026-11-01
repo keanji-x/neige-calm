@@ -121,6 +121,7 @@ async fn forge_approval_ask_rejects_agents_and_invalid_contract() {
     let forged = Event::AskRequested {
         track_id: boot.track_id.clone(),
         questions: vec![AskQuestion {
+            detail: None,
             title: "Re-run?".into(),
             options: vec!["Yes".into(), "No".into()],
         }],

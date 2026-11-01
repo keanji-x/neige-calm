@@ -25,6 +25,7 @@ const DENY_LINE: &str = r#"{"type":"control_response","response":{"subtype":"suc
 
 fn question() -> AskQuestion {
     AskQuestion {
+        detail: None,
         title: "Bash: echo z > /probe/outside/denied.txt\nBlocked path: /probe/outside/denied.txt"
             .into(),
         options: vec!["Allow".into(), "Deny".into()],
