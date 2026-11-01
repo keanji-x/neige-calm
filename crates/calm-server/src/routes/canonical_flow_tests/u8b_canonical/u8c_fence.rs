@@ -121,9 +121,9 @@ async fn u8c_fence_replay_repair_waits_for_clean() {
     let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let track = created["id"].as_str().unwrap();
     // An idle closed candidate, through the same setup as C1's clean regressions.
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(track)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(track))
         .await
         .unwrap();
     let held = HeldPause::arm("c1-clean-fenced", track);
@@ -260,9 +260,9 @@ async fn retained_clean_and_delete(cold: bool) {
     if cold {
         super::super::native_attempt_recovery_tests::shutdown(&state, &worker, &mut peer).await;
     }
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(track)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(track))
         .await
         .unwrap();
     let held = HeldPause::arm("c1-clean-fenced", track);
@@ -483,10 +483,13 @@ async fn u8c_fence_post_rejects_changed_workspace_after_commit() {
     // This is the boundary fact the owner must re-read, without requiring repoint's
     // separate migration/provider policy to permit an attached-to-attached change.
     let changed = fixture.root.path().join("changed-worktree");
-    sqlx::query("UPDATE tracks SET workspace_worktree_path=? WHERE id=?")
-        .bind(changed.to_str().unwrap())
-        .bind(&binding.track_id)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET workspace_worktree_path=? WHERE id=?")
+                .bind(changed.to_str().unwrap())
+                .bind(&binding.track_id),
+        )
         .await
         .unwrap();
     drop(lifecycle);
@@ -585,9 +588,9 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         assert!(state.harness.get(&worker).is_some());
         assert!(worktree.is_dir());
     } else if mode == 1 {
-        sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-            .bind(track)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(track))
             .await
             .unwrap();
         let admitted = HeldPause::arm("c5d-clean-before-track", track);

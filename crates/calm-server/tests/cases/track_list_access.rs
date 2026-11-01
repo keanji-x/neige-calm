@@ -5,7 +5,7 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use calm_server::auth::{OWNER_USER_ID, SESSION_COOKIE, SessionAuthority, SessionIdentity};
-use calm_server::db::sqlite::{area_membership, begin_immediate_tx};
+use calm_server::db::sqlite::area_membership;
 use calm_server::model::{NewArea, NewTrack};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -27,44 +27,53 @@ impl Fixture {
         let state = fresh_state().await;
         let repo = state.raw_repo();
         let db = repo.sqlite_db().unwrap();
-        let mut tx = begin_immediate_tx(&db).await.unwrap();
-        area_membership::application_user_register(&mut tx, "alice", "Owner")
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    area_membership::application_user_register(&mut tx, "alice", "Owner")
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    let mut areas = Vec::new();
+                    for user in [OWNER_USER_ID, "alice"] {
+                        areas.push(
+                            repo.area_create(
+                                user,
+                                NewArea {
+                                    name: user.into(),
+                                    color: "#123456".into(),
+                                    sort: None,
+                                },
+                            )
+                            .await
+                            .unwrap()
+                            .id
+                            .to_string(),
+                        );
+                    }
+                    let auth = live_auth_state("owner", "fixture-password");
+                    let owner = cookie(&auth, OWNER_USER_ID);
+                    let alice = cookie(&auth, "alice");
+                    let mut f = Self {
+                        app: app(state.clone(), auth.clone()),
+                        state,
+                        pool: db.read_pool().clone(),
+                        auth,
+                        area: areas[0].clone(),
+                        other: areas[1].clone(),
+                        track: String::new(),
+                        owner,
+                        alice,
+                    };
+                    f.track = f.track_in(&f.area).await;
+                    f
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let mut areas = Vec::new();
-        for user in [OWNER_USER_ID, "alice"] {
-            areas.push(
-                repo.area_create(
-                    user,
-                    NewArea {
-                        name: user.into(),
-                        color: "#123456".into(),
-                        sort: None,
-                    },
-                )
-                .await
-                .unwrap()
-                .id
-                .to_string(),
-            );
-        }
-        let auth = live_auth_state("owner", "fixture-password");
-        let owner = cookie(&auth, OWNER_USER_ID);
-        let alice = cookie(&auth, "alice");
-        let mut f = Self {
-            app: app(state.clone(), auth.clone()),
-            state,
-            pool: db.read_pool().clone(),
-            auth,
-            area: areas[0].clone(),
-            other: areas[1].clone(),
-            track: String::new(),
-            owner,
-            alice,
-        };
-        f.track = f.track_in(&f.area).await;
-        f
+            .expect("independent write operation")
     }
     async fn track_in(&self, area: &str) -> String {
         self.state

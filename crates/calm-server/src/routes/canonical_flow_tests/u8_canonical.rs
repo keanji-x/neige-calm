@@ -174,21 +174,23 @@ async fn u8_canonical_receipt_abort_rolls_back_carrier_and_admin() {
         let mut body = body(&a, provider);
         body["admin"] = json!(true);
         body["first_message"] = json!(FIRST_BODY);
-        sqlx::query(
-            "CREATE TRIGGER fail_u8_receipt BEFORE INSERT ON conversation_human_track_creations
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER fail_u8_receipt BEFORE INSERT ON conversation_human_track_creations
             BEGIN SELECT RAISE(ABORT,'fixture refuses U8 receipt'); END",
-        )
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         let before = counts(&fixture).await;
         assert_eq!(
             create(&app, &cookie, "first", body.clone()).await.0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(counts(&fixture).await, before);
-        sqlx::query("DROP TRIGGER fail_u8_receipt")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_u8_receipt"))
             .await
             .unwrap();
         let created = post(&app, &cookie, "/api/tracks", "first", body).await;
@@ -328,9 +330,12 @@ async fn u8_canonical_managed_admin_rechecks_target_and_live_auth_before_commit(
                     .remove(cookie.split_once('=').unwrap().1)
                     .unwrap();
             } else {
-                sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-                    .bind(a["id"].as_str().unwrap())
-                    .execute(fixture.repo.pool())
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+                            .bind(a["id"].as_str().unwrap()),
+                    )
                     .await
                     .unwrap();
             }

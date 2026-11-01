@@ -65,8 +65,7 @@ async fn cold_original_source(
     let original = receipts(&fixture, &card).await;
     let (worker, _) = frame(&fixture, &card).await;
     if claimed {
-        sqlx::query(&format!("CREATE TRIGGER hold_summary_crossing BEFORE UPDATE OF handle_state_json ON worker_sessions WHEN NEW.id='{worker}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>0 BEGIN SELECT RAISE(ABORT,'hold crossing'); END"))
-            .execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query(&format!("CREATE TRIGGER hold_summary_crossing BEFORE UPDATE OF handle_state_json ON worker_sessions WHEN NEW.id='{worker}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>0 BEGIN SELECT RAISE(ABORT,'hold crossing'); END"))).await.unwrap();
         let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
         state.dispatcher.reconcile_tick_for_test().await;
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -105,16 +104,20 @@ async fn cold_original_source(
     fixture.repo.db().close().await;
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     if claimed {
-        sqlx::query("DROP TRIGGER hold_summary_crossing")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER hold_summary_crossing"))
             .await
             .unwrap();
     }
     if corrupt {
-        sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
-            .bind(original[0].event_id)
-            .bind(serde_json::to_string(&crate::ids::ActorId::User).unwrap())
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
+                    .bind(original[0].event_id)
+                    .bind(serde_json::to_string(&crate::ids::ActorId::User).unwrap()),
+            )
             .await
             .unwrap();
     }

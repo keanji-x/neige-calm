@@ -87,7 +87,8 @@ async fn database_id_concurrent_boot_reads_one_id() {
     for pool in &pools {
         let pool = pool.clone();
         tasks.push(tokio::spawn(async move {
-            ensure_database_identity(&pool).await
+            let mut connection = pool.acquire().await?;
+            ensure_database_identity(&mut connection).await
         }));
     }
     let mut ids = Vec::new();
@@ -112,12 +113,16 @@ async fn database_identity_rejects_second_row() {
     let before = identity_rows(repo.pool()).await;
     assert_eq!(before.len(), 1);
 
-    let err =
-        sqlx::query("INSERT INTO database_identity(singleton, id, minted_at_ms) VALUES (2, ?1, 0)")
-            .bind("second-identity")
-            .execute(repo.pool())
-            .await
-            .expect_err("a second key must be refused");
+    let err = (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO database_identity(singleton, id, minted_at_ms) VALUES (2, ?1, 0)",
+            )
+            .bind("second-identity"),
+        )
+        .await
+        .expect_err("a second key must be refused");
     let message = err.to_string();
     assert!(
         message.contains("CHECK constraint failed"),

@@ -89,8 +89,9 @@ async fn write(
 
 async fn assert_refusal(kind: WriteKind, expected: CalmError) {
     let repo = sqlite::SqlxRepo::open("sqlite::memory:").await.unwrap();
-    sqlx::query("CREATE TABLE typed_write_probe(value INTEGER)")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("CREATE TABLE typed_write_probe(value INTEGER)"))
         .await
         .unwrap();
     let bus = EventBus::new();
@@ -218,11 +219,14 @@ async fn typed_writes_preserve_idempotency_and_replacement_refusals() {
 async fn typed_writes_map_commit_failure_to_db_without_events() {
     for kind in KINDS {
         let repo = sqlite::SqlxRepo::open("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE typed_write_parent(id INTEGER PRIMARY KEY)")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TABLE typed_write_parent(id INTEGER PRIMARY KEY)",
+            ))
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE typed_write_probe(value INTEGER REFERENCES typed_write_parent(id) DEFERRABLE INITIALLY DEFERRED)").execute(repo.pool()).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("CREATE TABLE typed_write_probe(value INTEGER REFERENCES typed_write_parent(id) DEFERRABLE INITIALLY DEFERRED)")).await.unwrap();
         let bus = EventBus::new();
         let mut receiver = bus.subscribe();
         let error = write(kind, &repo, &bus, None).await.unwrap_err();

@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::{
-    SqlxRepo, begin_immediate_tx, evaluate_schedulability, project_tasks_tx, task_claim_pending_tx,
+    SqlxRepo, evaluate_schedulability, project_tasks_tx, task_claim_pending_tx,
     task_mark_running_tx, task_projection::evaluate_schedulability_after_snapshot_for_test,
 };
 
@@ -96,76 +96,90 @@ fn legacy_track_reference(track_id: &str) -> String {
 
 async fn setup() -> Arc<SqlxRepo> {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.expect("open repo"));
-    sqlx::query(
-        "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
          VALUES('snapshot-area','snapshot','#000',0,'user',0,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed area");
-    sqlx::query(
-        "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
+        ))
+        .await
+        .expect("seed area");
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
          VALUES('snapshot-area-2','snapshot-2','#000',1,'user',0,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed second area");
-    sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
+        ))
+        .await
+        .expect("seed second area");
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
          planner_task_ceiling,require_task_gates) \
          VALUES('snapshot-track','snapshot-area','snapshot',0,0,0,1,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed track");
-    sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
+        ))
+        .await
+        .expect("seed track");
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,\
          planner_task_ceiling,require_task_gates) \
          VALUES('destination-track','snapshot-area','destination',1,0,0,1,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed destination track");
-    sqlx::query(
+        ))
+        .await
+        .expect("seed destination track");
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) \
          VALUES('reference-blocker','destination-track','note',0,'{}','before',1,0,0,'assistant')",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .expect("seed reference card");
     let persisted = declaration(0, "running-key", "persisted goal");
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("seed task tx");
-    project_tasks_tx(&mut tx, "snapshot-track", &[persisted], &[vec![]])
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("seed task tx");
+                project_tasks_tx(&mut tx, "snapshot-track", &[persisted], &[vec![]])
+                    .await
+                    .expect("project pending task");
+                let task_id: String =
+                    sqlx::query_scalar("SELECT id FROM tasks WHERE track_id='snapshot-track'")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .expect("projected task id");
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &task_id, 0, &[], false)
+                        .await
+                        .expect("claim task"),
+                    1
+                );
+                assert_eq!(
+                    task_mark_running_tx(&mut tx, &task_id, None, 0, 1_000)
+                        .await
+                        .expect("mark task running"),
+                    1
+                );
+                tx.commit().await.expect("commit running task");
+                repo
+            })
+        })
         .await
-        .expect("project pending task");
-    let task_id: String =
-        sqlx::query_scalar("SELECT id FROM tasks WHERE track_id='snapshot-track'")
-            .fetch_one(&mut **tx)
-            .await
-            .expect("projected task id");
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &task_id, 0, &[], false)
-            .await
-            .expect("claim task"),
-        1
-    );
-    assert_eq!(
-        task_mark_running_tx(&mut tx, &task_id, None, 0, 1_000)
-            .await
-            .expect("mark task running"),
-        1
-    );
-    tx.commit().await.expect("commit running task");
-    repo
+        .expect("independent write operation")
 }
 
 async fn delete_seeded_task(repo: &SqlxRepo) {
-    let deleted =
-        sqlx::query("DELETE FROM tasks WHERE track_id='snapshot-track' AND key='running-key'")
-            .execute(repo.pool())
-            .await
-            .expect("delete seeded task")
-            .rows_affected();
+    let deleted = (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "DELETE FROM tasks WHERE track_id='snapshot-track' AND key='running-key'",
+        ))
+        .await
+        .expect("delete seeded task")
+        .rows_affected();
     assert_eq!(deleted, 1, "the t0/t1 mutation must change one row");
 }
 
@@ -248,14 +262,15 @@ async fn diagnostics_never_mix_source_area_with_later_reference_targets() {
         .await
         .expect("predicate must finish its fact statement")
         .expect("reader task must stay alive");
-    let moved = sqlx::query(
-        "UPDATE tracks SET area_id='snapshot-area-2' \
+    let moved = (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tracks SET area_id='snapshot-area-2' \
          WHERE id IN ('snapshot-track','destination-track')",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("move both tracks between the fact snapshot and verdict evaluation")
-    .rows_affected();
+        ))
+        .await
+        .expect("move both tracks between the fact snapshot and verdict evaluation")
+        .rows_affected();
     assert_eq!(moved, 2, "the t0/t1 mutation must move both tracks");
     let moved_areas: Vec<(String,)> = sqlx::query_as(
         "SELECT area_id FROM tracks \
@@ -296,34 +311,38 @@ async fn diagnostics_never_mix_source_area_with_later_reference_targets() {
 async fn snapshot_reference_materialization_preserves_reference_diagnostics() {
     let repo = setup().await;
     delete_seeded_task(repo.as_ref()).await;
-    sqlx::query("UPDATE tracks SET planner_task_ceiling=20 WHERE id='snapshot-track'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tracks SET planner_task_ceiling=20 WHERE id='snapshot-track'",
+        ))
         .await
         .expect("leave capacity for every declaration");
-    sqlx::query(
-        "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) \
          VALUES('system-area','system','#000',2,'system',0,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed system area");
-    sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES \
+        ))
+        .await
+        .expect("seed system area");
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES \
          ('cross-user-track','snapshot-area-2','cross-user',2,0,0), \
          ('system-track','system-area','system',3,0,0)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed cross-area tracks");
-    sqlx::query(
+        ))
+        .await
+        .expect("seed cross-area tracks");
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) \
          VALUES('destination-report','destination-track','track-report',1,\
          '{\"blocks\":[{\"id\":\"b_1234\"}]}','report',1,0,0,'reportcard')",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .expect("seed destination report block");
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) VALUES \
          ('cross-user-card','cross-user-track','note',0,'{}','cross-user',1,0,0,'assistant'), \
          ('cross-user-report','cross-user-track','track-report',1,\
@@ -331,8 +350,7 @@ async fn snapshot_reference_materialization_preserves_reference_diagnostics() {
          ('system-card','system-track','note',0,'{}','system',1,0,0,'assistant'), \
          ('system-report','system-track','track-report',1,\
           '{\"blocks\":[{\"id\":\"b_1234\"}]}','system-report',1,0,0,'reportcard')",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .expect("seed cross-area reference targets");
 

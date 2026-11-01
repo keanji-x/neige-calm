@@ -75,35 +75,44 @@ async fn seed_rooted_track(repo: &SqlxRepo) {
         })
         .await
         .expect("create reset root card");
-    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("start reset root runtime");
-    tx.commit().await.expect("commit runtime tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("start reset root runtime");
+                tx.commit().await.expect("commit runtime tx");
 
-    let root: Option<String> =
-        sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
-            .bind(track.id.as_str())
-            .fetch_one(repo.pool())
-            .await
-            .expect("read reset root");
-    assert_eq!(root.as_deref(), Some(runtime.id.as_str()));
+                let root: Option<String> =
+                    sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id = ?1")
+                        .bind(track.id.as_str())
+                        .fetch_one(repo.pool())
+                        .await
+                        .expect("read reset root");
+                assert_eq!(root.as_deref(), Some(runtime.id.as_str()));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
@@ -580,14 +589,15 @@ async fn reset_from_fixture_wipes_and_reseeds() {
     assert_eq!(extra_id, n + 1, "extra event sits at id=N+1");
 
     // `tasks` has no FK to `tracks`, so a track wipe alone would never cascade here.
-    sqlx::query(
-        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, \
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, \
          created_at_ms, updated_at_ms) \
          VALUES ('wv-x:t1', 'wv-x', 't1', 'codex', 'leftover goal', '{}', 1, 1)",
-    )
-    .execute(repo.pool())
-    .await
-    .expect("seed leftover tasks row");
+        ))
+        .await
+        .expect("seed leftover tasks row");
 
     // A rooted track: `DELETE FROM worker_sessions` must cope with `tracks.root_session_id` still pointing at the root session.
     seed_rooted_track(&repo).await;
@@ -644,17 +654,18 @@ async fn dev_reset_survives_the_keyed_operations_fence() {
         .expect("initial seed");
 
     // The only state that can trip the fence.
-    sqlx::query(
-        r#"INSERT INTO operations (
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO operations (
              id, operation_key, kind, idempotency_key, payload_hash,
              target_type, target_json, payload_json, phase,
              created_at_ms, updated_at_ms
            ) VALUES ('op-keyed', 'op-keyed', 'planner-harness-start', 'a-key', 'hash',
                      'track', '{}', '{}', 'succeeded', 0, 0)"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("plant a keyed operations row");
+        ))
+        .await
+        .expect("plant a keyed operations row");
 
     replay::reset_from_fixture(&repo, &bus, &fixture)
         .await

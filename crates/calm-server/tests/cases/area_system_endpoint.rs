@@ -371,8 +371,9 @@ async fn system_area_mint_refuses_an_unregistered_authenticated_owner() {
     let (app, _repo, concrete) = boot_with_concrete().await;
     // Credentials do not recreate a deleted registry fact. There is no supported
     // user-deletion API; corrupted/missing identity still must fail closed.
-    sqlx::query("DELETE FROM application_users")
-        .execute(concrete.pool())
+    (concrete.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM application_users"))
         .await
         .unwrap();
     let (status, body) = post_empty(app, "/api/areas/system").await;

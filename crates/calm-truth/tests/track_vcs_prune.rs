@@ -2,7 +2,7 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::{BTreeMap, BTreeSet};
 
 use calm_truth::db::prelude::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use calm_truth::db::sqlite::SqlxRepo;
 use calm_truth::ids::TrackId;
 use calm_truth::model::{NewArea, NewTrack, RequestTheme, now_ms};
 use calm_truth::track_vcs::{
@@ -181,12 +181,21 @@ async fn prune_once(
     track_id: &TrackId,
     keep: usize,
 ) -> u64 {
-    let mut tx = begin_immediate_tx(pool).await.expect("begin prune");
-    let deleted = track_vcs::prune_track_history_tx(&mut tx, track_id, keep)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin prune");
+                let deleted = track_vcs::prune_track_history_tx(&mut tx, track_id, keep)
+                    .await
+                    .expect("prune");
+                tx.commit().await.expect("commit prune");
+                deleted
+            })
+        })
         .await
-        .expect("prune");
-    tx.commit().await.expect("commit prune");
-    deleted
+        .expect("independent write operation")
 }
 
 async fn insert_active_session(
@@ -472,9 +481,11 @@ async fn log_reports_a_missing_parent_tree_as_corruption() {
     let fixture = fixture_with_commits(2).await;
     let parent = &fixture.commits[0];
 
-    sqlx::query("DELETE FROM track_vcs_objects WHERE hash = ?1")
-        .bind(&parent.tree_hash)
-        .execute(fixture.pool())
+    (fixture.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM track_vcs_objects WHERE hash = ?1").bind(&parent.tree_hash),
+        )
         .await
         .expect("delete parent tree object");
 
@@ -494,46 +505,56 @@ async fn default_log_finds_changes_beyond_one_thousand_empty_commits() {
     let fixture = fixture_with_commits(2).await;
     let changed = fixture.commits.last().expect("latest changed commit");
     let mut parent_hash = changed.hash.clone();
-    let mut tx = fixture.pool().begin().await.expect("begin empty commits");
-    for index in 0..EMPTY_COMMITS {
-        let hash = format!("{}-empty-{index:04}", fixture.track_id.as_str());
-        sqlx::query(
-            r#"INSERT INTO track_vcs_commits (
+    let fixture = &fixture;
+    let write_db = (fixture.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.expect("begin empty commits");
+                            for index in 0..EMPTY_COMMITS {
+                                let hash = format!("{}-empty-{index:04}", fixture.track_id.as_str());
+                                sqlx::query(
+                                    r#"INSERT INTO track_vcs_commits (
                    hash, track_id, parent_hash, tree_hash, manifest_schema_version,
                    author, message, event_id, created_at
                )
                VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'harness.item.added', ?6, ?7)"#,
-        )
-        .bind(&hash)
-        .bind(fixture.track_id.as_str())
-        .bind(&parent_hash)
-        .bind(&changed.tree_hash)
-        .bind(MANIFEST_SCHEMA_VERSION)
-        .bind(3 + index as i64)
-        .bind(changed.created_at + 1 + index as i64)
-        .execute(&mut *tx)
-        .await
-        .expect("insert empty commit");
-        parent_hash = hash;
-    }
-    sqlx::query(
-        "UPDATE track_vcs_refs SET head_hash = ?1, updated_event_id = ?2 WHERE track_id = ?3",
-    )
-    .bind(&parent_hash)
-    .bind(2 + EMPTY_COMMITS as i64)
-    .bind(fixture.track_id.as_str())
-    .execute(&mut *tx)
-    .await
-    .expect("advance head across empty commits");
-    tx.commit().await.expect("commit empty history");
+                                )
+                                .bind(&hash)
+                                .bind(fixture.track_id.as_str())
+                                .bind(&parent_hash)
+                                .bind(&changed.tree_hash)
+                                .bind(MANIFEST_SCHEMA_VERSION)
+                                .bind(3 + index as i64)
+                                .bind(changed.created_at + 1 + index as i64)
+                                .execute(&mut **tx)
+                                .await
+                                .expect("insert empty commit");
+                                parent_hash = hash;
+                            }
+                            sqlx::query(
+                    "UPDATE track_vcs_refs SET head_hash = ?1, updated_event_id = ?2 WHERE track_id = ?3",
+                )
+                .bind(&parent_hash)
+                .bind(2 + EMPTY_COMMITS as i64)
+                .bind(fixture.track_id.as_str())
+                .execute(&mut **tx)
+                .await
+                .expect("advance head across empty commits");
+                            tx.commit().await.expect("commit empty history");
 
-    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
+                            let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
+                                .await
+                                .expect("default log beyond empty commits");
+                            assert_eq!(log.commits.len(), 1, "log = {log:?}");
+                            assert_eq!(log.commits[0].hash, changed.hash);
+                            assert!(!log.commits[0].changed_paths.is_empty());
+                            assert!(log.has_more);
+            })
+        })
         .await
-        .expect("default log beyond empty commits");
-    assert_eq!(log.commits.len(), 1, "log = {log:?}");
-    assert_eq!(log.commits[0].hash, changed.hash);
-    assert!(!log.commits[0].changed_paths.is_empty());
-    assert!(log.has_more);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -791,72 +812,81 @@ async fn sweep_preserves_shared_blob_referenced_by_kept_tree() {
     })
     .expect("canonical kept tree json");
 
-    let mut tx = repo.pool().begin().await.expect("begin seed shared blob");
-    sqlx::query(
-        r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin seed shared blob");
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'blob', ?2, ?3)"#,
-    )
-    .bind(&shared_blob_hash)
-    .bind(&shared_blob_bytes)
-    .bind(base)
-    .execute(&mut *tx)
-    .await
-    .expect("insert shared blob");
-    sqlx::query(
-        r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+                )
+                .bind(&shared_blob_hash)
+                .bind(&shared_blob_bytes)
+                .bind(base)
+                .execute(&mut **tx)
+                .await
+                .expect("insert shared blob");
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'tree', ?2, ?3), (?4, 'tree', ?5, ?6)"#,
-    )
-    .bind(&old_tree_hash)
-    .bind(&old_tree_bytes)
-    .bind(base)
-    .bind(&kept_tree_hash)
-    .bind(&kept_tree_bytes)
-    .bind(base + 1000)
-    .execute(&mut *tx)
-    .await
-    .expect("insert trees");
-    sqlx::query(
-        r#"INSERT INTO track_vcs_commits (
+                )
+                .bind(&old_tree_hash)
+                .bind(&old_tree_bytes)
+                .bind(base)
+                .bind(&kept_tree_hash)
+                .bind(&kept_tree_bytes)
+                .bind(base + 1000)
+                .execute(&mut **tx)
+                .await
+                .expect("insert trees");
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_commits (
                hash, track_id, parent_hash, tree_hash, manifest_schema_version,
                author, message, event_id, created_at
            )
            VALUES (?1, ?2, NULL, ?3, ?4, NULL, 'old shared blob', 1, ?5),
                   (?6, ?2, ?1, ?7, ?4, NULL, 'kept shared blob', 2, ?8)"#,
-    )
-    .bind(&old_commit_hash)
-    .bind(track_id.as_str())
-    .bind(&old_tree_hash)
-    .bind(MANIFEST_SCHEMA_VERSION)
-    .bind(base)
-    .bind(&kept_commit_hash)
-    .bind(&kept_tree_hash)
-    .bind(base + 1000)
-    .execute(&mut *tx)
-    .await
-    .expect("insert commits");
-    sqlx::query(
-        r#"INSERT INTO track_vcs_refs (track_id, head_hash, updated_event_id)
+                )
+                .bind(&old_commit_hash)
+                .bind(track_id.as_str())
+                .bind(&old_tree_hash)
+                .bind(MANIFEST_SCHEMA_VERSION)
+                .bind(base)
+                .bind(&kept_commit_hash)
+                .bind(&kept_tree_hash)
+                .bind(base + 1000)
+                .execute(&mut **tx)
+                .await
+                .expect("insert commits");
+                sqlx::query(
+                    r#"INSERT INTO track_vcs_refs (track_id, head_hash, updated_event_id)
            VALUES (?1, ?2, 2)"#,
-    )
-    .bind(track_id.as_str())
-    .bind(&kept_commit_hash)
-    .execute(&mut *tx)
-    .await
-    .expect("insert ref");
-    tx.commit().await.expect("commit seed shared blob");
+                )
+                .bind(track_id.as_str())
+                .bind(&kept_commit_hash)
+                .execute(&mut **tx)
+                .await
+                .expect("insert ref");
+                tx.commit().await.expect("commit seed shared blob");
 
-    let deleted = prune_once(repo.db(), &track_id, 1).await;
-    let swept = track_vcs::sweep_unreferenced_objects_once(repo.db())
+                let deleted = prune_once(repo.db(), &track_id, 1).await;
+                let swept = track_vcs::sweep_unreferenced_objects_once(repo.db())
+                    .await
+                    .expect("sweep");
+
+                assert_eq!(deleted, 1);
+                assert!(swept > 0);
+                assert!(!commit_exists(repo.pool(), &old_commit_hash).await);
+                assert!(!object_exists(repo.pool(), &old_tree_hash).await);
+                assert!(commit_exists(repo.pool(), &kept_commit_hash).await);
+                assert!(object_exists(repo.pool(), &kept_tree_hash).await);
+                assert!(object_exists(repo.pool(), &shared_blob_hash).await);
+            })
+        })
         .await
-        .expect("sweep");
-
-    assert_eq!(deleted, 1);
-    assert!(swept > 0);
-    assert!(!commit_exists(repo.pool(), &old_commit_hash).await);
-    assert!(!object_exists(repo.pool(), &old_tree_hash).await);
-    assert!(commit_exists(repo.pool(), &kept_commit_hash).await);
-    assert!(object_exists(repo.pool(), &kept_tree_hash).await);
-    assert!(object_exists(repo.pool(), &shared_blob_hash).await);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1088,19 +1118,22 @@ async fn sweep_honors_object_created_at_grace_cutoff() {
     let fixture = fixture_with_commits(4).await;
     let old_orphan = format!("{}-old-orphan", fixture.track_id.as_str());
     let young_orphan = format!("{}-young-orphan", fixture.track_id.as_str());
-    sqlx::query(
-        r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
+    (fixture.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO track_vcs_objects (hash, kind, bytes, created_at)
            VALUES (?1, 'blob', ?2, ?3), (?4, 'blob', ?5, ?6)"#,
-    )
-    .bind(&old_orphan)
-    .bind(b"old".as_slice())
-    .bind(now_ms() - (2 * SWEEP_GRACE_MS))
-    .bind(&young_orphan)
-    .bind(b"young".as_slice())
-    .bind(now_ms())
-    .execute(fixture.pool())
-    .await
-    .expect("insert orphan objects");
+            )
+            .bind(&old_orphan)
+            .bind(b"old".as_slice())
+            .bind(now_ms() - (2 * SWEEP_GRACE_MS))
+            .bind(&young_orphan)
+            .bind(b"young".as_slice())
+            .bind(now_ms()),
+        )
+        .await
+        .expect("insert orphan objects");
 
     assert!(prune_once(fixture.db(), &fixture.track_id, 1).await > 0);
     let swept = track_vcs::sweep_unreferenced_objects_once(fixture.db())

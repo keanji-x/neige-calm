@@ -136,46 +136,55 @@ fn head_resolves(path: &std::path::Path) -> bool {
 async fn assert_workspace_is_usable_by_the_first_worker(b: &Boot, track_id: &str) {
     let (_, path, _) = workspace_row(&b.repo, track_id).await;
     let path = PathBuf::from(path);
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
-        &mut tx,
-        track_id,
-        &b.workspace_root,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        panic!(
-            "the materialized workspace at {path:?} is not usable by the first \
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    track_id,
+                    &b.workspace_root,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "the materialized workspace at {path:?} is not usable by the first \
                      worker: preparing its lease failed with {e}. A track in this state \
                      serves nothing but `spawn-failed` — bug #1147."
-        )
-    });
-    tx.commit().await.unwrap();
-    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
-    assert!(
-        head_resolves(&path),
-        "no init commit — the worker has no base to record and never starts"
-    );
+                    )
+                });
+                tx.commit().await.unwrap();
+                assert!(path.join(".git").is_dir(), "no repository at {path:?}");
+                assert!(
+                    head_resolves(&path),
+                    "no init commit — the worker has no base to record and never starts"
+                );
 
-    assert_eq!(
-        checkout, path,
-        "a managed track's worker runs in its directory"
-    );
-    let branch = String::from_utf8(
-        Command::new("git")
-            .arg("-C")
-            .arg(&checkout)
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    assert_eq!(
-        branch.trim(),
-        "main",
-        "the spawn verifies a managed checkout is on `main`"
-    );
+                assert_eq!(
+                    checkout, path,
+                    "a managed track's worker runs in its directory"
+                );
+                let branch = String::from_utf8(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&checkout)
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .output()
+                        .unwrap()
+                        .stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    branch.trim(),
+                    "main",
+                    "the spawn verifies a managed checkout is on `main`"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn workspace_row(repo: &SqlxRepo, track_id: &str) -> (String, String, Option<i64>) {
@@ -274,19 +283,26 @@ async fn template_create_without_cwd_materializes_a_managed_workspace_on_first_l
 
     // Empty canonical creation allocates the path; the existing lease owner
     // materializes it when a worker actually needs the checkout.
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    track_id,
+                    &b.workspace_root,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(checkout, PathBuf::from(path));
+                assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
+            })
+        })
         .await
-        .unwrap();
-    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
-        &mut tx,
-        track_id,
-        &b.workspace_root,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(checkout, PathBuf::from(path));
-    assert_workspace_is_usable_by_the_first_worker(&b, track_id).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -414,22 +430,31 @@ async fn an_unmaterialized_managed_track_heals_when_a_worker_takes_its_lease() {
     assert!(!std::path::Path::new(&path).exists());
 
     // The production lease path a codex worker takes.
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
-        &mut tx,
-        &track_id,
-        &b.workspace_root,
-    )
-    .await
-    .expect(
-        "taking a lease on an un-materialized managed track must repair it, not fail: \
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let checkout = calm_server::test_seams::prepare_worker_lease_for_test(
+                    &mut tx,
+                    &track_id,
+                    &b.workspace_root,
+                )
+                .await
+                .expect(
+                    "taking a lease on an un-materialized managed track must repair it, not fail: \
          a permanently `spawn-failed` track is bug #1147 itself",
-    );
-    tx.commit().await.unwrap();
+                );
+                tx.commit().await.unwrap();
 
-    assert_eq!(checkout, std::path::Path::new(&path));
-    // `prepare_…` is idempotent, so re-running it inside the bar is the same repair a second worker would drive.
-    assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
+                assert_eq!(checkout, std::path::Path::new(&path));
+                // `prepare_…` is idempotent, so re-running it inside the bar is the same repair a second worker would drive.
+                assert_workspace_is_usable_by_the_first_worker(&b, &track_id).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// A `main` branch with one commit: `git worktree add` on an unborn HEAD fails differently and would let these cases pass vacuously.

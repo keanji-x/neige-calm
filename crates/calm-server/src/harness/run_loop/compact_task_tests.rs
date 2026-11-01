@@ -286,9 +286,12 @@ async fn compact_task_sweep_fails_superseded_session() {
         if started {
             self_compact::tick(&f.harness.inner, true).await.unwrap();
         }
-        sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
-            .bind(&f.harness.inner.worker_session_id)
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?")
+                    .bind(&f.harness.inner.worker_session_id),
+            )
             .await
             .unwrap();
         scheduler.sweep_all().await;
@@ -323,14 +326,15 @@ async fn compact_task_settlement_rolls_back_with_wake() {
     let f = Fixture::new().await;
     declared(&f).await;
     self_compact::tick(&f.harness.inner, true).await.unwrap();
-    sqlx::query(
-        "CREATE TRIGGER compact_task_wake_fail BEFORE INSERT ON events \
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER compact_task_wake_fail BEFORE INSERT ON events \
          WHEN NEW.kind='track.wake_requested' \
          BEGIN SELECT RAISE(ABORT,'blocked wake'); END",
-    )
-    .execute(f.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(finish(&f, "completed").await.is_err());
     let id = format!("{}:compact", f.harness.inner.track_id);
     assert_eq!(
@@ -345,8 +349,9 @@ async fn compact_task_settlement_rolls_back_with_wake() {
             .iter()
             .any(|event| matches!(event.3, Event::TaskCompleted { .. }))
     );
-    sqlx::query("DROP TRIGGER compact_task_wake_fail")
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER compact_task_wake_fail"))
         .await
         .unwrap();
     persist_snapshot(&f.harness.inner).await.unwrap();
@@ -461,9 +466,14 @@ async fn compact_task_start_lost_guard_rolls_back() {
     let inner = &f.harness.inner;
     let id = format!("{}:compact", inner.track_id);
     // The task settles after request admission, before the idle Start transaction.
-    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=7,updated_at_ms=7 WHERE id=?")
-        .bind(&id)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tasks SET status='done',finished_at_ms=7,updated_at_ms=7 WHERE id=?",
+            )
+            .bind(&id),
+        )
         .await
         .unwrap();
     let before = f
@@ -588,9 +598,9 @@ async fn compact_task_handoff_historical_empty_object_keeps_old_wake() {
     let inner = &f.harness.inner;
     let id = format!("{}:compact", inner.track_id);
     // Simulate an already-claimed pre-handoff row, not a newly admitted declaration.
-    sqlx::query("UPDATE tasks SET context_json='{}' WHERE id=?")
-        .bind(&id)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET context_json='{}' WHERE id=?").bind(&id))
         .await
         .unwrap();
     self_compact::tick(inner, true).await.unwrap();

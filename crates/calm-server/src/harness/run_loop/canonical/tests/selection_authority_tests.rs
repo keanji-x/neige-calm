@@ -102,35 +102,45 @@ async fn configure_default_effort(repo: &crate::db::sqlite::SqlxRepo, card_id: &
     // Use the settings owner's real value transition: an explicit effort was
     // selected, then changed to the installation default. A config with no
     // effort must consult the actual model catalog to resolve that default.
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let mut payload = crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut payload =
+                    crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card_id)
+                        .await
+                        .unwrap();
+                let fields = payload.as_object_mut().unwrap();
+                crate::planner_model::CardModelSelection::apply_to_payload(
+                    fields,
+                    Some("fixture-private-model"),
+                    Some("medium"),
+                );
+                crate::planner_model::CardModelSelection::apply_to_payload(
+                    fields,
+                    Some("fixture-private-model"),
+                    None,
+                );
+                crate::db::sqlite::card_update_tx(
+                    &mut tx,
+                    card_id,
+                    crate::model::CardPatch {
+                        title: None,
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let fields = payload.as_object_mut().unwrap();
-    crate::planner_model::CardModelSelection::apply_to_payload(
-        fields,
-        Some("fixture-private-model"),
-        Some("medium"),
-    );
-    crate::planner_model::CardModelSelection::apply_to_payload(
-        fields,
-        Some("fixture-private-model"),
-        None,
-    );
-    crate::db::sqlite::card_update_tx(
-        &mut tx,
-        card_id,
-        crate::model::CardPatch {
-            title: None,
-            kind: None,
-            sort: None,
-            payload: Some(payload),
-            deletable: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 fn catalog_reply(call: &Value, next: Option<&str>) -> Value {
@@ -200,33 +210,42 @@ async fn canonical_revoked_source_cannot_request_another_catalog_page() {
 }
 
 async fn bound_admission(fx: &Fixture) -> crate::conversation_inputs::SelectionReadAdmission {
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    let plan = human_plan_for_pending_prefix_tx(
-        &mut tx,
-        &carrier,
-        std::num::NonZeroU32::new(1).unwrap(),
-        vec![],
-    )
-    .await
-    .unwrap();
-    let admission = crate::conversation_inputs::SelectionReadAdmission::pending_tx(
-        &mut tx,
-        fx.original.repo.clone(),
-        fx.source.clone(),
-        &carrier,
-        plan,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    admission
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier = current_input_carrier_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                let plan = human_plan_for_pending_prefix_tx(
+                    &mut tx,
+                    &carrier,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    vec![],
+                )
+                .await
+                .unwrap();
+                let admission = crate::conversation_inputs::SelectionReadAdmission::pending_tx(
+                    &mut tx,
+                    fx.original.repo.clone(),
+                    fx.source.clone(),
+                    &carrier,
+                    plan,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                admission
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -237,63 +256,67 @@ async fn sqlite_admission_under_sink_yields_before_server_reply_timeout() {
     let (client, mut peer) = connect(&fx.daemon).await;
     let admission = bound_admission(&fx).await;
     let before = fx.frame().await;
-    let writer = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let entered = tokio::sync::Notify::new();
-    let gate = PreSendGate::new(|| {
-        Box::pin(async {
-            entered.notify_one();
-            admission
-                .revalidate()
-                .await
-                .map_err(|error| provider::send_boundary::SendRefusal(error.to_string()))
-        })
-    });
-    let selection = provider::TurnModelSelection::inherit();
-    let attempt = client.turn_start_attempt_gated(
-        "thread",
-        vec![],
-        &selection,
-        TurnApprovals::Unchanged,
-        None,
-        &gate,
-    );
-    tokio::pin!(attempt);
-    tokio::select! {
-        _ = entered.notified() => {}
-        result = &mut attempt => panic!("admission did not wait for the real writer: {result:?}"),
-    }
-    send(
-        &mut peer,
-        json!({"id":"needs-reply","method":"fixture/unsupported","params":{}}),
-    )
-    .await;
-    let (failure, reply) = tokio::join!(
-        async { tokio::time::timeout(Duration::from_secs(4), &mut attempt).await },
-        async { tokio::time::timeout(Duration::from_secs(4), peer.next()).await },
-    );
-    // Release the actual writer even on expected-red timeout.
-    writer.rollback().await.unwrap();
-    let failure = failure
-        .expect("a blocked admission must release the sink before replies time out")
-        .unwrap_err();
-    assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
-    let frame = reply
-        .expect("the shared reply writer must acquire the sink")
-        .unwrap()
-        .unwrap();
-    let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-    assert_eq!(frame["id"], "needs-reply");
-    assert_eq!(frame["error"]["code"], -32601);
-    // A second real server request proves refusal did not poison the transport.
-    send(
-        &mut peer,
-        json!({"id":"still-live","method":"fixture/unsupported","params":{}}),
-    )
-    .await;
-    let frame = request(&mut peer).await;
-    assert_eq!(frame["id"], "still-live");
-    assert_eq!(fx.frame().await, before);
-    fx.harness.shutdown().await.unwrap();
+    let write_db = (fx.original.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let writer = write_session.begin().await.unwrap();
+        let entered = tokio::sync::Notify::new();
+        let gate = PreSendGate::new(|| {
+            Box::pin(async {
+                entered.notify_one();
+                admission
+                    .revalidate()
+                    .await
+                    .map_err(|error| provider::send_boundary::SendRefusal(error.to_string()))
+            })
+        });
+        let selection = provider::TurnModelSelection::inherit();
+        let attempt = client.turn_start_attempt_gated(
+            "thread",
+            vec![],
+            &selection,
+            TurnApprovals::Unchanged,
+            None,
+            &gate,
+        );
+        tokio::pin!(attempt);
+        tokio::select! {
+            _ = entered.notified() => {}
+            result = &mut attempt => panic!("admission did not wait for the real writer: {result:?}"),
+        }
+        send(
+            &mut peer,
+            json!({"id":"needs-reply","method":"fixture/unsupported","params":{}}),
+        )
+        .await;
+        let (failure, reply) = tokio::join!(
+            async { tokio::time::timeout(Duration::from_secs(4), &mut attempt).await },
+            async { tokio::time::timeout(Duration::from_secs(4), peer.next()).await },
+        );
+        // Release the actual writer even on expected-red timeout.
+        writer.rollback().await.unwrap();
+        let failure = failure
+            .expect("a blocked admission must release the sink before replies time out")
+            .unwrap_err();
+        assert_eq!(failure.crossing(), RequestCrossing::BeforeSend);
+        let frame = reply
+            .expect("the shared reply writer must acquire the sink")
+            .unwrap()
+            .unwrap();
+        let frame: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(frame["id"], "needs-reply");
+        assert_eq!(frame["error"]["code"], -32601);
+        // A second real server request proves refusal did not poison the transport.
+        send(
+            &mut peer,
+            json!({"id":"still-live","method":"fixture/unsupported","params":{}}),
+        )
+        .await;
+        let frame = request(&mut peer).await;
+        assert_eq!(frame["id"], "still-live");
+        assert_eq!(fx.frame().await, before);
+        fx.harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -415,81 +438,90 @@ async fn canonical_selection_read_preserves_appended_pending_while_issuing_origi
         .unwrap();
     let config = request(&mut peer).await;
     assert_eq!(config["method"], "config/read");
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    let appended = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "later pending, with no observed execution source".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    config_reply(&mut peer, &config).await;
-    let page = request(&mut peer).await;
-    assert_eq!(page["method"], "model/list");
-    send(&mut peer, catalog_reply(&page, None)).await;
-    let start = request(&mut peer).await;
-    assert_eq!(start["method"], "turn/start");
-    let input = start["params"]["input"].to_string();
-    assert!(input.contains("canonical scheduler human body"));
-    assert!(!input.contains("later pending"));
-    let crossing = fx.frame().await;
-    assert_eq!(crossing.canonical_inputs.pending.len(), 1);
-    assert_eq!(
-        crossing.canonical_inputs.pending[0]
-            .accepted_input_ref()
-            .unwrap(),
-        appended.input_ref
-    );
-    let thread = start["params"]["threadId"].as_str().unwrap();
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/started",
-        json!({"id":"original-with-appended-tail","status":"inProgress"}),
-    )
-    .await;
-    send(
-        &mut peer,
-        json!({"id":start["id"],"result":{"turn":{"id":"original-with-appended-tail"}}}),
-    )
-    .await;
-    fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/completed",
-        json!({"id":"original-with-appended-tail","status":"completed"}),
-    )
-    .await;
-    let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    assert_eq!(
-        done.canonical_inputs.pending,
-        crossing.canonical_inputs.pending
-    );
-    let mut stopping = tokio::spawn({
-        let handle = fx.harness.clone();
-        async move { handle.shutdown().await }
-    });
-    tokio::select! {
-        result=&mut stopping => result.unwrap().unwrap(),
-        call=request(&mut peer) => {
-            assert_eq!(call["method"],"turn/interrupt");
-            send(&mut peer,json!({"id":call["id"],"result":{}})).await;
-            stopping.await.unwrap().unwrap();
-        }
-    }
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            let mut carrier = current_input_carrier_tx(
+                                &mut tx,
+                                fx.harness.inner.card_id.as_str(),
+                                &fx.harness.inner.worker_session_id,
+                            )
+                            .await
+                            .unwrap();
+                            let appended = crate::conversation_inputs::accept_human_tx(
+                                &mut tx,
+                                &fx.source.current_principal().unwrap(),
+                                &mut carrier,
+                                HumanPayload {
+                                    text: "later pending, with no observed execution source".into(),
+                                    bound_attachments: vec![],
+                                },
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                            config_reply(&mut peer, &config).await;
+                            let page = request(&mut peer).await;
+                            assert_eq!(page["method"], "model/list");
+                            send(&mut peer, catalog_reply(&page, None)).await;
+                            let start = request(&mut peer).await;
+                            assert_eq!(start["method"], "turn/start");
+                            let input = start["params"]["input"].to_string();
+                            assert!(input.contains("canonical scheduler human body"));
+                            assert!(!input.contains("later pending"));
+                            let crossing = fx.frame().await;
+                            assert_eq!(crossing.canonical_inputs.pending.len(), 1);
+                            assert_eq!(
+                                crossing.canonical_inputs.pending[0]
+                                    .accepted_input_ref()
+                                    .unwrap(),
+                                appended.input_ref
+                            );
+                            let thread = start["params"]["threadId"].as_str().unwrap();
+                            notify_thread(
+                                &fx.daemon,
+                                &mut peer,
+                                thread,
+                                "turn/started",
+                                json!({"id":"original-with-appended-tail","status":"inProgress"}),
+                            )
+                            .await;
+                            send(
+                    &mut peer,
+                    json!({"id":start["id"],"result":{"turn":{"id":"original-with-appended-tail"}}}),
+                )
+                .await;
+                            fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                            notify_thread(
+                                &fx.daemon,
+                                &mut peer,
+                                thread,
+                                "turn/completed",
+                                json!({"id":"original-with-appended-tail","status":"completed"}),
+                            )
+                            .await;
+                            let done = fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+                            assert_eq!(
+                                done.canonical_inputs.pending,
+                                crossing.canonical_inputs.pending
+                            );
+                            let mut stopping = tokio::spawn({
+                                let handle = fx.harness.clone();
+                                async move { handle.shutdown().await }
+                            });
+                            tokio::select! {
+                                result=&mut stopping => result.unwrap().unwrap(),
+                                call=request(&mut peer) => {
+                                    assert_eq!(call["method"],"turn/interrupt");
+                                    send(&mut peer,json!({"id":call["id"],"result":{}})).await;
+                                    stopping.await.unwrap().unwrap();
+                                }
+                            }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

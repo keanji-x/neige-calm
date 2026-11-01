@@ -26,10 +26,13 @@ async fn context_usage_replace_refuses_nonregenerable_context_even_with_a_user_m
         let mut segments: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(segments[0]["presentation"], "system_planner_context_usage");
         segments[0] = context;
-        sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
-            .bind(segments.to_string())
-            .bind(id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
+                    .bind(segments.to_string())
+                    .bind(id),
+            )
             .await
             .unwrap();
         assert_refused_unchanged(&boot, TURN_B, "system update").await;
@@ -51,10 +54,13 @@ async fn replace_keeps_legacy_all_user_rows_replaceable() {
             .filter(|segment| segment["presentation"] == "user")
             .collect();
         assert!(!segments.is_empty());
-        sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
-            .bind(serde_json::to_string(&segments).unwrap())
-            .bind(id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
+                    .bind(serde_json::to_string(&segments).unwrap())
+                    .bind(id),
+            )
             .await
             .unwrap();
     }
@@ -82,10 +88,13 @@ async fn context_usage_and_budget_never_count_as_a_user_message() {
             })
             .collect();
         assert_eq!(segments.len(), 1);
-        sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
-            .bind(serde_json::to_string(&segments).unwrap())
-            .bind(id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE harness_items SET input_segments=?1 WHERE id=?2")
+                    .bind(serde_json::to_string(&segments).unwrap())
+                    .bind(id),
+            )
             .await
             .unwrap();
     }

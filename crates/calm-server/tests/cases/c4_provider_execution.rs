@@ -317,14 +317,15 @@ touch ready; exec sleep 120"#,
     };
     wait(async || rig.dir.path().join("ws/ready").exists()).await;
     // Keep settlement unavailable until after both production admission paths run.
-    sqlx::query(
-        "CREATE TRIGGER c4_delay_settlement
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER c4_delay_settlement
          BEFORE UPDATE OF settled_at_ms ON workspace_executions
          BEGIN SELECT RAISE(FAIL, 'c4 settlement paused'); END",
-    )
-    .execute(rig.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let old = claim(&rig).await.unwrap();
     let id = owner::execution_id(old.record()).unwrap();
     task.abort();
@@ -360,8 +361,9 @@ touch ready; exec sleep 120"#,
             .unwrap()
             .is_none()
     );
-    sqlx::query("DROP TRIGGER c4_delay_settlement")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER c4_delay_settlement"))
         .await
         .unwrap();
     wait(async || {
@@ -460,13 +462,17 @@ async fn c4_inventory_err_never_drives_stop_retire_or_clear() {
     let (old, guard) = admit(&rig).await;
     let id = owner::execution_id(old.record()).unwrap();
     drop(guard);
-    sqlx::query("DROP TRIGGER workspace_executions_immutable")
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER workspace_executions_immutable"))
         .await
         .unwrap();
-    sqlx::query("UPDATE workspace_executions SET intent_json='{}' WHERE execution_id=?")
-        .bind(id.as_str())
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE workspace_executions SET intent_json='{}' WHERE execution_id=?")
+                .bind(id.as_str()),
+        )
         .await
         .unwrap();
     sweep(&rig).await;
@@ -481,9 +487,12 @@ async fn c4_orphan_execution_without_record_is_retired() {
     let id = owner::execution_id(old.record()).unwrap();
     drop(guard);
     // An owner deletion's record loss, with a still-classified consumer execution.
-    sqlx::query("UPDATE worker_sessions SET provider_execution_json=NULL WHERE id=?")
-        .bind(&rig.worker_session_id)
-        .execute(rig.repo.pool())
+    (rig.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider_execution_json=NULL WHERE id=?")
+                .bind(&rig.worker_session_id),
+        )
         .await
         .unwrap();
     sweep(&rig).await;

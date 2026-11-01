@@ -106,64 +106,74 @@ async fn neutralize(fx: &Fixture) {
     // Fixture starts with an unattempted Initial claim. Retire it through the
     // repository's confirmed non-delivery path before any loop tick can resume
     // it without a live source and leave an unrelated issuance block behind.
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let attempt = InputAttempt {
+                    submission_id: fx.submission.clone(),
+                    attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
+                };
+                let correlation = InputCorrelationFact {
+                    provider: fx.provider.clone(),
+                    thread_id: fx.owner.thread.clone(),
+                    native_session_id: None,
+                    local_turn_id: None,
+                    native_turn_id: None,
+                    rpc_request_id: None,
+                };
+                begin_input_attempt_tx(
+                    &mut tx,
+                    &mut carrier,
+                    attempt.clone(),
+                    correlation.clone(),
+                    FrozenInputInvocation {
+                        model: None,
+                        effort: None,
+                        permission: PlannerPermissionMode::Never,
+                    },
+                )
+                .await
+                .unwrap();
+                record_input_attempt_fact_tx(
+                    &mut tx,
+                    &mut carrier,
+                    InputAttemptFact {
+                        attempt: attempt.clone(),
+                        correlation,
+                        delivery: InputDeliveryFact::NotDispatched {
+                            basis: "unused race fixture claim".into(),
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+                release_submission_tx(&mut tx, &mut carrier, &attempt)
+                    .await
+                    .unwrap();
+                // Keep startup neutral, without the released pending input. Compacting must
+                // be installed only after startup: load_current would wedge it on restart
+                // and bypass the loop observation seam this race exercises.
+                let mut neutral = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                neutral.header.last_thread_id = Some(fx.owner.thread.clone());
+                crate::db::sqlite::session_set_handle_state_tx(
+                    &mut tx,
+                    &fx.owner.worker,
+                    Some(serde_json::to_value(neutral).unwrap()),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let attempt = InputAttempt {
-        submission_id: fx.submission.clone(),
-        attempt_id: InputAttemptId::parse(&crate::model::new_id()).unwrap(),
-    };
-    let correlation = InputCorrelationFact {
-        provider: fx.provider.clone(),
-        thread_id: fx.owner.thread.clone(),
-        native_session_id: None,
-        local_turn_id: None,
-        native_turn_id: None,
-        rpc_request_id: None,
-    };
-    begin_input_attempt_tx(
-        &mut tx,
-        &mut carrier,
-        attempt.clone(),
-        correlation.clone(),
-        FrozenInputInvocation {
-            model: None,
-            effort: None,
-            permission: PlannerPermissionMode::Never,
-        },
-    )
-    .await
-    .unwrap();
-    record_input_attempt_fact_tx(
-        &mut tx,
-        &mut carrier,
-        InputAttemptFact {
-            attempt: attempt.clone(),
-            correlation,
-            delivery: InputDeliveryFact::NotDispatched {
-                basis: "unused race fixture claim".into(),
-            },
-        },
-    )
-    .await
-    .unwrap();
-    release_submission_tx(&mut tx, &mut carrier, &attempt)
-        .await
-        .unwrap();
-    // Keep startup neutral, without the released pending input. Compacting must
-    // be installed only after startup: load_current would wedge it on restart
-    // and bypass the loop observation seam this race exercises.
-    let mut neutral = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-    neutral.header.last_thread_id = Some(fx.owner.thread.clone());
-    crate::db::sqlite::session_set_handle_state_tx(
-        &mut tx,
-        &fx.owner.worker,
-        Some(serde_json::to_value(neutral).unwrap()),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn frame(fx: &Fixture) -> Value {
@@ -180,11 +190,24 @@ async fn frame(fx: &Fixture) -> Value {
 }
 
 async fn store(fx: &Fixture, frame: Value) {
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    crate::db::sqlite::session_set_handle_state_tx(&mut tx, &fx.owner.worker, Some(frame))
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::db::sqlite::session_set_handle_state_tx(
+                    &mut tx,
+                    &fx.owner.worker,
+                    Some(frame),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]

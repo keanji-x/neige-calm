@@ -51,61 +51,74 @@ async fn canonical_grok_declined_request_ends_failed_and_settles_its_receipt() {
     );
     fx.wait_end().await;
     assert!(fx.complete().await.is_none(), "END is consumed once");
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            let carrier =
+                                current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                                    .await
+                                    .unwrap();
+                            assert!(carrier.checkpoint().active.is_none());
+                            // The turn ended: neither interrupted nor wedged, and the next input is admitted.
+                            assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::TurnCompleted);
+                            tx.commit().await.unwrap();
+                            // One terminal row, failed, carrying the reason the person reads today: the driver records
+                            // Neige's decline before END, and END does not replace an existing row. Whether ACP canonical
+                            // execution should apply `canonical_diagnostic` to it instead is tracked in #3091.
+                            let ended: Vec<String> = sqlx::query_scalar(
+                    "SELECT params FROM harness_items WHERE worker_session_id=?1 AND method='turn/completed'",
+                )
+                .bind(&fx.owner.worker)
+                .fetch_all(fx.owner.repo.pool())
+                .await
+                .unwrap();
+                            assert_eq!(ended.len(), 1, "{ended:?}");
+                            let ended: serde_json::Value = serde_json::from_str(&ended[0]).unwrap();
+                            assert_eq!(ended["status"], "failed", "{ended}");
+                            assert_eq!(ended["error"]["message"], DECLINED, "{ended}");
+                            assert!(
+                                !crate::db::sqlite::acp_submission_unresolved(
+                                    fx.owner.repo.pool(),
+                                    &fx.owner.worker
+                                )
+                                .await
+                                .unwrap(),
+                                "a declined turn leaves no unresolved receipt"
+                            );
+                            std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
+                            let successor = fx.claim_successor().await;
+                            fx.dispatch_submission(&successor).await;
+                            fx.wait_idle().await;
+                            fx.wait_end().await;
+                            let (_, _, state, outcome) = fx.receipt_bytes(&successor).await;
+                            assert_eq!(state, "completed");
+                            assert_eq!(
+                                serde_json::from_str::<serde_json::Value>(&outcome.unwrap()).unwrap()["status"],
+                                "completed"
+                            );
+                            let requests = fx.requests();
+                            let prompts: Vec<_> = requests
+                                .iter()
+                                .filter(|r| r["method"] == "session/prompt")
+                                .collect();
+                            assert_eq!(prompts.len(), 2);
+                            let loaded: Vec<_> = requests
+                                .iter()
+                                .filter(|r| r["method"] == "session/load")
+                                .collect();
+                            assert_eq!(loaded.len(), 1);
+                            assert_eq!(
+                                loaded[0]["params"]["sessionId"],
+                                prompts[0]["params"]["sessionId"]
+                            );
+                            fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert!(carrier.checkpoint().active.is_none());
-    // The turn ended: neither interrupted nor wedged, and the next input is admitted.
-    assert_eq!(carrier.phase().unwrap(), HarnessPhaseTag::TurnCompleted);
-    tx.commit().await.unwrap();
-    // One terminal row, failed, carrying the reason the person reads today: the driver records
-    // Neige's decline before END, and END does not replace an existing row. Whether ACP canonical
-    // execution should apply `canonical_diagnostic` to it instead is tracked in #3091.
-    let ended: Vec<String> = sqlx::query_scalar(
-        "SELECT params FROM harness_items WHERE worker_session_id=?1 AND method='turn/completed'",
-    )
-    .bind(&fx.owner.worker)
-    .fetch_all(fx.owner.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(ended.len(), 1, "{ended:?}");
-    let ended: serde_json::Value = serde_json::from_str(&ended[0]).unwrap();
-    assert_eq!(ended["status"], "failed", "{ended}");
-    assert_eq!(ended["error"]["message"], DECLINED, "{ended}");
-    assert!(
-        !crate::db::sqlite::acp_submission_unresolved(fx.owner.repo.pool(), &fx.owner.worker)
-            .await
-            .unwrap(),
-        "a declined turn leaves no unresolved receipt"
-    );
-    std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
-    let successor = fx.claim_successor().await;
-    fx.dispatch_submission(&successor).await;
-    fx.wait_idle().await;
-    fx.wait_end().await;
-    let (_, _, state, outcome) = fx.receipt_bytes(&successor).await;
-    assert_eq!(state, "completed");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&outcome.unwrap()).unwrap()["status"],
-        "completed"
-    );
-    let requests = fx.requests();
-    let prompts: Vec<_> = requests
-        .iter()
-        .filter(|r| r["method"] == "session/prompt")
-        .collect();
-    assert_eq!(prompts.len(), 2);
-    let loaded: Vec<_> = requests
-        .iter()
-        .filter(|r| r["method"] == "session/load")
-        .collect();
-    assert_eq!(loaded.len(), 1);
-    assert_eq!(
-        loaded[0]["params"]["sessionId"],
-        prompts[0]["params"]["sessionId"]
-    );
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 /// A Grok Planner stored before canonical input keeps its historical entry: the prompt runs on

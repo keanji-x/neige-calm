@@ -60,141 +60,144 @@ async fn queued_task_change(replace_session: bool) {
         .await
         .unwrap();
     let roles = CardRoleCache::new();
-    let mut tx = sql.pool().begin().await.unwrap();
-    card_with_codex_create_tx(
-        &mut tx,
-        planner.clone(),
-        &planner_session,
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "/tmp".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        &roles,
-        theme,
-    )
-    .await
-    .unwrap();
-    let (_, terminal) = card_with_terminal_create_tx(
-        &mut tx,
-        card.clone(),
-        &session,
-        Some(&op),
-        track.id.clone(),
-        None,
-        None,
-        "/bin/sh".into(),
-        "/tmp".into(),
-        json!({}),
-        CardRole::Worker,
-        true,
-        &roles,
-        theme,
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    sql.session_projection_set_status_for_card(&card, WorkerSessionState::Running)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'terminal','test','[]','running',?4,'user',?5,?5)")
-        .bind(&task).bind(track.id.as_str()).bind(&key).bind(&card).bind(now_ms()).execute(sql.pool()).await.unwrap();
-    let identity = ToolCallIdentity {
-        card_id: planner,
-        role: CardRole::Planner,
-        provider: AgentProvider::Codex,
-        session_id: planner_session,
-        track_id: Some(track.id.to_string()),
-        area_id: area.id.to_string(),
-        thread_id: "card-bound".into(),
-    };
-    let binding = Binding {
-        terminal_id: terminal.id.clone(),
-        card_id: card.clone(),
-        worker_session_id: session.clone(),
-        task: Some(TaskBinding {
-            attempt_id: task.clone(),
-            task_key: key,
-        }),
-    };
-    // This is the same factory used by real Planner clients, not a test policy.
-    let scope = TerminalInteraction::bound_scope(sql.clone(), &identity, &binding);
-    assert!(scope.allowed().await);
-    assert!(scope.control_allowed().await);
-    let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
-    let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
-    let (events, _) = broadcast::channel(32);
-    let (control, mut queue) = mpsc::unbounded_channel();
-    let mut client = scoped_client(barrier, registry, control.clone(), events, scope.clone()).await;
-    client
-        .input
-        .send(ClientMsg::Input {
-            data: b"revoked".to_vec(),
-            input_seq: 1,
-        })
-        .await
-        .unwrap();
-    let queued = tokio::time::timeout(Duration::from_secs(2), queue.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(&queued, SupervisorControl::Write(_)));
-    if replace_session {
-        let mut tx = sql.pool().begin().await.unwrap();
-        crate::db::sqlite::session_supersede_and_start_tx(
+    let write_db = (sql.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        card_with_codex_create_tx(
             &mut tx,
+            planner.clone(),
+            &planner_session,
+            None,
+            track.id.clone(),
+            None,
+            None,
+            "/tmp".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            CardRole::Planner,
+            false,
+            &roles,
+            theme,
+        )
+        .await
+        .unwrap();
+        let (_, terminal) = card_with_terminal_create_tx(
+            &mut tx,
+            card.clone(),
             &session,
-            WorkerSessionInit {
-                id: new_id(),
-                card_id: card,
-                kind: WorkerSessionKind::Terminal,
-                agent_provider: None,
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(terminal.id),
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: Some(op),
-                now_ms: now_ms(),
-            },
+            Some(&op),
+            track.id.clone(),
+            None,
+            None,
+            "/bin/sh".into(),
+            "/tmp".into(),
+            json!({}),
+            CardRole::Worker,
+            true,
+            &roles,
+            theme,
+            false,
+            calm_types::card_presentation::CardCreationSource::Manual,
         )
         .await
         .unwrap();
         tx.commit().await.unwrap();
-    } else {
-        sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
-            .bind(&task)
-            .bind(now_ms())
-            .execute(sql.pool())
+        sql.session_projection_set_status_for_card(&card, WorkerSessionState::Running)
             .await
             .unwrap();
-        // Completion retains read access; using observe scope at write time is wrong.
+        (sql.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'terminal','test','[]','running',?4,'user',?5,?5)")
+            .bind(&task).bind(track.id.as_str()).bind(&key).bind(&card).bind(now_ms())).await.unwrap();
+        let identity = ToolCallIdentity {
+            card_id: planner,
+            role: CardRole::Planner,
+            provider: AgentProvider::Codex,
+            session_id: planner_session,
+            track_id: Some(track.id.to_string()),
+            area_id: area.id.to_string(),
+            thread_id: "card-bound".into(),
+        };
+        let binding = Binding {
+            terminal_id: terminal.id.clone(),
+            card_id: card.clone(),
+            worker_session_id: session.clone(),
+            task: Some(TaskBinding {
+                attempt_id: task.clone(),
+                task_key: key,
+            }),
+        };
+        // This is the same factory used by real Planner clients, not a test policy.
+        let scope = TerminalInteraction::bound_scope(sql.clone(), &identity, &binding);
         assert!(scope.allowed().await);
-    }
-    assert!(!scope.control_allowed().await);
-    control.send(queued).unwrap();
-    let (writer, mut peer) = UnixStream::pair().unwrap();
-    let writer_task = spawn_supervisor_control_writer(writer, "term:queued-task".into(), queue);
-    let result = tokio::time::timeout(Duration::from_secs(2),async {
-        loop {
-            tokio::select! {
-                sent = read_frame::<ControlMsg,_>(&mut peer) => return Err(format!("revoked task input reached supervisor: {sent:?}")),
-                message = client.output.recv() => if matches!(message,Some(DaemonMsg::ProtocolError {code:calm_session::ProtocolErrorCode::NotOwner,..})) { return Ok(()); },
-            }
+        assert!(scope.control_allowed().await);
+        let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
+        let registry = Arc::new(Mutex::new(OwnerRegistry::new()));
+        let (events, _) = broadcast::channel(32);
+        let (control, mut queue) = mpsc::unbounded_channel();
+        let mut client = scoped_client(barrier, registry, control.clone(), events, scope.clone()).await;
+        client
+            .input
+            .send(ClientMsg::Input {
+                data: b"revoked".to_vec(),
+                input_seq: 1,
+            })
+            .await
+            .unwrap();
+        let queued = tokio::time::timeout(Duration::from_secs(2), queue.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&queued, SupervisorControl::Write(_)));
+        if replace_session {
+            let mut tx = write_session.begin().await.unwrap();
+            crate::db::sqlite::session_supersede_and_start_tx(
+                &mut tx,
+                &session,
+                WorkerSessionInit {
+                    id: new_id(),
+                    card_id: card,
+                    kind: WorkerSessionKind::Terminal,
+                    agent_provider: None,
+                    status: WorkerSessionState::Running,
+                    terminal_run_id: Some(terminal.id),
+                    thread_id: None,
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    spawn_op_id: Some(op),
+                    now_ms: now_ms(),
+                },
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        } else {
+            (sql.db()).writer().execute(sqlx::query("UPDATE tasks SET status='done',finished_at_ms=?2 WHERE id=?1")
+                .bind(&task)
+                .bind(now_ms()))
+                .await
+                .unwrap();
+            // Completion retains read access; using observe scope at write time is wrong.
+            assert!(scope.allowed().await);
         }
-    }).await;
-    writer_task.abort();
-    let _ = writer_task.await;
-    assert!(matches!(result, Ok(Ok(()))), "{result:?}");
+        assert!(!scope.control_allowed().await);
+        control.send(queued).unwrap();
+        let (writer, mut peer) = UnixStream::pair().unwrap();
+        let writer_task = spawn_supervisor_control_writer(writer, "term:queued-task".into(), queue);
+        let result = tokio::time::timeout(Duration::from_secs(2),async {
+            loop {
+                tokio::select! {
+                    sent = read_frame::<ControlMsg,_>(&mut peer) => return Err(format!("revoked task input reached supervisor: {sent:?}")),
+                    message = client.output.recv() => if matches!(message,Some(DaemonMsg::ProtocolError {code:calm_session::ProtocolErrorCode::NotOwner,..})) { return Ok(()); },
+                }
+            }
+        }).await;
+        writer_task.abort();
+        let _ = writer_task.await;
+        assert!(matches!(result, Ok(Ok(()))), "{result:?}");
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

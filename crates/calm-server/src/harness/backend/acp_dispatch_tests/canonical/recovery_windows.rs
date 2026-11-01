@@ -45,9 +45,9 @@ async fn snapshot(
     name: &str,
 ) -> Owner {
     let path = dir.path().join(name);
-    sqlx::query("VACUUM INTO ?1")
-        .bind(path.to_str().unwrap())
-        .execute(owner.repo.pool())
+    (owner.repo.db())
+        .writer()
+        .execute(sqlx::query("VACUUM INTO ?1").bind(path.to_str().unwrap()))
         .await
         .unwrap();
     reopen(owner, format!("sqlite:{}", path.display())).await
@@ -92,10 +92,9 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
             fail_terminal_outcome(fx.owner.repo.as_ref()).await;
         }
         if window == "lost-report" {
-            sqlx::query("CREATE TRIGGER refuse_report BEFORE UPDATE OF handle_state_json ON worker_sessions
+            (fx.owner.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_report BEFORE UPDATE OF handle_state_json ON worker_sessions
                 WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].delivery.kind')='unknown'
-                BEGIN SELECT RAISE(ABORT,'lost canonical report'); END")
-                .execute(fx.owner.repo.pool()).await.unwrap();
+                BEGIN SELECT RAISE(ABORT,'lost canonical report'); END")).await.unwrap();
             let error = fx
                 .dispatch()
                 .await
@@ -133,90 +132,103 @@ async fn canonical_acp_completed_crash_recovery_preserves_receipt_and_projection
                 .count(),
             usize::from(window == "projected")
         );
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let carrier =
+                        current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    assert_eq!(
+                        matches!(
+                            carrier
+                                .checkpoint()
+                                .attempt(&fx.submission)
+                                .unwrap()
+                                .delivery,
+                            InputDeliveryFact::CrossingUnknown
+                        ),
+                        window == "lost-report"
+                    );
+                    tx.commit().await.unwrap();
+                    let mut owner = snapshot(&fx.owner, &fx.dir, "completed-crash.db").await;
+                    fx.session.shutdown().await.unwrap();
+                    if window == "lost-report" {
+                        (owner.repo.db())
+                            .writer()
+                            .execute(sqlx::query("DROP TRIGGER refuse_report"))
+                            .await
+                            .unwrap();
+                    }
+                    if window == "failed-terminal" {
+                        let (backend, session, _held) = session_for(&owner, &fx.dir);
+                        let before = rows(&owner).await;
+                        let error = backend.recover_retained().await.unwrap_err();
+                        assert!(error.to_string().contains("outcome failed"), "{error}");
+                        assert!(
+                            !complete(&owner, &backend).await,
+                            "partial recovery installed a certificate"
+                        );
+                        let restored = rows(&owner).await;
+                        preserves_complete(&before, &restored);
+                        assert_eq!(
+                            restored, before,
+                            "failed recovery must not commit receipt items"
+                        );
+                        assert!(!restored.iter().any(|row| row.1 == "turn/completed"));
+                        assert_eq!(receipt(&owner).await, durable);
+                        // Crash again after terminal recording failed; items remain in the receipt.
+                        owner = snapshot(&owner, &fx.dir, "recovery-crash.db").await;
+                        session.shutdown().await.unwrap();
+                    }
+                    if window != "projected" {
+                        (owner.repo.db())
+                            .writer()
+                            .execute(sqlx::query("DROP TRIGGER fail_outcome"))
+                            .await
+                            .unwrap();
+                    }
+                    let before = rows(&owner).await;
+                    assert_eq!(receipt(&owner).await, durable);
+                    let prompts = fx.prompts();
+                    let (backend, session, _held) = session_for(&owner, &fx.dir);
+                    backend.recover_retained().await.unwrap();
+                    assert!(complete(&owner, &backend).await, "missing END at {window}");
+                    assert!(!complete(&owner, &backend).await);
+                    let recovered = rows(&owner).await;
+                    preserves_complete(&initial_rows, &recovered);
+                    preserves_complete(&before, &recovered);
+                    one_terminal(&recovered);
+                    assert_eq!(receipt(&owner).await, durable);
+                    let outcome: serde_json::Value =
+                        serde_json::from_str(durable.2.as_deref().unwrap()).unwrap();
+                    let items = outcome["items"].as_array().unwrap();
+                    assert!(!items.is_empty());
+                    for item in items {
+                        assert!(recovered.iter().any(|(_, method, params)| method
+                            == item["method"].as_str().unwrap()
+                            && serde_json::from_str::<serde_json::Value>(params).unwrap()
+                                == item["params"]));
+                    }
+                    session.shutdown().await.unwrap();
+                    let owner = reopen(&owner, owner.db_url.clone()).await;
+                    let (backend, session, _held) = session_for(&owner, &fx.dir);
+                    backend.recover_retained().await.unwrap();
+                    assert!(
+                        !complete(&owner, &backend).await,
+                        "duplicate END at {window}"
+                    );
+                    assert_eq!(rows(&owner).await, recovered);
+                    assert_eq!(receipt(&owner).await, durable);
+                    assert_eq!(fx.prompts(), prompts);
+                    session.shutdown().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        assert_eq!(
-            matches!(
-                carrier
-                    .checkpoint()
-                    .attempt(&fx.submission)
-                    .unwrap()
-                    .delivery,
-                InputDeliveryFact::CrossingUnknown
-            ),
-            window == "lost-report"
-        );
-        tx.commit().await.unwrap();
-        let mut owner = snapshot(&fx.owner, &fx.dir, "completed-crash.db").await;
-        fx.session.shutdown().await.unwrap();
-        if window == "lost-report" {
-            sqlx::query("DROP TRIGGER refuse_report")
-                .execute(owner.repo.pool())
-                .await
-                .unwrap();
-        }
-        if window == "failed-terminal" {
-            let (backend, session, _held) = session_for(&owner, &fx.dir);
-            let before = rows(&owner).await;
-            let error = backend.recover_retained().await.unwrap_err();
-            assert!(error.to_string().contains("outcome failed"), "{error}");
-            assert!(
-                !complete(&owner, &backend).await,
-                "partial recovery installed a certificate"
-            );
-            let restored = rows(&owner).await;
-            preserves_complete(&before, &restored);
-            assert_eq!(
-                restored, before,
-                "failed recovery must not commit receipt items"
-            );
-            assert!(!restored.iter().any(|row| row.1 == "turn/completed"));
-            assert_eq!(receipt(&owner).await, durable);
-            // Crash again after terminal recording failed; items remain in the receipt.
-            owner = snapshot(&owner, &fx.dir, "recovery-crash.db").await;
-            session.shutdown().await.unwrap();
-        }
-        if window != "projected" {
-            sqlx::query("DROP TRIGGER fail_outcome")
-                .execute(owner.repo.pool())
-                .await
-                .unwrap();
-        }
-        let before = rows(&owner).await;
-        assert_eq!(receipt(&owner).await, durable);
-        let prompts = fx.prompts();
-        let (backend, session, _held) = session_for(&owner, &fx.dir);
-        backend.recover_retained().await.unwrap();
-        assert!(complete(&owner, &backend).await, "missing END at {window}");
-        assert!(!complete(&owner, &backend).await);
-        let recovered = rows(&owner).await;
-        preserves_complete(&initial_rows, &recovered);
-        preserves_complete(&before, &recovered);
-        one_terminal(&recovered);
-        assert_eq!(receipt(&owner).await, durable);
-        let outcome: serde_json::Value =
-            serde_json::from_str(durable.2.as_deref().unwrap()).unwrap();
-        let items = outcome["items"].as_array().unwrap();
-        assert!(!items.is_empty());
-        for item in items {
-            assert!(recovered.iter().any(|(_, method, params)| method
-                == item["method"].as_str().unwrap()
-                && serde_json::from_str::<serde_json::Value>(params).unwrap() == item["params"]));
-        }
-        session.shutdown().await.unwrap();
-        let owner = reopen(&owner, owner.db_url.clone()).await;
-        let (backend, session, _held) = session_for(&owner, &fx.dir);
-        backend.recover_retained().await.unwrap();
-        assert!(
-            !complete(&owner, &backend).await,
-            "duplicate END at {window}"
-        );
-        assert_eq!(rows(&owner).await, recovered);
-        assert_eq!(receipt(&owner).await, durable);
-        assert_eq!(fx.prompts(), prompts);
-        session.shutdown().await.unwrap();
+            .expect("independent write operation")
     }
 }
 
@@ -228,83 +240,95 @@ async fn canonical_acp_sending_unknown_crash_recovery_after_authenticated_keep_s
         if scenario == "lost" {
             fx.wait_idle().await;
         }
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-            .await
-            .unwrap();
-        let attempt = carrier
-            .checkpoint()
-            .attempt(&fx.submission)
-            .unwrap()
-            .clone();
-        tx.commit().await.unwrap();
-        let request = KeepConversationInputRequest::from(&RetryConversationInputRequest {
-            carrier_id: fx.owner.worker.clone(),
-            submission_id: fx.submission.as_str().into(),
-            attempt_id: attempt.attempt.attempt_id.as_str().into(),
-            revision: attempt.revision.to_string(),
-        });
-        let kept = crate::conversation_inputs::resolution::keep(
-            fx.owner.repo.as_ref(),
-            fx.registry.clone(),
-            fx.source.clone(),
-            fx.owner.card.clone(),
-            "keep-before-crash".into(),
-            request,
-        )
-        .await
-        .unwrap()
-        .0;
-        assert!(kept.waiting_for_settlement);
-        let durable = receipt(&fx.owner).await;
-        assert_eq!(
-            durable.0,
-            if scenario == "hold" {
-                "sending"
-            } else {
-                "unknown"
-            }
-        );
-        let before = rows(&fx.owner).await;
-        let owner = snapshot(&fx.owner, &fx.dir, "keep-crash.db").await;
-        fx.session.shutdown().await.unwrap();
-        let prompts = fx.prompts();
-        for _ in 0..2 {
-            let owner = reopen(&owner, owner.db_url.clone()).await;
-            let (backend, session, _held) = session_for(&owner, &fx.dir);
-            backend.recover_retained().await.unwrap();
-            assert!(!complete(&owner, &backend).await);
-            let admission = crate::harness::native_admission::NativePromptAdmission::new(
-                || Ok(()),
-                || Box::pin(async { Ok(()) }),
-            );
-            assert!(matches!(
-                backend
-                    .settled_activity(&owner.card, &owner.thread, &admission)
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let carrier =
+                        current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    let attempt = carrier
+                        .checkpoint()
+                        .attempt(&fx.submission)
+                        .unwrap()
+                        .clone();
+                    tx.commit().await.unwrap();
+                    let request =
+                        KeepConversationInputRequest::from(&RetryConversationInputRequest {
+                            carrier_id: fx.owner.worker.clone(),
+                            submission_id: fx.submission.as_str().into(),
+                            attempt_id: attempt.attempt.attempt_id.as_str().into(),
+                            revision: attempt.revision.to_string(),
+                        });
+                    let kept = crate::conversation_inputs::resolution::keep(
+                        fx.owner.repo.as_ref(),
+                        fx.registry.clone(),
+                        fx.source.clone(),
+                        fx.owner.card.clone(),
+                        "keep-before-crash".into(),
+                        request,
+                    )
                     .await
-                    .unwrap(),
-                SettledActivity::Held
-            ));
-            assert!(
-                crate::harness::input_dispatch::initial(
-                    owner.repo.as_ref(),
-                    &fx.source,
-                    &owner.card,
-                    &owner.worker,
-                    &fx.submission,
-                    &backend,
-                    &TurnModelSelection::inherit(),
-                    PlannerPermissionMode::Never,
-                    &backend.handoff_for_test().await
-                )
-                .await
-                .is_err()
-            );
-            assert_eq!(receipt(&owner).await, durable);
-            assert_eq!(rows(&owner).await, before);
-            assert_eq!(fx.prompts(), prompts);
-            session.shutdown().await.unwrap();
-        }
+                    .unwrap()
+                    .0;
+                    assert!(kept.waiting_for_settlement);
+                    let durable = receipt(&fx.owner).await;
+                    assert_eq!(
+                        durable.0,
+                        if scenario == "hold" {
+                            "sending"
+                        } else {
+                            "unknown"
+                        }
+                    );
+                    let before = rows(&fx.owner).await;
+                    let owner = snapshot(&fx.owner, &fx.dir, "keep-crash.db").await;
+                    fx.session.shutdown().await.unwrap();
+                    let prompts = fx.prompts();
+                    for _ in 0..2 {
+                        let owner = reopen(&owner, owner.db_url.clone()).await;
+                        let (backend, session, _held) = session_for(&owner, &fx.dir);
+                        backend.recover_retained().await.unwrap();
+                        assert!(!complete(&owner, &backend).await);
+                        let admission =
+                            crate::harness::native_admission::NativePromptAdmission::new(
+                                || Ok(()),
+                                || Box::pin(async { Ok(()) }),
+                            );
+                        assert!(matches!(
+                            backend
+                                .settled_activity(&owner.card, &owner.thread, &admission)
+                                .await
+                                .unwrap(),
+                            SettledActivity::Held
+                        ));
+                        assert!(
+                            crate::harness::input_dispatch::initial(
+                                owner.repo.as_ref(),
+                                &fx.source,
+                                &owner.card,
+                                &owner.worker,
+                                &fx.submission,
+                                &backend,
+                                &TurnModelSelection::inherit(),
+                                PlannerPermissionMode::Never,
+                                &backend.handoff_for_test().await
+                            )
+                            .await
+                            .is_err()
+                        );
+                        assert_eq!(receipt(&owner).await, durable);
+                        assert_eq!(rows(&owner).await, before);
+                        assert_eq!(fx.prompts(), prompts);
+                        session.shutdown().await.unwrap();
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -321,8 +345,9 @@ async fn c4_acp_owner_retry_preserves_the_normal_drivers_known_receipt() {
             .unwrap()
             .expect("owner write failure keeps its claim");
     assert_eq!(receipt(&fx.owner).await.0, "completed");
-    sqlx::query("DROP TRIGGER fail_outcome")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_outcome"))
         .await
         .unwrap();
     fx.session

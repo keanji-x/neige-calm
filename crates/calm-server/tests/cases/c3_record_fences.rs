@@ -41,49 +41,65 @@ async fn c3_completion_rechecks_record_and_retires_in_same_tx() {
             .unwrap(),
         ParkedRecovery::LeaveParked
     ));
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    assert!(
-        ForgeActionAdapter::new()
-            .complete_owned_parked_tx(&mut tx, &stale)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let desired: String =
-        sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id=?")
-            .bind(c3_record(&stale)["execution_id"].as_str().unwrap())
-            .fetch_one(boot.repo.pool())
-            .await
-            .unwrap();
-    assert_ne!(desired, "retire");
-    use workspace_runtime::execution::{Desired, ExecutionId};
-    let latest = c3_record(&c3_op(&boot, &id).await);
-    let probe: ExecutionId =
-        serde_json::from_value(latest["probes"]["verdict"]["execution_id"].clone()).unwrap();
-    let engine = boot.spawn_ctx.execution.engine().unwrap();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let ticket = engine
-        .request(&mut tx, &probe, Desired::Stop)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    ForgeActionAdapter::new()
+                        .complete_owned_parked_tx(&mut tx, &stale)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                let desired: String = sqlx::query_scalar(
+                    "SELECT desired FROM workspace_executions WHERE execution_id=?",
+                )
+                .bind(c3_record(&stale)["execution_id"].as_str().unwrap())
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+                assert_ne!(desired, "retire");
+                use workspace_runtime::execution::{Desired, ExecutionId};
+                let latest = c3_record(&c3_op(&boot, &id).await);
+                let probe: ExecutionId =
+                    serde_json::from_value(latest["probes"]["verdict"]["execution_id"].clone())
+                        .unwrap();
+                let engine = boot.spawn_ctx.execution.engine().unwrap();
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = engine
+                    .request(&mut tx, &probe, Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&probe))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (boot.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?",
+                        )
+                        .bind(&id),
+                    )
+                    .await
+                    .unwrap();
+                boot.runtime.sweep_parked().await.unwrap();
+                assert!(matches!(
+                    c3_result(&boot, &id).await.outcome,
+                    OperationOutcome::Failed { .. }
+                ));
+                c3_all_retired(&boot, &id).await;
+                assert_eq!(c3_count(&boot, &id).await, 2);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&probe))
-        .await
-        .unwrap()
-        .unwrap();
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-    boot.runtime.sweep_parked().await.unwrap();
-    assert!(matches!(
-        c3_result(&boot, &id).await.outcome,
-        OperationOutcome::Failed { .. }
-    ));
-    c3_all_retired(&boot, &id).await;
-    assert_eq!(c3_count(&boot, &id).await, 2);
+        .expect("independent write operation")
 }
 
 #[tokio::test]

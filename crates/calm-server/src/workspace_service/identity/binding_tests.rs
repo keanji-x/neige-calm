@@ -95,27 +95,36 @@ async fn workspace_identity_repeated_selection_writer_preserves_registered_alias
         frozen_at: None,
         worktree: None,
     };
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                super::observe_for_task(repo.db(), current.id.as_str())
+                    .await
+                    .unwrap();
+                let before = binding(&repo, &current).await;
+                assert_ne!(before.0, binding(&repo, &first).await.0);
+                assert_eq!(before.1, "subdir");
+                let mut tx = write_session.begin().await.unwrap();
+                track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    binding(&repo, &current).await,
+                    before,
+                    "same selection must preserve normalized binding"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    super::observe_for_task(repo.db(), current.id.as_str())
-        .await
-        .unwrap();
-    let before = binding(&repo, &current).await;
-    assert_ne!(before.0, binding(&repo, &first).await.0);
-    assert_eq!(before.1, "subdir");
-    let mut tx = repo.pool().begin().await.unwrap();
-    track_workspace_write_tx(&mut tx, current.id.as_str(), &selected)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        binding(&repo, &current).await,
-        before,
-        "same selection must preserve normalized binding"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -149,21 +158,30 @@ async fn workspace_identity_observation_cas_rejects_older_probe() {
     )
     .await
     .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(
-        workspace_observe_tx(&mut tx, &before, &probe)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let after = workspace_observation_snapshot(
-        &mut repo.pool().acquire().await.unwrap(),
-        current.id.as_str(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(observed.state, after.state);
-    assert_eq!(observed.workspace_id, after.workspace_id);
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    workspace_observe_tx(&mut tx, &before, &probe)
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                let after = workspace_observation_snapshot(
+                    &mut repo.pool().acquire().await.unwrap(),
+                    current.id.as_str(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(observed.state, after.state);
+                assert_eq!(observed.workspace_id, after.workspace_id);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -241,32 +259,42 @@ async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) 
         ctx.completion.clone(),
         ctx,
     ));
-    let mut tx = repo.pool().begin().await.unwrap();
-    let sweep = crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(
-        &mut tx,
-        current.id.as_str(),
-        &[current.id.to_string()],
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let registration = workspace_runtime::sweep::TeardownTargets::default().registration();
-    registration.register(&sweep);
-    sqlx::query("DELETE FROM areas WHERE id=?1")
-        .bind(current.area_id.as_str())
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let sweep = crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(
+                    &mut tx,
+                    current.id.as_str(),
+                    &[current.id.to_string()],
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let registration =
+                    workspace_runtime::sweep::TeardownTargets::default().registration();
+                registration.register(&sweep);
+                sqlx::query("DELETE FROM areas WHERE id=?1")
+                    .bind(current.area_id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
+                    registration.sweeps(vec![sweep]),
+                    crate::workspace_service::reclaim::ServerReclaimPorts {
+                        runtime,
+                        db: repo.db().clone(),
+                    },
+                    crate::workspace_service::ports::observe,
+                )
+                .await;
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
-        registration.sweeps(vec![sweep]),
-        crate::workspace_service::reclaim::ServerReclaimPorts {
-            runtime,
-            db: repo.db().clone(),
-        },
-        crate::workspace_service::ports::observe,
-    )
-    .await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -343,21 +371,30 @@ async fn workspace_identity_identical_facts_stale_probe_is_idempotent() {
     )
     .await
     .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    workspace_observe_tx(&mut tx, &before, &probe)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                workspace_observe_tx(&mut tx, &before, &probe)
+                    .await
+                    .expect("a completed identical observation is not a launch conflict");
+                tx.commit().await.unwrap();
+                let after = workspace_observation_snapshot(
+                    &mut repo.pool().acquire().await.unwrap(),
+                    current.id.as_str(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    observed.state, after.state,
+                    "idempotent convergence does not change observation version"
+                );
+            })
+        })
         .await
-        .expect("a completed identical observation is not a launch conflict");
-    tx.commit().await.unwrap();
-    let after = workspace_observation_snapshot(
-        &mut repo.pool().acquire().await.unwrap(),
-        current.id.as_str(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        observed.state, after.state,
-        "idempotent convergence does not change observation version"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]

@@ -58,13 +58,14 @@ async fn canonical_acp_retained_recovery_reopens_exact_completed_and_holds_unkno
         };
         let (backend, session, _held) = session_for(&owner, &fx.dir);
         let before = fx.prompts();
-        sqlx::query(concat!(
+        (owner.repo.db()).writer().execute(sqlx::query(concat!(
     "CREATE TRIGGER refuse_recovery_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions ",
     "BEGIN SELECT RAISE(ABORT,'refuse recovery revoke'); END",
-)).execute(owner.repo.pool()).await.unwrap();
+))).await.unwrap();
         let refused = backend.recover_retained().await;
-        sqlx::query("DROP TRIGGER refuse_recovery_revoke")
-            .execute(owner.repo.pool())
+        (owner.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_recovery_revoke"))
             .await
             .unwrap();
         assert!(
@@ -178,9 +179,9 @@ async fn canonical_acp_retained_recovery_crash_windows_keep_sending_held_without
         // A SQLite snapshot captures the actual durable crash window while the
         // production issuer is paused; subsequent orderly teardown is excluded.
         let path = fx.dir.path().join("crash.db");
-        sqlx::query("VACUUM INTO ?1")
-            .bind(path.to_str().unwrap())
-            .execute(fx.owner.repo.pool())
+        (fx.owner.repo.db())
+            .writer()
+            .execute(sqlx::query("VACUUM INTO ?1").bind(path.to_str().unwrap()))
             .await
             .unwrap();
         dispatch.abort();
@@ -287,74 +288,93 @@ async fn later_activity(consume_before_shutdown: bool) {
             .unwrap(),
         SettledActivity::Settled
     ));
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "later human".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                let plan = pending_plan_for_prefix_tx(
+                    &mut tx,
+                    &carrier,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    vec![],
+                )
+                .await
+                .unwrap();
+                let claim = crate::conversation_inputs::claim_initial_tx(
+                    &mut tx,
+                    &fx.source,
+                    &mut carrier,
+                    plan,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                std::fs::write(fx.dir.path().join("scenario"), "hold").unwrap();
+                let listener =
+                    tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock"))
+                        .unwrap();
+                // Subscribe before dispatch: a local write receipt cannot prove remote consumption.
+                let mut events = fx.session.subscribe_events();
+                let report = fx
+                    .dispatch_submission_with_selection(
+                        &claim.submission_id,
+                        &TurnModelSelection::inherit(),
+                    )
+                    .await;
+                assert!(matches!(
+                    report.report.delivery(),
+                    InputDelivery::Unknown(_)
+                ));
+                assert!(matches!(
+                    fx.backend
+                        .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+                        .await
+                        .unwrap(),
+                    SettledActivity::Held
+                ));
+                let (mut peer, _) =
+                    tokio::time::timeout(Duration::from_secs(20), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(
+                    fx.prompts(),
+                    1,
+                    "dispatch returned while the real peer was blocked before reading prompt two"
+                );
+                if consume_before_shutdown {
+                    fx.consume_held_prompt(&mut peer, &mut events).await;
+                    fx.session.shutdown().await.unwrap();
+                    assert_eq!(fx.prompts(), 2);
+                } else {
+                    fx.session.shutdown().await.unwrap();
+                    use tokio::io::AsyncReadExt;
+                    assert_eq!(
+                        peer.read(&mut [0]).await.unwrap(),
+                        0,
+                        "shutdown killed the blocked peer"
+                    );
+                    assert_eq!(fx.prompts(), 1);
+                }
+            })
+        })
         .await
-        .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "later human".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    let plan = pending_plan_for_prefix_tx(
-        &mut tx,
-        &carrier,
-        std::num::NonZeroU32::new(1).unwrap(),
-        vec![],
-    )
-    .await
-    .unwrap();
-    let claim =
-        crate::conversation_inputs::claim_initial_tx(&mut tx, &fx.source, &mut carrier, plan)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    std::fs::write(fx.dir.path().join("scenario"), "hold").unwrap();
-    let listener =
-        tokio::net::UnixListener::bind(fx.dir.path().join("prompt-consumption.sock")).unwrap();
-    // Subscribe before dispatch: a local write receipt cannot prove remote consumption.
-    let mut events = fx.session.subscribe_events();
-    let report = fx
-        .dispatch_submission_with_selection(&claim.submission_id, &TurnModelSelection::inherit())
-        .await;
-    assert!(matches!(
-        report.report.delivery(),
-        InputDelivery::Unknown(_)
-    ));
-    assert!(matches!(
-        fx.backend
-            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
-            .await
-            .unwrap(),
-        SettledActivity::Held
-    ));
-    let (mut peer, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        fx.prompts(),
-        1,
-        "dispatch returned while the real peer was blocked before reading prompt two"
-    );
-    if consume_before_shutdown {
-        fx.consume_held_prompt(&mut peer, &mut events).await;
-        fx.session.shutdown().await.unwrap();
-        assert_eq!(fx.prompts(), 2);
-    } else {
-        fx.session.shutdown().await.unwrap();
-        use tokio::io::AsyncReadExt;
-        assert_eq!(
-            peer.read(&mut [0]).await.unwrap(),
-            0,
-            "shutdown killed the blocked peer"
-        );
-        assert_eq!(fx.prompts(), 1);
-    }
+        .expect("independent write operation")
 }

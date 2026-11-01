@@ -2,9 +2,12 @@ use super::*;
 
 async fn admin_boot() -> Boot {
     let boot = boot().await;
-    sqlx::query("UPDATE tracks SET plugin_scope = NULL WHERE id = ?1")
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope = NULL WHERE id = ?1")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     boot
@@ -93,9 +96,12 @@ async fn grant_admin_answer_rechecks_eligibility() {
     for change in ["purpose = 'area-chat'", "admin_granted_at = 1"] {
         let boot = admin_boot().await;
         let id = request_admin(&boot).await;
-        sqlx::query(&format!("UPDATE tracks SET {change} WHERE id = ?1"))
-            .bind(boot.track_id.as_str())
-            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+        (boot.repo.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query(&format!("UPDATE tracks SET {change} WHERE id = ?1"))
+                    .bind(boot.track_id.as_str()),
+            )
             .await
             .unwrap();
         assert_eq!(

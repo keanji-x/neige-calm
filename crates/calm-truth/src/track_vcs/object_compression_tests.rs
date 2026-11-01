@@ -1,7 +1,7 @@
 use super::object_codec::{MAX_DECODED_BYTES, StoredObject, encode};
 use super::*;
 use crate::db::prelude::RepoSyncDomainRaw;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::model::{NewArea, NewTrack, RequestTheme};
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeMap;
@@ -87,30 +87,39 @@ fn object_codec_preserves_arbitrary_legacy_raw_and_small_objects() {
 async fn object_storage_large_write_defers_cpu_to_outside_writer_conversion() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let raw = b"large historical document\n".repeat(32768);
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let hash = put_blob(&mut tx, "blob", &raw).await.unwrap();
-    tx.commit().await.unwrap();
-    let encoding: String =
-        sqlx::query_scalar("SELECT encoding FROM track_vcs_objects WHERE hash=?")
-            .bind(&hash)
-            .fetch_one(repo.db().read_pool())
-            .await
-            .unwrap();
-    assert_eq!(encoding, "raw");
-    assert_eq!(
-        object_compression::convert_page(repo.db(), "")
-            .await
-            .unwrap()
-            .converted,
-        1
-    );
-    assert_eq!(
-        super::store::load_blob_bytes_pool(repo.db().read_pool(), &hash)
-            .await
-            .unwrap()
-            .unwrap(),
-        raw
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let hash = put_blob(&mut tx, "blob", &raw).await.unwrap();
+                tx.commit().await.unwrap();
+                let encoding: String =
+                    sqlx::query_scalar("SELECT encoding FROM track_vcs_objects WHERE hash=?")
+                        .bind(&hash)
+                        .fetch_one(repo.db().read_pool())
+                        .await
+                        .unwrap();
+                assert_eq!(encoding, "raw");
+                assert_eq!(
+                    object_compression::convert_page(repo.db(), "")
+                        .await
+                        .unwrap()
+                        .converted,
+                    1
+                );
+                assert_eq!(
+                    super::store::load_blob_bytes_pool(repo.db().read_pool(), &hash)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    raw
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -120,24 +129,33 @@ async fn object_storage_compresses_repetitive_payload_without_changing_identity(
     let expected = blake3::hash(&[b"calm-track-vcs-v1\0blob\0".as_slice(), &bytes].concat())
         .to_hex()
         .to_string();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let hash = put_blob(&mut tx, "blob", &bytes).await.unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(hash, expected);
-    let stored: i64 =
-        sqlx::query_scalar("SELECT length(bytes) FROM track_vcs_objects WHERE hash=?")
-            .bind(&hash)
-            .fetch_one(repo.db().read_pool())
-            .await
-            .unwrap();
-    assert!(stored < bytes.len() as i64 / 2, "stored {stored} bytes");
-    assert_eq!(
-        super::store::load_blob_bytes_pool(repo.db().read_pool(), &hash)
-            .await
-            .unwrap()
-            .unwrap(),
-        bytes
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let hash = put_blob(&mut tx, "blob", &bytes).await.unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(hash, expected);
+                let stored: i64 =
+                    sqlx::query_scalar("SELECT length(bytes) FROM track_vcs_objects WHERE hash=?")
+                        .bind(&hash)
+                        .fetch_one(repo.db().read_pool())
+                        .await
+                        .unwrap();
+                assert!(stored < bytes.len() as i64 / 2, "stored {stored} bytes");
+                assert_eq!(
+                    super::store::load_blob_bytes_pool(repo.db().read_pool(), &hash)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    bytes
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -147,12 +165,11 @@ async fn object_conversion_preview_resume_and_replay_preserve_bytes_and_identity
     for i in 0..40 {
         let raw = format!("historical output {i}\n").repeat(2048).into_bytes();
         let hash = super::store::hash_bytes("blob", &raw);
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "INSERT INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES(?,'blob',?,0)",
         )
         .bind(&hash)
-        .bind(&raw)
-        .execute(repo.db().writer_pool())
+        .bind(&raw))
         .await
         .unwrap();
         hashes.push((hash, raw));
@@ -242,105 +259,109 @@ async fn object_storage_history_cat_diff_log_and_gc_preserve_mixed_roots() {
     let after = "new report\n".repeat(4096);
     let mut parent = None;
     let mut commits = Vec::new();
-    for (n, content) in [&before, &after].into_iter().enumerate() {
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let blob = put_blob(&mut tx, "blob", content.as_bytes()).await.unwrap();
-        if n == 0 {
-            sqlx::query("UPDATE track_vcs_objects SET bytes=?,encoding='raw',decoded_size=NULL WHERE hash=?")
-                .bind(content.as_bytes()).bind(&blob).execute(&mut **tx).await.unwrap();
-        }
-        let entries = (0..128)
-            .map(|i| {
-                (
-                    format!("documents/{i}.md"),
-                    ManifestEntry {
-                        blob_hash: blob.clone(),
-                        byte_len: content.len() as u64,
-                        content_type: "text/markdown".into(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let tree = super::store::store_tree(&mut tx, 1, entries, n as i64)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for (n, content) in [&before, &after].into_iter().enumerate() {
+            let mut tx = write_session.begin().await.unwrap();
+            let blob = put_blob(&mut tx, "blob", content.as_bytes()).await.unwrap();
+            if n == 0 {
+                sqlx::query("UPDATE track_vcs_objects SET bytes=?,encoding='raw',decoded_size=NULL WHERE hash=?")
+                    .bind(content.as_bytes()).bind(&blob).execute(&mut **tx).await.unwrap();
+            }
+            let entries = (0..128)
+                .map(|i| {
+                    (
+                        format!("documents/{i}.md"),
+                        ManifestEntry {
+                            blob_hash: blob.clone(),
+                            byte_len: content.len() as u64,
+                            content_type: "text/markdown".into(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let tree = super::store::store_tree(&mut tx, 1, entries, n as i64)
+                .await
+                .unwrap();
+            let commit = commit_tree(
+                &mut tx,
+                &track.id,
+                parent.as_deref(),
+                &tree,
+                None,
+                "report revision",
+                n as i64,
+            )
             .await
             .unwrap();
-        let commit = commit_tree(
-            &mut tx,
-            &track.id,
-            parent.as_deref(),
-            &tree,
-            None,
-            "report revision",
-            n as i64,
+            tx.commit().await.unwrap();
+            parent = Some(commit.clone());
+            commits.push(commit);
+        }
+        assert_eq!(
+            cat_at(repo.db().read_pool(), &commits[0], "documents/0.md")
+                .await
+                .unwrap()
+                .content,
+            before
+        );
+        assert_eq!(
+            cat_at(repo.db().read_pool(), &commits[1], "documents/0.md")
+                .await
+                .unwrap()
+                .content,
+            after
+        );
+        let delta = diff_with_patches(
+            repo.db().read_pool(),
+            &commits[0],
+            &commits[1],
+            Some("documents/0.md"),
+            20,
         )
         .await
         .unwrap();
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].status, DiffStatus::Modified);
+        assert!(delta[0].patch.as_ref().unwrap().contains("old report"));
+        let history = log(repo.db().read_pool(), &track.id, None, None, 50, false)
+            .await
+            .unwrap();
+        assert_eq!(history.commits.len(), 2);
+        let mut tx = write_session.begin().await.unwrap();
+        let orphan = put_blob(&mut tx, "blob", &b"unreferenced diagnostic\n".repeat(4096))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE track_vcs_objects SET created_at=0")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
-        parent = Some(commit.clone());
-        commits.push(commit);
-    }
-    assert_eq!(
-        cat_at(repo.db().read_pool(), &commits[0], "documents/0.md")
+        assert_eq!(sweep_unreferenced_objects_once(repo.db()).await.unwrap(), 1);
+        assert!(
+            super::store::load_blob_bytes_pool(repo.db().read_pool(), &orphan)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            cat_at(repo.db().read_pool(), &commits[0], "documents/0.md")
+                .await
+                .unwrap()
+                .content,
+            before
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM track_vcs_objects WHERE encoding='zlib-v1'"
+            )
+            .fetch_one(repo.db().read_pool())
             .await
-            .unwrap()
-            .content,
-        before
-    );
-    assert_eq!(
-        cat_at(repo.db().read_pool(), &commits[1], "documents/0.md")
-            .await
-            .unwrap()
-            .content,
-        after
-    );
-    let delta = diff_with_patches(
-        repo.db().read_pool(),
-        &commits[0],
-        &commits[1],
-        Some("documents/0.md"),
-        20,
-    )
-    .await
-    .unwrap();
-    assert_eq!(delta.len(), 1);
-    assert_eq!(delta[0].status, DiffStatus::Modified);
-    assert!(delta[0].patch.as_ref().unwrap().contains("old report"));
-    let history = log(repo.db().read_pool(), &track.id, None, None, 50, false)
-        .await
-        .unwrap();
-    assert_eq!(history.commits.len(), 2);
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let orphan = put_blob(&mut tx, "blob", &b"unreferenced diagnostic\n".repeat(4096))
-        .await
-        .unwrap();
-    sqlx::query("UPDATE track_vcs_objects SET created_at=0")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(sweep_unreferenced_objects_once(repo.db()).await.unwrap(), 1);
-    assert!(
-        super::store::load_blob_bytes_pool(repo.db().read_pool(), &orphan)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        cat_at(repo.db().read_pool(), &commits[0], "documents/0.md")
-            .await
-            .unwrap()
-            .content,
-        before
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM track_vcs_objects WHERE encoding='zlib-v1'"
-        )
-        .fetch_one(repo.db().read_pool())
-        .await
-        .unwrap(),
-        3
-    );
+            .unwrap(),
+            3
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -349,12 +370,11 @@ async fn object_conversion_rechecks_after_concurrent_sweep_or_conversion() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let raw = b"historical output\n".repeat(4096);
         let hash = super::store::hash_bytes("blob", &raw);
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "INSERT INTO track_vcs_objects(hash,kind,bytes,created_at) VALUES(?,'blob',?,0)",
         )
         .bind(&hash)
-        .bind(&raw)
-        .execute(repo.db().writer_pool())
+        .bind(&raw))
         .await
         .unwrap();
         let pause = Arc::new((Notify::new(), Notify::new()));

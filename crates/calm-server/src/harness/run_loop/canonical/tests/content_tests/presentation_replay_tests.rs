@@ -86,14 +86,15 @@ async fn presentation_replay_event_failure_rolls_back_content_for_retry() {
     let inner = &fx.harness.inner;
     let live = inner.live_claim.writer();
     let before = presentation_events(&fx).await.len();
-    sqlx::query(
-        "CREATE TRIGGER refuse_presentation_event BEFORE INSERT ON events
+    (fx.original.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_presentation_event BEFORE INSERT ON events
         WHEN NEW.kind='harness.presentation.changed'
         BEGIN SELECT RAISE(ABORT,'event unavailable'); END",
-    )
-    .execute(fx.original.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let params = json!({"threadId":thread,"turnId":"retry-event",
         "item":{"id":"retry-item","type":"agentMessage","text":"answer"}});
     assert!(
@@ -111,8 +112,9 @@ async fn presentation_replay_event_failure_rolls_back_content_for_retry() {
             .all(|row| row.item_uuid.as_deref() != Some("retry-item")),
         "failed notification must roll back its content so a replay can retry"
     );
-    sqlx::query("DROP TRIGGER refuse_presentation_event")
-        .execute(fx.original.repo.db().writer_pool())
+    (fx.original.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_presentation_event"))
         .await
         .unwrap();
     content_observer::on_item(inner, &live, ItemPhase::Completed, params, vec![])
@@ -137,8 +139,8 @@ async fn presentation_replay_repairs_missing_reference_and_announces_once() {
         .unwrap();
     let before = presentation_events(&fx).await;
     let cursor = before.last().unwrap()["cursor"].clone();
-    sqlx::query("UPDATE conversation_presentations SET native_item_row_id=NULL WHERE card_id=?1 AND source_kind='native_item'")
-        .bind(inner.card_id.as_str()).execute(fx.original.repo.db().writer_pool()).await.unwrap();
+    (fx.original.repo.db()).writer().execute(sqlx::query("UPDATE conversation_presentations SET native_item_row_id=NULL WHERE card_id=?1 AND source_kind='native_item'")
+        .bind(inner.card_id.as_str())).await.unwrap();
     // A late start repairs the completed reference without opening a ghost live reply.
     content_observer::on_item(inner, &live, ItemPhase::Started, params.clone(), vec![])
         .await

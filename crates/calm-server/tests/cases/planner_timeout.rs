@@ -87,8 +87,8 @@ async fn planner_timeout_identity_fence_rejects_each_mismatched_intent() {
     for field in ["session_id", "card_id", "track_id", "thread_id", "turn_id"] {
         let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
         let turn = request(&boot).await;
-        sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,?1,'foreign') WHERE id=?2")
-            .bind(format!("$.interruption_intent.{field}")).bind(&boot.worker_session_id).execute(boot.repo.pool()).await.unwrap();
+        (boot.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,?1,'foreign') WHERE id=?2")
+            .bind(format!("$.interruption_intent.{field}")).bind(&boot.worker_session_id)).await.unwrap();
         let row = finish(&boot, &turn, "interrupted").await;
         let params: serde_json::Value = serde_json::from_str(&row.params).unwrap();
         assert!(params.get("harness_timeout").is_none(), "{field}: {params}");
@@ -225,18 +225,24 @@ async fn turn_budget_assistant_still_receives_previous_timeout() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     let turn = request(&boot).await;
     let row = finish(&boot, &turn, "interrupted").await;
-    sqlx::query(concat!(
-        "UPDATE cards SET role='assistant', ",
-        "payload=json_set(payload,'$.harness_profile','assistant',",
-        "'$.assistant_provider','codex') WHERE id=?1"
-    ))
-    .bind(boot.planner_card.id.as_str())
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-    sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE cards SET role='assistant', ",
+                "payload=json_set(payload,'$.harness_profile','assistant',",
+                "'$.assistant_provider','codex') WHERE id=?1"
+            ))
+            .bind(boot.planner_card.id.as_str()),
+        )
+        .await
+        .unwrap();
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
     // The generic ingress exercises the real start; the Planner-only REST route refuses Assistant.
@@ -471,10 +477,13 @@ async fn planner_timeout_legacy_provider_payload_does_not_become_trusted_evidenc
     let evidence = serde_json::to_value(row.timeout().unwrap()).unwrap();
     params["harness_interruption_reason"] = json!("max_turn_duration");
     params["harness_timeout"] = evidence;
-    sqlx::query("UPDATE harness_items SET params=?1 WHERE id=?2")
-        .bind(params.to_string())
-        .bind(row.id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE harness_items SET params=?1 WHERE id=?2")
+                .bind(params.to_string())
+                .bind(row.id),
+        )
         .await
         .unwrap();
     assert!(
@@ -506,9 +515,12 @@ async fn planner_timeout_terminal_causality_survives_utc_rollback_and_ties() {
             let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
             let turn = request(&boot).await;
             let timeout = finish(&boot, &turn, "interrupted").await;
-            sqlx::query("UPDATE harness_items SET created_at_ms=100000 WHERE id=?1")
-                .bind(timeout.id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE harness_items SET created_at_ms=100000 WHERE id=?1")
+                        .bind(timeout.id),
+                )
                 .await
                 .unwrap();
             let id = boot
@@ -523,10 +535,13 @@ async fn planner_timeout_terminal_causality_survives_utc_rollback_and_ties() {
                 )
                 .await
                 .unwrap();
-            sqlx::query("UPDATE harness_items SET created_at_ms=?1 WHERE id=?2")
-                .bind(later_utc)
-                .bind(id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE harness_items SET created_at_ms=?1 WHERE id=?2")
+                        .bind(later_utc)
+                        .bind(id),
+                )
                 .await
                 .unwrap();
             let latest = boot

@@ -347,46 +347,57 @@ async fn area_owner_session() -> (axum::Router, AppState, Arc<SqlxRepo>, String)
     let (state, repo) = fresh_state().await;
     let auth = super::auth::live_auth_state("owner", "fixture-password");
     let user = "settings-alice";
-    let mut tx = repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::area_membership::application_user_register(&mut tx, user, "Alice")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::area_membership::application_user_register(
+                    &mut tx, user, "Alice",
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let token = auth.sessions.create(
+                    calm_server::auth::SessionIdentity {
+                        user_id: user.into(),
+                        // These credential-bound labels still do not confer deployment ownership.
+                        display_name: "Owner".into(),
+                        role: calm_server::auth::OWNER_ROLE.into(),
+                    },
+                    calm_server::auth::SessionAuthority::PasswordLogin,
+                );
+                let cookie = format!("{}={token}", calm_server::auth::SESSION_COOKIE);
+                let app = routes::application_router(state.clone(), auth);
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::post("/api/areas")
+                            .header("content-type", "application/json")
+                            .header("cookie", &cookie)
+                            .body(Body::from(r##"{"name":"Alice's Area","color":"#abc"}"##))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 201);
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                let area: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let membership = repo
+                    .area_require_access(
+                        area["id"].as_str().unwrap(),
+                        user,
+                        calm_types::organization::AreaAccess::Delete,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(membership.id.as_str(), area["id"].as_str().unwrap());
+                (app, state, repo, cookie)
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let token = auth.sessions.create(
-        calm_server::auth::SessionIdentity {
-            user_id: user.into(),
-            // These credential-bound labels still do not confer deployment ownership.
-            display_name: "Owner".into(),
-            role: calm_server::auth::OWNER_ROLE.into(),
-        },
-        calm_server::auth::SessionAuthority::PasswordLogin,
-    );
-    let cookie = format!("{}={token}", calm_server::auth::SESSION_COOKIE);
-    let app = routes::application_router(state.clone(), auth);
-    let response = app
-        .clone()
-        .oneshot(
-            Request::post("/api/areas")
-                .header("content-type", "application/json")
-                .header("cookie", &cookie)
-                .body(Body::from(r##"{"name":"Alice's Area","color":"#abc"}"##))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 201);
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let area: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let membership = repo
-        .area_require_access(
-            area["id"].as_str().unwrap(),
-            user,
-            calm_types::organization::AreaAccess::Delete,
-        )
-        .await
-        .unwrap();
-    assert_eq!(membership.id.as_str(), area["id"].as_str().unwrap());
-    (app, state, repo, cookie)
+        .expect("independent write operation")
 }
 
 fn nonowner_request(method: &str, cookie: &str, body: serde_json::Value) -> Request<Body> {

@@ -151,45 +151,61 @@ impl Store for SqliteExecutionStore {
     async fn spawned(&self, id: &ExecutionId) -> Result<(), StoreError> {
         #[cfg(feature = "fixtures")]
         self.faults.check("spawned")?;
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.pool)
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.map_err(error)?;
+                    let metadata: ExecutionMetadata = serde_json::from_str(
+                        &sql::intent_tx(&mut tx, id.as_str()).await.map_err(error)?,
+                    )
+                    .map_err(error)?;
+                    self.projection(&metadata.consumer)?
+                        .spawned(
+                            &mut tx,
+                            &metadata.alias.0,
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                        .await
+                        .map_err(error)?;
+                    tx.commit().await.map_err(error)
+                })
+            })
             .await
-            .map_err(error)?;
-        let metadata: ExecutionMetadata =
-            serde_json::from_str(&sql::intent_tx(&mut tx, id.as_str()).await.map_err(error)?)
-                .map_err(error)?;
-        self.projection(&metadata.consumer)?
-            .spawned(
-                &mut tx,
-                &metadata.alias.0,
-                chrono::Utc::now().timestamp_millis(),
-            )
-            .await
-            .map_err(error)?;
-        tx.commit().await.map_err(error)
+            .map_err(error)?
     }
     async fn settle(&self, id: &ExecutionId, settlement: &Settlement) -> Result<(), StoreError> {
         #[cfg(feature = "fixtures")]
         self.faults.check("settle")?;
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&self.pool)
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.map_err(error)?;
+                    let now = chrono::Utc::now().timestamp_millis();
+                    sql::settle_tx(
+                        &mut tx,
+                        id.as_str(),
+                        &serde_json::to_string(settlement).map_err(error)?,
+                        now,
+                    )
+                    .await
+                    .map_err(error)?;
+                    let metadata: ExecutionMetadata = serde_json::from_str(
+                        &sql::intent_tx(&mut tx, id.as_str()).await.map_err(error)?,
+                    )
+                    .map_err(error)?;
+                    self.projection(&metadata.consumer)?
+                        .settled(&mut tx, &metadata.alias.0, settlement, now)
+                        .await
+                        .map_err(error)?;
+                    tx.commit().await.map_err(error)
+                })
+            })
             .await
-            .map_err(error)?;
-        let now = chrono::Utc::now().timestamp_millis();
-        sql::settle_tx(
-            &mut tx,
-            id.as_str(),
-            &serde_json::to_string(settlement).map_err(error)?,
-            now,
-        )
-        .await
-        .map_err(error)?;
-        let metadata: ExecutionMetadata =
-            serde_json::from_str(&sql::intent_tx(&mut tx, id.as_str()).await.map_err(error)?)
-                .map_err(error)?;
-        self.projection(&metadata.consumer)?
-            .settled(&mut tx, &metadata.alias.0, settlement, now)
-            .await
-            .map_err(error)?;
-        tx.commit().await.map_err(error)
+            .map_err(error)?
     }
     async fn finish(&self, id: &ExecutionId) -> Result<(), StoreError> {
         #[cfg(feature = "fixtures")]

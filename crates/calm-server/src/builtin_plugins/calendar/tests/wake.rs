@@ -376,9 +376,12 @@ async fn human_cancelled_all_day_and_closed_track_entries_never_wake() {
         timed("2026-10-02T09:00", "2026-10-02T10:00"),
     )
     .await;
-    sqlx::query("UPDATE tracks SET closed_at = 1 WHERE id = ?")
-        .bind(other.track_id.as_deref().unwrap())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at = 1 WHERE id = ?")
+                .bind(other.track_id.as_deref().unwrap()),
+        )
         .await
         .unwrap();
 

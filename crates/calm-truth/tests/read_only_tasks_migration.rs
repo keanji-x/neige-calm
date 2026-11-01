@@ -24,7 +24,7 @@ async fn schema_up_to(version: i64) -> SqliteConnection {
 }
 
 async fn exec(db: &mut SqliteConnection, sql: &str) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(sql).execute(db).await.map(|_| ())
+    { let query = sqlx::raw_sql(sql); sqlx::Executor::execute(db, query).await }.map(|_| ())
 }
 
 fn lease(id: &str, state: &str, access: Option<&str>) -> String {

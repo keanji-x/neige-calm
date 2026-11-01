@@ -5,7 +5,7 @@ use super::*;
 use crate::auth::HumanInputSource;
 use crate::db::prelude::*;
 use crate::db::sqlite::conversation::human_plan_for_pending_prefix_tx;
-use crate::db::sqlite::{begin_immediate_tx, session_set_handle_state_tx};
+use crate::db::sqlite::session_set_handle_state_tx;
 use crate::harness::run_loop::completed_commit_tests::Fixture as ExistingRuntime;
 use crate::shared_codex_appserver::native_owner_tests::{connect, notify_thread, request, send};
 use calm_truth::db::RepoRead;
@@ -84,101 +84,121 @@ impl Fixture {
         let mut snapshot = CanonicalHarnessSnapshot::dormant(0);
         let thread = format!("thread-{}", uuid::Uuid::new_v4());
         *inner.thread_id.write().await = Some(thread.clone());
-        sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
-            .bind(&thread)
-            .bind(&inner.worker_session_id)
-            .execute(original.repo.db().writer_pool())
+        (original.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                    .bind(&thread)
+                    .bind(&inner.worker_session_id),
+            )
             .await
             .unwrap();
         snapshot.header.last_thread_id = Some(thread);
         snapshot.header.token_usage = usage;
         snapshot.header.context_usage_invalidated = invalidated;
-        let mut tx = begin_immediate_tx(original.repo.db()).await.unwrap();
-        assert!(
-            session_set_handle_state_tx(
-                &mut tx,
-                &inner.worker_session_id,
-                Some(serde_json::to_value(&snapshot).unwrap())
-            )
+        let write_db = (original.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    assert!(
+                        session_set_handle_state_tx(
+                            &mut tx,
+                            &inner.worker_session_id,
+                            Some(serde_json::to_value(&snapshot).unwrap())
+                        )
+                        .await
+                        .unwrap()
+                    );
+                    let mut carrier = current_input_carrier_tx(
+                        &mut tx,
+                        inner.card_id.as_str(),
+                        &inner.worker_session_id,
+                    )
+                    .await
+                    .unwrap();
+                    let accepted = crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &source.current_principal().unwrap(),
+                        &mut carrier,
+                        HumanPayload {
+                            text: "canonical scheduler human body".into(),
+                            bound_attachments: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("human")
+                    };
+                    // The old queue fixture uses the fake turn/start shortcut. This test
+                    // needs the real transport and native receipt owner on its actual row.
+                    let daemon = shared.unwrap_or_else(|| {
+                        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(
+                            original.repo.clone(),
+                        )
+                    });
+                    let actual_card = original
+                        .repo
+                        .card_get(inner.card_id.as_str())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let backend = PlannerBackend::codex(
+                        daemon.clone(),
+                        actual_card.id.as_str(),
+                        actual_card.track_id.as_str(),
+                        &inner.worker_session_id,
+                    )
+                    .unwrap();
+                    let registry = crate::harness::registry::HarnessRegistry::default();
+                    let application =
+                        crate::auth::ValidatedApplicationAuth::from_state(auth.clone()).unwrap();
+                    registry
+                        .activate_maintenance_execution(application.execution)
+                        .unwrap();
+                    let harness = PlannerHarness::run(PlannerHarnessParams {
+                        track_delete_locks: Default::default(),
+                        worker_session_id: inner.worker_session_id.clone(),
+                        track_id: inner.track_id.clone(),
+                        card_id: inner.card_id.clone(),
+                        thread_id: inner.thread_id.read().await.clone(),
+                        repo: original.repo.clone(),
+                        events: inner.events.clone(),
+                        card_role_cache: inner.card_role_cache.clone(),
+                        track_area_cache: inner.track_area_cache.clone(),
+                        backend,
+                        registry: registry.clone(),
+                        config,
+                        snapshot: HarnessRuntimeSnapshot::decode(
+                            serde_json::to_value(snapshot).unwrap(),
+                        )
+                        .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                    assert!(
+                        registry
+                            .try_reserve(inner.worker_session_id.clone())
+                            .unwrap()
+                            .install(harness.clone())
+                    );
+                    Self {
+                        original,
+                        harness,
+                        source,
+                        message,
+                        auth,
+                        session,
+                        daemon,
+                        registry,
+                    }
+                })
+            })
             .await
-            .unwrap()
-        );
-        let mut carrier =
-            current_input_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
-                .await
-                .unwrap();
-        let accepted = crate::conversation_inputs::accept_human_tx(
-            &mut tx,
-            &source.current_principal().unwrap(),
-            &mut carrier,
-            HumanPayload {
-                text: "canonical scheduler human body".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("human")
-        };
-        // The old queue fixture uses the fake turn/start shortcut. This test
-        // needs the real transport and native receipt owner on its actual row.
-        let daemon = shared.unwrap_or_else(|| {
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(original.repo.clone())
-        });
-        let actual_card = original
-            .repo
-            .card_get(inner.card_id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
-        let backend = PlannerBackend::codex(
-            daemon.clone(),
-            actual_card.id.as_str(),
-            actual_card.track_id.as_str(),
-            &inner.worker_session_id,
-        )
-        .unwrap();
-        let registry = crate::harness::registry::HarnessRegistry::default();
-        let application = crate::auth::ValidatedApplicationAuth::from_state(auth.clone()).unwrap();
-        registry
-            .activate_maintenance_execution(application.execution)
-            .unwrap();
-        let harness = PlannerHarness::run(PlannerHarnessParams {
-            track_delete_locks: Default::default(),
-            worker_session_id: inner.worker_session_id.clone(),
-            track_id: inner.track_id.clone(),
-            card_id: inner.card_id.clone(),
-            thread_id: inner.thread_id.read().await.clone(),
-            repo: original.repo.clone(),
-            events: inner.events.clone(),
-            card_role_cache: inner.card_role_cache.clone(),
-            track_area_cache: inner.track_area_cache.clone(),
-            backend,
-            registry: registry.clone(),
-            config,
-            snapshot: HarnessRuntimeSnapshot::decode(serde_json::to_value(snapshot).unwrap())
-                .unwrap(),
-        })
-        .await
-        .unwrap();
-        assert!(
-            registry
-                .try_reserve(inner.worker_session_id.clone())
-                .unwrap()
-                .install(harness.clone())
-        );
-        Self {
-            original,
-            harness,
-            source,
-            message,
-            auth,
-            session,
-            daemon,
-            registry,
-        }
+            .expect("independent write operation")
     }
 
     pub(super) async fn frame(&self) -> CanonicalHarnessSnapshot {
@@ -488,88 +508,104 @@ async fn assert_resumed_context_usage(usage: Option<&str>) {
     }
     // Persist a composed claim before the scheduler has a live source. Resume
     // must hydrate this immutable plan without additions or a fresh reading.
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    let plan = human_plan_for_pending_prefix_tx(
-        &mut tx,
-        &carrier,
-        std::num::NonZeroU32::new(1).unwrap(),
-        contexts,
-    )
-    .await
-    .unwrap();
-    let expected = crate::harness::input_dispatch::hydrate_for_test(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &plan,
-    )
-    .await
-    .unwrap();
-    let claim =
-        crate::conversation_inputs::claim_initial_tx(&mut tx, &fx.source, &mut carrier, plan)
-            .await
-            .unwrap();
-    let mut snapshot: CanonicalHarnessSnapshot =
-        serde_json::from_value(carrier.snapshot().clone()).unwrap();
-    snapshot.header.turn_budget = budget::FrozenBudget::Planner {
-        budget: crate::planner_turn_budget::PlannerTurnBudget::default(),
-        start_attempt: QueueEntryId::from_wire(claim.submission_id.as_str().into()),
-        warning_attempted: false,
-        context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
-    };
-    let mut header = header_value(&snapshot).unwrap();
-    if usage.is_none() {
-        header["turn_budget"]
-            .as_object_mut()
-            .unwrap()
-            .remove("context_usage");
-    }
-    persist_runtime_frame_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-        &RuntimeExecutionFence::from_carrier(&carrier),
-        header,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    fx.harness
-        .observe_canonical_source(fx.message.clone(), fx.source.clone())
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier = current_input_carrier_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                let plan = human_plan_for_pending_prefix_tx(
+                    &mut tx,
+                    &carrier,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    contexts,
+                )
+                .await
+                .unwrap();
+                let expected = crate::harness::input_dispatch::hydrate_for_test(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &plan,
+                )
+                .await
+                .unwrap();
+                let claim = crate::conversation_inputs::claim_initial_tx(
+                    &mut tx,
+                    &fx.source,
+                    &mut carrier,
+                    plan,
+                )
+                .await
+                .unwrap();
+                let mut snapshot: CanonicalHarnessSnapshot =
+                    serde_json::from_value(carrier.snapshot().clone()).unwrap();
+                snapshot.header.turn_budget = budget::FrozenBudget::Planner {
+                    budget: crate::planner_turn_budget::PlannerTurnBudget::default(),
+                    start_attempt: QueueEntryId::from_wire(claim.submission_id.as_str().into()),
+                    warning_attempted: false,
+                    context_usage: calm_types::harness::budget::FrozenContextUsage::RenderPlan,
+                };
+                let mut header = header_value(&snapshot).unwrap();
+                if usage.is_none() {
+                    header["turn_budget"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("context_usage");
+                }
+                persist_runtime_frame_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                    &RuntimeExecutionFence::from_carrier(&carrier),
+                    header,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                fx.harness
+                    .observe_canonical_source(fx.message.clone(), fx.source.clone())
+                    .await
+                    .unwrap();
+                let call = request(&mut peer).await;
+                assert_eq!(call["method"], "turn/start");
+                let [InputItem::Text { text: expected }] = expected.as_slice() else {
+                    panic!("one text input")
+                };
+                assert_eq!(call["params"]["input"][0]["text"], *expected);
+                assert_eq!(call["params"]["input"].as_array().unwrap().len(), 1);
+                let input = call["params"]["input"].to_string();
+                assert_eq!(
+                    input.matches("[上下文]").count(),
+                    usize::from(usage.is_some())
+                );
+                assert!(!input.contains("not recorded"));
+                let mut tx = write_session.begin().await.unwrap();
+                let stored = crate::db::sqlite::conversation::submission_plan_tx(
+                    &mut tx,
+                    &claim.submission_id,
+                )
+                .await
+                .unwrap();
+                assert_eq!(stored.plan, claim.plan);
+                tx.rollback().await.unwrap();
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"error":{"code":-32000,"message":"fixture rejected"}}),
+                )
+                .await;
+                peer.close(None).await.unwrap();
+                fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let call = request(&mut peer).await;
-    assert_eq!(call["method"], "turn/start");
-    let [InputItem::Text { text: expected }] = expected.as_slice() else {
-        panic!("one text input")
-    };
-    assert_eq!(call["params"]["input"][0]["text"], *expected);
-    assert_eq!(call["params"]["input"].as_array().unwrap().len(), 1);
-    let input = call["params"]["input"].to_string();
-    assert_eq!(
-        input.matches("[上下文]").count(),
-        usize::from(usage.is_some())
-    );
-    assert!(!input.contains("not recorded"));
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, &claim.submission_id)
-        .await
-        .unwrap();
-    assert_eq!(stored.plan, claim.plan);
-    tx.rollback().await.unwrap();
-    send(
-        &mut peer,
-        json!({"id":call["id"],"error":{"code":-32000,"message":"fixture rejected"}}),
-    )
-    .await;
-    peer.close(None).await.unwrap();
-    fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -599,87 +635,91 @@ async fn context_usage_canonical_freezes_context_at_claim() {
         .as_ref()
         .unwrap()
         .submission_ids[0];
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+    let write_db = (fx.original.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+            .await
+            .unwrap();
+        let before = crate::harness::input_dispatch::hydrate_for_test(
+            &mut tx,
+            fx.harness.inner.card_id.as_str(),
+            &stored.plan,
+        )
         .await
         .unwrap();
-    let before = crate::harness::input_dispatch::hydrate_for_test(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &stored.plan,
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    let [InputItem::Text { text: before_text }] = before.as_slice() else {
-        panic!("one text input")
-    };
-    assert_eq!(before_text, input);
-    let thread = call["params"]["threadId"].as_str().unwrap();
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/started",
-        json!({"id":"usage-turn"}),
-    )
-    .await;
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"usage-turn"}}}),
-    )
-    .await;
-    fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    send(&mut peer, json!({"method":"thread/tokenUsage/updated","params":{
-        "threadId":thread,"turnId":"usage-turn",
-        "tokenUsage":{"last":{"totalTokens":142000},"total":{"totalTokens":9999999},"modelContextWindow":272000}
-    }})).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if fx
-                .frame()
-                .await
-                .header
-                .token_usage
-                .as_ref()
-                .is_some_and(|u| u.used_tokens == 142000)
-            {
-                break;
+        tx.rollback().await.unwrap();
+        let [InputItem::Text { text: before_text }] = before.as_slice() else {
+            panic!("one text input")
+        };
+        assert_eq!(before_text, input);
+        let thread = call["params"]["threadId"].as_str().unwrap();
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            thread,
+            "turn/started",
+            json!({"id":"usage-turn"}),
+        )
+        .await;
+        send(
+            &mut peer,
+            json!({"id":call["id"],"result":{"turn":{"id":"usage-turn"}}}),
+        )
+        .await;
+        fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+        send(&mut peer, json!({"method":"thread/tokenUsage/updated","params":{
+            "threadId":thread,"turnId":"usage-turn",
+            "tokenUsage":{"last":{"totalTokens":142000},"total":{"totalTokens":9999999},"modelContextWindow":272000}
+        }})).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if fx
+                    .frame()
+                    .await
+                    .header
+                    .token_usage
+                    .as_ref()
+                    .is_some_and(|u| u.used_tokens == 142000)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let restored: CanonicalHarnessSnapshot = serde_json::from_str(&wire).unwrap();
-    assert_eq!(restored, frozen);
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+        })
         .await
         .unwrap();
-    let after = crate::harness::input_dispatch::hydrate_for_test(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &stored.plan,
-    )
-    .await
-    .unwrap();
-    tx.rollback().await.unwrap();
-    let [InputItem::Text { text: after_text }] = after.as_slice() else {
-        panic!("one text input")
-    };
-    assert_eq!(after_text, before_text);
-    notify_thread(
-        &fx.daemon,
-        &mut peer,
-        thread,
-        "turn/completed",
-        json!({"id":"usage-turn","status":"completed"}),
-    )
-    .await;
-    fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    peer.close(None).await.unwrap();
-    fx.harness.shutdown().await.unwrap();
+        let restored: CanonicalHarnessSnapshot = serde_json::from_str(&wire).unwrap();
+        assert_eq!(restored, frozen);
+        let mut tx = write_session.begin().await.unwrap();
+        let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+            .await
+            .unwrap();
+        let after = crate::harness::input_dispatch::hydrate_for_test(
+            &mut tx,
+            fx.harness.inner.card_id.as_str(),
+            &stored.plan,
+        )
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        let [InputItem::Text { text: after_text }] = after.as_slice() else {
+            panic!("one text input")
+        };
+        assert_eq!(after_text, before_text);
+        notify_thread(
+            &fx.daemon,
+            &mut peer,
+            thread,
+            "turn/completed",
+            json!({"id":"usage-turn","status":"completed"}),
+        )
+        .await;
+        fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+        peer.close(None).await.unwrap();
+        fx.harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

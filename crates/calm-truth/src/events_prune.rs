@@ -4,7 +4,6 @@
 //! pruning. Every DELETE advances a durable watermark the WS replay guard
 //! uses to force `_snapshot_required`. Never VACUUMs.
 
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::model::now_ms;
 use sqlx::{Sqlite, Transaction};
@@ -235,14 +234,18 @@ async fn prune_batch(
     horizon_ms: i64,
     batch: i64,
 ) -> Result<u64> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    let query = sqlx::query_scalar::<_, i64>(
-        "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE kind=?1 AND at<?2 LIMIT ?3) RETURNING id"
-    ).bind(kind).bind(horizon_ms).bind(batch);
-    let deleted_ids: Vec<i64> = query.fetch_all(&mut **tx).await?;
-    advance_watermark(&mut tx, &deleted_ids).await?;
-    tx.commit().await?;
-    Ok(deleted_ids.len() as u64)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await?;
+        let query = sqlx::query_scalar::<_, i64>(
+            "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE kind=?1 AND at<?2 LIMIT ?3) RETURNING id"
+        ).bind(kind).bind(horizon_ms).bind(batch);
+        let deleted_ids: Vec<i64> = query.fetch_all(&mut **tx).await?;
+        advance_watermark(&mut tx, &deleted_ids).await?;
+        tx.commit().await?;
+        Ok(deleted_ids.len() as u64)
+
+    })).await.map_err(crate::TruthError::from)?
 }
 
 async fn advance_watermark(tx: &mut Transaction<'_, Sqlite>, deleted_ids: &[i64]) -> Result<()> {

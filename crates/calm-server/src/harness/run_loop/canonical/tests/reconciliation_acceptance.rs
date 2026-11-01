@@ -35,19 +35,29 @@ async fn unchanged_idle_full_reconciliation_does_not_need_the_writer() {
     let card = fx.harness.inner.card_id.as_str();
     let observed = PausePoint::default();
     install_pause_for_test("canonical-idle-wait", card, observed.clone());
-    let writer = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    idle.release.notify_one();
-    fx.harness.request_progress();
-    let advanced = tokio::time::timeout(Duration::from_secs(1), observed.entered.notified()).await;
-    writer.rollback().await.unwrap();
-    observed.release.notify_one();
-    assert!(
-        advanced.is_ok(),
-        "the full unchanged idle pass must not queue behind a writer"
-    );
-    assert!(fx.frame().await.canonical_inputs.active.is_none());
-    peer.close(None).await.unwrap();
-    fx.harness.shutdown().await.unwrap();
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let writer = write_session.begin().await.unwrap();
+                idle.release.notify_one();
+                fx.harness.request_progress();
+                let advanced =
+                    tokio::time::timeout(Duration::from_secs(1), observed.entered.notified()).await;
+                writer.rollback().await.unwrap();
+                observed.release.notify_one();
+                assert!(
+                    advanced.is_ok(),
+                    "the full unchanged idle pass must not queue behind a writer"
+                );
+                assert!(fx.frame().await.canonical_inputs.active.is_none());
+                peer.close(None).await.unwrap();
+                fx.harness.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

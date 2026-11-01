@@ -201,18 +201,20 @@ impl Directory {
 
 /// Fault the production Stop transaction, rather than a removed marker path.
 pub(crate) async fn block_stops(pool: &SqliteDb) {
-    sqlx::query(
-        "CREATE TRIGGER c4_block_stops BEFORE UPDATE OF desired ON workspace_executions
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER c4_block_stops BEFORE UPDATE OF desired ON workspace_executions
          WHEN NEW.desired='stop' BEGIN SELECT RAISE(FAIL, 'provider Stop blocked'); END",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 }
 
 pub(crate) async fn unblock_stops(pool: &SqliteDb) {
-    sqlx::query("DROP TRIGGER c4_block_stops")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER c4_block_stops"))
         .await
         .unwrap();
 }

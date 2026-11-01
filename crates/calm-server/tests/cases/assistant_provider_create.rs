@@ -419,18 +419,20 @@ async fn managed_lifecycle(stack: &Stack, card: &str, track: &str) {
     canonical_assistant_lifecycle(stack, card, true).await;
     let current = stack.runtime(card).await;
     let outcomes = stack.outcomes(card).await.len();
-    sqlx::query(
-        "CREATE TRIGGER assistant_block_delete BEFORE DELETE ON tracks
+    (stack.repo().sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER assistant_block_delete BEFORE DELETE ON tracks
          BEGIN SELECT RAISE(FAIL, 'delete blocked'); END",
-    )
-    .execute(stack.repo().sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let (status, response) = stack
         .send("DELETE", &format!("/api/tracks/{track}"), None)
         .await;
-    sqlx::query("DROP TRIGGER assistant_block_delete")
-        .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+    (stack.repo().sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER assistant_block_delete"))
         .await
         .unwrap();
     assert!(!status.is_success(), "{response}");
@@ -526,9 +528,12 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
         .unwrap();
         // ACP cleanup must work without a native thread and must not reopen a session.
         if provider == AgentProvider::OpenCode {
-            sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
-                .bind(&runtime.id)
-                .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+            (stack.repo().sqlite_db().unwrap())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
+                        .bind(&runtime.id),
+                )
                 .await
                 .unwrap();
         }

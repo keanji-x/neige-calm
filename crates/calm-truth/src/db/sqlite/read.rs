@@ -117,10 +117,19 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>> {
-        let mut tx = super::begin_immediate_tx(&self.db).await?;
-        let areas = super::area_membership::areas_list_for_member(&mut tx, user_id).await?;
-        tx.commit().await?;
-        Ok(areas)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let areas =
+                        super::area_membership::areas_list_for_member(&mut tx, user_id).await?;
+                    tx.commit().await?;
+                    Ok(areas)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn area_require_access(
@@ -129,11 +138,21 @@ impl RepoRead for SqlxRepo {
         user_id: &str,
         access: calm_types::organization::AreaAccess,
     ) -> Result<Area> {
-        let mut tx = super::begin_immediate_tx(&self.db).await?;
-        let area =
-            super::area_membership::area_require_access(&mut tx, area_id, user_id, access).await?;
-        tx.commit().await?;
-        Ok(area)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let area = super::area_membership::area_require_access(
+                        &mut tx, area_id, user_id, access,
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok(area)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn harness_latest_terminal(

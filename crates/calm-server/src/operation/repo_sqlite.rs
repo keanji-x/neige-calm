@@ -5,7 +5,6 @@ use sqlx::query::Query;
 use sqlx::sqlite::{SqliteArguments, SqliteRow};
 use sqlx::{Row, Sqlite};
 
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::model::{new_id, now_ms};
 
@@ -48,9 +47,14 @@ impl SqlxOperationRepo {
         let lease_until = now + OPERATION_LEASE_MS;
         // A deferred read→write upgrade on `operations` deadlocks against any IMMEDIATE writer ("database is
         // deadlocked"); BEGIN IMMEDIATE parks at BEGIN holding nothing.
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        let ids = sqlx::query(
-            r#"SELECT id
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let ids = sqlx::query(
+                        r#"SELECT id
                FROM operations
                WHERE phase IN (
                  'pending',
@@ -64,18 +68,18 @@ impl SqlxOperationRepo {
                AND (?3 IS NULL OR id = ?3)
                ORDER BY created_at_ms ASC
                LIMIT ?2"#,
-        )
-        .bind(now)
-        .bind(limit)
-        .bind(exact_id)
-        .fetch_all(&mut **tx)
-        .await?;
+                    )
+                    .bind(now)
+                    .bind(limit)
+                    .bind(exact_id)
+                    .fetch_all(&mut **tx)
+                    .await?;
 
-        let mut claimed = Vec::new();
-        for row in ids {
-            let id: String = row.try_get("id")?;
-            let result = sqlx::query(
-                r#"UPDATE operations
+                    let mut claimed = Vec::new();
+                    for row in ids {
+                        let id: String = row.try_get("id")?;
+                        let result = sqlx::query(
+                            r#"UPDATE operations
                    SET lease_owner = ?1,
                        lease_until_ms = ?2,
                        updated_at_ms = ?3
@@ -89,31 +93,37 @@ impl SqlxOperationRepo {
                      'compensating'
                    )
                      AND (lease_until_ms IS NULL OR lease_until_ms < ?3)"#,
-            )
-            .bind(&lease_owner)
-            .bind(lease_until)
-            .bind(now)
-            .bind(&id)
-            .execute(&mut **tx)
-            .await?;
-            if result.rows_affected() == 1 {
-                let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
-                    .bind(&id)
-                    .fetch_one(&mut **tx)
-                    .await?;
-                claimed.push(operation_from_row(&row)?);
-            }
-        }
-        tx.commit().await?;
-        Ok(claimed)
+                        )
+                        .bind(&lease_owner)
+                        .bind(lease_until)
+                        .bind(now)
+                        .bind(&id)
+                        .execute(&mut **tx)
+                        .await?;
+                        if result.rows_affected() == 1 {
+                            let row = sqlx::query("SELECT * FROM operations WHERE id = ?1")
+                                .bind(&id)
+                                .fetch_one(&mut **tx)
+                                .await?;
+                            claimed.push(operation_from_row(&row)?);
+                        }
+                    }
+                    tx.commit().await?;
+                    Ok(claimed)
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn claim_operation_for_boot_recovery(&self, op_id: &str) -> Result<Option<Operation>> {
         let now = now_ms();
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let result = (self.pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
@@ -126,13 +136,13 @@ impl SqlxOperationRepo {
                    'spawn_succeeded',
                    'compensating'
                  )"#,
-        )
-        .bind(&lease_owner)
-        .bind(lease_until)
-        .bind(now)
-        .bind(op_id)
-        .execute(self.pool.writer_pool())
-        .await?;
+                )
+                .bind(&lease_owner)
+                .bind(lease_until)
+                .bind(now)
+                .bind(op_id),
+            )
+            .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
@@ -183,8 +193,9 @@ impl OperationRepo for SqlxOperationRepo {
         }
 
         let id = new_id();
-        let inserted = insert_pending_row(&id, kind, &key, &payload)?
-            .execute(self.pool.writer_pool())
+        let inserted = (self.pool)
+            .writer()
+            .execute(insert_pending_row(&id, kind, &key, &payload)?)
             .await;
 
         match inserted {
@@ -295,40 +306,47 @@ impl OperationRepo for SqlxOperationRepo {
         adapter: &dyn ProviderAdapter,
         prepared: Option<Box<dyn super::PreparedTx>>,
     ) -> Result<super::PrepareAdvance> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(super::PrepareAdvance::ClaimLost);
-        }
-        let applied = match prepared {
-            Some(prepared) => prepared.apply(&mut tx, op).await,
-            None => adapter
-                .prepare_tx(&mut tx, &op.payload, op)
-                .await
-                .map(super::PreparedTxResult::Ready),
-        };
-        let output = match applied {
-            Ok(super::PreparedTxResult::Stale) => {
-                tx.rollback().await?;
-                return Ok(super::PrepareAdvance::Stale);
-            }
-            Ok(super::PreparedTxResult::Ready(output)) => output,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        let events = output.post_commit_events.clone();
-        let advanced = advance_to_tx_committed_tx(&mut tx, op, &output).await?;
-        if advanced == TxCommittedAdvance::ClaimLost {
-            let _ = tx.rollback().await;
-            return Ok(super::PrepareAdvance::ClaimLost);
-        }
-        tx.commit().await?;
-        let next = self
-            .find_by_id(&op.id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))?;
-        Ok(super::PrepareAdvance::Committed(Box::new(next), events))
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    if !has_live_claim_tx(&mut tx, op).await? {
+                        return Ok(super::PrepareAdvance::ClaimLost);
+                    }
+                    let applied = match prepared {
+                        Some(prepared) => prepared.apply(&mut tx, op).await,
+                        None => adapter
+                            .prepare_tx(&mut tx, &op.payload, op)
+                            .await
+                            .map(super::PreparedTxResult::Ready),
+                    };
+                    let output = match applied {
+                        Ok(super::PreparedTxResult::Stale) => {
+                            tx.rollback().await?;
+                            return Ok(super::PrepareAdvance::Stale);
+                        }
+                        Ok(super::PreparedTxResult::Ready(output)) => output,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    let events = output.post_commit_events.clone();
+                    let advanced = advance_to_tx_committed_tx(&mut tx, op, &output).await?;
+                    if advanced == TxCommittedAdvance::ClaimLost {
+                        let _ = tx.rollback().await;
+                        return Ok(super::PrepareAdvance::ClaimLost);
+                    }
+                    tx.commit().await?;
+                    let next = self.find_by_id(&op.id).await?.ok_or_else(|| {
+                        CalmError::Internal(format!("operation {} vanished", op.id))
+                    })?;
+                    Ok(super::PrepareAdvance::Committed(Box::new(next), events))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_phase(
@@ -350,18 +368,23 @@ impl OperationRepo for SqlxOperationRepo {
         {
             return Ok(super::LeaveWrite::ClaimLost);
         }
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
-            tx.commit().await?;
-            return Ok(super::LeaveWrite::Retained);
-        }
-        let (tag, detail) = phase.serialize_split();
-        let detail_text = optional_json_text(detail.as_ref())?;
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    if !has_live_claim_tx(&mut tx, op).await? {
+                        return Ok(super::LeaveWrite::ClaimLost);
+                    }
+                    if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+                        tx.commit().await?;
+                        return Ok(super::LeaveWrite::Retained);
+                    }
+                    let (tag, detail) = phase.serialize_split();
+                    let detail_text = optional_json_text(detail.as_ref())?;
+                    let result = sqlx::query(
+                        r#"UPDATE operations
                SET phase = ?1,
                    phase_detail_json = ?2,
                    lease_owner = NULL,
@@ -369,22 +392,25 @@ impl OperationRepo for SqlxOperationRepo {
                    updated_at_ms = ?3
                WHERE id = ?4
                  AND lease_owner = ?5"#,
-        )
-        .bind(tag.as_str())
-        .bind(detail_text)
-        .bind(now_ms())
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        tx.commit().await?;
-        self.find_by_id(&op.id)
-            .await?
-            .map(super::LeaveWrite::Applied)
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                    )
+                    .bind(tag.as_str())
+                    .bind(detail_text)
+                    .bind(now_ms())
+                    .bind(&op.id)
+                    .bind(required_lease_owner(op)?)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() == 0 {
+                        return Ok(super::LeaveWrite::ClaimLost);
+                    }
+                    tx.commit().await?;
+                    self.find_by_id(&op.id)
+                        .await?
+                        .map(super::LeaveWrite::Applied)
+                        .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_phase_and_tx_output(
@@ -393,17 +419,26 @@ impl OperationRepo for SqlxOperationRepo {
         phase: Phase,
         output: &TxOutput,
     ) -> Result<Option<Operation>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        let written =
-            write_phase_and_tx_output(&mut tx, PhaseWrite::Claimed(op), &phase, output).await?;
-        if !written {
-            return Ok(None);
-        }
-        tx.commit().await?;
-        self.find_by_id(&op.id)
-            .await?
-            .map(Some)
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let written =
+                        write_phase_and_tx_output(&mut tx, PhaseWrite::Claimed(op), &phase, output)
+                            .await?;
+                    if !written {
+                        return Ok(None);
+                    }
+                    tx.commit().await?;
+                    self.find_by_id(&op.id)
+                        .await?
+                        .map(Some)
+                        .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn set_compensating(
@@ -412,25 +447,30 @@ impl OperationRepo for SqlxOperationRepo {
         state: &CompensationStateVersioned,
         owner_key: Option<&'static str>,
     ) -> Result<super::LeaveWrite<Operation>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
-            tx.commit().await?;
-            return Ok(super::LeaveWrite::Retained);
-        }
-        // Compensation owns its plan and phase. Domain output remains the
-        // owner's last committed checkpoint, including when a later checkpoint
-        // failed after an external effect already happened.
-        if read_output_tx(&mut tx, &op.id).await?.is_none() {
-            return Err(CalmError::Internal(format!(
-                "operation {} has no committed output for compensation",
-                op.id
-            )));
-        }
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    if !has_live_claim_tx(&mut tx, op).await? {
+                        return Ok(super::LeaveWrite::ClaimLost);
+                    }
+                    if writes::retain_owned_tx(&mut tx, op, owner_key).await? {
+                        tx.commit().await?;
+                        return Ok(super::LeaveWrite::Retained);
+                    }
+                    // Compensation owns its plan and phase. Domain output remains the
+                    // owner's last committed checkpoint, including when a later checkpoint
+                    // failed after an external effect already happened.
+                    if read_output_tx(&mut tx, &op.id).await?.is_none() {
+                        return Err(CalmError::Internal(format!(
+                            "operation {} has no committed output for compensation",
+                            op.id
+                        )));
+                    }
+                    let result = sqlx::query(
+                        r#"UPDATE operations
                SET phase = 'compensating',
                    phase_detail_json = ?1,
                    compensation_state = ?2,
@@ -439,25 +479,28 @@ impl OperationRepo for SqlxOperationRepo {
                    lease_until_ms = NULL,
                    updated_at_ms = ?4
                WHERE id = ?5 AND lease_owner = ?6"#,
-        )
-        .bind(serde_json::to_string(&json!({
-            "from_phase": state.from_phase, "reason": state.reason,
-        }))?)
-        .bind(serde_json::to_string(state)?)
-        .bind(&state.reason)
-        .bind(now_ms())
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        tx.commit().await?;
-        self.find_by_id(&op.id)
-            .await?
-            .map(super::LeaveWrite::Applied)
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                    )
+                    .bind(serde_json::to_string(&json!({
+                        "from_phase": state.from_phase, "reason": state.reason,
+                    }))?)
+                    .bind(serde_json::to_string(state)?)
+                    .bind(&state.reason)
+                    .bind(now_ms())
+                    .bind(&op.id)
+                    .bind(required_lease_owner(op)?)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() == 0 {
+                        return Ok(super::LeaveWrite::ClaimLost);
+                    }
+                    tx.commit().await?;
+                    self.find_by_id(&op.id)
+                        .await?
+                        .map(super::LeaveWrite::Applied)
+                        .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn update_compensation_state(
@@ -465,31 +508,39 @@ impl OperationRepo for SqlxOperationRepo {
         op: &Operation,
         state: &CompensationStateVersioned,
     ) -> Result<Option<Operation>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(None);
-        }
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    if !has_live_claim_tx(&mut tx, op).await? {
+                        return Ok(None);
+                    }
+                    let result = sqlx::query(
+                        r#"UPDATE operations
                SET compensation_state = ?1,
                    updated_at_ms = ?2
                WHERE id = ?3
                  AND lease_owner = ?4"#,
-        )
-        .bind(serde_json::to_string(state)?)
-        .bind(now_ms())
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut **tx)
-        .await?;
-        if result.rows_affected() == 0 {
-            return Ok(None);
-        }
-        tx.commit().await?;
-        self.find_by_id(&op.id)
-            .await?
-            .map(Some)
-            .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                    )
+                    .bind(serde_json::to_string(state)?)
+                    .bind(now_ms())
+                    .bind(&op.id)
+                    .bind(required_lease_owner(op)?)
+                    .execute(&mut **tx)
+                    .await?;
+                    if result.rows_affected() == 0 {
+                        return Ok(None);
+                    }
+                    tx.commit().await?;
+                    self.find_by_id(&op.id)
+                        .await?
+                        .map(Some)
+                        .ok_or_else(|| CalmError::Internal(format!("operation {} vanished", op.id)))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn settle_claimed(
@@ -498,18 +549,28 @@ impl OperationRepo for SqlxOperationRepo {
         outcome: super::TerminalOutcome,
         adapter: &dyn ProviderAdapter,
     ) -> Result<super::LeaveWrite<OperationResult>> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        if !has_live_claim_tx(&mut tx, op).await? {
-            return Ok(super::LeaveWrite::ClaimLost);
-        }
-        if writes::retain_owned_tx(&mut tx, op, adapter.owns_parked_resource()).await? {
-            tx.commit().await?;
-            return Ok(super::LeaveWrite::Retained);
-        }
-        let result = super::settlement::write_terminal_tx(&mut tx, op, &outcome).await?;
-        super::settlement::append_result_event_tx(&mut tx, op, adapter, &outcome, None).await?;
-        tx.commit().await?;
-        Ok(super::LeaveWrite::Applied(result))
+        let write_db = (self.pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    if !has_live_claim_tx(&mut tx, op).await? {
+                        return Ok(super::LeaveWrite::ClaimLost);
+                    }
+                    if writes::retain_owned_tx(&mut tx, op, adapter.owns_parked_resource()).await? {
+                        tx.commit().await?;
+                        return Ok(super::LeaveWrite::Retained);
+                    }
+                    let result =
+                        super::settlement::write_terminal_tx(&mut tx, op, &outcome).await?;
+                    super::settlement::append_result_event_tx(&mut tx, op, adapter, &outcome, None)
+                        .await?;
+                    tx.commit().await?;
+                    Ok(super::LeaveWrite::Applied(result))
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 }
 
@@ -545,10 +606,18 @@ pub async fn complete_parked_for_test(
     op_id: &OperationId,
     outcome: &ParkedOutcome,
 ) -> Result<ParkedCompletion> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    let completion = complete_parked_tx(&mut tx, op_id, outcome).await?;
-    tx.commit().await?;
-    Ok(completion)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let completion = complete_parked_tx(&mut tx, op_id, outcome).await?;
+                tx.commit().await?;
+                Ok(completion)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 pub(super) async fn fetch_claimed_parked(

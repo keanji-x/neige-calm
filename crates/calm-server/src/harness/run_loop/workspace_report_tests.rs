@@ -9,13 +9,12 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
         // No template snapshot and an existing thread: updating the capability must suffice.
-        sqlx::query(concat!(
+        (fx.repo.db()).writer().execute(sqlx::query(concat!(
             "INSERT INTO managed_track_identities(owner,identity,track_id,report_read_scope,",
             "report_time_zone,tool_policy,kernel_controls_lifecycle) ",
             "VALUES('test','2026-10-04',?1,'workspace','Asia/Shanghai','reports',1)",
         ))
-        .bind(inner.track_id.as_str())
-        .execute(fx.repo.pool())
+        .bind(inner.track_id.as_str()))
         .await
         .unwrap();
         let user = QueueEntry::user_message("Read other Areas' reports".into(), None, vec![]);
@@ -84,11 +83,10 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             fx.harness.snapshot().await.unwrap().phase,
             HarnessPhaseTag::TurnCompleted
         );
-        sqlx::query(
+        (fx.repo.db()).writer().execute(sqlx::query(
             "UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1",
         )
-        .bind(inner.track_id.as_str())
-        .execute(fx.repo.pool())
+        .bind(inner.track_id.as_str()))
         .await
         .unwrap();
         fx.enqueue(vec![QueueEntry::user_message(
@@ -118,14 +116,13 @@ async fn ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants() {
         let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
         if let Some(scope) = scope {
-            sqlx::query(concat!(
+            (fx.repo.db()).writer().execute(sqlx::query(concat!(
                 "INSERT INTO managed_track_identities(owner,identity,track_id,report_read_scope,",
                 "report_time_zone,tool_policy,kernel_controls_lifecycle) ",
                 "VALUES('test','2026-10-04',?1,?2,'Asia/Shanghai','reports',1)",
             ))
             .bind(inner.track_id.as_str())
-            .bind(scope)
-            .execute(fx.repo.pool())
+            .bind(scope))
             .await
             .unwrap();
         }

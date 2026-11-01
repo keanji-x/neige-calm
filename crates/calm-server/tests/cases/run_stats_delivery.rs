@@ -91,8 +91,9 @@ async fn run_stats_delivered_commits_survive_event_retention_and_ignore_no_chang
     assert_eq!(candidate.commit_sha, candidate.base_sha);
     projector.recompute_track(fx.track()).await.unwrap();
     assert_eq!(count(&fx).await, 1.0);
-    sqlx::query("DELETE FROM events")
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM events"))
         .await
         .unwrap();
     assert!(!projector.recompute_track(fx.track()).await.unwrap());

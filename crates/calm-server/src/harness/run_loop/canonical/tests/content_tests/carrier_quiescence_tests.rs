@@ -150,33 +150,42 @@ async fn carrier_quiescence_parked_loop_keeps_ingress_polling() {
         .observe_canonical_source(next, fx.source.clone())
         .await
         .unwrap();
-    let tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    tokio::time::timeout(Duration::from_millis(200), tick(&fx.harness.inner, true))
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let tx = write_session.begin().await.unwrap();
+                tokio::time::timeout(Duration::from_millis(200), tick(&fx.harness.inner, true))
+                    .await
+                    .expect("parked tick must skip SQL entirely")
+                    .unwrap();
+                tokio::time::timeout(
+                    Duration::from_millis(200),
+                    fx.harness.stop_canonical(fx.source.clone()),
+                )
+                .await
+                .expect("parked Stop must skip SQL")
+                .unwrap_err();
+                tx.rollback().await.unwrap();
+                assert_eq!(
+                    fx.frame().await.header.phase,
+                    HarnessPhaseTag::TurnCompleted
+                );
+                let parked = fx.frame().await;
+                assert!(parked.canonical_inputs.active.is_none());
+                assert_eq!(parked.canonical_inputs.pending.len(), 1);
+                assert_eq!(parked.header.last_turn_id.as_deref(), Some("parked"));
+                fx.harness.inner.shutting_down.store(true, Ordering::SeqCst);
+                drop(track);
+                drop(owner);
+                complete(&sibling, &mut peer, &sibling_thread, "sibling").await;
+                stop(&sibling, &mut peer).await;
+                stop(&fx, &mut peer).await;
+            })
+        })
         .await
-        .expect("parked tick must skip SQL entirely")
-        .unwrap();
-    tokio::time::timeout(
-        Duration::from_millis(200),
-        fx.harness.stop_canonical(fx.source.clone()),
-    )
-    .await
-    .expect("parked Stop must skip SQL")
-    .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert_eq!(
-        fx.frame().await.header.phase,
-        HarnessPhaseTag::TurnCompleted
-    );
-    let parked = fx.frame().await;
-    assert!(parked.canonical_inputs.active.is_none());
-    assert_eq!(parked.canonical_inputs.pending.len(), 1);
-    assert_eq!(parked.header.last_turn_id.as_deref(), Some("parked"));
-    fx.harness.inner.shutting_down.store(true, Ordering::SeqCst);
-    drop(track);
-    drop(owner);
-    complete(&sibling, &mut peer, &sibling_thread, "sibling").await;
-    stop(&sibling, &mut peer).await;
-    stop(&fx, &mut peer).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -198,77 +207,86 @@ async fn carrier_quiescence_ingress_writers_refuse_committed_replacement() {
     .unwrap()
     .unwrap();
     row.publish(inner);
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    crate::db::sqlite::session_supersede_and_start_tx(
-        &mut tx,
-        &inner.worker_session_id,
-        crate::session_projection_repo::WorkerSessionInit {
-            id: "replacement".into(),
-            card_id: inner.card_id.to_string(),
-            kind: crate::session_projection_repo::WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
-            status: crate::session_projection_repo::WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(
-                serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
-            ),
-            spawn_op_id: None,
-            now_ms: crate::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let terminal_refused = crate::harness::turn_outcome::record(
-        inner.repo.as_ref(),
-        &inner.worker_session_id,
-        inner.card_id.as_str(),
-        inner.track_id.as_str(),
-        &thread,
-        "after-rotation",
-        &json!({"id":"after-rotation","status":"completed"}),
-        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
-    )
-    .await
-    .is_err();
-    let presentation_refused = persist_native_item(
-        inner,
-        &thread,
-        Some("retired"),
-        "item/completed",
-        &json!({"item":{"id":"before-rotation","type":"agentMessage","text":"before"}}),
-    )
-    .await
-    .is_err();
-    let legacy_refused = insert_item_row(
-        inner,
-        &thread,
-        Some("after-rotation"),
-        Some("after-rotation"),
-        Some("agentMessage"),
-        "item/completed",
-        "{}",
-        None,
-    )
-    .await
-    .is_err();
-    assert_eq!(
-        (terminal_refused, presentation_refused, legacy_refused),
-        (true, true, true)
-    );
-    let rows = inner
-        .repo
-        .transcript_rows_of_thread(inner.card_id.as_str(), &thread)
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::db::sqlite::session_supersede_and_start_tx(
+                    &mut tx,
+                    &inner.worker_session_id,
+                    crate::session_projection_repo::WorkerSessionInit {
+                        id: "replacement".into(),
+                        card_id: inner.card_id.to_string(),
+                        kind: crate::session_projection_repo::WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
+                        status: crate::session_projection_repo::WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(
+                            serde_json::to_value(CanonicalHarnessSnapshot::dormant(0)).unwrap(),
+                        ),
+                        spawn_op_id: None,
+                        now_ms: crate::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let terminal_refused = crate::harness::turn_outcome::record(
+                    inner.repo.as_ref(),
+                    &inner.worker_session_id,
+                    inner.card_id.as_str(),
+                    inner.track_id.as_str(),
+                    &thread,
+                    "after-rotation",
+                    &json!({"id":"after-rotation","status":"completed"}),
+                    crate::harness::turn_outcome::Confirmation::ProviderTerminal,
+                )
+                .await
+                .is_err();
+                let presentation_refused = persist_native_item(
+                    inner,
+                    &thread,
+                    Some("retired"),
+                    "item/completed",
+                    &json!({"item":{"id":"before-rotation","type":"agentMessage","text":"before"}}),
+                )
+                .await
+                .is_err();
+                let legacy_refused = insert_item_row(
+                    inner,
+                    &thread,
+                    Some("after-rotation"),
+                    Some("after-rotation"),
+                    Some("agentMessage"),
+                    "item/completed",
+                    "{}",
+                    None,
+                )
+                .await
+                .is_err();
+                assert_eq!(
+                    (terminal_refused, presentation_refused, legacy_refused),
+                    (true, true, true)
+                );
+                let rows = inner
+                    .repo
+                    .transcript_rows_of_thread(inner.card_id.as_str(), &thread)
+                    .await
+                    .unwrap();
+                assert!(
+                    rows.iter()
+                        .all(|row| row.turn_id.as_deref() != Some("after-rotation"))
+                );
+                stop(&fx, &mut peer).await;
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        rows.iter()
-            .all(|row| row.turn_id.as_deref() != Some("after-rotation"))
-    );
-    stop(&fx, &mut peer).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]

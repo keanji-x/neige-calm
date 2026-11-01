@@ -40,10 +40,18 @@ async fn raw(
     .unwrap()
 }
 async fn import(repo: &SqlxRepo, card: &str, id: i64, boundary: i64) -> Result<Option<i64>> {
-    let mut tx = begin_immediate_tx(repo.db()).await?;
-    let result = import_item_tx(&mut tx, card, id, boundary).await?;
-    tx.commit().await?;
-    Ok(result)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let result = import_item_tx(&mut tx, card, id, boundary).await?;
+                tx.commit().await?;
+                Ok(result)
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }
 async fn page(repo: &SqlxRepo, card: &str, after: i64, limit: i64, desc: bool) -> ConversationPage {
     super::super::conversation_read::page(repo.pool(), card, after, limit, desc)
@@ -117,190 +125,194 @@ async fn u2_imported_excludes_indexed_native_identity() {
         "item/completed",
     )
     .await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let seq = allocate_presentation_tx(
-        &mut tx,
-        &card,
-        PresentationSource::NativeItem { row_id: first },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(import(&repo, &card, first, seq).await.unwrap(), None);
-    let replacement = raw(
-        &repo,
-        &card,
-        "thread",
-        Some("native"),
-        Some("agentMessage"),
-        "item/completed",
-    )
-    .await;
-    sqlx::query("UPDATE harness_items SET worker_session_id='replacement' WHERE id=?1")
-        .bind(replacement)
-        .execute(repo.pool())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let seq = allocate_presentation_tx(
+            &mut tx,
+            &card,
+            PresentationSource::NativeItem { row_id: first },
+        )
         .await
         .unwrap();
-    assert_eq!(import(&repo, &card, replacement, seq).await.unwrap(), None);
-    sqlx::query("UPDATE conversation_presentations SET erased_by_operation_id=?1,native_item_row_id=NULL WHERE sequence=?2")
-        .bind("a".repeat(32)).bind(seq).execute(repo.pool()).await.unwrap();
-    repo.fixture_transcript_delete(first).await.unwrap();
-    assert_eq!(import(&repo, &card, replacement, seq).await.unwrap(), None);
-    let distinct = raw(
-        &repo,
-        &card,
-        "other-thread",
-        Some("native"),
-        Some("agentMessage"),
-        "item/completed",
-    )
-    .await;
-    let imported = import(&repo, &card, distinct, seq).await.unwrap().unwrap();
-    // Defensive read exclusion happens before LIMIT even when native indexing is later.
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    allocate_presentation_tx(
-        &mut tx,
-        &card,
-        PresentationSource::NativeItem { row_id: distinct },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let p = page(&repo, &card, seq, 1, false).await;
-    assert_eq!(p.items.len(), 1);
-    assert!(p.items[0].cursor.position > imported);
-    assert!(matches!(
-        p.items[0].source,
-        ConversationDisplaySource::Native { .. }
-    ));
+        tx.commit().await.unwrap();
+        assert_eq!(import(&repo, &card, first, seq).await.unwrap(), None);
+        let replacement = raw(
+            &repo,
+            &card,
+            "thread",
+            Some("native"),
+            Some("agentMessage"),
+            "item/completed",
+        )
+        .await;
+        (repo.db()).writer().execute(sqlx::query("UPDATE harness_items SET worker_session_id='replacement' WHERE id=?1")
+            .bind(replacement))
+            .await
+            .unwrap();
+        assert_eq!(import(&repo, &card, replacement, seq).await.unwrap(), None);
+        (repo.db()).writer().execute(sqlx::query("UPDATE conversation_presentations SET erased_by_operation_id=?1,native_item_row_id=NULL WHERE sequence=?2")
+            .bind("a".repeat(32)).bind(seq)).await.unwrap();
+        repo.fixture_transcript_delete(first).await.unwrap();
+        assert_eq!(import(&repo, &card, replacement, seq).await.unwrap(), None);
+        let distinct = raw(
+            &repo,
+            &card,
+            "other-thread",
+            Some("native"),
+            Some("agentMessage"),
+            "item/completed",
+        )
+        .await;
+        let imported = import(&repo, &card, distinct, seq).await.unwrap().unwrap();
+        // Defensive read exclusion happens before LIMIT even when native indexing is later.
+        let mut tx = write_session.begin().await.unwrap();
+        allocate_presentation_tx(
+            &mut tx,
+            &card,
+            PresentationSource::NativeItem { row_id: distinct },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let p = page(&repo, &card, seq, 1, false).await;
+        assert_eq!(p.items.len(), 1);
+        assert!(p.items[0].cursor.position > imported);
+        assert!(matches!(
+            p.items[0].source,
+            ConversationDisplaySource::Native { .. }
+        ));
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
 async fn u2_imported_mixed_boundary_order_pagination_and_identity_erasure() {
     let (repo, _, card) = fixture().await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let human = insert_message_tx(
-        &mut tx,
-        &card,
-        &MessageAuthor::AuthenticatedHuman {
-            registered_user_id: LEGACY_OWNER_USER_ID.into(),
-        },
-        body("same words"),
-    )
-    .await
-    .unwrap();
-    let boundary = allocate_presentation_tx(
-        &mut tx,
-        &card,
-        PresentationSource::HumanMessage(&human.reference.message_id),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let old = page(&repo, &card, 0, 1, false).await.items[0]
-        .cursor
-        .clone();
-    let a = raw(
-        &repo,
-        &card,
-        "thread",
-        Some("a"),
-        Some("userMessage"),
-        "item/completed",
-    )
-    .await;
-    let b = raw(
-        &repo,
-        &card,
-        "thread",
-        Some("b"),
-        Some("userMessage"),
-        "item/completed",
-    )
-    .await;
-    sqlx::query("UPDATE harness_items SET created_at_ms=1000-id WHERE card_id=?1")
-        .bind(&card)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    assert!(matches!(
-        import(&repo, &card, a, boundary + 1).await,
-        Err(Core(Conflict(_)))
-    ));
-    let sa = import(&repo, &card, a, boundary).await.unwrap().unwrap();
-    let sb = import(&repo, &card, b, boundary).await.unwrap().unwrap();
-    assert_eq!(import(&repo, &card, a, boundary).await.unwrap(), Some(sa));
-    assert!(sa > boundary && sb > sa);
-    assert_eq!(page(&repo, &card, 0, 1, false).await.items[0].cursor, old);
-    for desc in [false, true] {
-        let mut after = 0;
-        let mut positions = Vec::new();
-        loop {
-            let p = page(&repo, &card, after, 1, desc).await;
-            positions.extend(p.items.iter().map(|i| i.cursor.position));
-            if let Some(next) = p.next_cursor {
-                after = next.position;
-            } else {
-                break;
-            }
-        }
-        assert_eq!(
-            positions,
-            if desc {
-                vec![sb, sa, boundary]
-            } else {
-                vec![boundary, sa, sb]
-            }
-        );
-    }
-    assert!(page(&repo, &card, 0, 0, false).await.items.is_empty());
-    let before =
-        serde_json::to_value(&page(&repo, &card, boundary, 1, false).await.items[0]).unwrap();
-    sqlx::query(
-        "UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE sequence=?2",
-    )
-    .bind("b".repeat(32))
-    .bind(sa)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    repo.fixture_transcript_delete(a).await.unwrap();
-    assert_eq!(import(&repo, &card, a, boundary).await.unwrap(), Some(sa));
-    let p = page(&repo, &card, boundary, 20, false).await;
-    let removed = serde_json::to_value(&p.items[0]).unwrap();
-    assert_eq!(removed["cursor"], before["cursor"]);
-    assert_eq!(
-        removed["source"]["identity"]["provenance"],
-        before["source"]["provenance"]
-    );
-    assert!(removed["source"].get("item").is_none());
-    assert!(matches!(
-        p.items[1].source,
-        ConversationDisplaySource::ImportedItem { .. }
-    ));
-    assert!(matches!(
-        sqlx::query(
-            "UPDATE conversation_presentations SET imported_provenance_json='{}' WHERE sequence=?1"
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let human = insert_message_tx(
+            &mut tx,
+            &card,
+            &MessageAuthor::AuthenticatedHuman {
+                registered_user_id: LEGACY_OWNER_USER_ID.into(),
+            },
+            body("same words"),
         )
-        .bind(sa)
-        .execute(repo.pool())
-        .await,
-        Err(Database(ref db)) if db.code().as_deref() == Some("1811")
-    ));
-    sqlx::query("UPDATE harness_items SET params='{}' WHERE id=?1")
-        .bind(b)
-        .execute(repo.pool())
         .await
         .unwrap();
-    assert!(matches!(
-        super::super::conversation_read::page(repo.pool(), &card, sa, 1, false).await,
-        Err(Core(Conflict(_)))
-    ));
-    repo.fixture_transcript_delete(b).await.unwrap();
-    assert!(matches!(
-        super::super::conversation_read::page(repo.pool(), &card, sa, 1, false).await,
-        Err(Core(Conflict(_)))
-    ));
+        let boundary = allocate_presentation_tx(
+            &mut tx,
+            &card,
+            PresentationSource::HumanMessage(&human.reference.message_id),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let old = page(&repo, &card, 0, 1, false).await.items[0]
+            .cursor
+            .clone();
+        let a = raw(
+            &repo,
+            &card,
+            "thread",
+            Some("a"),
+            Some("userMessage"),
+            "item/completed",
+        )
+        .await;
+        let b = raw(
+            &repo,
+            &card,
+            "thread",
+            Some("b"),
+            Some("userMessage"),
+            "item/completed",
+        )
+        .await;
+        (repo.db()).writer().execute(sqlx::query("UPDATE harness_items SET created_at_ms=1000-id WHERE card_id=?1")
+            .bind(&card))
+            .await
+            .unwrap();
+        assert!(matches!(
+            import(&repo, &card, a, boundary + 1).await,
+            Err(Core(Conflict(_)))
+        ));
+        let sa = import(&repo, &card, a, boundary).await.unwrap().unwrap();
+        let sb = import(&repo, &card, b, boundary).await.unwrap().unwrap();
+        assert_eq!(import(&repo, &card, a, boundary).await.unwrap(), Some(sa));
+        assert!(sa > boundary && sb > sa);
+        assert_eq!(page(&repo, &card, 0, 1, false).await.items[0].cursor, old);
+        for desc in [false, true] {
+            let mut after = 0;
+            let mut positions = Vec::new();
+            loop {
+                let p = page(&repo, &card, after, 1, desc).await;
+                positions.extend(p.items.iter().map(|i| i.cursor.position));
+                if let Some(next) = p.next_cursor {
+                    after = next.position;
+                } else {
+                    break;
+                }
+            }
+            assert_eq!(
+                positions,
+                if desc {
+                    vec![sb, sa, boundary]
+                } else {
+                    vec![boundary, sa, sb]
+                }
+            );
+        }
+        assert!(page(&repo, &card, 0, 0, false).await.items.is_empty());
+        let before =
+            serde_json::to_value(&page(&repo, &card, boundary, 1, false).await.items[0]).unwrap();
+        (repo.db()).writer().execute(sqlx::query(
+            "UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE sequence=?2",
+        )
+        .bind("b".repeat(32))
+        .bind(sa))
+        .await
+        .unwrap();
+        repo.fixture_transcript_delete(a).await.unwrap();
+        assert_eq!(import(&repo, &card, a, boundary).await.unwrap(), Some(sa));
+        let p = page(&repo, &card, boundary, 20, false).await;
+        let removed = serde_json::to_value(&p.items[0]).unwrap();
+        assert_eq!(removed["cursor"], before["cursor"]);
+        assert_eq!(
+            removed["source"]["identity"]["provenance"],
+            before["source"]["provenance"]
+        );
+        assert!(removed["source"].get("item").is_none());
+        assert!(matches!(
+            p.items[1].source,
+            ConversationDisplaySource::ImportedItem { .. }
+        ));
+        assert!(matches!(
+            sqlx::query(
+                "UPDATE conversation_presentations SET imported_provenance_json='{}' WHERE sequence=?1"
+            )
+            .bind(sa)
+            .execute(repo.pool())
+            .await,
+            Err(Database(ref db)) if db.code().as_deref() == Some("1811")
+        ));
+        (repo.db()).writer().execute(sqlx::query("UPDATE harness_items SET params='{}' WHERE id=?1")
+            .bind(b))
+            .await
+            .unwrap();
+        assert!(matches!(
+            super::super::conversation_read::page(repo.pool(), &card, sa, 1, false).await,
+            Err(Core(Conflict(_)))
+        ));
+        repo.fixture_transcript_delete(b).await.unwrap();
+        assert!(matches!(
+            super::super::conversation_read::page(repo.pool(), &card, sa, 1, false).await,
+            Err(Core(Conflict(_)))
+        ));
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -319,7 +331,13 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
             ),
             ..sqlx::migrate::Migrator::DEFAULT
         };
-        old.run(db.writer_pool()).await.unwrap();
+        { let migrator = &(old);
+    (db).writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|connection| Box::pin(async move {
+            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+        })).await
+    })).await.unwrap().unwrap()
+}.unwrap();
         let repo = SqlxRepo {
             db,
             card_role_cache: super::super::CardRoleCache::new(),
@@ -337,161 +355,168 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
             "item/completed",
         )
         .await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let h = insert_message_tx(
-            &mut tx,
-            &card,
-            &MessageAuthor::AuthenticatedHuman {
-                registered_user_id: LEGACY_OWNER_USER_ID.into(),
-            },
-            body("original"),
-        )
-        .await
-        .unwrap();
-        allocate_presentation_tx(
-            &mut tx,
-            &card,
-            PresentationSource::HumanMessage(&h.reference.message_id),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let native = raw(
-            &repo,
-            &card,
-            "old-thread",
-            Some("old-item"),
-            Some("agentMessage"),
-            "item/completed",
-        )
-        .await;
-        let identity = presentation::native_source_identity(
-            "old-thread",
-            Some("old-item"),
-            Some("agentMessage"),
-            "item/completed",
-            &serde_json::json!({}),
-        )
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO conversation_presentations(
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let h = insert_message_tx(
+                &mut tx,
+                &card,
+                &MessageAuthor::AuthenticatedHuman {
+                    registered_user_id: LEGACY_OWNER_USER_ID.into(),
+                },
+                body("original"),
+            )
+            .await
+            .unwrap();
+            allocate_presentation_tx(
+                &mut tx,
+                &card,
+                PresentationSource::HumanMessage(&h.reference.message_id),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let native = raw(
+                &repo,
+                &card,
+                "old-thread",
+                Some("old-item"),
+                Some("agentMessage"),
+                "item/completed",
+            )
+            .await;
+            let identity = presentation::native_source_identity(
+                "old-thread",
+                Some("old-item"),
+                Some("agentMessage"),
+                "item/completed",
+                &serde_json::json!({}),
+            )
+            .unwrap();
+            (repo.db()).writer().execute(sqlx::query(
+                "INSERT INTO conversation_presentations(
             card_id,source_kind,source_identity,native_item_row_id,erased_by_operation_id)
             VALUES(?1,'native_item',?2,?3,?4)",
-        )
-        .bind(&card)
-        .bind(identity)
-        .bind(native)
-        .bind("e".repeat(32))
-        .execute(repo.pool())
-        .await
-        .unwrap();
-        if empty {
-            sqlx::query("DELETE FROM conversation_presentations")
-                .execute(repo.pool())
-                .await
-                .unwrap();
-        }
-        sqlx::query("UPDATE sqlite_sequence SET seq=9000 WHERE name='conversation_presentations'")
-            .execute(repo.pool())
+            )
+            .bind(&card)
+            .bind(identity)
+            .bind(native)
+            .bind("e".repeat(32)))
             .await
             .unwrap();
-        let cards: Vec<(String, String)> =
-            sqlx::query_as("SELECT id,payload FROM cards ORDER BY id")
-                .fetch_all(repo.pool())
+            if empty {
+                (repo.db()).writer().execute(sqlx::query("DELETE FROM conversation_presentations"))
+                    .await
+                    .unwrap();
+            }
+            (repo.db()).writer().execute(sqlx::query("UPDATE sqlite_sequence SET seq=9000 WHERE name='conversation_presentations'"))
                 .await
                 .unwrap();
-        type OldPresentation = (
-            i64,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        );
-        let old_columns =
-            "SELECT sequence,card_id,source_kind,source_identity,message_id,observation_id,
+            let cards: Vec<(String, String)> =
+                sqlx::query_as("SELECT id,payload FROM cards ORDER BY id")
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap();
+            type OldPresentation = (
+                i64,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+            );
+            let old_columns =
+                "SELECT sequence,card_id,source_kind,source_identity,message_id,observation_id,
             native_item_row_id,submission_id,erased_by_operation_id
             FROM conversation_presentations ORDER BY sequence";
-        let before: Vec<OldPresentation> = sqlx::query_as(old_columns)
-            .fetch_all(repo.pool())
-            .await
-            .unwrap();
-        crate::MIGRATOR.run(repo.pool()).await.unwrap();
-        assert_eq!(
-            sqlx::query_as::<_, (String, String)>("SELECT id,payload FROM cards ORDER BY id")
+            let before: Vec<OldPresentation> = sqlx::query_as(old_columns)
                 .fetch_all(repo.pool())
                 .await
-                .unwrap(),
-            cards
-        );
-        assert_eq!(
-            sqlx::query_as::<_, OldPresentation>(old_columns)
-                .fetch_all(repo.pool())
+                .unwrap();
+            { let migrator = &(crate::MIGRATOR);
+    (repo.db()).writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|connection| Box::pin(async move {
+            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+        })).await
+    })).await.unwrap().unwrap()
+}.unwrap();
+            assert_eq!(
+                sqlx::query_as::<_, (String, String)>("SELECT id,payload FROM cards ORDER BY id")
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap(),
+                cards
+            );
+            assert_eq!(
+                sqlx::query_as::<_, OldPresentation>(old_columns)
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap(),
+                before
+            );
+            assert!(!canonical(&repo, &historical).await.unwrap());
+            assert!(canonical(&repo, &card).await.unwrap());
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT seq FROM sqlite_sequence WHERE name='conversation_presentations'"
+                )
+                .fetch_one(repo.pool())
                 .await
                 .unwrap(),
-            before
-        );
-        assert!(!canonical(&repo, &historical).await.unwrap());
-        assert!(canonical(&repo, &card).await.unwrap());
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT seq FROM sqlite_sequence WHERE name='conversation_presentations'"
+                9000
+            );
+            assert!(
+                sqlx::query("PRAGMA foreign_key_check")
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let error=(repo.db()).writer().execute(sqlx::query("INSERT INTO conversation_assistant_creations VALUES(?1,'track',?2,?3,'carrier','message',1,'{}')")
+                .bind(&card).bind("a".repeat(64)).bind(LEGACY_OWNER_USER_ID)).await.unwrap_err();
+            assert!(matches!(error, crate::TruthError::Db(Database(ref db)) if db.code().as_deref() == Some("1811")));
+            let row = raw(
+                &repo,
+                &card,
+                "thread",
+                None,
+                Some("userMessage"),
+                "item/completed",
+            )
+            .await;
+            assert!(matches!(
+                import(&repo, &historical, row, 0).await,
+                Err(Core(Conflict(_)))
+            ));
+            assert!(
+                import(
+                    &repo,
+                    &card,
+                    row,
+                    if empty { 0 } else { before.last().unwrap().0 }
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                    > 9000
+            );
+            let stored = sqlx::query(
+                "SELECT * FROM conversation_presentations WHERE source_kind='imported_item'",
             )
             .fetch_one(repo.pool())
             .await
-            .unwrap(),
-            9000
-        );
-        assert!(
-            sqlx::query("PRAGMA foreign_key_check")
-                .fetch_all(repo.pool())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        let error=sqlx::query("INSERT INTO conversation_assistant_creations VALUES(?1,'track',?2,?3,'carrier','message',1,'{}')")
-            .bind(&card).bind("a".repeat(64)).bind(LEGACY_OWNER_USER_ID).execute(repo.pool()).await.unwrap_err();
-        assert!(matches!(error, Database(ref db) if db.code().as_deref() == Some("1811")));
-        let row = raw(
-            &repo,
-            &card,
-            "thread",
-            None,
-            Some("userMessage"),
-            "item/completed",
-        )
-        .await;
-        assert!(matches!(
-            import(&repo, &historical, row, 0).await,
-            Err(Core(Conflict(_)))
-        ));
-        assert!(
-            import(
-                &repo,
-                &card,
-                row,
-                if empty { 0 } else { before.last().unwrap().0 }
-            )
-            .await
-            .unwrap()
-            .unwrap()
-                > 9000
-        );
-        let stored = sqlx::query(
-            "SELECT * FROM conversation_presentations WHERE source_kind='imported_item'",
-        )
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert!(
-            stored
-                .try_get::<Option<String>, _>("submission_id")
-                .unwrap()
-                .is_none()
-        );
+            .unwrap();
+            assert!(
+                stored
+                    .try_get::<Option<String>, _>("submission_id")
+                    .unwrap()
+                    .is_none()
+            );
+
+    })).await.expect("independent write operation")
     }
 }
 
@@ -518,11 +543,14 @@ async fn u2_imported_projection_segments_attachments_original_bytes_and_row_orde
     .await;
     let params = r#"{ "_projection":true,"item":{"type":"agentMessage","text":"legacy"}}"#;
     let segments = r#"[ {"presentation":"user","text":"original","attachments":[{"id":"00000000-0000-4000-8000-000000000001.png","size":1,"url":"/api/cards/image","contentType":"image/png"}]} ]"#;
-    sqlx::query("UPDATE harness_items SET params=?1,input_segments=?2 WHERE id=?3")
-        .bind(params)
-        .bind(segments)
-        .bind(a)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE harness_items SET params=?1,input_segments=?2 WHERE id=?3")
+                .bind(params)
+                .bind(segments)
+                .bind(a),
+        )
         .await
         .unwrap();
     let seq = import(&repo, &card, a, 0).await.unwrap().unwrap();
@@ -609,12 +637,11 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
             .unwrap();
             tx.commit().await.unwrap();
         }
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE sequence=?2",
         )
         .bind("d".repeat(32))
-        .bind(seq)
-        .execute(repo.pool())
+        .bind(seq))
         .await
         .unwrap();
         repo.fixture_transcript_delete(row).await.unwrap();
@@ -627,9 +654,12 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
             "item/completed",
         )
         .await;
-        sqlx::query("UPDATE harness_items SET worker_session_id='replacement' WHERE id=?1")
-            .bind(replacement)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE harness_items SET worker_session_id='replacement' WHERE id=?1")
+                    .bind(replacement),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -677,15 +707,25 @@ async fn u2_imported_erasure_fences_native_replacement_and_observer() {
                 "item/completed",
             )
             .await;
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            allocate_presentation_tx(
-                &mut tx,
-                &card,
-                PresentationSource::NativeItem { row_id: distinct },
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
+            let card = &card;
+            let write_db = (repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        allocate_presentation_tx(
+                            &mut tx,
+                            &card,
+                            PresentationSource::NativeItem { row_id: distinct },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    })
+                })
+                .await
+                .expect("independent write operation")
         }
         assert_eq!(page(&repo, &card, boundary, 20, false).await.items.len(), 3);
         let (_, other_card) = super::tests::fixture_card(&repo).await;

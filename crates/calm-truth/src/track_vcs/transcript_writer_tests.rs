@@ -1,7 +1,7 @@
 //! Pause the real transcript projection; the regression never substitutes a renderer.
 use super::*;
 use crate::db::prelude::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
@@ -239,60 +239,73 @@ async fn transcript_refresh_allows_unrelated_writer_during_hook_interpretation()
     let repo = &fx.repo;
     let track = &fx.track;
     let card = &fx.card;
-    sqlx::query("CREATE TABLE unrelated_transcript_writer_probe (value INTEGER NOT NULL)")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE unrelated_transcript_writer_probe (value INTEGER NOT NULL)",
+        ))
         .await
         .unwrap();
     let parent = head(repo.pool(), &track.id).await.unwrap().unwrap();
     let (pause, refresh) = start(repo.db().clone(), track.id.clone(), vec![Phase::Interpret]);
     let entered = tokio::time::timeout(Duration::from_secs(10), pause.entered.notified()).await;
     let pool = repo.db().clone();
-    let mut writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)")
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, crate::error::TruthError>(())
-    });
-    let before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
-    // Always release and drain, including the expected old-code timeout.
-    pause.release.notify_one();
-    let commit = tokio::time::timeout(Duration::from_secs(10), refresh)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let writer_completed = match before_release {
-        Ok(result) => {
-            result.unwrap().unwrap();
-            true
-        }
-        Err(_) => {
-            tokio::time::timeout(Duration::from_secs(10), writer)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            false
-        }
-    };
-    entered.expect("real transcript hook read reached its interpretation phase");
-    assert_eq!(
-        head(repo.pool(), &track.id).await.unwrap(),
-        Some(commit.clone())
-    );
-    let record = commit_record(repo.pool(), &commit).await.unwrap().unwrap();
-    assert_eq!(record.parent_hash.as_deref(), Some(parent.as_str()));
-    assert_eq!(record.message.as_deref(), Some("transcript refresh"));
-    for name in ["events.json", "conversation.md"] {
-        let blob = cat_at(repo.pool(), &commit, &format!("cards/{}/{name}", card.id))
+
+    {
+
+        let mut writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await?;
+            sqlx::query("INSERT INTO unrelated_transcript_writer_probe (value) VALUES (1)")
+                .execute(&mut **tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, crate::error::TruthError>(())
+
+        })).await.expect("independent write operation")
+});
+        let before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        // Always release and drain, including the expected old-code timeout.
+        pause.release.notify_one();
+        let commit = tokio::time::timeout(Duration::from_secs(10), refresh)
             .await
+            .unwrap()
+            .unwrap()
             .unwrap();
-        assert!(blob.content.contains("retained transcript writer probe"));
-    }
-    assert!(
-        writer_completed,
-        "unrelated writer could not commit before transcript interpretation was released"
-    );
+        let writer_completed = match before_release {
+            Ok(result) => {
+                result.unwrap().unwrap();
+                true
+            }
+            Err(_) => {
+                tokio::time::timeout(Duration::from_secs(10), writer)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                false
+            }
+        };
+        entered.expect("real transcript hook read reached its interpretation phase");
+        assert_eq!(
+            head(repo.pool(), &track.id).await.unwrap(),
+            Some(commit.clone())
+        );
+        let record = commit_record(repo.pool(), &commit).await.unwrap().unwrap();
+        assert_eq!(record.parent_hash.as_deref(), Some(parent.as_str()));
+        assert_eq!(record.message.as_deref(), Some("transcript refresh"));
+        for name in ["events.json", "conversation.md"] {
+            let blob = cat_at(repo.pool(), &commit, &format!("cards/{}/{name}", card.id))
+                .await
+                .unwrap();
+            assert!(blob.content.contains("retained transcript writer probe"));
+        }
+        assert!(
+            writer_completed,
+            "unrelated writer could not commit before transcript interpretation was released"
+        );
+
+
+}
 }

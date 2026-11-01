@@ -68,15 +68,21 @@ async fn shutdown(
     let mut output = TxOutput::new("runtime", Some(id.into()), json!({}));
     output.data = payload;
     if unreadable {
-        sqlx::query("ALTER TABLE worker_sessions RENAME TO worker_sessions_hidden")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "ALTER TABLE worker_sessions RENAME TO worker_sessions_hidden",
+            ))
             .await
             .unwrap();
     }
     let result = adapter.spawn_side_effect(&output, &op, &ctx).await;
     if unreadable {
-        sqlx::query("ALTER TABLE worker_sessions_hidden RENAME TO worker_sessions")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "ALTER TABLE worker_sessions_hidden RENAME TO worker_sessions",
+            ))
             .await
             .unwrap();
     }
@@ -97,46 +103,55 @@ async fn registry_miss_reads_the_row_without_native_marker_cleanup() {
         .unwrap();
     assert!(!stack.state.shared_codex_appserver.is_running());
     let repo = SqlxRepo::open(&root.db_url()).await.unwrap();
-    for kind in [
-        WorkerSessionKind::SharedPlanner,
-        WorkerSessionKind::ManagedAssistant,
-        WorkerSessionKind::ClaudeCard,
-    ] {
-        let id = calm_server::model::new_id();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let row = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: id.clone(),
-                card_id: card.clone(),
-                kind: kind.clone(),
-                agent_provider: Some(AgentProvider::Claude),
-                status: WorkerSessionState::Superseded,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: calm_server::model::now_ms(),
-            },
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for kind in [
+                    WorkerSessionKind::SharedPlanner,
+                    WorkerSessionKind::ManagedAssistant,
+                    WorkerSessionKind::ClaudeCard,
+                ] {
+                    let id = calm_server::model::new_id();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let row = session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: id.clone(),
+                            card_id: card.clone(),
+                            kind: kind.clone(),
+                            agent_provider: Some(AgentProvider::Claude),
+                            status: WorkerSessionState::Superseded,
+                            terminal_run_id: None,
+                            thread_id: None,
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: calm_server::model::now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(row.kind, kind);
+                    root.spawn_marked_orphan(&id);
+                    assert!(shutdown(&stack, &root, &id, false).await.is_ok());
+                    assert_eq!(
+                        root.marked_pids(&id).len(),
+                        1,
+                        "runtime shutdown must not use pre-C4 markers"
+                    );
+                    assert!(
+                        shutdown(&stack, &root, &id, true).await.is_err(),
+                        "miss still propagates row read errors"
+                    );
+                }
+            })
+        })
         .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(row.kind, kind);
-        root.spawn_marked_orphan(&id);
-        assert!(shutdown(&stack, &root, &id, false).await.is_ok());
-        assert_eq!(
-            root.marked_pids(&id).len(),
-            1,
-            "runtime shutdown must not use pre-C4 markers"
-        );
-        assert!(
-            shutdown(&stack, &root, &id, true).await.is_err(),
-            "miss still propagates row read errors"
-        );
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

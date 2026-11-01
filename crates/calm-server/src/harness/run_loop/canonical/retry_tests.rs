@@ -1,7 +1,7 @@
 //! Transport/scheduler tests for an internally committed intent. Truth's tests
 //! exercise the real private resolution transaction; no HTTP activation is claimed.
 use super::*;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::shared_codex_appserver::native_owner_tests::{notify_thread, request, send};
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -37,59 +37,69 @@ async fn canonical_retry_waits_for_exact_thread_settled_activity() {
 #[tokio::test]
 async fn canonical_retry_uses_frozen_model_permission_after_selection_change() {
     let (r, mut peer) = RetryFixture::new().await;
-    let mut tx = begin_immediate_tx(r.fx.original.repo.db()).await.unwrap();
-    let card = r.fx.harness.inner.card_id.as_str();
-    let mut payload = crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card)
+    let write_db = (r.fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let card = r.fx.harness.inner.card_id.as_str();
+                let mut payload =
+                    crate::operation::codex_adapter::card_payload_get_tx(&mut tx, card)
+                        .await
+                        .unwrap();
+                crate::planner_model::CardModelSelection::apply_to_payload(
+                    payload.as_object_mut().unwrap(),
+                    Some("different-current-model"),
+                    Some("low"),
+                );
+                crate::db::sqlite::card_update_tx(
+                    &mut tx,
+                    card,
+                    crate::model::CardPatch {
+                        title: None,
+                        kind: None,
+                        sort: None,
+                        payload: Some(payload),
+                        deletable: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                r.attach().await;
+                let call = r.start(&mut peer).await;
+                let thread = r.fx.frame().await.header.last_thread_id.unwrap();
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":"retry-native"}}}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                notify_thread(
+                    &r.fx.daemon,
+                    &mut peer,
+                    &thread,
+                    "turn/completed",
+                    json!({"id":"retry-native","status":"completed"}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+                let current = r.fx.frame().await;
+                assert!(matches!(
+                    current.canonical_inputs.attempts[0].delivery,
+                    InputDeliveryFact::CrossingUnknown
+                ));
+                assert!(matches!(
+                    current.canonical_inputs.attempts[1].delivery,
+                    InputDeliveryFact::Accepted { .. }
+                ));
+                peer.close(None).await.unwrap();
+                r.fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    crate::planner_model::CardModelSelection::apply_to_payload(
-        payload.as_object_mut().unwrap(),
-        Some("different-current-model"),
-        Some("low"),
-    );
-    crate::db::sqlite::card_update_tx(
-        &mut tx,
-        card,
-        crate::model::CardPatch {
-            title: None,
-            kind: None,
-            sort: None,
-            payload: Some(payload),
-            deletable: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    r.attach().await;
-    let call = r.start(&mut peer).await;
-    let thread = r.fx.frame().await.header.last_thread_id.unwrap();
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"retry-native"}}}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    notify_thread(
-        &r.fx.daemon,
-        &mut peer,
-        &thread,
-        "turn/completed",
-        json!({"id":"retry-native","status":"completed"}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    let current = r.fx.frame().await;
-    assert!(matches!(
-        current.canonical_inputs.attempts[0].delivery,
-        InputDeliveryFact::CrossingUnknown
-    ));
-    assert!(matches!(
-        current.canonical_inputs.attempts[1].delivery,
-        InputDeliveryFact::Accepted { .. }
-    ));
-    peer.close(None).await.unwrap();
-    r.fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -121,33 +131,37 @@ async fn canonical_retry_erasure_between_resolve_and_send_has_zero_effects() {
     r.attach().await;
     let call = request(&mut peer).await;
     assert_eq!(call["method"], "thread/read");
-    let mut tx = begin_immediate_tx(r.fx.original.repo.db()).await.unwrap();
-    sqlx::query("UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2")
-        .bind(
-            serde_json::to_string(
-                &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
-                    operation_id: PrivateHistoryOperationId::parse(&"a".repeat(32)).unwrap(),
-                },
+    let write_db = (r.fx.original.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        sqlx::query("UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2")
+            .bind(
+                serde_json::to_string(
+                    &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
+                        operation_id: PrivateHistoryOperationId::parse(&"a".repeat(32)).unwrap(),
+                    },
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        )
-        .bind(r.fx.message.message_id.as_str())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let thread = r.fx.frame().await.header.last_thread_id.unwrap();
-    send(&mut peer,json!({"id":call["id"],"result":{"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}})).await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), request(&mut peer))
+            .bind(r.fx.message.message_id.as_str())
+            .execute(&mut **tx)
             .await
-            .is_err()
-    );
-    let held = r.fx.frame().await;
-    assert_eq!(held.canonical_inputs.pending.len(), 1);
-    assert_eq!(held.canonical_inputs.attempts.len(), 1);
-    peer.close(None).await.unwrap();
-    r.fx.harness.shutdown().await.unwrap();
+            .unwrap();
+        tx.commit().await.unwrap();
+        let thread = r.fx.frame().await.header.last_thread_id.unwrap();
+        send(&mut peer,json!({"id":call["id"],"result":{"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}})).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), request(&mut peer))
+                .await
+                .is_err()
+        );
+        let held = r.fx.frame().await;
+        assert_eq!(held.canonical_inputs.pending.len(), 1);
+        assert_eq!(held.canonical_inputs.attempts.len(), 1);
+        peer.close(None).await.unwrap();
+        r.fx.harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -222,7 +236,7 @@ async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
                 r.fx.auth.sessions.remove(&r.fx.session).unwrap();
             }
             Change::Erasure => {
-                sqlx::query(
+                (r.fx.original.repo.db()).writer().execute(sqlx::query(
                     "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
                 )
                 .bind(
@@ -234,8 +248,7 @@ async fn canonical_retry_rechecks_activity_and_source_after_gate_await() {
                     )
                     .unwrap(),
                 )
-                .bind(r.fx.message.message_id.as_str())
-                .execute(r.fx.original.repo.pool())
+                .bind(r.fx.message.message_id.as_str()))
                 .await
                 .unwrap();
             }
@@ -449,46 +462,57 @@ async fn canonical_retry_system_plan_retains_provenance_under_human_repeat() {
     );
     let current = r.fx.frame().await;
     let id = current.canonical_inputs.active.unwrap().submission_ids[0].clone();
-    let mut tx = begin_immediate_tx(r.fx.original.repo.db()).await.unwrap();
-    let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, &id)
+    let write_db = (r.fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let stored = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, &id)
+                    .await
+                    .unwrap();
+                let refs = stored.plan.input_refs().unwrap();
+                assert!(matches!(
+                    refs.as_slice(),
+                    [
+                        AcceptedInputRef::Human { .. },
+                        AcceptedInputRef::System { .. }
+                    ]
+                ));
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT count(*) FROM conversation_messages WHERE card_id=?1"
+                    )
+                    .bind(r.fx.harness.inner.card_id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    1,
+                    "a Human repeat must not create a Human copy of System provenance"
+                );
+                tx.commit().await.unwrap();
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":"mixed-repeat"}}}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                let thread = r.fx.frame().await.header.last_thread_id.unwrap();
+                notify_thread(
+                    &r.fx.daemon,
+                    &mut peer,
+                    &thread,
+                    "turn/completed",
+                    json!({"id":"mixed-repeat","status":"completed"}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+                peer.close(None).await.unwrap();
+                r.fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let refs = stored.plan.input_refs().unwrap();
-    assert!(matches!(
-        refs.as_slice(),
-        [
-            AcceptedInputRef::Human { .. },
-            AcceptedInputRef::System { .. }
-        ]
-    ));
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
-            .bind(r.fx.harness.inner.card_id.as_str())
-            .fetch_one(&mut **tx)
-            .await
-            .unwrap(),
-        1,
-        "a Human repeat must not create a Human copy of System provenance"
-    );
-    tx.commit().await.unwrap();
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"mixed-repeat"}}}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    let thread = r.fx.frame().await.header.last_thread_id.unwrap();
-    notify_thread(
-        &r.fx.daemon,
-        &mut peer,
-        &thread,
-        "turn/completed",
-        json!({"id":"mixed-repeat","status":"completed"}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    peer.close(None).await.unwrap();
-    r.fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -504,88 +528,103 @@ async fn canonical_retry_recovery_qualifies_intent_and_resumes_mixed_unattempted
             .await
             .is_none()
     );
-    let mut tx = begin_immediate_tx(r.fx.original.repo.db()).await.unwrap();
-    let mut carrier =
-        current_input_carrier_tx(&mut tx, inner.card_id.as_str(), &inner.worker_session_id)
-            .await
-            .unwrap();
-    let human = InputSource::from(&r.fx.source);
-    let queued = crate::conversation_inputs::source_inputs_tx(&mut tx, &human, &carrier)
+    let write_db = (r.fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier = current_input_carrier_tx(
+                    &mut tx,
+                    inner.card_id.as_str(),
+                    &inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                let human = InputSource::from(&r.fx.source);
+                let queued =
+                    crate::conversation_inputs::source_inputs_tx(&mut tx, &human, &carrier)
+                        .await
+                        .unwrap();
+                assert_eq!(queued.identities(), std::slice::from_ref(&r.identity));
+                assert!(!queued.is_unattempted_initial());
+                let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &r.identity
+                else {
+                    panic!("retry identity")
+                };
+                let scoped = human.for_identity(&r.identity);
+                let claim = crate::conversation_inputs::claim_initial_tx(
+                    &mut tx,
+                    &scoped,
+                    &mut carrier,
+                    crate::db::sqlite::conversation::InitialClaim::ExplicitSuccessor {
+                        retry_intent_id: retry_intent_id.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+                let recovered =
+                    crate::conversation_inputs::source_inputs_tx(&mut tx, &human, &carrier)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    recovered.identities(),
+                    std::slice::from_ref(&r.identity),
+                    "mixed root provenance is not a source registry key"
+                );
+                assert!(recovered.is_unattempted_initial());
+                tx.commit().await.unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(120), request(&mut peer))
+                        .await
+                        .is_err(),
+                    "persisted principal/receipt cannot recreate a live repeat source"
+                );
+                r.attach().await;
+                r.read_activity(&mut peer, "idle").await;
+                let call = request(&mut peer).await;
+                assert_eq!(
+                    call["method"], "turn/start",
+                    "resume must skip current config/catalog reads"
+                );
+                assert_eq!(call["params"]["model"], "frozen-retry-model");
+                assert!(
+                    call["params"]["input"]
+                        .to_string()
+                        .contains("frozen System provenance")
+                );
+                assert_eq!(
+                    r.fx.frame()
+                        .await
+                        .canonical_inputs
+                        .active
+                        .as_ref()
+                        .unwrap()
+                        .submission_ids,
+                    vec![claim.submission_id]
+                );
+                send(
+                    &mut peer,
+                    json!({"id":call["id"],"result":{"turn":{"id":"resumed-repeat"}}}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
+                let thread = r.fx.frame().await.header.last_thread_id.unwrap();
+                notify_thread(
+                    &r.fx.daemon,
+                    &mut peer,
+                    &thread,
+                    "turn/completed",
+                    json!({"id":"resumed-repeat","status":"completed"}),
+                )
+                .await;
+                r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
+                peer.close(None).await.unwrap();
+                r.fx.harness.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(queued.identities(), std::slice::from_ref(&r.identity));
-    assert!(!queued.is_unattempted_initial());
-    let CanonicalPendingIdentity::ExplicitSuccessor { retry_intent_id } = &r.identity else {
-        panic!("retry identity")
-    };
-    let scoped = human.for_identity(&r.identity);
-    let claim = crate::conversation_inputs::claim_initial_tx(
-        &mut tx,
-        &scoped,
-        &mut carrier,
-        crate::db::sqlite::conversation::InitialClaim::ExplicitSuccessor {
-            retry_intent_id: retry_intent_id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    let recovered = crate::conversation_inputs::source_inputs_tx(&mut tx, &human, &carrier)
-        .await
-        .unwrap();
-    assert_eq!(
-        recovered.identities(),
-        std::slice::from_ref(&r.identity),
-        "mixed root provenance is not a source registry key"
-    );
-    assert!(recovered.is_unattempted_initial());
-    tx.commit().await.unwrap();
-    assert!(
-        tokio::time::timeout(Duration::from_millis(120), request(&mut peer))
-            .await
-            .is_err(),
-        "persisted principal/receipt cannot recreate a live repeat source"
-    );
-    r.attach().await;
-    r.read_activity(&mut peer, "idle").await;
-    let call = request(&mut peer).await;
-    assert_eq!(
-        call["method"], "turn/start",
-        "resume must skip current config/catalog reads"
-    );
-    assert_eq!(call["params"]["model"], "frozen-retry-model");
-    assert!(
-        call["params"]["input"]
-            .to_string()
-            .contains("frozen System provenance")
-    );
-    assert_eq!(
-        r.fx.frame()
-            .await
-            .canonical_inputs
-            .active
-            .as_ref()
-            .unwrap()
-            .submission_ids,
-        vec![claim.submission_id]
-    );
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"resumed-repeat"}}}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnRunning).await;
-    let thread = r.fx.frame().await.header.last_thread_id.unwrap();
-    notify_thread(
-        &r.fx.daemon,
-        &mut peer,
-        &thread,
-        "turn/completed",
-        json!({"id":"resumed-repeat","status":"completed"}),
-    )
-    .await;
-    r.fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
-    peer.close(None).await.unwrap();
-    r.fx.harness.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]

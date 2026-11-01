@@ -209,9 +209,12 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
         assert_eq!(error["detail"], json!({"kind": "catalog"}));
         let (_, _, exit) = cli(&boot, &["tool", "ls", "--prefix", "neige_*", "--json"]).await;
         assert_eq!(exit, 1);
-        sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?")
-            .bind(&boot.card_id)
-            .execute(boot.sqlx.pool())
+        (boot.sqlx.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?")
+                    .bind(&boot.card_id),
+            )
             .await
             .unwrap();
         send_frame(&mut write, json!({"jsonrpc":"2.0","id":91,"method":"neige/cli","params":{"argv":["tool","ls","--all","--json"]}})).await;

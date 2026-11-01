@@ -555,14 +555,15 @@ impl Boot {
     /// Reject the `spawn_succeeded` phase write, so the driver's `set_phase` errors *after* `spawn_side_effect`
     /// installed a live harness: the only way to reach `OperationOutcome::Stuck` from a route test.
     async fn reject_spawn_succeeded(&self) {
-        sqlx::query(
-            "CREATE TRIGGER reject_spawn_succeeded BEFORE UPDATE ON operations \
+        (self.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER reject_spawn_succeeded BEFORE UPDATE ON operations \
              FOR EACH ROW WHEN NEW.phase = 'spawn_succeeded' \
              BEGIN SELECT RAISE(ABORT, 'injected: spawn_succeeded write rejected'); END",
-        )
-        .execute(self.repo.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
     }
 
     /// Park the next planner harness immediately before it can turn its pending queue into a turn. `ANY_RUNTIME`
@@ -1994,151 +1995,165 @@ async fn a_retry_after_a_failure_fails_once_the_attached_directory_is_no_reposit
         "template_id":null,"recipe_id":null,"template_input":null,"attach_folder":true,
         "theme":{"fg":[255,255,255],"bg":[0,0,0]},"fork_report_from":null}))
     .unwrap();
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    for (id, role, kind, payload) in [
-        (
-            &planner,
-            CardRole::Planner,
-            "codex",
-            crate::support::planner::payload(),
-        ),
-        (
-            &report,
-            CardRole::ReportCard,
-            "track-report",
-            serde_json::to_value(calm_server::track_report::TrackReportPayload::initial()).unwrap(),
-        ),
-    ] {
-        card_create_with_id_tx(
-            &mut tx,
-            id.clone(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: kind.into(),
-                sort: None,
-                payload,
-            },
-            role,
-            false,
-            &b.state.card_role_cache,
-        )
-        .await
-        .unwrap();
-    }
-    track_create_idempotency_claim_tx(
-        &mut tx,
-        &b.area_id,
-        "idem-retry-invalid-dir",
-        &TrackCreateBindingClaim {
-            track_id: track.id.to_string(),
-            planner_card_id: planner.clone(),
-            report_card_id: report.clone(),
-            create_request_sha256: create_sha.clone(),
-            first_message_sha256: Some(hex::encode(Sha256::digest(b"second time lucky"))),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let request =
-        calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload {
-            actor: calm_server::ids::ActorId::User,
-            track_id: track.id.to_string(),
-            planner_card_id: planner.into(),
-            report_card_id: Some(report),
-            sort: None,
-            cwd: track.workspace.agent_cwd().into(),
-            goal: None,
-            reset_harness_items: false,
-            force_new_thread: false,
-            profile: Default::default(),
-            create_card: None,
-            opening_briefing: None,
-            first_message: Some("second time lucky".into()),
-            create_request_sha256: Some(create_sha),
-        };
-    let key = format!(
-        "track-create-{}",
-        hex::encode(Sha256::digest(
-            format!("track-create:{}:idem-retry-invalid-dir", b.area_id).as_bytes()
-        ))
-    );
-    let hash = stable_payload_hash(&json!({"actor":"user","request":request})).unwrap();
-    let op = b
-        .state
-        .operation_runtime
-        .submit(
-            "planner-harness-start",
-            OperationKey {
-                operation_key: key.clone(),
-                idempotency_key: Some(key),
-                payload_hash: hash,
-            },
-            serde_json::to_value(request).unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        matches!(
-            b.state.operation_runtime.wait(&op).await.unwrap().outcome,
-            OperationOutcome::Failed { .. }
-        ),
-        "the real historical native thread/start must fail before the retry"
-    );
-    assert_eq!(
-        b.state
-            .shared_codex_appserver
-            .started_thread_params_for_test()
-            .len(),
-        1,
-        "the seeded historical operation must reach the native thread/start"
-    );
-    assert_eq!(
-        b.track_count().await,
-        1,
-        "the failed attempt left its track"
-    );
-    let track_id: String = sqlx::query_scalar("SELECT id FROM tracks")
-        .fetch_one(b.repo.pool())
-        .await
-        .unwrap();
-    let (_, path) = b.workspace_row(&track_id).await;
-    assert_eq!(PathBuf::from(&path), attached);
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        for (id, role, kind, payload) in [
+                            (
+                                &planner,
+                                CardRole::Planner,
+                                "codex",
+                                crate::support::planner::payload(),
+                            ),
+                            (
+                                &report,
+                                CardRole::ReportCard,
+                                "track-report",
+                                serde_json::to_value(
+                                    calm_server::track_report::TrackReportPayload::initial(),
+                                )
+                                .unwrap(),
+                            ),
+                        ] {
+                            card_create_with_id_tx(
+                                &mut tx,
+                                id.clone(),
+                                NewCard {
+                                    track_id: track.id.clone(),
+                                    title: None,
+                                    kind: kind.into(),
+                                    sort: None,
+                                    payload,
+                                },
+                                role,
+                                false,
+                                &b.state.card_role_cache,
+                            )
+                            .await
+                            .unwrap();
+                        }
+                        track_create_idempotency_claim_tx(
+                            &mut tx,
+                            &b.area_id,
+                            "idem-retry-invalid-dir",
+                            &TrackCreateBindingClaim {
+                                track_id: track.id.to_string(),
+                                planner_card_id: planner.clone(),
+                                report_card_id: report.clone(),
+                                create_request_sha256: create_sha.clone(),
+                                first_message_sha256: Some(hex::encode(Sha256::digest(
+                                    b"second time lucky",
+                                ))),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        let request =
+                calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload {
+                    actor: calm_server::ids::ActorId::User,
+                    track_id: track.id.to_string(),
+                    planner_card_id: planner.into(),
+                    report_card_id: Some(report),
+                    sort: None,
+                    cwd: track.workspace.agent_cwd().into(),
+                    goal: None,
+                    reset_harness_items: false,
+                    force_new_thread: false,
+                    profile: Default::default(),
+                    create_card: None,
+                    opening_briefing: None,
+                    first_message: Some("second time lucky".into()),
+                    create_request_sha256: Some(create_sha),
+                };
+                        let key = format!(
+                            "track-create-{}",
+                            hex::encode(Sha256::digest(
+                                format!("track-create:{}:idem-retry-invalid-dir", b.area_id).as_bytes()
+                            ))
+                        );
+                        let hash = stable_payload_hash(&json!({"actor":"user","request":request})).unwrap();
+                        let op = b
+                            .state
+                            .operation_runtime
+                            .submit(
+                                "planner-harness-start",
+                                OperationKey {
+                                    operation_key: key.clone(),
+                                    idempotency_key: Some(key),
+                                    payload_hash: hash,
+                                },
+                                serde_json::to_value(request).unwrap(),
+                            )
+                            .await
+                            .unwrap();
+                        assert!(
+                            matches!(
+                                b.state.operation_runtime.wait(&op).await.unwrap().outcome,
+                                OperationOutcome::Failed { .. }
+                            ),
+                            "the real historical native thread/start must fail before the retry"
+                        );
+                        assert_eq!(
+                            b.state
+                                .shared_codex_appserver
+                                .started_thread_params_for_test()
+                                .len(),
+                            1,
+                            "the seeded historical operation must reach the native thread/start"
+                        );
+                        assert_eq!(
+                            b.track_count().await,
+                            1,
+                            "the failed attempt left its track"
+                        );
+                        let track_id: String = sqlx::query_scalar("SELECT id FROM tracks")
+                            .fetch_one(b.repo.pool())
+                            .await
+                            .unwrap();
+                        let (_, path) = b.workspace_row(&track_id).await;
+                        assert_eq!(PathBuf::from(&path), attached);
 
-    // The disturbance: the directory stops being a repository while remaining a directory.
-    std::fs::remove_dir_all(attached.join(".git")).unwrap();
+                        // The disturbance: the directory stops being a repository while remaining a directory.
+                        std::fs::remove_dir_all(attached.join(".git")).unwrap();
 
-    let (retry, retry_body) = b
-        .create_track_at(
-            Some("idem-retry-invalid-dir"),
-            Some("second time lucky"),
-            &attached,
-        )
-        .await;
-    assert!(
-        !retry.is_success(),
-        "the retry's track worktree ensure cannot succeed without the repository: \
+                        let (retry, retry_body) = b
+                            .create_track_at(
+                                Some("idem-retry-invalid-dir"),
+                                Some("second time lucky"),
+                                &attached,
+                            )
+                            .await;
+                        assert!(
+                            !retry.is_success(),
+                            "the retry's track worktree ensure cannot succeed without the repository: \
          status={retry} body={retry_body}"
-    );
-    assert_eq!(
-        retry,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "resource ensure refusal: {retry_body}"
-    );
-    assert_ne!(
-        retry_body["code"], "idempotency_key_exhausted",
-        "the key is not poisoned: body={retry_body}"
-    );
-    assert_eq!(b.track_count().await, 1, "the retry mints nothing");
-    assert_eq!(
-        b.first_message_payload_cwds("second time lucky")
-            .await
-            .len(),
-        1,
-        "and submits nothing"
-    );
-    b.shutdown_harnesses().await;
+                        );
+                        assert_eq!(
+                            retry,
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "resource ensure refusal: {retry_body}"
+                        );
+                        assert_ne!(
+                            retry_body["code"], "idempotency_key_exhausted",
+                            "the key is not poisoned: body={retry_body}"
+                        );
+                        assert_eq!(b.track_count().await, 1, "the retry mints nothing");
+                        assert_eq!(
+                            b.first_message_payload_cwds("second time lucky")
+                                .await
+                                .len(),
+                            1,
+                            "and submits nothing"
+                        );
+                        b.shutdown_harnesses().await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Moving the arm decision in front of the create-path validation must not remove that validation from the
@@ -2356,17 +2371,20 @@ async fn a_legacy_binding_without_a_request_fingerprint_fails_closed() {
         "the upgrade fixture is a genuine V1 binding, never canonical acceptance"
     );
     let operations_before = b.operation_count().await;
-    sqlx::query(
-        "UPDATE track_create_idempotency \
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE track_create_idempotency \
          SET request_fingerprint_version = 0, \
              create_request_sha256 = NULL, \
              first_message_sha256 = NULL \
          WHERE idempotency_key = ?1",
-    )
-    .bind(key)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(key),
+        )
+        .await
+        .unwrap();
 
     let (status, body) = b.post_create(Some(key), request).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
@@ -2452,17 +2470,20 @@ async fn a_binding_miss_with_an_occupied_key_mints_nothing() {
     };
     // An operation under the derived key, in a non-`Failed` phase so `retryable_operation_key` stops on it, and
     // with no binding row anywhere.
-    sqlx::query(
-        "INSERT INTO operations \
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO operations \
          (id, kind, operation_key, idempotency_key, payload_hash, target_type, target_json, \
           payload_json, phase, attempt, created_at_ms, updated_at_ms) \
          VALUES ('op-orphan', 'planner-harness-start', ?1, ?1, 'hash', 'card', '{}', '{}', \
                  'succeeded', 0, 1, 1)",
-    )
-    .bind(&operation_key)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&operation_key),
+        )
+        .await
+        .unwrap();
     assert_eq!(b.binding_count().await, 0, "premise: no binding row");
 
     let (status, body) = b
@@ -2497,27 +2518,30 @@ async fn a_replay_of_a_stuck_attempt_answers_500_and_delivers_nothing() {
     let deliveries_before = b.user_message_event_count().await;
 
     // The phase compensation could not finish on; `retryable_operation_key` deliberately does not step over it.
-    let updated = sqlx::query(
-        "UPDATE operations \
+    let updated = (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations \
          SET phase = 'stuck', \
              last_error = 'compensation step failed', \
              phase_detail_json = ?1, \
              lease_owner = NULL, \
              lease_until_ms = NULL \
          WHERE kind = 'planner-harness-start'",
-    )
-    .bind(
-        json!({
-            "reason": "compensation step failed",
-            "since": 1,
-            "from_phase": "spawn_started",
-        })
-        .to_string(),
-    )
-    .execute(b.repo.pool())
-    .await
-    .unwrap()
-    .rows_affected();
+            )
+            .bind(
+                json!({
+                    "reason": "compensation step failed",
+                    "since": 1,
+                    "from_phase": "spawn_started",
+                })
+                .to_string(),
+            ),
+        )
+        .await
+        .unwrap()
+        .rows_affected();
     assert_eq!(updated, 1, "premise: the create's own operation went stuck");
 
     let (status, body) = b.create_track(Some(key), Some("the stuck sentence")).await;
@@ -3660,10 +3684,13 @@ async fn a_pre_upgrade_sentence_survives_a_failed_mint_that_moved_it() {
             .unwrap();
     let mut state: Value = serde_json::from_str(&state).unwrap();
     state.as_object_mut().unwrap().remove("pending_message_ids");
-    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
-        .bind(serde_json::to_string(&state).unwrap())
-        .bind(&predecessor)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+                .bind(serde_json::to_string(&state).unwrap())
+                .bind(&predecessor),
+        )
         .await
         .unwrap();
 

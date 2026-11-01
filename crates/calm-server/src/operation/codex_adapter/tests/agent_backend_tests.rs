@@ -149,11 +149,10 @@ async fn agent_backend_worker_compensation_timeout_and_settle_interrupt_bound_in
         let card = output.output_string("card_id", "test").unwrap();
         let terminal = output.output_string("terminal_id", "test").unwrap();
         bind(&harness.repo, &id, Some("bound-thread")).await;
-        sqlx::query(
+        (harness.repo.db()).writer().execute(sqlx::query(
             "UPDATE worker_sessions SET state='running',active_turn_id='bound-turn' WHERE id=?",
         )
-        .bind(&id)
-        .execute(harness.repo.pool())
+        .bind(&id))
         .await
         .unwrap();
         let (_a, mut default, _fa) = connect_with_reader(pool.default_only()).await;
@@ -194,16 +193,22 @@ async fn agent_backend_worker_compensation_timeout_and_settle_interrupt_bound_in
         );
         state.codex_backends = pool.clone();
         if action == "settle" {
-            sqlx::query("UPDATE tasks SET status='done',finished_at_ms=? WHERE track_id=?")
-                .bind(crate::model::now_ms() - 600_000)
-                .bind(&harness.track_id)
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='done',finished_at_ms=? WHERE track_id=?")
+                        .bind(crate::model::now_ms() - 600_000)
+                        .bind(&harness.track_id),
+                )
                 .await
                 .unwrap();
-            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-                .bind(crate::model::now_ms())
-                .bind(&harness.track_id)
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                        .bind(crate::model::now_ms())
+                        .bind(&harness.track_id),
+                )
                 .await
                 .unwrap();
         }

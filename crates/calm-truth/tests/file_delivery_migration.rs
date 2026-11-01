@@ -50,7 +50,7 @@ async fn file_delivery_tables_are_dropped() {
     }
     // One row per table, linked the way production linked them, so a parent dropped before its
     // child fails on the foreign key.
-    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
+    { let query = sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','T',0,1,2);
         INSERT INTO operations(id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,created_at_ms,updated_at_ms)
           VALUES('publication','publication','task-file-publication','producer','h','task','{}','{}','succeeded',1,2),
@@ -63,9 +63,7 @@ async fn file_delivery_tables_are_dropped() {
         INSERT INTO task_candidate_input_bindings VALUES('reviewer','track','publication','verification','{}','bound',NULL);
         INSERT INTO task_candidate_decisions VALUES(1,'track','producer','{}');
         INSERT INTO task_candidate_decision_bindings VALUES('reviewer',1);
-        INSERT INTO task_candidate_repairs VALUES('repair','track','produce','repair','review','{}');")
-        .execute(&mut db)
-        .await
+        INSERT INTO task_candidate_repairs VALUES('repair','track','produce','repair','review','{}');"); sqlx::Executor::execute(&mut db, query).await }
         .unwrap();
     assert!(
         schema_objects(&mut db).await.len() > DROPPED.len(),

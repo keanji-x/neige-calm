@@ -112,28 +112,35 @@ pub(crate) async fn supersede_planner(
     successor: &str,
 ) -> ToolCallIdentity {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::session_supersede_active_tx(
+                    &mut tx,
+                    &current.to_string(),
+                    calm_server::model::now_ms(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                seed_track_root_session(
+                    boot.repo.as_ref(),
+                    &boot.track_id,
+                    &boot.planner_card_id,
+                    successor,
+                )
+                .await;
+                ToolCallIdentity {
+                    session_id: successor.to_string(),
+                    ..planner_identity(boot)
+                }
+            })
+        })
         .await
-        .unwrap();
-    calm_server::db::sqlite::session_supersede_active_tx(
-        &mut tx,
-        &current.to_string(),
-        calm_server::model::now_ms(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    seed_track_root_session(
-        boot.repo.as_ref(),
-        &boot.track_id,
-        &boot.planner_card_id,
-        successor,
-    )
-    .await;
-    ToolCallIdentity {
-        session_id: successor.to_string(),
-        ..planner_identity(boot)
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test]

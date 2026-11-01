@@ -35,9 +35,12 @@ async fn real_planner_creates_calendar_commitment() {
         Err(reason) => skip!("{reason}"),
     };
     // Represent an ordinary unbound Track. Do not widen the development-owner policy.
-    sqlx::query("UPDATE tracks SET plugin_scope=NULL WHERE id=?")
-        .bind(fx.track_id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope=NULL WHERE id=?")
+                .bind(fx.track_id.as_str()),
+        )
         .await
         .unwrap();
     fx.plugin_host.reconcile_builtins().await.unwrap();

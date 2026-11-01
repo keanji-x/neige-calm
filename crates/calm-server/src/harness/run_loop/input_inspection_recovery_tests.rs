@@ -163,14 +163,23 @@ pub(super) async fn transfer_before_issuance(fx: &Fixture) -> PlannerHarness {
         parked_at_ms: None,
         parked_deadline_ms: None,
     };
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
-    let id = output.data["runtime_id"].as_str().unwrap().to_string();
-    assert_ne!(id, inner.worker_session_id);
-    let snapshot = HarnessSnapshot::from_value_strict(output.data["snapshot"].clone());
-    assert!(snapshot.projection_client_id.is_none());
-    unstarted(fx, id, snapshot)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
+                let id = output.data["runtime_id"].as_str().unwrap().to_string();
+                assert_ne!(id, inner.worker_session_id);
+                let snapshot = HarnessSnapshot::from_value_strict(output.data["snapshot"].clone());
+                assert!(snapshot.projection_client_id.is_none());
+                unstarted(fx, id, snapshot)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -179,13 +188,14 @@ async fn initial_input_inspection_recovery_does_not_certify_a_predecessors_faile
     let entry = QueueEntry::user_message("failed before recovery".into(), None, vec![]);
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry]).await;
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_recovery_cleanup BEFORE DELETE ON ",
-        "harness_items BEGIN SELECT RAISE(ABORT, 'forced cleanup failure'); END"
-    ))
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_recovery_cleanup BEFORE DELETE ON ",
+            "harness_items BEGIN SELECT RAISE(ABORT, 'forced cleanup failure'); END"
+        )))
+        .await
+        .unwrap();
     fx.daemon.fail_turn_start_for_test();
     assert!(maybe_issue_turn(&fx.harness.inner).await.is_err());
     assert_eq!(
@@ -197,8 +207,9 @@ async fn initial_input_inspection_recovery_does_not_certify_a_predecessors_faile
             .as_ref(),
         Some(&id)
     );
-    sqlx::query("DROP TRIGGER refuse_recovery_cleanup")
-        .execute(fx.repo.db().writer_pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_recovery_cleanup"))
         .await
         .unwrap();
     let successor = transfer_before_issuance(&fx).await;
@@ -252,13 +263,14 @@ async fn rowless_steer(fx: &Fixture) -> QueueEntryId {
     let entry = QueueEntry::user_message("steer without a transcript row".into(), None, vec![]);
     let id = entry.id().unwrap().clone();
     fx.enqueue(vec![entry]).await;
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_recovery_steer BEFORE INSERT ON ",
-        "harness_items BEGIN SELECT RAISE(ABORT, 'forced steer write failure'); END"
-    ))
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_recovery_steer BEFORE INSERT ON ",
+            "harness_items BEGIN SELECT RAISE(ABORT, 'forced steer write failure'); END"
+        )))
+        .await
+        .unwrap();
     fx.harness
         .steer_pending_entry(id.clone(), 0, ActorId::User)
         .await

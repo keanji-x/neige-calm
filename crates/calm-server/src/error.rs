@@ -492,11 +492,18 @@ impl From<calm_types::error::CoreError> for CalmError {
     }
 }
 
+impl From<calm_truth::db::sqlite::NestedWrite> for CalmError {
+    fn from(error: calm_truth::db::sqlite::NestedWrite) -> Self {
+        calm_truth::TruthError::from(error).into()
+    }
+}
+
 impl From<calm_truth::TruthError> for CalmError {
     fn from(err: calm_truth::TruthError) -> Self {
         use calm_truth::TruthError as Truth;
         match err {
             Truth::CarrierReplacementRefused(reason) => CalmError::Conflict(reason.to_string()),
+            Truth::NestedWrite(error) => CalmError::Internal(error.to_string()),
             Truth::Core(core) => CalmError::from(core),
             Truth::Forbidden(m) => CalmError::Forbidden(m),
             Truth::Db(e) => CalmError::Db(e),

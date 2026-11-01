@@ -99,31 +99,40 @@ pub(super) async fn settle_action(boot: &Boot, id: &str) {
         serde_json::from_value(output["data"]["forge_execution"]["execution_id"].clone()).unwrap();
     let engine = boot.execution.lifecycle.engine().unwrap();
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = engine
+                    .request(&mut tx, &execution, Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    engine.wait_settled(&execution),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                // Crash checkpoint: execution settled, but op completion was not committed.
+                output["data"]["forge_execution"]["release"] =
+                    json!({"Released":{"authorized_at_ms":now_ms()}});
+                (db).writer()
+                    .execute(
+                        sqlx::query("UPDATE operations SET tx_output_json=?2 WHERE id=?1")
+                            .bind(id)
+                            .bind(output.to_string()),
+                    )
+                    .await
+                    .unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        engine.wait_settled(&execution),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    // Crash checkpoint: execution settled, but op completion was not committed.
-    output["data"]["forge_execution"]["release"] =
-        json!({"Released":{"authorized_at_ms":now_ms()}});
-    sqlx::query("UPDATE operations SET tx_output_json=?2 WHERE id=?1")
-        .bind(id)
-        .bind(output.to_string())
-        .execute(db.writer_pool())
-        .await
-        .unwrap();
+        .expect("independent write operation")
 }
 
 use calm_server::operation::forge_action_adapter::ProbeSpec;
@@ -168,10 +177,13 @@ async fn probe_ready(boot: &Boot, track: &str, output_probe: bool) -> (String, O
     let alias = boot.tmp.path().join("probe-cwd");
     std::os::unix::fs::symlink(frozen["data"]["cwd_lease"].as_str().unwrap(), &alias).unwrap();
     frozen["data"]["cwd_lease"] = json!(alias);
-    sqlx::query("UPDATE operations SET tx_output_json=?2 WHERE id=?1")
-        .bind(&id)
-        .bind(frozen.to_string())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET tx_output_json=?2 WHERE id=?1")
+                .bind(&id)
+                .bind(frozen.to_string()),
+        )
         .await
         .unwrap();
     if !output_probe {
@@ -215,37 +227,43 @@ async fn probe_ready(boot: &Boot, track: &str, output_probe: bool) -> (String, O
     .await
     .unwrap();
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            let ticket = engine
+                                .request(&mut tx, &execution, Desired::Stop)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            engine.drive(ticket.committed());
+                            tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            data["data"]["forge_execution"]["probes"]["verdict"]["release"] =
+                                json!({"Released":{"authorized_at_ms":now_ms()}});
+                            let result = format!(
+                                "{}.probe.{}",
+                                data["data"]["result_path"].as_str().unwrap(),
+                                execution.as_str()
+                            );
+                            std::fs::write(format!("{result}.code"), "0").unwrap();
+                            std::fs::write(format!("{result}.stdout"), "").unwrap();
+                            (db).writer().execute(sqlx::query(
+                    "UPDATE operations SET tx_output_json=?2,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1",
+                )
+                .bind(&id)
+                .bind(data.to_string()))
+                .await
+                .unwrap();
+                            (id, ObserverStart::Paused(paused))
+            })
+        })
         .await
-        .unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
-        .await
-        .unwrap()
-        .unwrap();
-    data["data"]["forge_execution"]["probes"]["verdict"]["release"] =
-        json!({"Released":{"authorized_at_ms":now_ms()}});
-    let result = format!(
-        "{}.probe.{}",
-        data["data"]["result_path"].as_str().unwrap(),
-        execution.as_str()
-    );
-    std::fs::write(format!("{result}.code"), "0").unwrap();
-    std::fs::write(format!("{result}.stdout"), "").unwrap();
-    sqlx::query(
-        "UPDATE operations SET tx_output_json=?2,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1",
-    )
-    .bind(&id)
-    .bind(data.to_string())
-    .execute(db.writer_pool())
-    .await
-    .unwrap();
-    (id, ObserverStart::Paused(paused))
+        .expect("independent write operation")
 }
 
 async fn count(boot: &Boot) -> i64 {
@@ -299,9 +317,12 @@ async fn blocked(boot: &Boot, id: &str, observer: ObserverStart) -> PausePoint {
             .unwrap(),
         calm_server::operation::ParkedRecovery::LeaveParked
     ));
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-        .bind(id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
+                .bind(id),
+        )
         .await
         .unwrap();
     boot.state.operation_runtime.sweep_parked().await.unwrap();
@@ -389,9 +410,8 @@ async fn c5_probe_clean_track_fence_observer_and_boot_then_retry() {
                 let _ = handle.shutdown().await;
             }
         }
-        sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-            .bind(&track)
-            .execute(db.writer_pool())
+        (db).writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(&track))
             .await
             .unwrap();
         let (id, observer) = probe_ready(&boot, &track, output_probe).await;
@@ -435,10 +455,15 @@ async fn c5_probe_own_track_and_canonical_location_owners_busy_leave_parked() {
             std::os::unix::fs::symlink(&root, &alias).unwrap();
             let mut data = output(&boot, &id).await;
             data["data"]["cwd_lease"] = json!(alias);
-            sqlx::query("UPDATE operations SET tx_output_json=?2,parked_deadline_ms=1 WHERE id=?1")
-                .bind(&id)
-                .bind(data.to_string())
-                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+            (boot.repo.sqlite_db().unwrap())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET tx_output_json=?2,parked_deadline_ms=1 WHERE id=?1",
+                    )
+                    .bind(&id)
+                    .bind(data.to_string()),
+                )
                 .await
                 .unwrap();
             let (locks, key) = match owner {

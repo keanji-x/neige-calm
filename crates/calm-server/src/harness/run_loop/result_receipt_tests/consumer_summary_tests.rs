@@ -55,15 +55,15 @@ async fn consumer_summary_reference_requires_full_value_event_and_attempt() {
         match mismatch {
             "details" => {
                 // Keep queued event ID and summary equal, change only full details.
-                sqlx::query("UPDATE events SET payload=json_set(payload,'$.result.details.direct_call_command','changed-script') WHERE id=?1")
-                    .bind(id).execute(fx.repo.pool()).await.unwrap();
+                (fx.repo.db()).writer().execute(sqlx::query("UPDATE events SET payload=json_set(payload,'$.result.details.direct_call_command','changed-script') WHERE id=?1")
+                    .bind(id)).await.unwrap();
             }
             "event" => {
                 record(&fx, &event).await;
             }
             "attempt" => {
-                sqlx::query("UPDATE events SET payload=json_set(payload,'$.idempotency_key','other-attempt') WHERE id=?1")
-                    .bind(id).execute(fx.repo.pool()).await.unwrap();
+                (fx.repo.db()).writer().execute(sqlx::query("UPDATE events SET payload=json_set(payload,'$.idempotency_key','other-attempt') WHERE id=?1")
+                    .bind(id)).await.unwrap();
             }
             _ => unreachable!(),
         }

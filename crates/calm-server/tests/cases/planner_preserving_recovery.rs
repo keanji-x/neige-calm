@@ -3,9 +3,11 @@ use calm_server::harness::{HarnessState, QueueEntry};
 
 pub(super) async fn failed_conversation(boot: &Boot) -> (Card, String, String, QueueEntry) {
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
-    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?")
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?").bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     let thread = format!("retained-thread-{}", new_id());
@@ -135,97 +137,101 @@ async fn system_error_completion_keeps_original_error_without_automatic_retry() 
     let boot = boot_fake_running().await;
     let (card, runtime, thread, _) = failed_conversation(&boot).await;
     // Start in the state immediately before the production notification sequence.
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET state='turn_pending' WHERE id=?")
-        .bind(&runtime)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::TurnRunning;
-    snapshot.last_turn_id = Some("failed-turn".into());
-    snapshot.last_thread_id = Some(thread.clone());
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            boot.state.shared_codex_appserver.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            runtime.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: runtime.clone(),
-        card_id: card.id.clone(),
-        track_id: card.track_id.clone(),
-        thread_id: Some(thread.clone()),
-        repo: boot.repo.clone(),
-        events: boot.state.events.clone(),
-        card_role_cache: boot.state.card_role_cache.clone(),
-        track_area_cache: boot.state.track_area_cache.clone(),
+    let write_db = (boot.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        sqlx::query("UPDATE worker_sessions SET state='turn_pending' WHERE id=?")
+            .bind(&runtime)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+        snapshot.phase = HarnessPhaseTag::TurnRunning;
+        snapshot.last_turn_id = Some("failed-turn".into());
+        snapshot.last_thread_id = Some(thread.clone());
+        let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                boot.state.shared_codex_appserver.clone(),
+                card.id.as_ref(),
+                card.track_id.as_ref(),
+                runtime.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: runtime.clone(),
+            card_id: card.id.clone(),
+            track_id: card.track_id.clone(),
+            thread_id: Some(thread.clone()),
+            repo: boot.repo.clone(),
+            events: boot.state.events.clone(),
+            card_role_cache: boot.state.card_role_cache.clone(),
+            track_area_cache: boot.state.track_area_cache.clone(),
 
-        registry: boot.state.harness.clone(),
-        config: HarnessConfig::default(),
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    let daemon = &boot.state.shared_codex_appserver;
-    daemon.emit_notification_for_test(
-        calm_server::codex_appserver::Notification::ThreadStatusChanged {
-            thread_id: thread.clone(),
-            status: json!({"type":"systemError"}),
-        },
-    );
-    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::TurnCompleted {
-        thread_id: thread.clone(), turn: json!({"id":"failed-turn","status":"failed", "error":{
-            "message":"Usage limit exceeded; retry after replenishing quota.","codexErrorInfo":"usageLimitExceeded"}}),
-    });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let items = conversation_rows(&boot, &card).await;
-        if let Some(item) = items.iter().find(|item| item["method"] == "turn/completed") {
-            assert!(
-                item["params"]
-                    .as_str()
-                    .unwrap()
-                    .contains("Usage limit exceeded")
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "matching failed completion must be persisted after systemError"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.item.added' AND \
-            json_extract(payload,'$.method')='turn/completed'",
-        )
-        .bind(card.id.as_str())
-        .fetch_one(boot.repo.pool())
+            registry: boot.state.harness.clone(),
+            config: HarnessConfig::default(),
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
         .await
-        .unwrap();
-        if count == 1 {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "saved error needs a post-insert browser invalidation"
+        .expect("historical fixture harness");
+        let daemon = &boot.state.shared_codex_appserver;
+        daemon.emit_notification_for_test(
+            calm_server::codex_appserver::Notification::ThreadStatusChanged {
+                thread_id: thread.clone(),
+                status: json!({"type":"systemError"}),
+            },
         );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(matches!(
-        harness.state_for_test().await,
-        HarnessState::Wedged { .. }
-    ));
-    assert_eq!(daemon.turn_start_count_for_test(), 0);
-    harness.shutdown().await.unwrap();
+        daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::TurnCompleted {
+            thread_id: thread.clone(), turn: json!({"id":"failed-turn","status":"failed", "error":{
+                "message":"Usage limit exceeded; retry after replenishing quota.","codexErrorInfo":"usageLimitExceeded"}}),
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let items = conversation_rows(&boot, &card).await;
+            if let Some(item) = items.iter().find(|item| item["method"] == "turn/completed") {
+                assert!(
+                    item["params"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Usage limit exceeded")
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "matching failed completion must be persisted after systemError"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM events WHERE scope_card=? AND kind='harness.item.added' AND \
+            json_extract(payload,'$.method')='turn/completed'",
+            )
+            .bind(card.id.as_str())
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+            if count == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "saved error needs a post-insert browser invalidation"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            harness.state_for_test().await,
+            HarnessState::Wedged { .. }
+        ));
+        assert_eq!(daemon.turn_start_count_for_test(), 0);
+        harness.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -377,9 +383,9 @@ async fn recovery_refuses_every_retired_or_untrusted_carrier() {
     ] {
         let boot = boot_fake_running().await;
         let (card, runtime, _, _) = failed_conversation(&boot).await;
-        sqlx::query(change)
-            .bind(&runtime)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(change).bind(&runtime))
             .await
             .unwrap();
         let before: (String, String) =
@@ -537,9 +543,9 @@ async fn preserving_recovery_uses_exact_thread_resume_wire_for_hot_and_cold_thre
 async fn planner_run_exposes_retained_queue_and_send_to_resume_notice() {
     let boot = boot_fake_running().await;
     let (card, runtime, _, entry) = failed_conversation(&boot).await;
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.token_usage',json(?)) WHERE id=?")
+    (boot.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.token_usage',json(?)) WHERE id=?")
         .bind(json!({"used_tokens":100000,"total_tokens":15,"context_window":200000,"at_ms":1}).to_string())
-        .bind(&runtime).execute(boot.repo.pool()).await.unwrap();
+        .bind(&runtime)).await.unwrap();
     let response = boot
         .app
         .oneshot(
@@ -643,8 +649,8 @@ async fn cold_daemon_replacement_leaves_failed_threads_for_credentialed_human_re
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=?2,handle_state_json=json_set(handle_state_json,'$.last_thread_id',?2) WHERE id=?1")
-        .bind(&runtime).bind(&thread).execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET thread_id=?2,handle_state_json=json_set(handle_state_json,'$.last_thread_id',?2) WHERE id=?1")
+        .bind(&runtime).bind(&thread)).await.unwrap();
     assert!(
         boot.state
             .shared_codex_appserver

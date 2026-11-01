@@ -82,9 +82,9 @@ async fn worker_flow_items_key_worker_session_id_not_agent_session_or_thread() {
         assert_eq!(joined_thread_id.as_deref(), Some(thread_id));
     }
 
-    sqlx::query("DELETE FROM worker_sessions WHERE id = ?1")
-        .bind(&session_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM worker_sessions WHERE id = ?1").bind(&session_id))
         .await
         .unwrap();
     let rows_after_session_delete: Vec<(Option<String>, String)> = sqlx::query_as(
@@ -143,44 +143,55 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
         .unwrap();
     assert!(matches!(outcome, CaptureOutcome::Applied(_)));
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    let card_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE id = ?1")
-        .bind(&card_id)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(card_count, 0);
+                let card_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE id = ?1")
+                        .bind(&card_id)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(card_count, 0);
 
-    let session_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE id = ?1")
-            .bind(&session_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(session_count, 0);
+                let session_count: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE id = ?1")
+                        .bind(&session_id)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(session_count, 0);
 
-    let captured: Vec<(Option<String>, Option<String>, String, String)> = sqlx::query_as(
-        "SELECT card_id, worker_session_id, kind, payload
+                let captured: Vec<(Option<String>, Option<String>, String, String)> =
+                    sqlx::query_as(
+                        "SELECT card_id, worker_session_id, kind, payload
          FROM worker_flow_items
          ORDER BY id",
-    )
-    .fetch_all(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(captured.len(), 2);
-    assert_eq!(captured[0].0.as_deref(), None);
-    assert_eq!(captured[0].1.as_deref(), None);
-    assert_eq!(captured[0].2, "user_message");
-    assert_eq!(captured[0].3, r#"{"text":"first"}"#);
-    assert_eq!(captured[1].0.as_deref(), None);
-    assert_eq!(captured[1].1.as_deref(), None);
-    assert_eq!(captured[1].2, "assistant_message");
-    assert_eq!(captured[1].3, r#"{"text":"second"}"#);
+                    )
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(captured.len(), 2);
+                assert_eq!(captured[0].0.as_deref(), None);
+                assert_eq!(captured[0].1.as_deref(), None);
+                assert_eq!(captured[0].2, "user_message");
+                assert_eq!(captured[0].3, r#"{"text":"first"}"#);
+                assert_eq!(captured[1].0.as_deref(), None);
+                assert_eq!(captured[1].1.as_deref(), None);
+                assert_eq!(captured[1].2, "assistant_message");
+                assert_eq!(captured[1].3, r#"{"text":"second"}"#);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn flow_item_count(repo: &SqlxRepo, card_id: &str) -> i64 {

@@ -3,8 +3,8 @@
 use super::super::*;
 use crate::auth::{AuthConfig, AuthState, HumanInputSource, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
+use crate::db::sqlite::SqlxRepo;
 use crate::db::sqlite::conversation::current_input_carrier_tx;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme, new_id};
 use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
 use crate::shared_codex_appserver::SharedCodexAppServer;
@@ -84,82 +84,92 @@ impl Fixture {
             })
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let card = crate::db::sqlite::card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                kind: "codex".into(),
-                title: None,
-                sort: None,
-                payload: serde_json::json!({"schemaVersion":1,"planner_harness":true,
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let card = crate::db::sqlite::card_create_with_id_tx(
+                        &mut tx,
+                        new_id(),
+                        NewCard {
+                            track_id: track.id.clone(),
+                            kind: "codex".into(),
+                            title: None,
+                            sort: None,
+                            payload: serde_json::json!({"schemaVersion":1,"planner_harness":true,
                     "planner_provider":"codex","permission_mode":"never"}),
-            },
-            CardRole::Planner,
-            true,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap()
-        .id
-        .to_string();
-        let runtime = new_id();
-        let thread = uuid::Uuid::new_v4().to_string();
-        let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-        frame.header.last_thread_id = Some(thread.clone());
-        crate::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                runtime.clone(),
-                card.clone(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                Some(thread.clone()),
-                serde_json::to_value(frame).unwrap(),
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-        let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
+                        },
+                        CardRole::Planner,
+                        true,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap()
+                    .id
+                    .to_string();
+                    let runtime = new_id();
+                    let thread = uuid::Uuid::new_v4().to_string();
+                    let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                    frame.header.last_thread_id = Some(thread.clone());
+                    crate::db::sqlite::session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit::shared_planner(
+                            runtime.clone(),
+                            card.clone(),
+                            AgentProvider::Codex,
+                            WorkerSessionState::Idle,
+                            Some(thread.clone()),
+                            serde_json::to_value(frame).unwrap(),
+                            0,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    let mut carrier = current_input_carrier_tx(&mut tx, &card, &runtime)
+                        .await
+                        .unwrap();
+                    let accepted = crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &source.current_principal().unwrap(),
+                        &mut carrier,
+                        body(HUMAN_BODY),
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("human")
+                    };
+                    let claimed = crate::conversation_inputs::claim_initial_tx(
+                        &mut tx,
+                        &source,
+                        &mut carrier,
+                        plan(message.clone()),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let daemon = SharedCodexAppServer::new_stub(repo.clone());
+                    let backend =
+                        PlannerBackend::codex(daemon.clone(), &card, track.id.as_str(), &runtime)
+                            .unwrap();
+                    Self {
+                        repo,
+                        backend,
+                        daemon,
+                        card,
+                        runtime,
+                        source,
+                        submission: claimed.submission_id,
+                        message,
+                        _dir: dir,
+                        native: tokio::sync::Mutex::new(None),
+                    }
+                })
+            })
             .await
-            .unwrap();
-        let accepted = crate::conversation_inputs::accept_human_tx(
-            &mut tx,
-            &source.current_principal().unwrap(),
-            &mut carrier,
-            body(HUMAN_BODY),
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("human")
-        };
-        let claimed = crate::conversation_inputs::claim_initial_tx(
-            &mut tx,
-            &source,
-            &mut carrier,
-            plan(message.clone()),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let daemon = SharedCodexAppServer::new_stub(repo.clone());
-        let backend =
-            PlannerBackend::codex(daemon.clone(), &card, track.id.as_str(), &runtime).unwrap();
-        Self {
-            repo,
-            backend,
-            daemon,
-            card,
-            runtime,
-            source,
-            submission: claimed.submission_id,
-            message,
-            _dir: dir,
-            native: tokio::sync::Mutex::new(None),
-        }
+            .expect("independent write operation")
     }
 
     pub async fn dispatch(&self) -> crate::harness::input_dispatch::CommittedInputReport {
@@ -173,19 +183,28 @@ impl Fixture {
     }
 
     pub async fn sample(&self) -> Sample {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let sampled = sample_tx(
-            &mut tx,
-            &self.card,
-            &self.runtime,
-            &self.backend.provider(),
-            true,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        tx.commit().await.unwrap();
-        sampled
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let sampled = sample_tx(
+                        &mut tx,
+                        &self.card,
+                        &self.runtime,
+                        &self.backend.provider(),
+                        true,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    sampled
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     pub async fn observe(&self, sampled: &Sample) -> QualifiedExecutionEnd {
@@ -207,13 +226,22 @@ impl Fixture {
     }
 
     pub async fn checkpoint(&self) -> ConversationInputCheckpoint {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let carrier = current_input_carrier_tx(&mut tx, &self.card, &self.runtime)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let carrier = current_input_carrier_tx(&mut tx, &self.card, &self.runtime)
+                        .await
+                        .unwrap();
+                    let value = carrier.checkpoint().clone();
+                    tx.commit().await.unwrap();
+                    value
+                })
+            })
             .await
-            .unwrap();
-        let value = carrier.checkpoint().clone();
-        tx.commit().await.unwrap();
-        value
+            .expect("independent write operation")
     }
 
     pub async fn stop(&self) {

@@ -8,13 +8,14 @@ async fn conversation_title_result_missing_row_keeps_its_owner() {
     let entry = QueueEntry::user_message("Unknown transfer is still owed".into(), None, vec![]);
     let id = entry.id().unwrap().clone();
     f.enqueue(vec![entry]).await;
-    sqlx::query(
-        "CREATE TRIGGER refuse_result_checkpoint BEFORE UPDATE OF handle_state_json \
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_result_checkpoint BEFORE UPDATE OF handle_state_json \
          ON worker_sessions BEGIN SELECT RAISE(ABORT, 'checkpoint unavailable'); END",
-    )
-    .execute(f.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(
         handle_steer(&f.harness.inner, &id, 0, &ActorId::User)
             .await
@@ -26,29 +27,34 @@ async fn conversation_title_result_missing_row_keeps_its_owner() {
         Some(input_commit::Continuation::SteerAccepted(outcome))
             if outcome.entry_id == id && outcome.turn_id == turn
     ));
-    sqlx::query("DROP TRIGGER refuse_result_checkpoint")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_result_checkpoint"))
         .await
         .unwrap();
     // Storage disappearance is not a committed start/MOVE. It cannot excuse the
     // actual accepted result or remove its discoverable input owner.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(f.repo.db())
-        .await
-        .unwrap();
-    crate::db::sqlite::session_delete_tx(&mut tx, &f.harness.inner.worker_session_id)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let registry = HarnessRegistry::new();
-    let runtime = f.harness.inner.worker_session_id.clone();
-    registry.insert(runtime.clone(), f.harness.clone());
-    assert!(registry.shutdown_and_remove(&runtime).await.is_err());
-    assert!(registry.get(&runtime).is_some());
-    assert!(matches!(
-        &*f.harness.inner.input_commit.lock().await,
-        Some(input_commit::Continuation::SteerAccepted(outcome)) if outcome.entry_id == id
-    ));
-    assert_eq!(f.daemon.turn_start_count_for_test(), 1);
+    let write_db = (f.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        crate::db::sqlite::session_delete_tx(&mut tx, &f.harness.inner.worker_session_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let registry = HarnessRegistry::new();
+        let runtime = f.harness.inner.worker_session_id.clone();
+        registry.insert(runtime.clone(), f.harness.clone());
+        assert!(registry.shutdown_and_remove(&runtime).await.is_err());
+        assert!(registry.get(&runtime).is_some());
+        assert!(matches!(
+            &*f.harness.inner.input_commit.lock().await,
+            Some(input_commit::Continuation::SteerAccepted(outcome)) if outcome.entry_id == id
+        ));
+        assert_eq!(f.daemon.turn_start_count_for_test(), 1);
+
+    })).await.expect("independent write operation")
 }
 
 async fn owed_failed_pair() -> (Fixture, HarnessRegistry, Vec<QueueEntryId>) {
@@ -89,8 +95,9 @@ async fn owed_failed_pair() -> (Fixture, HarnessRegistry, Vec<QueueEntryId>) {
 }
 
 async fn allow_retirement(f: &Fixture) {
-    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_projection_cleanup"))
         .await
         .unwrap();
 }
@@ -190,17 +197,23 @@ async fn conversation_title_owner_release_closing_quiesce_refuses_unwritten_guar
     let (f, registry, ids) = owed_failed_pair().await;
     assert!(f.harness.shutdown().await.is_err());
     allow_retirement(&f).await;
-    sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?")
-        .bind(&f.harness.inner.worker_session_id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?")
+                .bind(&f.harness.inner.worker_session_id),
+        )
         .await
         .unwrap();
     assert!(f.harness.quiesce_system_error_for_recovery().await.is_err());
     assert_sources_owed(&f, &registry, &ids).await;
     // Restore the original row's eligibility; do not reset closing or checkpoint.
-    sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=NULL WHERE id=?")
-        .bind(&f.harness.inner.worker_session_id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=NULL WHERE id=?")
+                .bind(&f.harness.inner.worker_session_id),
+        )
         .await
         .unwrap();
     f.harness.quiesce_system_error_for_recovery().await.unwrap();
@@ -210,30 +223,37 @@ async fn conversation_title_owner_release_closing_quiesce_refuses_unwritten_guar
 #[tokio::test]
 async fn conversation_title_owner_release_cancelled_shutdown_retains_quiesce_retry() {
     let (f, registry, ids) = owed_failed_pair().await;
-    let mut blocker = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut blocker = write_session.begin().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
+                    .execute(&mut **blocker)
+                    .await
+                    .unwrap();
+                let handle = f.harness.clone();
+                let mut shutdown = tokio::spawn(async move { handle.shutdown().await });
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), &mut shutdown)
+                        .await
+                        .is_err()
+                );
+                assert!(f.harness.inner.shutting_down.load(Ordering::SeqCst));
+                shutdown.abort();
+                assert!(shutdown.await.unwrap_err().is_cancelled());
+                blocker.rollback().await.unwrap();
+                assert_sources_owed(&f, &registry, &ids).await;
+                assert!(f.harness.quiesce_system_error_for_recovery().await.is_err());
+                assert_sources_owed(&f, &registry, &ids).await;
+                allow_retirement(&f).await;
+                f.harness.quiesce_system_error_for_recovery().await.unwrap();
+                assert_settled(&f, &ids).await;
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
-        .execute(&mut **blocker)
-        .await
-        .unwrap();
-    let handle = f.harness.clone();
-    let mut shutdown = tokio::spawn(async move { handle.shutdown().await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut shutdown)
-            .await
-            .is_err()
-    );
-    assert!(f.harness.inner.shutting_down.load(Ordering::SeqCst));
-    shutdown.abort();
-    assert!(shutdown.await.unwrap_err().is_cancelled());
-    blocker.rollback().await.unwrap();
-    assert_sources_owed(&f, &registry, &ids).await;
-    assert!(f.harness.quiesce_system_error_for_recovery().await.is_err());
-    assert_sources_owed(&f, &registry, &ids).await;
-    allow_retirement(&f).await;
-    f.harness.quiesce_system_error_for_recovery().await.unwrap();
-    assert_settled(&f, &ids).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -338,13 +358,14 @@ async fn conversation_title_owner_release_durable_pending_needs_no_checkpoint() 
     let before = serde_json::to_value(f.stored().await).unwrap();
     // Even a nonempty live queue is not an outstanding transfer. Shutdown must
     // neither require nor manufacture another durable snapshot.
-    sqlx::query(
-        "CREATE TRIGGER refuse_release_checkpoint BEFORE UPDATE ON worker_sessions
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_release_checkpoint BEFORE UPDATE ON worker_sessions
         BEGIN SELECT RAISE(ABORT, 'physical stop must not checkpoint'); END",
-    )
-    .execute(f.repo.db().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     f.harness.shutdown().await.unwrap();
     assert_eq!(serde_json::to_value(f.stored().await).unwrap(), before);
 }

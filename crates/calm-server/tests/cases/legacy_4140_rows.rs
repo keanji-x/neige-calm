@@ -26,8 +26,9 @@ async fn legacy_boot() -> Boot {
             "{in_track_route}",
             calm_types::task_recovery::TASK_IN_TRACK_ROUTE,
         );
-    sqlx::raw_sql(&fixture)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::raw_sql(&fixture))
         .await
         .expect("the fixture applies after every migration");
     boot.repo

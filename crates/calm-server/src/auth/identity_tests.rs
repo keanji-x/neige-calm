@@ -164,9 +164,9 @@ async fn owner_profile_startup_preserves_stable_identity_and_does_not_repair_mem
         )
         .await
         .unwrap();
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-        .bind(area.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM area_members WHERE area_id=?1").bind(area.id.as_str()))
         .await
         .unwrap();
     let created: i64 = sqlx::query_scalar("SELECT created_at FROM application_users WHERE id=?1")

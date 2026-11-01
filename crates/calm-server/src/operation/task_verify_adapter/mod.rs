@@ -471,9 +471,18 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     target,
                 };
                 let pool = ctx.operation_repo.sqlite_db();
-                let mut tx = begin_immediate_tx(&pool).await?;
-                let envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
-                tx.commit().await?;
+                let envelopes = pool
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                            let mut tx = write_session.begin().await?;
+                            let envelopes =
+                                apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
+                            tx.commit().await?;
+                            Ok::<_, CalmError>(envelopes)
+                        })
+                    })
+                    .await??;
                 for envelope in envelopes {
                     ctx.events.emit_envelope(envelope);
                 }

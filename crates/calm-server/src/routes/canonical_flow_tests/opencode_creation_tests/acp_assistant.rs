@@ -449,17 +449,24 @@ async fn historical_creation_key_replays_original_evidence(provider: AgentProvid
     assert_eq!(replay["id"], original["id"]);
     assert_eq!(replay["initialInput"], original["initialInput"]);
     let card = original["id"].as_str().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    !crate::db::sqlite::conversation::card_has_canonical_storage(&mut tx, card)
+                        .await
+                        .unwrap()
+                );
+                tx.rollback().await.unwrap();
+                assert_eq!(fixture.counts(card).await.0, 0);
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        !crate::db::sqlite::conversation::card_has_canonical_storage(&mut tx, card)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(fixture.counts(card).await.0, 0);
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -487,9 +494,14 @@ async fn c4_acp_planner_switch_next_turns_use_engine_and_inherit_permission() {
     wait_idle(&fixture, assistant, 1).await;
     // The promoted card inherits the outgoing Planner's mode, then its profile
     // composes the next process environment through the execution owner.
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id=?")
-        .bind(&planner)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id=?",
+            )
+            .bind(&planner),
+        )
         .await
         .unwrap();
     for card in [&planner, assistant] {

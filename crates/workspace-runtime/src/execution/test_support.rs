@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
-pub use store_contract::StoreHarness;
+pub use store_contract::{StoreHarness, StoreWrite, TransactionEnd};
 use tokio::sync::{Notify, watch};
 use workspace::identity::WorkspaceCwd;
 

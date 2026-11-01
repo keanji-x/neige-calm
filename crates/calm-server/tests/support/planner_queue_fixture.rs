@@ -129,172 +129,189 @@ async fn boot_inner(
     let workspace_root = tmp.path().join("workspaces");
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "pending queue".into(),
-            sort: None,
-            cwd: String::new(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        },
-        None,
-        &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
-        None,
-        &track_area_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let workspace = PathBuf::from(&track.workspace.path);
-    workspace_runtime::selection::materialize_workspace(
-        &track.workspace,
-        &workspace_root,
-        track.id.as_str(),
-    )
-    .unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "pending queue".into(),
+                        sort: None,
+                        cwd: String::new(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    },
+                    None,
+                    &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+                    None,
+                    &track_area_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let workspace = PathBuf::from(&track.workspace.path);
+                workspace_runtime::selection::materialize_workspace(
+                    &track.workspace,
+                    &workspace_root,
+                    track.id.as_str(),
+                )
+                .unwrap();
 
-    track_area_cache.insert(track.id.clone(), area.id);
+                track_area_cache.insert(track.id.clone(), area.id);
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            // Every Planner card is created with `permission_mode: "never"` (#2348).
-            payload: json!({
-                "schemaVersion": 1,
-                "planner_harness": true,
-                "planner_provider": "codex",
-                "permission_mode": "never",
-            }),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
+                let mut tx = write_session.begin().await.unwrap();
+                let planner_card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        // Every Planner card is created with `permission_mode: "never"` (#2348).
+                        payload: json!({
+                            "schemaVersion": 1,
+                            "planner_harness": true,
+                            "planner_provider": "codex",
+                            "permission_mode": "never",
+                        }),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
 
-    let worker_session_id = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        calm_server::session_projection_repo::WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Codex),
-            status: calm_server::session_projection_repo::WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(SEED_THREAD_ID.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+                let worker_session_id = new_id();
+                session_start_runtime_tx(
+                    &mut tx,
+                    calm_server::session_projection_repo::WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: planner_card.id.to_string(),
+                        kind:
+                            calm_server::session_projection_repo::WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(
+                            calm_server::session_projection_repo::AgentProvider::Codex,
+                        ),
+                        status: calm_server::session_projection_repo::WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(SEED_THREAD_ID.to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let events = EventBus::new();
-    let state = AppState::from_parts(
-        repo.clone(),
-        events.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-pending-queue"),
-            Vec::new(),
-            EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache.clone()),
-        Some(track_area_cache.clone()),
-    )
-    .with_workspace_root(workspace_root);
+                let events = EventBus::new();
+                let state = AppState::from_parts(
+                    repo.clone(),
+                    events.clone(),
+                    Arc::new(DaemonClient::new_stub()),
+                    Arc::new(PluginHost::new_full(
+                        Arc::new(PluginRegistry::empty()),
+                        repo.clone(),
+                        PathBuf::new(),
+                        std::env::temp_dir().join("calm-plugins-data-pending-queue"),
+                        Vec::new(),
+                        EventBus::new(),
+                        calm_server::state::WriteContext::new(
+                            role_cache.clone(),
+                            track_area_cache.clone(),
+                        ),
+                    )),
+                    Arc::new(CodexClient::new_stub()),
+                    Some(role_cache.clone()),
+                    Some(track_area_cache.clone()),
+                )
+                .with_workspace_root(workspace_root);
 
-    if event_writes == EventWrites::Broken {
-        sqlx::query("ALTER TABLE events RENAME TO events_hidden")
-            .execute(repo.pool())
-            .await
-            .expect("hide the events table");
-    }
+                if event_writes == EventWrites::Broken {
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query("ALTER TABLE events RENAME TO events_hidden"))
+                        .await
+                        .expect("hide the events table");
+                }
 
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let daemon_handle = Arc::clone(&daemon);
-    let state = state.with_shared_codex_appserver(daemon.clone());
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: state.operation_runtime.track_locks_for_test().clone(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon,
-            planner_card.id.as_ref(),
-            planner_card.track_id.as_ref(),
-            worker_session_id.as_ref(),
-        )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: planner_card.track_id.clone(),
-        card_id: planner_card.id.clone(),
-        thread_id: Some(SEED_THREAD_ID.to_string()),
-        repo: repo_dyn,
-        events,
-        card_role_cache: role_cache,
-        track_area_cache,
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let daemon_handle = Arc::clone(&daemon);
+                let state = state.with_shared_codex_appserver(daemon.clone());
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let harness = PlannerHarness::run(PlannerHarnessParams {
+                    track_delete_locks: state.operation_runtime.track_locks_for_test().clone(),
+                    backend: calm_server::harness::backend::PlannerBackend::codex(
+                        daemon,
+                        planner_card.id.as_ref(),
+                        planner_card.track_id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id: worker_session_id.clone(),
+                    track_id: planner_card.track_id.clone(),
+                    card_id: planner_card.id.clone(),
+                    thread_id: Some(SEED_THREAD_ID.to_string()),
+                    repo: repo_dyn,
+                    events,
+                    card_role_cache: role_cache,
+                    track_area_cache,
 
-        // The registry the harness is installed in, as production wires it: `GET harness/live` reads it.
-        registry: state.harness.clone(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            // Shortened from the production thirty seconds; must stay LONGER than `TRANSIENT_RETRY_DELAY` (2 s)
-            // or the notice appears at the second refusal regardless and the budget stops being load bearing.
-            transient_silence_budget: Duration::from_secs(5),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
-    // A user message hard-fires past the debounce windows and would be drained by the first 50ms tick;
-    // pausing issuance makes the in-queue assertions deterministic.
-    if issuance == Issuance::Paused {
-        harness.pause_issuance_for_dev();
-    }
-    state
-        .harness
-        .insert(worker_session_id.clone(), harness.clone());
-    let registry = state.harness.clone();
+                    // The registry the harness is installed in, as production wires it: `GET harness/live` reads it.
+                    registry: state.harness.clone(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::from_secs(60),
+                        debounce_max_wait: Duration::from_secs(60),
+                        // Shortened from the production thirty seconds; must stay LONGER than `TRANSIENT_RETRY_DELAY` (2 s)
+                        // or the notice appears at the second refusal regardless and the budget stops being load bearing.
+                        transient_silence_budget: Duration::from_secs(5),
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
+                })
+                .await
+                .expect("historical fixture harness");
+                // A user message hard-fires past the debounce windows and would be drained by the first 50ms tick;
+                // pausing issuance makes the in-queue assertions deterministic.
+                if issuance == Issuance::Paused {
+                    harness.pause_issuance_for_dev();
+                }
+                state
+                    .harness
+                    .insert(worker_session_id.clone(), harness.clone());
+                let registry = state.harness.clone();
 
-    let app = super::authenticated_router::application(state).await;
+                let app = super::authenticated_router::application(state).await;
 
-    Boot {
-        app,
-        harness,
-        registry,
-        planner_card,
-        worker_session_id,
-        daemon: daemon_handle,
-        repo,
-        workspace,
-        _tmp: tmp,
-    }
+                Boot {
+                    app,
+                    harness,
+                    registry,
+                    planner_card,
+                    worker_session_id,
+                    daemon: daemon_handle,
+                    repo,
+                    workspace,
+                    _tmp: tmp,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub fn idle_snapshot(entries: Vec<QueueEntry>) -> HarnessSnapshot {

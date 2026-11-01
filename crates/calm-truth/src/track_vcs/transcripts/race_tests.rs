@@ -157,9 +157,14 @@ async fn transcript_refresh_reprepares_after_selected_hook_delete_with_same_max_
     let fx = Fixture::new().await;
     let removed = fx.hook("removed middle selected hook").await;
     let maximum = fx.hook("unchanged maximum hook").await;
-    sqlx::query("INSERT INTO retention_meta (key,value) VALUES ('events_prune_watermark', ?1)")
-        .bind(maximum + 100)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO retention_meta (key,value) VALUES ('events_prune_watermark', ?1)",
+            )
+            .bind(maximum + 100),
+        )
         .await
         .unwrap();
     let (pause, task) = start(
@@ -168,9 +173,9 @@ async fn transcript_refresh_reprepares_after_selected_hook_delete_with_same_max_
         vec![Phase::BeforeWrite],
     );
     pause.entered().await;
-    sqlx::query("DELETE FROM events WHERE id = ?1")
-        .bind(removed)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM events WHERE id = ?1").bind(removed))
         .await
         .unwrap();
     pause.release();
@@ -272,10 +277,13 @@ async fn transcript_refresh_does_not_publish_prepared_hooks_for_moved_card() {
         vec![Phase::BeforeWrite],
     );
     pause.entered().await;
-    sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
-        .bind(other.id.as_str())
-        .bind(fx.card.id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET track_id = ?1 WHERE id = ?2")
+                .bind(other.id.as_str())
+                .bind(fx.card.id.as_str()),
+        )
         .await
         .unwrap();
     pause.release();
@@ -301,9 +309,11 @@ async fn transcript_refresh_fails_on_current_corrupt_card_before_any_publication
         vec![Phase::BeforeWrite],
     );
     pause.entered().await;
-    sqlx::query("UPDATE cards SET payload = '{' WHERE id = ?1")
-        .bind(fx.card.id.as_str())
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = '{' WHERE id = ?1").bind(fx.card.id.as_str()),
+        )
         .await
         .unwrap();
     pause.release();

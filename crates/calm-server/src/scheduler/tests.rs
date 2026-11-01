@@ -475,144 +475,154 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
 
     let pool = concrete.pool().clone();
     let now = now_ms();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.db())
-        .await
-        .expect("begin seed tx");
-    let (card, _term) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
-        &mut tx,
-        "card-claude-timeout".into(),
-        "runtime-claude-timeout",
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "claude".into(),
-        "/tmp".into(),
-        json!({}),
-        Some("do".into()),
-        None,
-        None,
-        "/tmp/neige-claude-timeout-settings.json".into(),
-        "claude-session-timeout".into(),
-        concrete.card_role_cache(),
-        crate::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("create claude worker card");
-    let mut running = task("claude-timeout", TaskStatus::Running, &[], 0);
-    running.id = format!("{}:claude-timeout", track.id.as_str());
-    running.track_id = track.id.as_str().to_string();
-    running.kind = TaskKind::Claude;
-    running.worker_card_id = Some(card.id.to_string());
-    running.running_deadline_ms = Some(now - 1);
-    running.created_at_ms = now;
-    running.updated_at_ms = now;
-    let task_id = running.id.clone();
-    crate::test_support::insert_task_tx(&mut tx, &running)
-        .await
-        .expect("insert running claude task");
-    tx.commit().await.expect("commit seed tx");
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin seed tx");
+                let (card, _term) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+                    &mut tx,
+                    "card-claude-timeout".into(),
+                    "runtime-claude-timeout",
+                    None,
+                    track.id.clone(),
+                    None,
+                    None,
+                    "claude".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    Some("do".into()),
+                    None,
+                    None,
+                    "/tmp/neige-claude-timeout-settings.json".into(),
+                    "claude-session-timeout".into(),
+                    concrete.card_role_cache(),
+                    crate::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("create claude worker card");
+                let mut running = task("claude-timeout", TaskStatus::Running, &[], 0);
+                running.id = format!("{}:claude-timeout", track.id.as_str());
+                running.track_id = track.id.as_str().to_string();
+                running.kind = TaskKind::Claude;
+                running.worker_card_id = Some(card.id.to_string());
+                running.running_deadline_ms = Some(now - 1);
+                running.created_at_ms = now;
+                running.updated_at_ms = now;
+                let task_id = running.id.clone();
+                crate::test_support::insert_task_tx(&mut tx, &running)
+                    .await
+                    .expect("insert running claude task");
+                tx.commit().await.expect("commit seed tx");
 
-    sqlx::query(
-        r#"UPDATE worker_sessions
+                sqlx::query(
+                    r#"UPDATE worker_sessions
                SET state = 'running',
                    updated_at_ms = ?1
                WHERE id = 'runtime-claude-timeout'"#,
-    )
-    .bind(now)
-    .execute(&pool)
-    .await
-    .expect("mark claude session running");
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+                )
+                .bind(now)
+                .execute(&pool)
+                .await
+                .expect("mark claude session running");
+                sqlx::query(
+                    r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-claude-timeout', ?1, ?2, '/tmp/neige-claude-timeout-lease',
                        'held', 'test-owner', ?3, NULL, ?4, ?4)"#,
-    )
-    .bind(card.id.as_ref())
-    .bind(track.id.as_str())
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .expect("insert held lease");
+                )
+                .bind(card.id.as_ref())
+                .bind(track.id.as_str())
+                .bind(now + 60_000)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .expect("insert held lease");
 
-    let events = EventBus::new();
-    let write = WriteContext::new(
-        concrete.card_role_cache().clone(),
-        concrete.track_area_cache().clone(),
-    );
-    let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
-        concrete.db().clone(),
-    ));
-    let completion = crate::operation::OperationCompletionBus::new();
-    let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo.clone(),
-        Vec::new(),
-        events.clone(),
-        completion.clone(),
-        crate::operation::SpawnCtx::new(
-            route_repo.clone(),
-            operation_repo,
-            Arc::new(crate::state::DaemonClient::new_stub()),
-            crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(route_repo),
-            events.clone(),
-            completion,
-        ),
-    ));
-    let scheduler = Scheduler::new(
-        repo.clone(),
-        events,
-        write,
-        Arc::downgrade(&runtime),
-        crate::per_card_lock::new_per_card_locks(),
-        Arc::new(Semaphore::new(1)),
-        std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
-        crate::scheduler::WorkerLiveness::DEFAULT,
-        crate::scheduler::WorkerIdleWake::new(
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
-            crate::scheduler::WORKER_IDLE_TURN_GRACE,
-            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
-        ),
-    );
-    scheduler.mark_boot_sweep_complete();
-    scheduler.open_context_sweep_gate().await;
+                let events = EventBus::new();
+                let write = WriteContext::new(
+                    concrete.card_role_cache().clone(),
+                    concrete.track_area_cache().clone(),
+                );
+                let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
+                    concrete.db().clone(),
+                ));
+                let completion = crate::operation::OperationCompletionBus::new();
+                let runtime = Arc::new(OperationRuntime::new_unchecked(
+                    operation_repo.clone(),
+                    Vec::new(),
+                    events.clone(),
+                    completion.clone(),
+                    crate::operation::SpawnCtx::new(
+                        route_repo.clone(),
+                        operation_repo,
+                        Arc::new(crate::state::DaemonClient::new_stub()),
+                        crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(
+                            route_repo,
+                        ),
+                        events.clone(),
+                        completion,
+                    ),
+                ));
+                let scheduler = Scheduler::new(
+                    repo.clone(),
+                    events,
+                    write,
+                    Arc::downgrade(&runtime),
+                    crate::per_card_lock::new_per_card_locks(),
+                    Arc::new(Semaphore::new(1)),
+                    std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+                    crate::scheduler::WorkerLiveness::DEFAULT,
+                    crate::scheduler::WorkerIdleWake::new(
+                        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+                        crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                        crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+                    ),
+                );
+                scheduler.mark_boot_sweep_complete();
+                scheduler.open_context_sweep_gate().await;
 
-    scheduler.sweep_all().await;
+                scheduler.sweep_all().await;
 
-    let failed = repo
-        .task_get(&task_id)
-        .await
-        .expect("read task")
-        .expect("task row");
-    assert_eq!(failed.status, TaskStatus::Failed);
-    assert_eq!(failed.status_detail.as_deref(), Some("worker-timeout"));
-    let lease_state: String = sqlx::query_scalar(
-        "SELECT state FROM workspace_leases WHERE lease_id = 'lease-claude-timeout'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("lease state");
-    assert_eq!(lease_state, "released");
-    let session_state: String =
-        sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id = 'runtime-claude-timeout'")
-            .fetch_one(&pool)
-            .await
-            .expect("session state");
-    assert_eq!(session_state, "failed");
-    let cleanup_markers: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*)
+                let failed = repo
+                    .task_get(&task_id)
+                    .await
+                    .expect("read task")
+                    .expect("task row");
+                assert_eq!(failed.status, TaskStatus::Failed);
+                assert_eq!(failed.status_detail.as_deref(), Some("worker-timeout"));
+                let lease_state: String = sqlx::query_scalar(
+                    "SELECT state FROM workspace_leases WHERE lease_id = 'lease-claude-timeout'",
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("lease state");
+                assert_eq!(lease_state, "released");
+                let session_state: String = sqlx::query_scalar(
+                    "SELECT state FROM worker_sessions WHERE id = 'runtime-claude-timeout'",
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("session state");
+                assert_eq!(session_state, "failed");
+                let cleanup_markers: i64 = sqlx::query_scalar(
+                    r#"SELECT COUNT(*)
                FROM worker_sessions
                WHERE id = 'runtime-claude-timeout'
                  AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
                      IS NOT NULL"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cleanup marker count");
-    assert_eq!(cleanup_markers, 0, "cleanup marker must be cleared");
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("cleanup marker count");
+                assert_eq!(cleanup_markers, 0, "cleanup marker must be cleared");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -657,92 +667,102 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     snapshot.running_deadline_ms = Some(now_ms() - 1);
 
     let pool = concrete.pool().clone();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.db())
-        .await
-        .expect("begin task tx");
-    crate::test_support::insert_task_tx(&mut tx, &stored)
-        .await
-        .expect("insert done task");
-    tx.commit().await.expect("commit task tx");
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin task tx");
+                crate::test_support::insert_task_tx(&mut tx, &stored)
+                    .await
+                    .expect("insert done task");
+                tx.commit().await.expect("commit task tx");
 
-    let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+                let now = now_ms();
+                sqlx::query(
+                    r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                    boot_id, created_at_ms, updated_at_ms
                )
                VALUES ('lease-race', 'card-race', ?1, '/tmp/neige-timeout-race',
                        'held', 'test-owner', ?2, NULL, ?3, ?3)"#,
-    )
-    .bind(track.id.as_str())
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(&pool)
-    .await
-    .expect("insert held lease");
-    sqlx::query(
-        r#"INSERT INTO worker_sessions (
+                )
+                .bind(track.id.as_str())
+                .bind(now + 60_000)
+                .bind(now)
+                .execute(&pool)
+                .await
+                .expect("insert held lease");
+                sqlx::query(
+                    r#"INSERT INTO worker_sessions (
                    id, track_id, provider, mode, contract, state, card_id,
                    created_at_ms, updated_at_ms
                )
                VALUES ('runtime-race', ?1, 'codex', 'resumable', 'executor',
                        'running', 'card-race', ?2, ?2)"#,
-    )
-    .bind(track.id.as_str())
-    .bind(now)
-    .execute(&pool)
-    .await
-    .expect("insert worker session");
+                )
+                .bind(track.id.as_str())
+                .bind(now)
+                .execute(&pool)
+                .await
+                .expect("insert worker session");
 
-    let events = EventBus::new();
-    let write = WriteContext::new(
-        concrete.card_role_cache().clone(),
-        concrete.track_area_cache().clone(),
-    );
-    let scheduler = Scheduler::new(
-        repo,
-        events,
-        write,
-        Weak::<OperationRuntime>::new(),
-        crate::per_card_lock::new_per_card_locks(),
-        Arc::new(Semaphore::new(1)),
-        std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
-        crate::scheduler::WorkerLiveness::DEFAULT,
-        crate::scheduler::WorkerIdleWake::new(
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(concrete.clone()),
-            crate::scheduler::WORKER_IDLE_TURN_GRACE,
-            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
-        ),
-    );
+                let events = EventBus::new();
+                let write = WriteContext::new(
+                    concrete.card_role_cache().clone(),
+                    concrete.track_area_cache().clone(),
+                );
+                let scheduler = Scheduler::new(
+                    repo,
+                    events,
+                    write,
+                    Weak::<OperationRuntime>::new(),
+                    crate::per_card_lock::new_per_card_locks(),
+                    Arc::new(Semaphore::new(1)),
+                    std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+                    crate::scheduler::WorkerLiveness::DEFAULT,
+                    crate::scheduler::WorkerIdleWake::new(
+                        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(
+                            concrete.clone(),
+                        ),
+                        crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                        crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+                    ),
+                );
 
-    scheduler
-        .fail_running_worker(
-            snapshot,
-            RunningWorkerFailure::LivenessTimeout(LivenessExpiry::Cap),
-        )
-        .await;
+                scheduler
+                    .fail_running_worker(
+                        snapshot,
+                        RunningWorkerFailure::LivenessTimeout(LivenessExpiry::Cap),
+                    )
+                    .await;
 
-    let state: String =
-        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = 'lease-race'")
-            .fetch_one(&pool)
-            .await
-            .expect("lease state");
-    assert_eq!(state, "held", "0-row CAS must not release lease");
-    let failed_events: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'task.failed'")
-            .fetch_one(&pool)
-            .await
-            .expect("failed event count");
-    assert_eq!(failed_events, 0, "0-row CAS must not emit task.failed");
-    let cleanup_markers: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*)
+                let state: String = sqlx::query_scalar(
+                    "SELECT state FROM workspace_leases WHERE lease_id = 'lease-race'",
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("lease state");
+                assert_eq!(state, "held", "0-row CAS must not release lease");
+                let failed_events: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'task.failed'")
+                        .fetch_one(&pool)
+                        .await
+                        .expect("failed event count");
+                assert_eq!(failed_events, 0, "0-row CAS must not emit task.failed");
+                let cleanup_markers: i64 = sqlx::query_scalar(
+                    r#"SELECT COUNT(*)
                FROM worker_sessions
                WHERE card_id = 'card-race'
                  AND json_extract(handle_state_json, '$.timeout_cleanup.requested_at_ms')
                      IS NOT NULL"#,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("cleanup marker count");
-    assert_eq!(cleanup_markers, 0, "0-row CAS must not mark cleanup");
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("cleanup marker count");
+                assert_eq!(cleanup_markers, 0, "0-row CAS must not mark cleanup");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

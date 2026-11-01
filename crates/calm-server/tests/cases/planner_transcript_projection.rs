@@ -125,175 +125,179 @@ async fn boot_with(plan: BootPlan) -> Boot {
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        repo.card_role_get(card.id.as_str()).await.unwrap(),
-        Some(CardRole::Planner)
-    );
-    let track_area_cache = TrackAreaCache::new();
-    track_area_cache.insert(track.id.clone(), area.id);
-
-    let worker_session_id = new_id();
-    for row in seeded {
-        let params = json!({
-            "item": {
-                "id": row.client_id,
-                "clientId": row.client_id,
-                "type": "userMessage",
-                "content": [{ "type": "text", "text": row.text }],
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
             },
-            "_projection": true,
-        });
-        let segments = json!([{ "presentation": "user", "text": row.text, "attachments": [] }]);
-        repo.fixture_transcript_insert(
-            "predecessor-session",
-            card.id.as_str(),
-            card.track_id.as_str(),
-            SEED_THREAD_ID,
-            None,
-            Some(row.client_id.as_str()),
-            Some("userMessage"),
-            "item/completed",
-            &params.to_string(),
-            Some(&segments.to_string()),
+            CardRole::Planner,
+            false,
+            &role_cache,
         )
         .await
         .unwrap();
-    }
-    let stored = match pre_p2_snapshot_json {
-        Some(stored) => stored,
-        None => {
-            let mut snapshot = HarnessSnapshot::initial(0, pending);
-            snapshot.phase = HarnessPhaseTag::Idle;
-            snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
-            snapshot.projection_client_id = projection_client_id;
-            serde_json::to_value(&snapshot).unwrap()
+        tx.commit().await.unwrap();
+        assert_eq!(
+            repo.card_role_get(card.id.as_str()).await.unwrap(),
+            Some(CardRole::Planner)
+        );
+        let track_area_cache = TrackAreaCache::new();
+        track_area_cache.insert(track.id.clone(), area.id);
+
+        let worker_session_id = new_id();
+        for row in seeded {
+            let params = json!({
+                "item": {
+                    "id": row.client_id,
+                    "clientId": row.client_id,
+                    "type": "userMessage",
+                    "content": [{ "type": "text", "text": row.text }],
+                },
+                "_projection": true,
+            });
+            let segments = json!([{ "presentation": "user", "text": row.text, "attachments": [] }]);
+            repo.fixture_transcript_insert(
+                "predecessor-session",
+                card.id.as_str(),
+                card.track_id.as_str(),
+                SEED_THREAD_ID,
+                None,
+                Some(row.client_id.as_str()),
+                Some("userMessage"),
+                "item/completed",
+                &params.to_string(),
+                Some(&segments.to_string()),
+            )
+            .await
+            .unwrap();
         }
-    };
-    let snapshot = HarnessSnapshot::from_value_strict(stored.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(SEED_THREAD_ID.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(stored),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    if fail_turn_start {
-        daemon.fail_turn_start_for_test();
-    }
-    if let Some(hook) = turn_start_hook {
-        daemon.install_turn_start_return_hook_for_test(hook);
-    }
-    let events_rx = events.subscribe();
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
+        let stored = match pre_p2_snapshot_json {
+            Some(stored) => stored,
+            None => {
+                let mut snapshot = HarnessSnapshot::initial(0, pending);
+                snapshot.phase = HarnessPhaseTag::Idle;
+                snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
+                snapshot.projection_client_id = projection_client_id;
+                serde_json::to_value(&snapshot).unwrap()
+            }
+        };
+        let snapshot = HarnessSnapshot::from_value_strict(stored.clone());
+        let mut tx = write_session.begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(SEED_THREAD_ID.to_string()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(stored),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
         )
-        .unwrap(),
-        worker_session_id: worker_session_id.clone(),
-        track_id: card.track_id.clone(),
-        card_id: card.id.clone(),
-        thread_id: Some(SEED_THREAD_ID.to_string()),
-        repo: repo_dyn.clone(),
-        events: events.clone(),
-        card_role_cache: role_cache.clone(),
-        track_area_cache: track_area_cache.clone(),
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            // A `turn_running` snapshot restores as `Resumed`; the watchdog
-            // must not flip it to `Idle` under a test that is still reading.
-            resumed_reconcile_budget: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+        if fail_turn_start {
+            daemon.fail_turn_start_for_test();
+        }
+        if let Some(hook) = turn_start_hook {
+            daemon.install_turn_start_return_hook_for_test(hook);
+        }
+        let events_rx = events.subscribe();
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                card.id.as_ref(),
+                card.track_id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id: worker_session_id.clone(),
+            track_id: card.track_id.clone(),
+            card_id: card.id.clone(),
+            thread_id: Some(SEED_THREAD_ID.to_string()),
+            repo: repo_dyn.clone(),
+            events: events.clone(),
+            card_role_cache: role_cache.clone(),
+            track_area_cache: track_area_cache.clone(),
 
-    let state = AppState::from_parts(
-        repo_dyn,
-        events.clone(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
-            repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-items-projection"),
-            Vec::new(),
-            events,
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache),
-        Some(track_area_cache),
-    );
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None,
-                password: None,
-                dev_autologin: true,
-                display_name: "Owner".into(),
-            }),
-            calm_server::auth::require_session,
-        ))
-        .with_state(state);
+            registry: calm_server::harness::HarnessRegistry::new(),
+            config: HarnessConfig {
+                debounce_min_idle: Duration::from_secs(60),
+                debounce_max_wait: Duration::from_secs(60),
+                // A `turn_running` snapshot restores as `Resumed`; the watchdog
+                // must not flip it to `Idle` under a test that is still reading.
+                resumed_reconcile_budget: Duration::from_secs(60),
+                ..HarnessConfig::default()
+            },
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
 
-    Boot {
-        app,
-        repo,
-        daemon,
-        harness,
-        card_id: card.id.to_string(),
-        worker_session_id,
-        events_rx,
-    }
+        let state = AppState::from_parts(
+            repo_dyn,
+            events.clone(),
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-items-projection"),
+                Vec::new(),
+                events,
+                calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            Some(role_cache),
+            Some(track_area_cache),
+        );
+        let app = routes::router()
+            .layer(axum::middleware::from_fn(
+                calm_server::actor::actor_middleware,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                    username: None,
+                    password: None,
+                    dev_autologin: true,
+                    display_name: "Owner".into(),
+                }),
+                calm_server::auth::require_session,
+            ))
+            .with_state(state);
+
+        Boot {
+            app,
+            repo,
+            daemon,
+            harness,
+            card_id: card.id.to_string(),
+            worker_session_id,
+            events_rx,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 /// The next `harness.phase.changed` on the bus, as `(old, new)`.

@@ -33,11 +33,9 @@ async fn planner_dispatch_receipts_table_is_dropped() {
         db.apply(migration).await.unwrap();
     }
     // A released receipt row, as 4140 holds three.
-    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
+    { let query = sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('area','A','red',0,1,2);
         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('track','area','T',0,1,2);
-        INSERT INTO planner_dispatch_receipts VALUES('track','Research','{\"workspace\":\"empty\"}','dispatch-1','report','b_task',3);")
-        .execute(&mut db)
-        .await
+        INSERT INTO planner_dispatch_receipts VALUES('track','Research','{\"workspace\":\"empty\"}','dispatch-1','report','b_task',3);"); sqlx::Executor::execute(&mut db, query).await }
         .unwrap();
     assert!(
         !schema_objects(&mut db).await.is_empty(),

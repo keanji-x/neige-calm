@@ -130,8 +130,11 @@ async fn closed_authorization_matrix() {
             Err(TruthError::Forbidden(_))
         ));
     }
-    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id='p'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET state='superseded' WHERE id='p'",
+        ))
         .await
         .unwrap();
     assert!(
@@ -169,8 +172,9 @@ async fn harness_source_is_session_bound_and_active() {
         Reaction::Duplicate { .. }
     ));
     // Still active in worker_sessions, but no longer the card's selected session.
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id='p'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id='p'"))
         .await
         .unwrap();
     assert!(
@@ -194,16 +198,25 @@ async fn non_finite_metric_is_refused_and_writes_nothing() {
         sample: 0,
         output: SampleOutput::Metric(MetricOutput { value: f64::NAN }),
     };
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let result = react_fixture_tx(&mut tx, &planner(event, "nan"), 0).await;
-    assert!(matches!(
-        result,
-        Err(TruthError::Core(calm_types::error::CoreError::BadRequest(
-            _
-        )))
-    ));
-    tx.rollback().await.unwrap();
-    assert_eq!(counts(&repo).await, (0, 0, 0));
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let result = react_fixture_tx(&mut tx, &planner(event, "nan"), 0).await;
+                assert!(matches!(
+                    result,
+                    Err(TruthError::Core(calm_types::error::CoreError::BadRequest(
+                        _
+                    )))
+                ));
+                tx.rollback().await.unwrap();
+                assert_eq!(counts(&repo).await, (0, 0, 0));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -221,7 +234,7 @@ async fn intent_insert_failure_rolls_back_every_write() {
     .await
     .unwrap();
     let before = load_state(repo.db(), &"t".into()).await.unwrap();
-    sqlx::query("CREATE TRIGGER refuse_intents BEFORE INSERT ON objective_intents BEGIN SELECT RAISE(ABORT,'test failure'); END").execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_intents BEFORE INSERT ON objective_intents BEGIN SELECT RAISE(ABORT,'test failure'); END")).await.unwrap();
     assert!(
         fixture_input_react(
             &repo,
@@ -259,9 +272,12 @@ async fn effect_collision_rolls_back() {
     let objective = rewound.objectives.get_mut(&definition().key).unwrap();
     objective.evaluation = None;
     objective.evaluations = 0;
-    sqlx::query("UPDATE objective_states SET state_json=?")
-        .bind(serde_json::to_string(&rewound).unwrap())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE objective_states SET state_json=?")
+                .bind(serde_json::to_string(&rewound).unwrap()),
+        )
         .await
         .unwrap();
     let result = react(repo.db(), planner(scenario()[2].clone(), "collision")).await;
@@ -285,14 +301,12 @@ async fn log_is_append_only() {
     .await
     .unwrap();
     assert!(
-        sqlx::query("UPDATE objective_events SET appended_at_ms=1")
-            .execute(repo.pool())
+        (repo.db()).writer().execute(sqlx::query("UPDATE objective_events SET appended_at_ms=1"))
             .await
             .is_err()
     );
     assert!(
-        sqlx::query("DELETE FROM objective_events")
-            .execute(repo.pool())
+        (repo.db()).writer().execute(sqlx::query("DELETE FROM objective_events"))
             .await
             .is_err()
     );
@@ -303,18 +317,24 @@ async fn log_is_append_only() {
 async fn capability_absent_track_refuses_every_source() {
     // A real Planner and valid identities ensure the refusal comes from capability first.
     let repo = fixture().await;
-    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('bare','a','bare',2,0,0)")
-        .execute(repo.pool()).await.unwrap();
-    sqlx::query("UPDATE cards SET track_id='bare' WHERE id='p'")
-        .execute(repo.pool())
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('bare','a','bare',2,0,0)")).await.unwrap();
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET track_id='bare' WHERE id='p'"))
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET track_id='bare' WHERE id='p'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET track_id='bare' WHERE id='p'",
+        ))
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET root_session_id='p' WHERE id='bare'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tracks SET root_session_id='p' WHERE id='bare'",
+        ))
         .await
         .unwrap();
     let mut events = scenario();
@@ -376,8 +396,11 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
         .await
         .unwrap();
     assert_eq!(n, 0);
-    sqlx::query("INSERT INTO track_capabilities VALUES('t','objectives')")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "INSERT INTO track_capabilities VALUES('t','objectives')",
+        ))
         .await
         .unwrap();
     for sql in [
@@ -389,7 +412,7 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
         "SELECT rowid FROM track_capabilities",
     ] {
         assert!(
-            sqlx::query(sql).execute(repo.pool()).await.is_err(),
+            (repo.db()).writer().execute(sqlx::query(sql)).await.is_err(),
             "{sql}"
         );
     }
@@ -397,18 +420,27 @@ async fn capability_schema_is_closed_immutable_and_cascades() {
     for verb in ["INSERT", "INSERT OR REPLACE", "INSERT OR IGNORE"] {
         let sql = format!("{verb} INTO track_capabilities VALUES('t','objectives')");
         assert!(
-            sqlx::query(&sql).execute(repo.pool()).await.is_err(),
+            (repo.db()).writer().execute(sqlx::query(&sql)).await.is_err(),
             "{sql}"
         );
     }
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    track_delete_tx(&mut tx, "t", repo.track_area_cache())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                track_delete_tx(&mut tx, "t", repo.track_area_cache())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let n: i64 = sqlx::query_scalar("SELECT count(*) FROM track_capabilities")
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(n, 0);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM track_capabilities")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(n, 0);
+        .expect("independent write operation")
 }

@@ -11,65 +11,83 @@ use crate::model::{NewArea, NewCard, NewOverlay, NewTrack, RequestTheme};
 use serde_json::json;
 
 async fn empty_track(repo: &SqlxRepo) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "order".into(),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "order".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("track");
-    tx.commit().await.expect("commit");
-    track.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "order".into(),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "order".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("track");
+                tx.commit().await.expect("commit");
+                track.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_tie_group(repo: &SqlxRepo, sort: f64, n: usize) -> (String, Vec<String>) {
     let track_id = empty_track(repo).await;
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let mut ids = Vec::with_capacity(n);
-    for i in 0..n {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track_id.clone().into(),
-                kind: "note".into(),
-                sort: Some(sort),
-                payload: json!({ "i": i }),
-                title: Some(format!("card {i}")),
-            },
-            &role_cache,
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let mut ids = Vec::with_capacity(n);
+                for i in 0..n {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track_id.clone().into(),
+                            kind: "note".into(),
+                            sort: Some(sort),
+                            payload: json!({ "i": i }),
+                            title: Some(format!("card {i}")),
+                        },
+                        &role_cache,
+                    )
+                    .await
+                    .expect("card");
+                    ids.push(card.id.to_string());
+                }
+                tx.commit().await.expect("commit");
+                (track_id, ids)
+            })
+        })
         .await
-        .expect("card");
-        ids.push(card.id.to_string());
-    }
-    tx.commit().await.expect("commit");
-    (track_id, ids)
+        .expect("independent write operation")
 }
 
 /// A tie group whose insertion order is provably NOT its id order. Ids are
@@ -101,72 +119,82 @@ async fn track_detail_order_survives_a_plan_change() {
     let track_id = empty_track(&repo).await;
     let role_cache = CardRoleCache::new();
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let mut card_ids = Vec::new();
-    for sort in [5.0_f64, 4.0, 3.0, 3.0, 2.0, 1.0] {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track_id.clone().into(),
-                kind: "note".into(),
-                sort: Some(sort),
-                payload: json!({}),
-                title: None,
-            },
-            &role_cache,
-        )
-        .await
-        .expect("card");
-        card_ids.push(card.id.to_string());
-    }
-    for (i, cid) in card_ids.iter().enumerate() {
-        overlay_upsert_tx(
-            &mut tx,
-            NewOverlay {
-                plugin_id: format!("p{}", 9 - i),
-                entity_kind: "card".into(),
-                entity_id: cid.clone(),
-                kind: "status".into(),
-                payload: json!({}),
-            },
-        )
-        .await
-        .expect("overlay");
-    }
-    tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let mut card_ids = Vec::new();
+                for sort in [5.0_f64, 4.0, 3.0, 3.0, 2.0, 1.0] {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track_id.clone().into(),
+                            kind: "note".into(),
+                            sort: Some(sort),
+                            payload: json!({}),
+                            title: None,
+                        },
+                        &role_cache,
+                    )
+                    .await
+                    .expect("card");
+                    card_ids.push(card.id.to_string());
+                }
+                for (i, cid) in card_ids.iter().enumerate() {
+                    overlay_upsert_tx(
+                        &mut tx,
+                        NewOverlay {
+                            plugin_id: format!("p{}", 9 - i),
+                            entity_kind: "card".into(),
+                            entity_id: cid.clone(),
+                            kind: "status".into(),
+                            payload: json!({}),
+                        },
+                    )
+                    .await
+                    .expect("overlay");
+                }
+                tx.commit().await.expect("commit");
 
-    async fn snapshot(repo: &SqlxRepo, track_id: &str) -> (Vec<String>, Vec<String>) {
-        let d = repo
-            .track_detail(track_id)
-            .await
-            .expect("track_detail")
-            .expect("track exists");
-        (
-            d.cards.iter().map(|c| c.id.to_string()).collect(),
-            d.overlays.iter().map(|o| o.id.clone()).collect(),
-        )
-    }
+                async fn snapshot(repo: &SqlxRepo, track_id: &str) -> (Vec<String>, Vec<String>) {
+                    let d = repo
+                        .track_detail(track_id)
+                        .await
+                        .expect("track_detail")
+                        .expect("track exists");
+                    (
+                        d.cards.iter().map(|c| c.id.to_string()).collect(),
+                        d.overlays.iter().map(|o| o.id.clone()).collect(),
+                    )
+                }
 
-    let before = snapshot(&repo, &track_id).await;
+                let before = snapshot(&repo, &track_id).await;
 
-    for stmt in [
-        "DROP INDEX idx_cards_track",
-        "DROP INDEX idx_overlays_entity",
-    ] {
-        sqlx::query(stmt)
-            .execute(repo.pool())
-            .await
-            .expect("drop index");
-    }
+                for stmt in [
+                    "DROP INDEX idx_cards_track",
+                    "DROP INDEX idx_overlays_entity",
+                ] {
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query(stmt))
+                        .await
+                        .expect("drop index");
+                }
 
-    let after = snapshot(&repo, &track_id).await;
-    assert_eq!(
-        after, before,
-        "track_detail must return the same order after the scan plan changed. \
+                let after = snapshot(&repo, &track_id).await;
+                assert_eq!(
+                    after, before,
+                    "track_detail must return the same order after the scan plan changed. \
          A difference means the order was the query plan's, not the data's."
-    );
-    assert_eq!(before.0.len(), card_ids.len(), "all cards present");
-    assert_eq!(before.1.len(), card_ids.len(), "all overlays present");
+                );
+                assert_eq!(before.0.len(), card_ids.len(), "all cards present");
+                assert_eq!(before.1.len(), card_ids.len(), "all overlays present");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -198,43 +226,52 @@ async fn track_detail_orders_cards_by_sort_then_id() {
     let track_id = empty_track(&repo).await;
     let role_cache = CardRoleCache::new();
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let mut seeded: Vec<(f64, String)> = Vec::new();
-    for sort in [3.0_f64, 2.0, 2.0, 2.0, 1.0] {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track_id.clone().into(),
-                kind: "note".into(),
-                sort: Some(sort),
-                payload: json!({}),
-                title: None,
-            },
-            &role_cache,
-        )
-        .await
-        .expect("card");
-        seeded.push((sort, card.id.to_string()));
-    }
-    tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let mut seeded: Vec<(f64, String)> = Vec::new();
+                for sort in [3.0_f64, 2.0, 2.0, 2.0, 1.0] {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track_id.clone().into(),
+                            kind: "note".into(),
+                            sort: Some(sort),
+                            payload: json!({}),
+                            title: None,
+                        },
+                        &role_cache,
+                    )
+                    .await
+                    .expect("card");
+                    seeded.push((sort, card.id.to_string()));
+                }
+                tx.commit().await.expect("commit");
 
-    let detail = repo
-        .track_detail(&track_id)
-        .await
-        .expect("track_detail")
-        .expect("track exists");
+                let detail = repo
+                    .track_detail(&track_id)
+                    .await
+                    .expect("track_detail")
+                    .expect("track exists");
 
-    let mut want = seeded.clone();
-    want.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    let got: Vec<(f64, String)> = detail
-        .cards
-        .iter()
-        .map(|c| (c.sort, c.id.to_string()))
-        .collect();
-    assert_eq!(
-        got, want,
-        "cards must come back ordered by (sort ASC, id ASC)"
-    );
+                let mut want = seeded.clone();
+                want.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+                let got: Vec<(f64, String)> = detail
+                    .cards
+                    .iter()
+                    .map(|c| (c.sort, c.id.to_string()))
+                    .collect();
+                assert_eq!(
+                    got, want,
+                    "cards must come back ordered by (sort ASC, id ASC)"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -243,105 +280,114 @@ async fn track_detail_orders_overlays_by_unique_key() {
     let track_id = empty_track(&repo).await;
     let role_cache = CardRoleCache::new();
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let mut card_ids = Vec::new();
-    for i in 0..2 {
-        let card = card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track_id.clone().into(),
-                kind: "note".into(),
-                sort: Some(i as f64),
-                payload: json!({}),
-                title: None,
-            },
-            &role_cache,
-        )
-        .await
-        .expect("card");
-        card_ids.push(card.id.to_string());
-    }
-    tx.commit().await.expect("commit");
-    // `entity_id` is a random uuid, so derive the expectation from the values.
-    card_ids.sort();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let mut card_ids = Vec::new();
+                for i in 0..2 {
+                    let card = card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track_id.clone().into(),
+                            kind: "note".into(),
+                            sort: Some(i as f64),
+                            payload: json!({}),
+                            title: None,
+                        },
+                        &role_cache,
+                    )
+                    .await
+                    .expect("card");
+                    card_ids.push(card.id.to_string());
+                }
+                tx.commit().await.expect("commit");
+                // `entity_id` is a random uuid, so derive the expectation from the values.
+                card_ids.sort();
 
-    // Insertion order is the exact reverse of the key order on every column.
-    let rows: Vec<(&str, String, &str, &str)> = vec![
-        ("track", track_id.clone(), "zeta", "z-kind"),
-        ("track", track_id.clone(), "zeta", "a-kind"),
-        ("track", track_id.clone(), "alpha", "z-kind"),
-        ("card", card_ids[1].clone(), "zeta", "z-kind"),
-        ("card", card_ids[1].clone(), "alpha", "a-kind"),
-        ("card", card_ids[0].clone(), "zeta", "a-kind"),
-        ("card", card_ids[0].clone(), "alpha", "z-kind"),
-        ("card", card_ids[0].clone(), "alpha", "a-kind"),
-    ];
+                // Insertion order is the exact reverse of the key order on every column.
+                let rows: Vec<(&str, String, &str, &str)> = vec![
+                    ("track", track_id.clone(), "zeta", "z-kind"),
+                    ("track", track_id.clone(), "zeta", "a-kind"),
+                    ("track", track_id.clone(), "alpha", "z-kind"),
+                    ("card", card_ids[1].clone(), "zeta", "z-kind"),
+                    ("card", card_ids[1].clone(), "alpha", "a-kind"),
+                    ("card", card_ids[0].clone(), "zeta", "a-kind"),
+                    ("card", card_ids[0].clone(), "alpha", "z-kind"),
+                    ("card", card_ids[0].clone(), "alpha", "a-kind"),
+                ];
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    for (entity_kind, entity_id, plugin_id, kind) in &rows {
-        overlay_upsert_tx(
-            &mut tx,
-            NewOverlay {
-                plugin_id: (*plugin_id).to_string(),
-                entity_kind: (*entity_kind).to_string(),
-                entity_id: entity_id.clone(),
-                kind: (*kind).to_string(),
-                payload: json!({}),
-            },
-        )
-        .await
-        .expect("overlay");
-    }
-    tx.commit().await.expect("commit");
+                let mut tx = write_session.begin().await.expect("begin");
+                for (entity_kind, entity_id, plugin_id, kind) in &rows {
+                    overlay_upsert_tx(
+                        &mut tx,
+                        NewOverlay {
+                            plugin_id: (*plugin_id).to_string(),
+                            entity_kind: (*entity_kind).to_string(),
+                            entity_id: entity_id.clone(),
+                            kind: (*kind).to_string(),
+                            payload: json!({}),
+                        },
+                    )
+                    .await
+                    .expect("overlay");
+                }
+                tx.commit().await.expect("commit");
 
-    let inserted: Vec<(String, String, String, String)> = rows
-        .iter()
-        .map(|(ek, ei, p, k)| {
-            (
-                (*ek).to_string(),
-                ei.clone(),
-                (*p).to_string(),
-                (*k).to_string(),
-            )
-        })
-        .collect();
-    let mut want = inserted.clone();
-    want.sort();
-    assert_ne!(
-        want, inserted,
-        "fixture guard: insertion order must differ from key order, or this \
+                let inserted: Vec<(String, String, String, String)> = rows
+                    .iter()
+                    .map(|(ek, ei, p, k)| {
+                        (
+                            (*ek).to_string(),
+                            ei.clone(),
+                            (*p).to_string(),
+                            (*k).to_string(),
+                        )
+                    })
+                    .collect();
+                let mut want = inserted.clone();
+                want.sort();
+                assert_ne!(
+                    want, inserted,
+                    "fixture guard: insertion order must differ from key order, or this \
          test cannot tell the aggregate ORDER BY from scan order"
-    );
+                );
 
-    let detail = repo
-        .track_detail(&track_id)
-        .await
-        .expect("track_detail")
-        .expect("track exists");
+                let detail = repo
+                    .track_detail(&track_id)
+                    .await
+                    .expect("track_detail")
+                    .expect("track exists");
 
-    let got: Vec<(String, String, String, String)> = detail
-        .overlays
-        .iter()
-        .map(|o| {
-            (
-                o.entity_kind.clone(),
-                o.entity_id.clone(),
-                o.plugin_id.clone(),
-                o.kind.clone(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        got.len(),
-        rows.len(),
-        "every seeded overlay must be in the result"
-    );
-    assert_eq!(
-        got, want,
-        "overlays must come back ordered by (entity_kind, entity_id, \
+                let got: Vec<(String, String, String, String)> = detail
+                    .overlays
+                    .iter()
+                    .map(|o| {
+                        (
+                            o.entity_kind.clone(),
+                            o.entity_id.clone(),
+                            o.plugin_id.clone(),
+                            o.kind.clone(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    got.len(),
+                    rows.len(),
+                    "every seeded overlay must be in the result"
+                );
+                assert_eq!(
+                    got, want,
+                    "overlays must come back ordered by (entity_kind, entity_id, \
          plugin_id, kind) — the table's UNIQUE key. Anything else is the \
          arbitrary aggregate input order."
-    );
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

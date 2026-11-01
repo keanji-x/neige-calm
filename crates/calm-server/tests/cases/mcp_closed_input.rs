@@ -35,10 +35,13 @@ use crate::support::builtins as configured;
 
 async fn scope_track(boot: &support::mcp::CardBoot, scope: Option<&str>) {
     let pool = boot.repo.sqlite_db().expect("sqlite-backed boot");
-    sqlx::query("UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2")
-        .bind(scope)
-        .bind(boot.track_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2")
+                .bind(scope)
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
 }
@@ -240,16 +243,22 @@ async fn kernel_refusal_reaches_model(provider: AgentProvider) {
         None,
         provider.clone(),
     );
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-        .bind(payload.to_string())
-        .bind(&boot.card_id)
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind(payload.to_string())
+                .bind(&boot.card_id),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET provider = ?1 WHERE id = ?2")
-        .bind(provider.wire_name())
-        .bind(&boot.session_id)
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider = ?1 WHERE id = ?2")
+                .bind(provider.wire_name())
+                .bind(&boot.session_id),
+        )
         .await
         .unwrap();
     let state = projection_raw_call(&boot, 2, "neige_track_status", json!({})).await;

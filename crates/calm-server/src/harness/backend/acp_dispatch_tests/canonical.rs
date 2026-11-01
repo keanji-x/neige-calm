@@ -23,7 +23,7 @@ mod stop_deadline;
 mod transport;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
-use crate::db::sqlite::{begin_immediate_tx, conversation::*};
+use crate::db::sqlite::conversation::*;
 use calm_types::conversation::*;
 use std::time::Duration;
 
@@ -77,66 +77,75 @@ impl Fixture {
         );
         let (_, source) = crate::auth::authenticated_source(auth.clone(), headers).await;
         let source = source.unwrap();
-        let mut tx = begin_immediate_tx(owner.repo.db()).await.unwrap();
-        let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
-        frame.header.last_thread_id = Some(owner.thread.clone());
-        crate::db::sqlite::session_set_handle_state_tx(
-            &mut tx,
-            &owner.worker,
-            Some(serde_json::to_value(frame).unwrap()),
-        )
-        .await
-        .unwrap();
-        let mut carrier = current_input_carrier_tx(&mut tx, &owner.card, &owner.worker)
-            .await
-            .unwrap();
-        let accepted = crate::conversation_inputs::accept_human_tx(
-            &mut tx,
-            &source.current_principal().unwrap(),
-            &mut carrier,
-            HumanPayload {
-                text: "canonical human".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("human")
-        };
-        let claimed = crate::conversation_inputs::claim_initial_tx(
-            &mut tx,
-            &source,
-            &mut carrier,
-            SubmissionRenderPlan::V1 {
-                segments: vec![SubmissionRenderSegment::Input {
-                    input_position: 0,
-                    input: SubmissionRenderInput::Human {
-                        message,
-                        author: FrozenHumanAttribution {
-                            registered_user_id: calm_types::organization::LEGACY_OWNER_USER_ID
-                                .into(),
-                            display_name: "Owner".into(),
+        let write_db = (owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let mut frame = crate::harness::snapshot::CanonicalHarnessSnapshot::dormant(0);
+                    frame.header.last_thread_id = Some(owner.thread.clone());
+                    crate::db::sqlite::session_set_handle_state_tx(
+                        &mut tx,
+                        &owner.worker,
+                        Some(serde_json::to_value(frame).unwrap()),
+                    )
+                    .await
+                    .unwrap();
+                    let mut carrier = current_input_carrier_tx(&mut tx, &owner.card, &owner.worker)
+                        .await
+                        .unwrap();
+                    let accepted = crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &source.current_principal().unwrap(),
+                        &mut carrier,
+                        HumanPayload {
+                            text: "canonical human".into(),
+                            bound_attachments: vec![],
                         },
-                    },
-                }],
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        Self {
-            registry: crate::harness::registry::HarnessRegistry::default(),
-            provider,
-            backend,
-            session,
-            owner,
-            dir,
-            source,
-            auth,
-            login,
-            submission: claimed.submission_id,
-        }
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("human")
+                    };
+                    let claimed = crate::conversation_inputs::claim_initial_tx(
+                        &mut tx,
+                        &source,
+                        &mut carrier,
+                        SubmissionRenderPlan::V1 {
+                            segments: vec![SubmissionRenderSegment::Input {
+                                input_position: 0,
+                                input: SubmissionRenderInput::Human {
+                                    message,
+                                    author: FrozenHumanAttribution {
+                                        registered_user_id:
+                                            calm_types::organization::LEGACY_OWNER_USER_ID.into(),
+                                        display_name: "Owner".into(),
+                                    },
+                                },
+                            }],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    Self {
+                        registry: crate::harness::registry::HarnessRegistry::default(),
+                        provider,
+                        backend,
+                        session,
+                        owner,
+                        dir,
+                        source,
+                        auth,
+                        login,
+                        submission: claimed.submission_id,
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
     async fn dispatch(
         &self,
@@ -509,65 +518,75 @@ async fn canonical_acp_receipt_revalidates_claim_and_final_source_after_commit()
             _ = &mut dispatch => panic!("canonical issue refused before reaching receipt boundary"),
             _ = tokio::time::sleep(Duration::from_secs(20)) => panic!("receipt boundary missing"),
         }
-        if after_receipt {
-            fx.auth.sessions.remove(&fx.login).unwrap();
-        } else {
-            let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-            let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-                .await
-                .unwrap();
-            let prior = carrier
-                .checkpoint()
-                .attempt(&fx.submission)
-                .unwrap()
-                .clone();
-            record_input_attempt_fact_tx(
-                &mut tx,
-                &mut carrier,
-                InputAttemptFact {
-                    attempt: prior.attempt.clone(),
-                    correlation: prior.correlation,
-                    delivery: InputDeliveryFact::NotDispatched {
-                        basis: "concurrent factual refusal".into(),
-                    },
-                },
-            )
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    if after_receipt {
+                        fx.auth.sessions.remove(&fx.login).unwrap();
+                    } else {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let mut carrier =
+                            current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                                .await
+                                .unwrap();
+                        let prior = carrier
+                            .checkpoint()
+                            .attempt(&fx.submission)
+                            .unwrap()
+                            .clone();
+                        record_input_attempt_fact_tx(
+                            &mut tx,
+                            &mut carrier,
+                            InputAttemptFact {
+                                attempt: prior.attempt.clone(),
+                                correlation: prior.correlation,
+                                delivery: InputDeliveryFact::NotDispatched {
+                                    basis: "concurrent factual refusal".into(),
+                                },
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        release_submission_tx(&mut tx, &mut carrier, &prior.attempt)
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                    }
+                    pause.release.notify_one();
+                    let report = dispatch.await.unwrap();
+                    if after_receipt {
+                        assert!(matches!(
+                            report.unwrap().report.delivery(),
+                            InputDelivery::Unknown(_)
+                        ));
+                        fx.wait_idle().await;
+                        let state: String = sqlx::query_scalar("SELECT state FROM acp_submissions")
+                            .fetch_one(fx.owner.repo.pool())
+                            .await
+                            .unwrap();
+                        assert_eq!(state, "unknown");
+                    } else if let Ok(report) = report {
+                        assert!(matches!(
+                            report.report.delivery(),
+                            InputDelivery::NotDispatched(_)
+                        ));
+                    }
+                    assert_eq!(fx.prompts(), 0);
+                    if !after_receipt {
+                        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM acp_submissions")
+                            .fetch_one(fx.owner.repo.pool())
+                            .await
+                            .unwrap();
+                        assert_eq!(count, 0);
+                    }
+                    assert!(fx.complete().await.is_none());
+                    fx.session.shutdown().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-            release_submission_tx(&mut tx, &mut carrier, &prior.attempt)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-        }
-        pause.release.notify_one();
-        let report = dispatch.await.unwrap();
-        if after_receipt {
-            assert!(matches!(
-                report.unwrap().report.delivery(),
-                InputDelivery::Unknown(_)
-            ));
-            fx.wait_idle().await;
-            let state: String = sqlx::query_scalar("SELECT state FROM acp_submissions")
-                .fetch_one(fx.owner.repo.pool())
-                .await
-                .unwrap();
-            assert_eq!(state, "unknown");
-        } else if let Ok(report) = report {
-            assert!(matches!(
-                report.report.delivery(),
-                InputDelivery::NotDispatched(_)
-            ));
-        }
-        assert_eq!(fx.prompts(), 0);
-        if !after_receipt {
-            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM acp_submissions")
-                .fetch_one(fx.owner.repo.pool())
-                .await
-                .unwrap();
-            assert_eq!(count, 0);
-        }
-        assert!(fx.complete().await.is_none());
-        fx.session.shutdown().await.unwrap();
+            .expect("independent write operation")
     }
 }
 
@@ -689,109 +708,112 @@ async fn canonical_acp_rejects_wrong_owner_proof_local_turn_and_native_session()
     let fx = Fixture::new("reply").await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let target = crate::harness::input_dispatch::execution_target_tx(
-        &mut tx,
-        &fx.owner.card,
-        &fx.owner.worker,
-        &AgentProvider::OpenCode,
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    tx.commit().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while fx
-            .backend
-            .qualify_execution_end(&target)
-            .await
-            .unwrap()
-            .is_none()
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    #[derive(Clone, Copy, Debug)]
-    enum Field {
-        Card,
-        Track,
-        Worker,
-        Logical,
-        Proof,
-        Thread,
-        Turn,
-        Native,
-    }
-    for field in [
-        Field::Card,
-        Field::Track,
-        Field::Worker,
-        Field::Logical,
-        Field::Proof,
-        Field::Thread,
-        Field::Turn,
-        Field::Native,
-    ] {
-        let mut wrong = target.clone();
-        match field {
-            Field::Card => wrong.card_id = "wrong".into(),
-            Field::Track => wrong.track_id = "wrong".into(),
-            Field::Worker => wrong.worker_session_id = "wrong".into(),
-            Field::Logical => {
-                wrong.logical_turn_id = LogicalTurnId::parse(&crate::model::new_id()).unwrap()
-            }
-            Field::Proof => {
-                let SubmissionDispatchProof::V2 { attempt, .. } = &mut wrong.proof;
-                attempt.attempt_id = InputAttemptId::parse(&crate::model::new_id()).unwrap();
-            }
-            Field::Thread => {
-                let ExecutionEndScope::ReceiptProcess { thread_id, .. } = &mut wrong.scope else {
-                    panic!("local")
-                };
-                *thread_id = uuid::Uuid::new_v4();
-            }
-            Field::Turn => {
-                let ExecutionEndScope::ReceiptProcess { local_turn_id, .. } = &mut wrong.scope
-                else {
-                    panic!("local")
-                };
-                *local_turn_id = uuid::Uuid::new_v4();
-            }
-            Field::Native => {
-                let ExecutionEndScope::ReceiptProcess {
-                    native_session_id, ..
-                } = &mut wrong.scope
-                else {
-                    panic!("receipt process")
-                };
-                *native_session_id = "wrong-native".into();
-            }
-        }
-        assert!(
-            fx.backend
-                .qualify_execution_end(&wrong)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let target = crate::harness::input_dispatch::execution_target_tx(
+            &mut tx,
+            &fx.owner.card,
+            &fx.owner.worker,
+            &AgentProvider::OpenCode,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tx.commit().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fx
+                .backend
+                .qualify_execution_end(&target)
                 .await
                 .unwrap()
-                .is_none(),
-            "{field:?}"
-        );
-    }
-    sqlx::query("UPDATE worker_sessions SET agent_session_id='wrong-native' WHERE id=?1")
-        .bind(&fx.owner.worker)
-        .execute(fx.owner.repo.pool())
+                .is_none()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
         .await
         .unwrap();
-    assert!(
-        fx.backend
-            .qualify_execution_end(&target)
+        #[derive(Clone, Copy, Debug)]
+        enum Field {
+            Card,
+            Track,
+            Worker,
+            Logical,
+            Proof,
+            Thread,
+            Turn,
+            Native,
+        }
+        for field in [
+            Field::Card,
+            Field::Track,
+            Field::Worker,
+            Field::Logical,
+            Field::Proof,
+            Field::Thread,
+            Field::Turn,
+            Field::Native,
+        ] {
+            let mut wrong = target.clone();
+            match field {
+                Field::Card => wrong.card_id = "wrong".into(),
+                Field::Track => wrong.track_id = "wrong".into(),
+                Field::Worker => wrong.worker_session_id = "wrong".into(),
+                Field::Logical => {
+                    wrong.logical_turn_id = LogicalTurnId::parse(&crate::model::new_id()).unwrap()
+                }
+                Field::Proof => {
+                    let SubmissionDispatchProof::V2 { attempt, .. } = &mut wrong.proof;
+                    attempt.attempt_id = InputAttemptId::parse(&crate::model::new_id()).unwrap();
+                }
+                Field::Thread => {
+                    let ExecutionEndScope::ReceiptProcess { thread_id, .. } = &mut wrong.scope else {
+                        panic!("local")
+                    };
+                    *thread_id = uuid::Uuid::new_v4();
+                }
+                Field::Turn => {
+                    let ExecutionEndScope::ReceiptProcess { local_turn_id, .. } = &mut wrong.scope
+                    else {
+                        panic!("local")
+                    };
+                    *local_turn_id = uuid::Uuid::new_v4();
+                }
+                Field::Native => {
+                    let ExecutionEndScope::ReceiptProcess {
+                        native_session_id, ..
+                    } = &mut wrong.scope
+                    else {
+                        panic!("receipt process")
+                    };
+                    *native_session_id = "wrong-native".into();
+                }
+            }
+            assert!(
+                fx.backend
+                    .qualify_execution_end(&wrong)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{field:?}"
+            );
+        }
+        (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET agent_session_id='wrong-native' WHERE id=?1")
+            .bind(&fx.owner.worker))
             .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(fx.complete().await.is_none());
-    fx.session.shutdown().await.unwrap();
+            .unwrap();
+        assert!(
+            fx.backend
+                .qualify_execution_end(&target)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(fx.complete().await.is_none());
+        fx.session.shutdown().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

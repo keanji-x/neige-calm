@@ -144,34 +144,41 @@ async fn c5d_engine_loss_during_writer_wait_keeps_fence_refusal() {
         crate::harness::run_loop::issuance::track_fence_for_test(&binding.track).await,
     );
     handoff.release();
-    let writer = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let writer = write_session.begin().await.unwrap();
+                let admit = owner.admit(
+                    repo.db(),
+                    &engine,
+                    &binding.worker,
+                    PreparedIntent(intent),
+                    Purpose::RewindCheck,
+                    OccupancyFence::ReleaseOnCommit(&handoff),
+                );
+                tokio::pin!(admit);
+                // One poll runs the entry check, then parks on the writer this test holds.
+                tokio::select! {
+                    biased;
+                    _ = &mut admit => panic!("admission passed the held writer"),
+                    _ = std::future::ready(()) => {}
+                }
+                fixture.disconnect().await;
+                assert!(matches!(
+                    super::super::engine(Some(&engine)),
+                    Err(CalmError::ExecutionUnavailable)
+                ));
+                drop(writer);
+                assert!(matches!(admit.await, Err(CalmError::Conflict(_))));
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_executions")
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0);
+            })
+        })
         .await
-        .unwrap();
-    let admit = owner.admit(
-        repo.db(),
-        &engine,
-        &binding.worker,
-        PreparedIntent(intent),
-        Purpose::RewindCheck,
-        OccupancyFence::ReleaseOnCommit(&handoff),
-    );
-    tokio::pin!(admit);
-    // One poll runs the entry check, then parks on the writer this test holds.
-    tokio::select! {
-        biased;
-        _ = &mut admit => panic!("admission passed the held writer"),
-        _ = std::future::ready(()) => {}
-    }
-    fixture.disconnect().await;
-    assert!(matches!(
-        super::super::engine(Some(&engine)),
-        Err(CalmError::ExecutionUnavailable)
-    ));
-    drop(writer);
-    assert!(matches!(admit.await, Err(CalmError::Conflict(_))));
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_executions")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
+        .expect("independent write operation")
 }

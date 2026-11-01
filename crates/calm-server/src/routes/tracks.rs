@@ -8,9 +8,9 @@ use crate::auth::Principal;
 use crate::db::sqlite::{
     MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_TREE_MEMBERS_SQL, TrackRecipeOrigin,
     TrackTreeTerm, TrackWorkspacePlan, area_folder_create_tx, area_folders_list_all_tx,
-    begin_immediate_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
-    terminal_delete_tx, track_create_idempotency_claim_tx, track_create_tx, track_delete_tx,
-    track_recipe_get_tx, track_tree_term, track_update_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx, terminal_delete_tx,
+    track_create_idempotency_claim_tx, track_create_tx, track_delete_tx, track_recipe_get_tx,
+    track_tree_term, track_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -2917,21 +2917,30 @@ async fn preflight_track_deletion_reprojection(
 ) -> Result<()> {
     // BEGIN IMMEDIATE even though read-only: it prevents a writer from changing the tree
     // between the root lookup and survivor validation.
-    let mut tx = begin_immediate_tx(pool).await?;
-    if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await? {
-        let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
-            .bind(&root_id)
-            .bind(MAX_TRACK_TREE_DEPTH + 1)
-            .fetch_all(&mut **tx)
-            .await?;
-        for (member_id, _) in members {
-            if member_id != track_id.as_str() {
-                validate_task_rebuild_source_tx(&mut tx, &member_id).await?;
-            }
-        }
-    }
-    tx.rollback().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                if let Some(root_id) = surviving_root_before_leaf_removal(&mut tx, track_id).await?
+                {
+                    let members: Vec<(String, i64)> = sqlx::query_as(TRACK_TREE_MEMBERS_SQL)
+                        .bind(&root_id)
+                        .bind(MAX_TRACK_TREE_DEPTH + 1)
+                        .fetch_all(&mut **tx)
+                        .await?;
+                    for (member_id, _) in members {
+                        if member_id != track_id.as_str() {
+                            validate_task_rebuild_source_tx(&mut tx, &member_id).await?;
+                        }
+                    }
+                }
+                tx.rollback().await?;
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 #[allow(deprecated)]
@@ -3971,50 +3980,61 @@ mod tests {
             calm_types::report_blocks::tasks::project_task_declarations(&blocks);
 
         let pool = repo.sqlite_db().unwrap();
-        let mut tx = pool.writer_pool().begin().await.unwrap();
-        let (updated, projection) = structural_init_report_tx(
-            &mut tx,
-            InitialReportTarget {
-                report_card_id: report.id.as_str(),
-                track_id: track.id.as_str(),
-                payload: &payload,
-                doc: &mut doc,
-                declarations: &declarations,
-                diagnostics: &diagnostics,
-            },
-        )
-        .await
-        .unwrap();
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let (updated, projection) = structural_init_report_tx(
+                        &mut tx,
+                        InitialReportTarget {
+                            report_card_id: report.id.as_str(),
+                            track_id: track.id.as_str(),
+                            payload: &payload,
+                            doc: &mut doc,
+                            declarations: &declarations,
+                            diagnostics: &diagnostics,
+                        },
+                    )
+                    .await
+                    .unwrap();
 
-        assert_eq!(updated.payload, payload_value);
-        let persisted: (String, bool) =
-            sqlx::query_as("SELECT json(payload),body_crdt IS NOT NULL FROM cards WHERE id=?1")
-                .bind(report.id.as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&persisted.0).unwrap(),
-            payload_value
-        );
-        assert!(persisted.1, "fork helper omitted CRDT bytes");
-        assert!(
-            projection
-                .diagnostics
-                .iter()
-                .flat_map(|verdict| &verdict.diagnostics)
-                .all(|diagnostic| diagnostic.code != "reference_missing"),
-            "fork projection diagnostics: {:?}",
-            projection.diagnostics
-        );
-        let task_key: String =
-            sqlx::query_scalar("SELECT key FROM tasks WHERE track_id=?1 AND key='projected'")
-                .bind(track.id.as_str())
-                .fetch_one(&mut *tx)
-                .await
-                .unwrap();
-        assert_eq!(task_key, "projected");
-        tx.rollback().await.unwrap();
+                    assert_eq!(updated.payload, payload_value);
+                    let persisted: (String, bool) = sqlx::query_as(
+                        "SELECT json(payload),body_crdt IS NOT NULL FROM cards WHERE id=?1",
+                    )
+                    .bind(report.id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&persisted.0).unwrap(),
+                        payload_value
+                    );
+                    assert!(persisted.1, "fork helper omitted CRDT bytes");
+                    assert!(
+                        projection
+                            .diagnostics
+                            .iter()
+                            .flat_map(|verdict| &verdict.diagnostics)
+                            .all(|diagnostic| diagnostic.code != "reference_missing"),
+                        "fork projection diagnostics: {:?}",
+                        projection.diagnostics
+                    );
+                    let task_key: String = sqlx::query_scalar(
+                        "SELECT key FROM tasks WHERE track_id=?1 AND key='projected'",
+                    )
+                    .bind(track.id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+                    assert_eq!(task_key, "projected");
+                    tx.rollback().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// Pins the full-write assumption the events retention pruner's keep-latest `overlay.set`

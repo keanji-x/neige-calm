@@ -133,43 +133,56 @@ async fn overlay_history_discovery_does_not_hold_database_writer_without_candida
         old(60),
     )
     .await;
-    sqlx::query("CREATE TABLE unrelated_event_writer_probe (value INTEGER NOT NULL)")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE unrelated_event_writer_probe (value INTEGER NOT NULL)",
+        ))
         .await
         .unwrap();
     let (pause, pruning) = start(repo.db().clone(), policy(16), vec![Phase::Interpret]);
     pause.entered().await;
     let pool = repo.db().clone();
-    let mut writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("INSERT INTO unrelated_event_writer_probe(value) VALUES (1)")
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, crate::error::CalmError>(())
-    });
-    let committed = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
-    pause.release();
-    let pruned = finish(pruning).await;
-    if committed.is_err() {
-        tokio::time::timeout(Duration::from_secs(10), writer)
+
+    {
+
+        let mut writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await?;
+            sqlx::query("INSERT INTO unrelated_event_writer_probe(value) VALUES (1)")
+                .execute(&mut **tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, crate::error::CalmError>(())
+
+        })).await.expect("independent write operation")
+});
+        let committed = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        pause.release();
+        let pruned = finish(pruning).await;
+        if committed.is_err() {
+            tokio::time::timeout(Duration::from_secs(10), writer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(pruned, 0);
+        assert_eq!(repo.events_prune_watermark().await.unwrap(), 0);
+        assert_eq!(ids(repo.pool()).await, vec![retained]);
+        assert!(
+            matches!(committed, Ok(Ok(Ok(())))),
+            "overlay discovery/interpretation retained the writer with no candidates: {committed:?}"
+        );
+        let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM unrelated_event_writer_probe")
+            .fetch_one(repo.pool())
             .await
-            .unwrap()
-            .unwrap()
             .unwrap();
-    }
-    assert_eq!(pruned, 0);
-    assert_eq!(repo.events_prune_watermark().await.unwrap(), 0);
-    assert_eq!(ids(repo.pool()).await, vec![retained]);
-    assert!(
-        matches!(committed, Ok(Ok(Ok(())))),
-        "overlay discovery/interpretation retained the writer with no candidates: {committed:?}"
-    );
-    let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM unrelated_event_writer_probe")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(writes, 1);
+        assert_eq!(writes, 1);
+
+
+}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -245,16 +258,21 @@ async fn overlay_candidate_age_and_kind_are_rechecked_in_delete_transaction() {
         let (pause, pruning) = start(repo.db().clone(), policy(1), vec![Phase::BeforeWrite]);
         pause.entered().await;
         if change == "age" {
-            sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
-                .bind(now_ms())
-                .bind(older)
-                .execute(repo.pool())
+            (repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE events SET at=?1 WHERE id=?2")
+                        .bind(now_ms())
+                        .bind(older),
+                )
                 .await
                 .unwrap();
         } else {
-            sqlx::query("UPDATE events SET kind='track.updated' WHERE id=?1")
-                .bind(older)
-                .execute(repo.pool())
+            (repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE events SET kind='track.updated' WHERE id=?1").bind(older),
+                )
                 .await
                 .unwrap();
         }
@@ -359,8 +377,9 @@ async fn retention_delete_and_watermark_remain_atomic_when_watermark_write_fails
             insert_event(repo.pool(), kind, "{}", old(60)).await;
         }
         let retained = ids(repo.pool()).await;
-        sqlx::query(include_str!("reject_watermark.sql"))
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(include_str!("reject_watermark.sql")))
             .await
             .unwrap();
         let policy = EventsRetentionPolicy {

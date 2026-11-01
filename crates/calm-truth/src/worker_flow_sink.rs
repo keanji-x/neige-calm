@@ -104,85 +104,94 @@ mod tests {
         use crate::db::sqlite::session_insert_tx;
         use crate::model::{NewArea, NewCard, NewTrack, RequestTheme};
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = crate::db::sqlite::area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let track = crate::db::sqlite::track_create_tx(
-            &mut tx,
-            NewTrack {
-                template_input: None,
-                area_id: area.id.clone(),
-                title: "w".into(),
-                sort: None,
-                cwd: String::new(),
-                template_id: None,
-                plugin_scope: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        let card = crate::db::sqlite::card_create_tx(
-            &mut tx,
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: Some(0.0),
-                payload: serde_json::json!({ "task": "x" }),
-            },
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        session_insert_tx(
-            &mut tx,
-            WorkerSession {
-                id: WorkerSessionId::from(SESSION_ID),
-                track_id: track.id,
-                provider: WorkerProviderKind::Codex,
-                mode: SessionMode::Resumable,
-                contract: WorkerContract::Executor,
-                parent_session_id: None,
-                requester_session_id: None,
-                state: WorkerSessionState::Running,
-                mcp_token_hash: None,
-                thread_id: Some("thread-sink-3".into()),
-                agent_session_id: Some("agent-sink-3".into()),
-                active_turn_id: None,
-                terminal_run_id: None,
-                card_id: Some(card.id.clone()),
-                handle_state_json: None,
-                liveness: LivenessTag::Alive,
-                liveness_probed_at_ms: None,
-                exit_code: None,
-                exit_interpretation: None,
-                spawn_op_id: None,
-                last_activity_ms: None,
-                last_thread_status: None,
-                created_at_ms: 1,
-                updated_at_ms: 1,
-                completed_at_ms: None,
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        card.id.as_str().to_string()
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let area = crate::db::sqlite::area_create_tx(
+                        &mut tx,
+                        calm_types::organization::LEGACY_OWNER_USER_ID,
+                        NewArea {
+                            name: "c".into(),
+                            color: "#000".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let track = crate::db::sqlite::track_create_tx(
+                        &mut tx,
+                        NewTrack {
+                            template_input: None,
+                            area_id: area.id.clone(),
+                            title: "w".into(),
+                            sort: None,
+                            cwd: String::new(),
+                            template_id: None,
+                            plugin_scope: None,
+                            attach_folder: false,
+                            theme: RequestTheme::default_dark(),
+                        },
+                        None,
+                        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                        None,
+                        repo.track_area_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    let card = crate::db::sqlite::card_create_tx(
+                        &mut tx,
+                        NewCard {
+                            track_id: track.id.clone(),
+                            title: None,
+                            kind: "codex".into(),
+                            sort: Some(0.0),
+                            payload: serde_json::json!({ "task": "x" }),
+                        },
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    session_insert_tx(
+                        &mut tx,
+                        WorkerSession {
+                            id: WorkerSessionId::from(SESSION_ID),
+                            track_id: track.id,
+                            provider: WorkerProviderKind::Codex,
+                            mode: SessionMode::Resumable,
+                            contract: WorkerContract::Executor,
+                            parent_session_id: None,
+                            requester_session_id: None,
+                            state: WorkerSessionState::Running,
+                            mcp_token_hash: None,
+                            thread_id: Some("thread-sink-3".into()),
+                            agent_session_id: Some("agent-sink-3".into()),
+                            active_turn_id: None,
+                            terminal_run_id: None,
+                            card_id: Some(card.id.clone()),
+                            handle_state_json: None,
+                            liveness: LivenessTag::Alive,
+                            liveness_probed_at_ms: None,
+                            exit_code: None,
+                            exit_interpretation: None,
+                            spawn_op_id: None,
+                            last_activity_ms: None,
+                            last_thread_status: None,
+                            created_at_ms: 1,
+                            updated_at_ms: 1,
+                            completed_at_ms: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    card.id.as_str().to_string()
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]

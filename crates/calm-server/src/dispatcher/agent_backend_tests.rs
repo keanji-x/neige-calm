@@ -49,11 +49,11 @@ async fn agent_backend_additional_notifications_cannot_write_default_liveness() 
         })
         .await
         .unwrap();
-    sqlx::query("INSERT INTO worker_sessions
+    (sql.db()).writer().execute(sqlx::query("INSERT INTO worker_sessions
         (id, track_id, provider, mode, contract, state, thread_id, created_at_ms, updated_at_ms,
          last_activity_ms, last_thread_status, last_turn_completed_ms)
         VALUES ('worker', ?, 'codex', 'resumable', 'executor', 'running', 't', 0, 0, 11, 'notLoaded', 7)")
-        .bind(track.id.as_str()).execute(sql.pool()).await.unwrap();
+        .bind(track.id.as_str())).await.unwrap();
     let isolation = BackendIsolation::prepare(&cfg, &repo).await.unwrap();
     let events = EventBus::new();
     let pending = Arc::new(

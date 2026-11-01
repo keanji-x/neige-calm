@@ -403,128 +403,132 @@ async fn g1_report_first(cold: bool, attach_folder: bool) {
     assert_eq!(crossing.canonical_inputs.attempts.len(), 1);
     let submission = &crossing.canonical_inputs.attempts[0].attempt.submission_id;
     assert_eq!(first["params"]["clientUserMessageId"], submission.as_str());
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, submission)
+            .await
+            .unwrap();
+        let refs = plan.plan.input_refs().unwrap();
+        assert!(matches!(
+            refs.as_slice(),
+            [calm_types::conversation::AcceptedInputRef::System { .. }]
+        ));
+        let original: (i64, String) = sqlx::query_as("SELECT envelope_id,observation_id FROM conversation_submission_inputs WHERE submission_id=? AND effective=1")
+            .bind(submission.as_str()).fetch_one(&mut **tx).await.unwrap();
+        assert_eq!(original.0, event.id);
+        assert_eq!(
+            refs[0],
+            calm_types::conversation::AcceptedInputRef::System {
+                observation_id: calm_types::conversation::SystemObservationId::parse(&original.1)
+                    .unwrap()
+            }
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(first["params"]["threadId"], THREAD);
+        assert!(
+            first["params"]["input"]
+                .to_string()
+                .contains(write["id"].as_str().unwrap())
+        );
+        assert!(!first["params"]["input"].to_string().contains(FIRST_BODY));
+        assert!(first["params"]["input"].to_string().contains("report.md"));
+        assert!(
+            !first["params"]["input"]
+                .to_string()
+                .contains(crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT)
+        );
+        ack_turn(&fixture, &state, &mut peer, track, &first, "report-first").await;
+        let uri = format!("/api/cards/{card}/planner/input");
+        let human = json!({"text":FIRST_BODY});
+        let ack = post(&app, &cookie, &uri, "human", human.clone()).await;
+        assert_eq!(ack["worker_session_id"], worker);
+        for _ in 0..2 {
+            state
+                .dispatcher
+                .catch_up_push(track.into(), event.event.clone(), event.id)
+                .await;
+            state.dispatcher.reconcile_tick_for_test().await;
+            assert_eq!(post(&app, &cookie, &uri, "human", human.clone()).await, ack);
+        }
+        let queued = fixture.carrier(track).await.2;
+        assert_eq!(queued.canonical_inputs.attempts.len(), 1);
+        assert!(matches!(queued.canonical_inputs.pending.as_slice(),
+            [PendingInput::Human { message, .. }] if message.message_id.as_str() == ack["entry_id"].as_str().unwrap()));
+        no_execution(&mut peer).await;
+        crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":"report-first","status":"completed"}),
+        )
+        .await;
+        let second = next_report_turn(&mut peer, false).await;
+        assert!(second["params"]["input"].to_string().contains(FIRST_BODY));
+        // Report suggestions remain unread context until an actual read; the
+        // precise Human-only plan below proves the event itself is not resubmitted.
+        assert!(
+            !second["params"]["input"]
+                .to_string()
+                .contains(crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT)
+        );
+        ack_turn(&fixture, &state, &mut peer, track, &second, "human-next").await;
+        let running = fixture.carrier(track).await.2;
+        let mut tx = write_session.begin().await.unwrap();
+        let human_plan = crate::db::sqlite::conversation::submission_plan_tx(
+            &mut tx,
+            &running.canonical_inputs.attempts[1].attempt.submission_id,
+        )
         .await
         .unwrap();
-    let refs = plan.plan.input_refs().unwrap();
-    assert!(matches!(
-        refs.as_slice(),
-        [calm_types::conversation::AcceptedInputRef::System { .. }]
-    ));
-    let original: (i64, String) = sqlx::query_as("SELECT envelope_id,observation_id FROM conversation_submission_inputs WHERE submission_id=? AND effective=1")
-        .bind(submission.as_str()).fetch_one(&mut *tx).await.unwrap();
-    assert_eq!(original.0, event.id);
-    assert_eq!(
-        refs[0],
-        calm_types::conversation::AcceptedInputRef::System {
-            observation_id: calm_types::conversation::SystemObservationId::parse(&original.1)
-                .unwrap()
-        }
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(first["params"]["threadId"], THREAD);
-    assert!(
-        first["params"]["input"]
-            .to_string()
-            .contains(write["id"].as_str().unwrap())
-    );
-    assert!(!first["params"]["input"].to_string().contains(FIRST_BODY));
-    assert!(first["params"]["input"].to_string().contains("report.md"));
-    assert!(
-        !first["params"]["input"]
-            .to_string()
-            .contains(crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT)
-    );
-    ack_turn(&fixture, &state, &mut peer, track, &first, "report-first").await;
-    let uri = format!("/api/cards/{card}/planner/input");
-    let human = json!({"text":FIRST_BODY});
-    let ack = post(&app, &cookie, &uri, "human", human.clone()).await;
-    assert_eq!(ack["worker_session_id"], worker);
-    for _ in 0..2 {
-        state
-            .dispatcher
-            .catch_up_push(track.into(), event.event.clone(), event.id)
-            .await;
-        state.dispatcher.reconcile_tick_for_test().await;
-        assert_eq!(post(&app, &cookie, &uri, "human", human.clone()).await, ack);
-    }
-    let queued = fixture.carrier(track).await.2;
-    assert_eq!(queued.canonical_inputs.attempts.len(), 1);
-    assert!(matches!(queued.canonical_inputs.pending.as_slice(),
-        [PendingInput::Human { message, .. }] if message.message_id.as_str() == ack["entry_id"].as_str().unwrap()));
-    no_execution(&mut peer).await;
-    crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/completed",
-        json!({"id":"report-first","status":"completed"}),
-    )
-    .await;
-    let second = next_report_turn(&mut peer, false).await;
-    assert!(second["params"]["input"].to_string().contains(FIRST_BODY));
-    // Report suggestions remain unread context until an actual read; the
-    // precise Human-only plan below proves the event itself is not resubmitted.
-    assert!(
-        !second["params"]["input"]
-            .to_string()
-            .contains(crate::routes::today_summary::TODAY_SUMMARY_BOOTSTRAP_TEXT)
-    );
-    ack_turn(&fixture, &state, &mut peer, track, &second, "human-next").await;
-    let running = fixture.carrier(track).await.2;
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let human_plan = crate::db::sqlite::conversation::submission_plan_tx(
-        &mut tx,
-        &running.canonical_inputs.attempts[1].attempt.submission_id,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        human_plan.plan.input_refs().unwrap(),
-        vec![
-            queued.canonical_inputs.pending[0]
-                .accepted_input_ref()
-                .unwrap()
-        ]
-    );
-    tx.rollback().await.unwrap();
-    notify_thread(
-        &state.shared_codex_appserver,
-        &mut peer,
-        THREAD,
-        "turn/completed",
-        json!({"id":"human-next","status":"completed"}),
-    )
-    .await;
-    let done = fixture
-        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+        assert_eq!(
+            human_plan.plan.input_refs().unwrap(),
+            vec![
+                queued.canonical_inputs.pending[0]
+                    .accepted_input_ref()
+                    .unwrap()
+            ]
+        );
+        tx.rollback().await.unwrap();
+        notify_thread(
+            &state.shared_codex_appserver,
+            &mut peer,
+            THREAD,
+            "turn/completed",
+            json!({"id":"human-next","status":"completed"}),
+        )
         .await;
-    assert!(done.canonical_inputs.pending.is_empty());
-    assert!(done.canonical_inputs.active.is_none());
-    assert_eq!(done.canonical_inputs.attempts.len(), 2);
-    assert_eq!(
-        done.canonical_inputs.attempts[0].attempt.submission_id,
-        *submission
-    );
-    assert_ne!(second["params"]["clientUserMessageId"], submission.as_str());
-    for _ in 0..2 {
-        state
-            .dispatcher
-            .catch_up_push(track.into(), event.event.clone(), event.id)
+        let done = fixture
+            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
             .await;
-        state.dispatcher.reconcile_tick_for_test().await;
-    }
-    no_execution(&mut peer).await;
-    crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
-    assert_eq!(
-        fixture.carrier(track).await,
-        (card.clone(), worker.clone(), done)
-    );
-    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 2, 0));
-    assert!(!shutdown(&state, &worker, &mut peer).await);
-    fixture.shutdown_process(&state).await;
+        assert!(done.canonical_inputs.pending.is_empty());
+        assert!(done.canonical_inputs.active.is_none());
+        assert_eq!(done.canonical_inputs.attempts.len(), 2);
+        assert_eq!(
+            done.canonical_inputs.attempts[0].attempt.submission_id,
+            *submission
+        );
+        assert_ne!(second["params"]["clientUserMessageId"], submission.as_str());
+        for _ in 0..2 {
+            state
+                .dispatcher
+                .catch_up_push(track.into(), event.event.clone(), event.id)
+                .await;
+            state.dispatcher.reconcile_tick_for_test().await;
+        }
+        no_execution(&mut peer).await;
+        crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
+        assert_eq!(
+            fixture.carrier(track).await,
+            (card.clone(), worker.clone(), done)
+        );
+        assert_eq!(fixture.counts(&card).await, (1, 1, 1, 2, 0));
+        assert!(!shutdown(&state, &worker, &mut peer).await);
+        fixture.shutdown_process(&state).await;
+
+    })).await.expect("independent write operation")
 }
 
 async fn no_execution(peer: &mut Peer) {

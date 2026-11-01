@@ -90,54 +90,66 @@ pub(super) async fn prove(
         .sqlite_db
         .as_ref()
         .ok_or(CalmError::ExecutionUnavailable)?;
-    let admit = NativePromptAdmission::new(
-        || source.current_principal().map(drop),
-        || {
-            Box::pin(async {
-                let mut tx = sqlite::begin_immediate_tx(db).await?;
-                authorize(&mut tx, source, captured.card_id()).await?;
-                let current = current_input_fact_carrier_tx(
-                    &mut tx,
-                    captured.card_id(),
-                    captured.worker_session_id(),
-                )
-                .await?;
-                let (current_binding, _) =
-                    crate::harness::profile::input_carrier_contract_tx(&mut tx, &current).await?;
-                if current.original_snapshot() != captured.original_snapshot()
-                    || &current_binding != binding
-                    || terminal_recovery_request_tx(&mut tx, &current)
-                        .await?
-                        .is_none()
-                {
-                    return Err(CalmError::Conflict(
-                        "terminal recovery target changed".into(),
-                    ));
-                }
-                context.recheck_tx(&mut tx, &current).await?;
-                tx.rollback().await?;
-                Ok(())
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let admit = NativePromptAdmission::new(
+                    || source.current_principal().map(drop),
+                    || {
+                        Box::pin(async {
+                            let mut tx = write_session.begin().await?;
+                            authorize(&mut tx, source, captured.card_id()).await?;
+                            let current = current_input_fact_carrier_tx(
+                                &mut tx,
+                                captured.card_id(),
+                                captured.worker_session_id(),
+                            )
+                            .await?;
+                            let (current_binding, _) =
+                                crate::harness::profile::input_carrier_contract_tx(
+                                    &mut tx, &current,
+                                )
+                                .await?;
+                            if current.original_snapshot() != captured.original_snapshot()
+                                || &current_binding != binding
+                                || terminal_recovery_request_tx(&mut tx, &current)
+                                    .await?
+                                    .is_none()
+                            {
+                                return Err(CalmError::Conflict(
+                                    "terminal recovery target changed".into(),
+                                ));
+                            }
+                            context.recheck_tx(&mut tx, &current).await?;
+                            tx.rollback().await?;
+                            Ok(())
+                        })
+                    },
+                );
+                let runtime = s
+                    .repo
+                    .session_projection_by_id(captured.worker_session_id())
+                    .await?
+                    .ok_or_else(|| CalmError::Conflict("recovery carrier disappeared".into()))?;
+                let target =
+                    crate::harness::backend::factory::RecoveryTarget::known_failed(&runtime)?;
+                let turn = captured.snapshot()["last_turn_id"]
+                    .as_str()
+                    .ok_or_else(|| CalmError::Conflict("failed turn missing".into()))?;
+                let prepared = daemon
+                    .terminal_recovery_guard(&target, turn, &admit)
+                    .await
+                    .map_err(provider_confirmation_error)?;
+                Ok(RecoveryProof::Codex {
+                    native: prepared.native,
+                    transcript: prepared.transcript,
+                    daemon: daemon.clone(),
+                })
             })
-        },
-    );
-    let runtime = s
-        .repo
-        .session_projection_by_id(captured.worker_session_id())
-        .await?
-        .ok_or_else(|| CalmError::Conflict("recovery carrier disappeared".into()))?;
-    let target = crate::harness::backend::factory::RecoveryTarget::known_failed(&runtime)?;
-    let turn = captured.snapshot()["last_turn_id"]
-        .as_str()
-        .ok_or_else(|| CalmError::Conflict("failed turn missing".into()))?;
-    let prepared = daemon
-        .terminal_recovery_guard(&target, turn, &admit)
-        .await
-        .map_err(provider_confirmation_error)?;
-    Ok(RecoveryProof::Codex {
-        native: prepared.native,
-        transcript: prepared.transcript,
-        daemon: daemon.clone(),
-    })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Provider transport/JSON-RPC errors may contain private request echoes. The

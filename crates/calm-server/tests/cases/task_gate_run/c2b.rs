@@ -32,8 +32,8 @@ async fn wait_until(mut ready: impl AsyncFnMut() -> bool) {
     .expect("invariant becomes observable");
 }
 async fn rewrite(fx: &Fx, id: &str, value: &Value) {
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.gate_execution',json(?)) WHERE id=?")
-        .bind(value.to_string()).bind(id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.gate_execution',json(?)) WHERE id=?")
+        .bind(value.to_string()).bind(id)).await.unwrap();
 }
 
 #[tokio::test]
@@ -100,9 +100,9 @@ async fn c2b_refused_release_writes_no_byte() {
     let call = gate_run(&fx, &a, Some("test: refuse release"));
     tokio::pin!(call);
     tokio::select! { _=entered.notified()=>{}, result=&mut call=>panic!("unexpected completion: {result:?}") }
-    sqlx::query("UPDATE tasks SET status='failed' WHERE id=?")
-        .bind(&a.task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='failed' WHERE id=?").bind(&a.task.id))
         .await
         .unwrap();
     resume.notify_one();
@@ -229,12 +229,11 @@ async fn recovery_3192_gate_run_live_timeout_retries_while_probe_holds_claim() {
     rewrite(&fx, &claim.id, &value).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(record(&op(&fx, &a.task.id).await)["decision"], "Observing");
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=? AND lease_owner=?",
     )
     .bind(&claim.id)
-    .bind(claim.lease_owner)
-    .execute(&fx.pool())
+    .bind(claim.lease_owner))
     .await
     .unwrap();
     let result = run_result(&fx, &a.task.id, 1).await;
@@ -272,9 +271,12 @@ async fn boot(fx: &Fx) {
     fx.runtime.apply_recovery(plan).await.unwrap();
 }
 async fn expire(fx: &Fx, id: &str) {
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-        .bind(id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
+                .bind(id),
+        )
         .await
         .unwrap();
 }
@@ -320,9 +322,12 @@ async fn c2b_boot_held_stops_without_token() {
 async fn c2b_boot_after_deadline_keeps_boot_origin() {
     let (fx, a, _) = held("boot-overdue").await;
     let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=parked_at_ms WHERE id=?")
-        .bind(&before.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET parked_deadline_ms=parked_at_ms WHERE id=?")
+                .bind(&before.id),
+        )
         .await
         .unwrap();
     boot(&fx).await;
@@ -337,8 +342,8 @@ async fn c2b_boot_after_deadline_keeps_boot_origin() {
 async fn c2b_redrive_of_held_ends_infra_without_second_execution() {
     let (fx, a, resume) = held("redrive-held").await;
     let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
-        .bind(&before.id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
+        .bind(&before.id)).await.unwrap();
     // The re-drive observer uses the same pause; wait until its park has committed.
     fx.runtime.drive().await.unwrap();
     assert_eq!(op(&fx, &a.task.id).await.phase.tag(), PhaseTag::Parked);
@@ -375,11 +380,11 @@ async fn c2b_gate_run_refuses_unavailable_executor() {
 async fn c2b_pre_c2b_native_op_is_never_advanced() {
     let (fx, a, _) = held("native").await;
     let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET \
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET \
          tx_output_json=json_remove(tx_output_json,'$.data.gate_execution'),spawn_artifacts_json=? WHERE \
          id=?")
         .bind(json!({"pid":2147483000,"pgid":2147483000,"start_time":1,"boot_id":"old","log_path":null,"extra":{}}).to_string())
-        .bind(&before.id).execute(&fx.pool()).await.unwrap();
+        .bind(&before.id)).await.unwrap();
     boot(&fx).await;
     let retained = op(&fx, &a.task.id).await;
     assert_eq!(retained.phase.tag(), PhaseTag::Parked);
@@ -401,8 +406,8 @@ async fn c2b_phase_writes_preserve_gate_record() {
     // Keep that driver from reclaiming the row while this test exercises the repo write.
     let _drive = fx.runtime.lock_for_track_delete_for_test().await;
     let before = op(&fx, &a.task.id).await;
-    sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
-        .bind(&before.id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',parked_at_ms=NULL,parked_deadline_ms=NULL WHERE id=?")
+        .bind(&before.id)).await.unwrap();
     let repo = SqlxOperationRepo::new(fx.db());
     let claimed = repo
         .claim_drive_batch(32)
@@ -436,9 +441,12 @@ async fn c2b_stop_decision_survives_unavailable_and_restart() {
             .await
             .is_err()
     );
-    sqlx::query("UPDATE operations SET parked_deadline_ms=parked_at_ms WHERE id=?")
-        .bind(&before.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET parked_deadline_ms=parked_at_ms WHERE id=?")
+                .bind(&before.id),
+        )
         .await
         .unwrap();
     fx.runtime.sweep_parked().await.unwrap();
@@ -619,8 +627,8 @@ async fn c2b_typed_gate_op_occupies_until_settled() {
         .unwrap()
         .unwrap();
     // A terminal phase cannot replace the authoritative executor settlement.
-    sqlx::query("UPDATE operations SET phase='succeeded',tx_output_json=json_set(tx_output_json,'$.result',json(?)) WHERE id=?")
-        .bind(serde_json::to_string(&result).unwrap()).bind(&second.id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET phase='succeeded',tx_output_json=json_set(tx_output_json,'$.result',json(?)) WHERE id=?")
+        .bind(serde_json::to_string(&result).unwrap()).bind(&second.id)).await.unwrap();
     let error = gate_run(&fx, &a, None).await.unwrap_err();
     assert!(
         error.message.contains("could not be proven stopped"),
@@ -651,9 +659,12 @@ async fn c2b_typed_gate_op_occupies_until_settled() {
     rewrite(&fx, &second.id, &record(&second)).await;
     fx.scheduler().drive_gate_for_test(task).await.unwrap();
     assert_eq!(reused_run(&verdict(&fx, "occupancy").await), None);
-    sqlx::query("UPDATE tasks SET status='failed',status_detail='gate-red' WHERE id=?")
-        .bind(&a.task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='failed',status_detail='gate-red' WHERE id=?")
+                .bind(&a.task.id),
+        )
         .await
         .unwrap();
     let error = call_tool(
@@ -685,11 +696,11 @@ async fn c2b_native_terminal_gate_op_is_unproven() {
         .unwrap();
     let before = op(&fx, &a.task.id).await;
     assert_eq!(before.phase.tag(), PhaseTag::Succeeded);
-    sqlx::query("UPDATE operations SET kind='task-verify',idempotency_key=?1, \
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET kind='task-verify',idempotency_key=?1, \
          tx_output_json=json_remove(tx_output_json,'$.data.gate_execution'),spawn_artifacts_json=?2 WHERE id=?3")
         .bind(format!("{}#g1",a.task.id))
         .bind(json!({"pid":2147483000,"pgid":2147483000,"start_time":1,"boot_id":"old","log_path":null,"extra":{}}).to_string())
-        .bind(&before.id).execute(&fx.pool()).await.unwrap();
+        .bind(&before.id)).await.unwrap();
     let error = gate_run(&fx, &a, Some("test: native must remain unproven"))
         .await
         .unwrap_err();
@@ -697,16 +708,19 @@ async fn c2b_native_terminal_gate_op_is_unproven() {
         error.message.contains("could not be proven stopped"),
         "{error:?}"
     );
-    sqlx::query(
-        "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase='parked',parked_at_ms=?1,parked_deadline_ms=?2, \
          lease_owner=NULL,lease_until_ms=NULL WHERE id=?3",
-    )
-    .bind(now_ms())
-    .bind(now_ms() + 600_000)
-    .bind(&before.id)
-    .execute(&fx.pool())
-    .await
-    .unwrap();
+            )
+            .bind(now_ms())
+            .bind(now_ms() + 600_000)
+            .bind(&before.id),
+        )
+        .await
+        .unwrap();
     boot(&fx).await;
     let native = fx
         .runtime

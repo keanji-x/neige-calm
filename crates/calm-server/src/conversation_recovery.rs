@@ -158,244 +158,248 @@ async fn replace_carrier_owned(
         .sqlite_db
         .clone()
         .ok_or(CalmError::ExecutionUnavailable)?;
-    let mut tx = sqlite::begin_immediate_tx(&db).await?;
-    let principal = authorize(&mut tx, &source, &card).await?;
-    if let Some(replay) =
-        replay_carrier_recovery_tx(&mut tx, &card, &principal.user_id, &key, &request).await?
-    {
-        source.current_principal()?;
-        tx.rollback().await?;
-        return Ok(replay);
-    }
-    let carrier = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
-    let (kind, _) = recovery_target_tx(&mut tx, &carrier, action)
-        .await?
-        .filter(|(_, candidate)| candidate == &request)
-        .ok_or_else(|| CalmError::Conflict(
-            "Recovery requires the unchanged eligible execution; resolve worker-bound queued work first.".into()
-        ))?;
-    let (binding, row) =
-        crate::harness::profile::input_carrier_contract_tx(&mut tx, &carrier).await?;
-    let track = row.track_id.clone();
-    tx.rollback().await?;
-    #[cfg(feature = "fixtures")]
-    crate::test_seams::pause_point("canonical-abandon-before-push", &card).await;
-    let _push = s.dispatcher.planner_switch_push_lock(&track).await;
-    let mut replay_tx = sqlite::begin_immediate_tx(&db).await?;
-    let principal = authorize(&mut replay_tx, &source, &card).await?;
-    if let Some(replay) =
-        replay_carrier_recovery_tx(&mut replay_tx, &card, &principal.user_id, &key, &request)
-            .await?
-    {
-        source.current_principal()?;
-        replay_tx.rollback().await?;
-        return Ok(replay);
-    }
-    replay_tx.rollback().await?;
-    // Keep and accepted Human input can restore this carrier. Wait for that
-    // retained installation before capturing the registry owner we will retire.
-    let card_id = crate::ids::CardId::from(card.clone());
-    let _start = crate::operation::planner_start_fence::CardStartFence::lock(
-        &s.planner_recovery_locks,
-        &s.repo,
-        &s.operation_runtime,
-        &card_id,
-    )
-    .await;
-    let handle = s.harness.get(&request.carrier_id);
-    let slot = s.harness.carrier_retirement_slot(&request.carrier_id);
-    if matches!(slot, CarrierRetirementSlot::Reserved(_)) {
-        return Err(CalmError::Conflict(
-            "original carrier is being restored".into(),
-        ));
-    }
-    let early_held = match (&handle, kind) {
-        (Some(h), CarrierRecoveryKind::Abandon(_)) => Some(h.held_carrier_owner().await?),
-        _ => None,
-    };
-    let calls = s
-        .mcp_context
-        .tool_calls
-        .fence(&request.carrier_id)
-        .map_err(|_| CalmError::Conflict("Wait for pending tool calls before recovery".into()))?;
-    let _drive = s.operation_runtime.lock_for_track_delete().await;
-    let _track = crate::per_card_lock::lock_key(&s.track_delete_locks, track.as_str()).await;
-    let mut tx = sqlite::begin_immediate_tx(&db).await?;
-    authorize(&mut tx, &source, &card).await?;
-    let captured = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
-    if recovery_target_tx(&mut tx, &captured, action).await? != Some((kind, request.clone())) {
-        return Err(CalmError::Conflict("Recovery target changed".into()));
-    }
-    let shape = sqlite::card_execution_shape_tx(&mut tx, &card).await?;
-    let captured_binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
-        .ok_or_else(|| CalmError::Conflict("recovery binding unsupported".into()))?;
-    if captured_binding.provider != binding.provider
-        || !s
-            .harness
-            .retirement_slot_is_current(&request.carrier_id, &slot)
-    {
-        return Err(CalmError::Conflict("recovery owner changed".into()));
-    }
-    crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &card)
-        .await?;
-    crate::ask::require_no_open_carrier_asks_tx(&mut tx, &card).await?;
-    let mut ingress =
-        carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id).await?;
-    let native_context = if kind == CarrierRecoveryKind::TerminalProviderError {
-        Some(NativeContext::capture_tx(&mut tx, &captured).await?)
-    } else {
-        None
-    };
-    tx.rollback().await?;
-    // No provider I/O while holding the SQL writer. The native/harness park stays held.
-    let native_daemon = if native_context.is_some() {
-        Some(
-            s.planner_start_adapter
-                .canonical_native_owner(&request.carrier_id)
-                .await?,
-        )
-    } else {
-        None
-    };
-    let proof = if let (Some(context), Some(daemon)) = (&native_context, &native_daemon) {
-        terminal::prove(&s, &source, &captured, &binding, context, daemon).await?
-    } else {
-        RecoveryProof::Provider(
-            PlannerFactory::new(
-                std::sync::Arc::downgrade(&s.shared_codex_appserver),
-                &s.claude_planner,
-                &s.acp_planner,
-            )
-            .quiesce_for_abandonment(&binding.provider, &request.carrier_id, track.as_str())
-            .await?,
-        )
-    };
-    let held = if let (Some(handle), RecoveryProof::Codex { native, .. }) = (&handle, &proof) {
-        Some(handle.held_terminal_carrier_owner(native).await?)
-    } else {
-        early_held
-    };
-    if let Some(held) = &held {
-        held.recheck()?;
-    }
-    let owner = Protected {
-        source: &source,
-        held: held.as_ref(),
-        calls: &calls,
-        proof: &proof,
-        action,
-        kind,
-        request: &request,
-        native_context: native_context.as_ref(),
-    };
-    #[cfg(feature = "fixtures")]
-    crate::test_seams::pause_point("canonical-abandon-before-commit", &card).await;
-    let mut tx = sqlite::begin_immediate_tx(&db).await?;
-    let principal = authorize(&mut tx, &source, &card).await?;
-    if !s
-        .harness
-        .retirement_slot_is_current(&request.carrier_id, &slot)
-    {
-        return Err(CalmError::Conflict("recovery owner changed".into()));
-    }
-    crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &card)
-        .await?;
-    crate::ask::require_no_open_carrier_asks_tx(&mut tx, &card).await?;
-    let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
-        serde_json::from_value(captured.snapshot().clone())?;
-    if let RecoveryProof::Codex { transcript, .. } = &proof {
-        let current = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
-        if current.original_snapshot() != captured.original_snapshot()
-            || carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id)
-                .await?
-                != ingress
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await?;
+        let principal = authorize(&mut tx, &source, &card).await?;
+        if let Some(replay) =
+            replay_carrier_recovery_tx(&mut tx, &card, &principal.user_id, &key, &request).await?
         {
+            source.current_principal()?;
+            tx.rollback().await?;
+            return Ok(replay);
+        }
+        let carrier = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
+        let (kind, _) = recovery_target_tx(&mut tx, &carrier, action)
+            .await?
+            .filter(|(_, candidate)| candidate == &request)
+            .ok_or_else(|| CalmError::Conflict(
+                "Recovery requires the unchanged eligible execution; resolve worker-bound queued work first.".into()
+            ))?;
+        let (binding, row) =
+            crate::harness::profile::input_carrier_contract_tx(&mut tx, &carrier).await?;
+        let track = row.track_id.clone();
+        tx.rollback().await?;
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("canonical-abandon-before-push", &card).await;
+        let _push = s.dispatcher.planner_switch_push_lock(&track).await;
+        let mut replay_tx = write_session.begin().await?;
+        let principal = authorize(&mut replay_tx, &source, &card).await?;
+        if let Some(replay) =
+            replay_carrier_recovery_tx(&mut replay_tx, &card, &principal.user_id, &key, &request)
+                .await?
+        {
+            source.current_principal()?;
+            replay_tx.rollback().await?;
+            return Ok(replay);
+        }
+        replay_tx.rollback().await?;
+        // Keep and accepted Human input can restore this carrier. Wait for that
+        // retained installation before capturing the registry owner we will retire.
+        let card_id = crate::ids::CardId::from(card.clone());
+        let _start = crate::operation::planner_start_fence::CardStartFence::lock(
+            &s.planner_recovery_locks,
+            &s.repo,
+            &s.operation_runtime,
+            &card_id,
+        )
+        .await;
+        let handle = s.harness.get(&request.carrier_id);
+        let slot = s.harness.carrier_retirement_slot(&request.carrier_id);
+        if matches!(slot, CarrierRetirementSlot::Reserved(_)) {
             return Err(CalmError::Conflict(
-                "recovery ingress changed before transcript settlement".into(),
+                "original carrier is being restored".into(),
             ));
         }
-        owner.recheck_tx(&mut tx, &current).await?;
-        // A native END may overtake queued content callbacks. Settle the full
-        // authoritative receipt before retiring their old carrier, through the
-        // same identity/erasure owner used by live and accepted-END recovery.
-        transcript.settle_tx(&mut tx, &current).await?;
-        ingress = carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id)
+        let early_held = match (&handle, kind) {
+            (Some(h), CarrierRecoveryKind::Abandon(_)) => Some(h.held_carrier_owner().await?),
+            _ => None,
+        };
+        let calls = s
+            .mcp_context
+            .tool_calls
+            .fence(&request.carrier_id)
+            .map_err(|_| CalmError::Conflict("Wait for pending tool calls before recovery".into()))?;
+        let _drive = s.operation_runtime.lock_for_track_delete().await;
+        let _track = crate::per_card_lock::lock_key(&s.track_delete_locks, track.as_str()).await;
+        let mut tx = write_session.begin().await?;
+        authorize(&mut tx, &source, &card).await?;
+        let captured = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
+        if recovery_target_tx(&mut tx, &captured, action).await? != Some((kind, request.clone())) {
+            return Err(CalmError::Conflict("Recovery target changed".into()));
+        }
+        let shape = sqlite::card_execution_shape_tx(&mut tx, &card).await?;
+        let captured_binding = PlannerBinding::from_shape(&shape.kind, shape.role, &shape.payload)
+            .ok_or_else(|| CalmError::Conflict("recovery binding unsupported".into()))?;
+        if captured_binding.provider != binding.provider
+            || !s
+                .harness
+                .retirement_slot_is_current(&request.carrier_id, &slot)
+        {
+            return Err(CalmError::Conflict("recovery owner changed".into()));
+        }
+        crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &card)
             .await?;
-    }
-    let replacement = replace_recoverable_carrier_tx(
-        &mut tx,
-        ExpectedCarrier {
-            card_id: card.clone(),
-            track_id: track.to_string(),
-            worker_session_id: request.carrier_id.clone(),
-            original_snapshot: captured.original_snapshot().into(),
-            execution: RuntimeExecutionFence::from_carrier(&captured),
-            binding: captured_binding,
-            accepted_prefix: frame.header.push_watermark,
-            ingress,
-            owner: &owner,
-            revision: CallerRevision::Unversioned,
-        },
-        kind,
-        &request,
-        &principal.user_id,
-        &key,
-    )
-    .await?;
-    let area = conversation_area_tx(&mut tx, &card).await?;
-    let scope = crate::event::EventScope::Card {
-        card: card.clone().into(),
-        track: track.clone(),
-        area: area.id,
-    };
-    let event = crate::event::Event::HarnessPhaseChanged {
-        worker_session_id: replacement.new_worker.id.to_string(),
-        card_id: card.clone().into(),
-        track_id: track.clone(),
-        old_phase: frame.header.phase,
-        new_phase: calm_types::harness::HarnessPhaseTag::Idle,
-    };
-    let event_id = sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::User,
-        &scope,
-        None,
-        &event,
-    )
-    .await?;
-    source.current_principal()?;
-    tx.commit().await?;
-    #[allow(deprecated)]
-    s.harness
-        .retire_and_publish_replacement(&replacement, &slot, s.write.role_cache())?;
-    s.events.emit_envelope(crate::event::BroadcastEnvelope {
-        id: event_id,
-        event_version: crate::event::SYNC_EVENT_VERSION,
-        actor: crate::ids::ActorId::User,
-        scope,
-        event,
-    });
-    // Replacement is dormant; its caller may wake only through current-source admission.
-    drop(_drive);
-    drop(held);
-    if let Err(error) = crate::harness::HarnessRegistry::cleanup_replacement(
-        &replacement,
-        slot,
-        Some(
-            native_daemon
-                .as_deref()
-                .unwrap_or(&s.shared_codex_appserver),
-        ),
-    )
-    .await
-    {
-        tracing::warn!(%error,"committed canonical recovery cleanup pending");
-    }
-    Ok(AbandonConversationResult {
-        card_id: card,
-        old_carrier_id: request.carrier_id,
-        carrier_id: replacement.new_worker.id.to_string(),
-    })
+        crate::ask::require_no_open_carrier_asks_tx(&mut tx, &card).await?;
+        let mut ingress =
+            carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id).await?;
+        let native_context = if kind == CarrierRecoveryKind::TerminalProviderError {
+            Some(NativeContext::capture_tx(&mut tx, &captured).await?)
+        } else {
+            None
+        };
+        tx.rollback().await?;
+        // No provider I/O while holding the SQL writer. The native/harness park stays held.
+        let native_daemon = if native_context.is_some() {
+            Some(
+                s.planner_start_adapter
+                    .canonical_native_owner(&request.carrier_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let proof = if let (Some(context), Some(daemon)) = (&native_context, &native_daemon) {
+            terminal::prove(&s, &source, &captured, &binding, context, daemon).await?
+        } else {
+            RecoveryProof::Provider(
+                PlannerFactory::new(
+                    std::sync::Arc::downgrade(&s.shared_codex_appserver),
+                    &s.claude_planner,
+                    &s.acp_planner,
+                )
+                .quiesce_for_abandonment(&binding.provider, &request.carrier_id, track.as_str())
+                .await?,
+            )
+        };
+        let held = if let (Some(handle), RecoveryProof::Codex { native, .. }) = (&handle, &proof) {
+            Some(handle.held_terminal_carrier_owner(native).await?)
+        } else {
+            early_held
+        };
+        if let Some(held) = &held {
+            held.recheck()?;
+        }
+        let owner = Protected {
+            source: &source,
+            held: held.as_ref(),
+            calls: &calls,
+            proof: &proof,
+            action,
+            kind,
+            request: &request,
+            native_context: native_context.as_ref(),
+        };
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("canonical-abandon-before-commit", &card).await;
+        let mut tx = write_session.begin().await?;
+        let principal = authorize(&mut tx, &source, &card).await?;
+        if !s
+            .harness
+            .retirement_slot_is_current(&request.carrier_id, &slot)
+        {
+            return Err(CalmError::Conflict("recovery owner changed".into()));
+        }
+        crate::operation::planner_start_fence::CardStartFence::require_settled_tx(&mut tx, &card)
+            .await?;
+        crate::ask::require_no_open_carrier_asks_tx(&mut tx, &card).await?;
+        let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+            serde_json::from_value(captured.snapshot().clone())?;
+        if let RecoveryProof::Codex { transcript, .. } = &proof {
+            let current = current_input_fact_carrier_tx(&mut tx, &card, &request.carrier_id).await?;
+            if current.original_snapshot() != captured.original_snapshot()
+                || carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id)
+                    .await?
+                    != ingress
+            {
+                return Err(CalmError::Conflict(
+                    "recovery ingress changed before transcript settlement".into(),
+                ));
+            }
+            owner.recheck_tx(&mut tx, &current).await?;
+            // A native END may overtake queued content callbacks. Settle the full
+            // authoritative receipt before retiring their old carrier, through the
+            // same identity/erasure owner used by live and accepted-END recovery.
+            transcript.settle_tx(&mut tx, &current).await?;
+            ingress = carrier_ingress_revision_tx(&mut tx, &card, track.as_str(), &request.carrier_id)
+                .await?;
+        }
+        let replacement = replace_recoverable_carrier_tx(
+            &mut tx,
+            ExpectedCarrier {
+                card_id: card.clone(),
+                track_id: track.to_string(),
+                worker_session_id: request.carrier_id.clone(),
+                original_snapshot: captured.original_snapshot().into(),
+                execution: RuntimeExecutionFence::from_carrier(&captured),
+                binding: captured_binding,
+                accepted_prefix: frame.header.push_watermark,
+                ingress,
+                owner: &owner,
+                revision: CallerRevision::Unversioned,
+            },
+            kind,
+            &request,
+            &principal.user_id,
+            &key,
+        )
+        .await?;
+        let area = conversation_area_tx(&mut tx, &card).await?;
+        let scope = crate::event::EventScope::Card {
+            card: card.clone().into(),
+            track: track.clone(),
+            area: area.id,
+        };
+        let event = crate::event::Event::HarnessPhaseChanged {
+            worker_session_id: replacement.new_worker.id.to_string(),
+            card_id: card.clone().into(),
+            track_id: track.clone(),
+            old_phase: frame.header.phase,
+            new_phase: calm_types::harness::HarnessPhaseTag::Idle,
+        };
+        let event_id = sqlite::append_decision_event_in_tx(
+            &mut tx,
+            &crate::ids::ActorId::User,
+            &scope,
+            None,
+            &event,
+        )
+        .await?;
+        source.current_principal()?;
+        tx.commit().await?;
+        #[allow(deprecated)]
+        s.harness
+            .retire_and_publish_replacement(&replacement, &slot, s.write.role_cache())?;
+        s.events.emit_envelope(crate::event::BroadcastEnvelope {
+            id: event_id,
+            event_version: crate::event::SYNC_EVENT_VERSION,
+            actor: crate::ids::ActorId::User,
+            scope,
+            event,
+        });
+        // Replacement is dormant; its caller may wake only through current-source admission.
+        drop(_drive);
+        drop(held);
+        if let Err(error) = crate::harness::HarnessRegistry::cleanup_replacement(
+            &replacement,
+            slot,
+            Some(
+                native_daemon
+                    .as_deref()
+                    .unwrap_or(&s.shared_codex_appserver),
+            ),
+        )
+        .await
+        {
+            tracing::warn!(%error,"committed canonical recovery cleanup pending");
+        }
+        Ok(AbandonConversationResult {
+            card_id: card,
+            old_carrier_id: request.carrier_id,
+            carrier_id: replacement.new_worker.id.to_string(),
+        })
+
+    })).await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Read-only declaration; the explicit action still establishes quiescence at execution time.

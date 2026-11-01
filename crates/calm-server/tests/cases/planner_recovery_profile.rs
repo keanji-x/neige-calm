@@ -12,7 +12,7 @@ async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
     let (card, runtime, thread, _) = failed_conversation(&boot).await;
-    sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
+    (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
         .bind(role.as_db_str())
         .bind(
             if role == CardRole::Assistant {
@@ -22,18 +22,20 @@ async fn assert_cold_profile(role: CardRole, marker: &str, expects_mcp: bool) {
             }
             .to_string(),
         )
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
+        .bind(card.id.as_str()))
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET contract=? WHERE id=?")
-        .bind(if role == CardRole::Assistant {
-            "assistant"
-        } else {
-            "executor"
-        })
-        .bind(&runtime)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET contract=? WHERE id=?")
+                .bind(if role == CardRole::Assistant {
+                    "assistant"
+                } else {
+                    "executor"
+                })
+                .bind(&runtime),
+        )
         .await
         .unwrap();
     boot.state
@@ -108,9 +110,9 @@ async fn ineligible_failed_sessions_do_not_advertise_send_to_resume() {
     ] {
         let boot = boot_fake_running().await;
         let (card, runtime, _, _) = failed_conversation(&boot).await;
-        sqlx::query(change)
-            .bind(&runtime)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(change).bind(&runtime))
             .await
             .unwrap();
         let response = boot
@@ -216,10 +218,13 @@ async fn cold_daemon_replay_keeps_active_plain_chat_without_mcp() {
     }
     let boot = boot_shared().await;
     let (card, runtime, _, _) = failed_conversation(&boot).await;
-    sqlx::query("UPDATE cards SET role='worker',payload=? WHERE id=?")
-        .bind(json!({"schemaVersion":1,"harness_profile":"plain_chat"}).to_string())
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role='worker',payload=? WHERE id=?")
+                .bind(json!({"schemaVersion":1,"harness_profile":"plain_chat"}).to_string())
+                .bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     let thread = boot
@@ -239,8 +244,8 @@ async fn cold_daemon_replay_keeps_active_plain_chat_without_mcp() {
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET state='idle',contract='executor',thread_id=?2,handle_state_json=?3 WHERE id=?1")
-        .bind(&runtime).bind(&thread).bind(idle_snapshot_value(&thread).to_string()).execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='idle',contract='executor',thread_id=?2,handle_state_json=?3 WHERE id=?1")
+        .bind(&runtime).bind(&thread).bind(idle_snapshot_value(&thread).to_string())).await.unwrap();
     let replaced = boot
         .state
         .shared_codex_appserver
@@ -278,10 +283,13 @@ async fn cold_daemon_replay_of_planner(payload: Value) -> (bool, bool) {
     }
     let boot = boot_shared().await;
     let (card, runtime, _, _) = failed_conversation(&boot).await;
-    sqlx::query("UPDATE cards SET payload=? WHERE id=?")
-        .bind(payload.to_string())
-        .bind(card.id.as_str())
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=? WHERE id=?")
+                .bind(payload.to_string())
+                .bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     let thread = boot
@@ -301,13 +309,12 @@ async fn cold_daemon_replay_of_planner(payload: Value) -> (bool, bool) {
         )
         .await
         .unwrap();
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "UPDATE worker_sessions SET state='idle',thread_id=?2,handle_state_json=?3 WHERE id=?1",
     )
     .bind(&runtime)
     .bind(&thread)
-    .bind(idle_snapshot_value(&thread).to_string())
-    .execute(boot.repo.pool())
+    .bind(idle_snapshot_value(&thread).to_string()))
     .await
     .unwrap();
     let replaced = boot
@@ -358,11 +365,10 @@ async fn cold_daemon_replay_gives_a_planner_without_a_codex_provider_no_mcp() {
 async fn a_failed_planner_bound_to_claude_is_not_resumed_on_codex() {
     let boot = boot_fake_running().await;
     let (card, runtime, _, _) = failed_conversation(&boot).await;
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'claude') WHERE id = ?",
     )
-    .bind(card.id.as_str())
-    .execute(boot.repo.pool())
+    .bind(card.id.as_str()))
     .await
     .unwrap();
     let (status, body) = post_planner_input(
@@ -488,12 +494,12 @@ async fn exact_thread_recovery_refusal_matrix_retains_carrier_and_queue() {
             let boot = boot_shared().await;
             let (card, runtime, thread, _) = failed_conversation(&boot).await;
             if !failed {
-                sqlx::query(
+                (boot.repo.db()).writer().execute(sqlx::query(
                     "UPDATE worker_sessions SET state='idle',
                         handle_state_json=json_set(handle_state_json,'$.phase','idle','$.wedged_reason',NULL)
                      WHERE id=?",
                 )
-                    .bind(&runtime).execute(boot.repo.pool()).await.unwrap();
+                    .bind(&runtime)).await.unwrap();
             }
             let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)
                 .await

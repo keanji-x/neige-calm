@@ -12,50 +12,68 @@ use serde_json::json;
 const HOSTILE_TEXT: &str = "quote\" backslash\\ newline\n tab\t ctrl\u{1}\u{1f} 中文 🌊";
 
 async fn empty_track(repo: &SqlxRepo) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "shape".into(),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "shape".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("track");
-    tx.commit().await.expect("commit");
-    track.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "shape".into(),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "shape".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("track");
+                tx.commit().await.expect("commit");
+                track.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn add_card(repo: &SqlxRepo, track_id: &str, card: NewCard) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let created = card_create_tx(&mut tx, card, &CardRoleCache::new())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                let created = card_create_tx(&mut tx, card, &CardRoleCache::new())
+                    .await
+                    .expect("card");
+                tx.commit().await.expect("commit");
+                debug_assert_eq!(created.track_id.as_str(), track_id);
+                created.id.to_string()
+            })
+        })
         .await
-        .expect("card");
-    tx.commit().await.expect("commit");
-    debug_assert_eq!(created.track_id.as_str(), track_id);
-    created.id.to_string()
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -94,38 +112,47 @@ async fn track_detail_round_trips_hostile_text_in_every_string_column() {
     )
     .await;
 
-    let mut tx = repo.pool().begin().await.expect("begin");
-    overlay_upsert_tx(
-        &mut tx,
-        NewOverlay {
-            plugin_id: format!("plugin{HOSTILE_TEXT}"),
-            entity_kind: "card".into(),
-            entity_id: card_id.clone(),
-            kind: format!("kind{HOSTILE_TEXT}"),
-            payload: json!({ "text": HOSTILE_TEXT }),
-        },
-    )
-    .await
-    .expect("overlay");
-    tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin");
+                overlay_upsert_tx(
+                    &mut tx,
+                    NewOverlay {
+                        plugin_id: format!("plugin{HOSTILE_TEXT}"),
+                        entity_kind: "card".into(),
+                        entity_id: card_id.clone(),
+                        kind: format!("kind{HOSTILE_TEXT}"),
+                        payload: json!({ "text": HOSTILE_TEXT }),
+                    },
+                )
+                .await
+                .expect("overlay");
+                tx.commit().await.expect("commit");
 
-    let detail = repo
-        .track_detail(&track_id)
+                let detail = repo
+                    .track_detail(&track_id)
+                    .await
+                    .expect("track_detail")
+                    .expect("track exists");
+
+                let card = detail.cards.first().expect("one card");
+                assert_eq!(card.kind, format!("note{HOSTILE_TEXT}"));
+                assert_eq!(card.title.as_deref(), Some(HOSTILE_TEXT));
+                assert_eq!(card.payload[HOSTILE_TEXT], json!(HOSTILE_TEXT));
+                assert_eq!(card.payload["nested"][0], json!(HOSTILE_TEXT));
+
+                let overlay = detail.overlays.first().expect("one overlay");
+                assert_eq!(overlay.plugin_id, format!("plugin{HOSTILE_TEXT}"));
+                assert_eq!(overlay.kind, format!("kind{HOSTILE_TEXT}"));
+                assert_eq!(overlay.entity_id, card_id);
+                assert_eq!(overlay.payload["text"], json!(HOSTILE_TEXT));
+            })
+        })
         .await
-        .expect("track_detail")
-        .expect("track exists");
-
-    let card = detail.cards.first().expect("one card");
-    assert_eq!(card.kind, format!("note{HOSTILE_TEXT}"));
-    assert_eq!(card.title.as_deref(), Some(HOSTILE_TEXT));
-    assert_eq!(card.payload[HOSTILE_TEXT], json!(HOSTILE_TEXT));
-    assert_eq!(card.payload["nested"][0], json!(HOSTILE_TEXT));
-
-    let overlay = detail.overlays.first().expect("one overlay");
-    assert_eq!(overlay.plugin_id, format!("plugin{HOSTILE_TEXT}"));
-    assert_eq!(overlay.kind, format!("kind{HOSTILE_TEXT}"));
-    assert_eq!(overlay.entity_id, card_id);
-    assert_eq!(overlay.payload["text"], json!(HOSTILE_TEXT));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -181,9 +208,9 @@ async fn track_detail_round_trips_deletable_both_ways() {
         .deletable;
     assert!(deletable, "cards default to deletable");
 
-    sqlx::query("UPDATE cards SET deletable = 0 WHERE id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET deletable = 0 WHERE id = ?1").bind(&card_id))
         .await
         .expect("clear deletable");
 
@@ -262,10 +289,13 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
     )
     .await;
 
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-        .bind(FORGERY)
-        .bind(&card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind(FORGERY)
+                .bind(&card_id),
+        )
         .await
         .expect("a raw column write is exactly what corruption looks like");
 
@@ -278,18 +308,17 @@ async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
         "unexpected error: {err}"
     );
 
-    sqlx::query("UPDATE cards SET payload = \'{}\' WHERE id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET payload = \'{}\' WHERE id = ?1").bind(&card_id))
         .await
         .expect("restore the card payload");
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO overlays (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at) \
          VALUES (\'forged-overlay\', \'p\', \'card\', ?1, \'status\', ?2, 0)",
     )
     .bind(&card_id)
-    .bind(FORGERY)
-    .execute(repo.pool())
+    .bind(FORGERY))
     .await
     .expect("seed a corrupt overlay payload");
 
@@ -315,9 +344,9 @@ async fn track_detail_reads_required_planner_revision() {
             .planner_revision,
         0
     );
-    sqlx::query("UPDATE tracks SET planner_revision=7 WHERE id=?1")
-        .bind(&id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET planner_revision=7 WHERE id=?1").bind(&id))
         .await
         .unwrap();
     let detail = repo.track_detail(&id).await.unwrap().unwrap();

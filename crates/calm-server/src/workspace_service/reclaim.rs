@@ -220,34 +220,46 @@ mod tests {
                 ownership_conflict: false,
             },
         };
-        let mut tx = repo.pool().begin().await.unwrap();
-        operation::register(&mut tx, &target, true).await.unwrap();
-        tx.commit().await.unwrap();
-        let admission = LocationAdmission {
-            managed_root: root.path().join("managed"),
-            objective_checkout_root: root.path().join("objective"),
-            teardown_targets: Default::default(),
-            area_locks: crate::per_card_lock::new_keyed_locks(),
-            track_locks: crate::per_card_lock::new_keyed_locks(),
-        };
-        let registration = admission.teardown_targets.registration();
-        registration.register_location(&target.track_id, target.request.path.clone());
-        let mut conn = repo.pool().acquire().await.unwrap();
-        let fence = admission
-            .try_fence(&mut conn, &target.request.repo, Some(&target.track_id))
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    operation::register(&mut tx, &target, true).await.unwrap();
+                    tx.commit().await.unwrap();
+                    let admission = LocationAdmission {
+                        managed_root: root.path().join("managed"),
+                        objective_checkout_root: root.path().join("objective"),
+                        teardown_targets: Default::default(),
+                        area_locks: crate::per_card_lock::new_keyed_locks(),
+                        track_locks: crate::per_card_lock::new_keyed_locks(),
+                    };
+                    let registration = admission.teardown_targets.registration();
+                    registration.register_location(&target.track_id, target.request.path.clone());
+                    let mut conn = repo.pool().acquire().await.unwrap();
+                    let fence = admission
+                        .try_fence(&mut conn, &target.request.repo, Some(&target.track_id))
+                        .await
+                        .unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    fence.recheck(&mut tx).await.unwrap();
+                    tx.rollback().await.unwrap();
+                    // Before execution admission, the teardown registry supplies the track owner.
+                    let _held = crate::per_card_lock::try_lock_key(
+                        &admission.track_locks,
+                        &target.track_id,
+                    )
+                    .unwrap();
+                    assert!(matches!(
+                        admission
+                            .try_fence(&mut conn, &target.request.path, None)
+                            .await,
+                        Err(CalmError::WorkspaceBusy(_))
+                    ));
+                })
+            })
             .await
-            .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        fence.recheck(&mut tx).await.unwrap();
-        tx.rollback().await.unwrap();
-        // Before execution admission, the teardown registry supplies the track owner.
-        let _held =
-            crate::per_card_lock::try_lock_key(&admission.track_locks, &target.track_id).unwrap();
-        assert!(matches!(
-            admission
-                .try_fence(&mut conn, &target.request.path, None)
-                .await,
-            Err(CalmError::WorkspaceBusy(_))
-        ));
+            .expect("independent write operation")
     }
 }

@@ -638,16 +638,21 @@ async fn the_database_refuses_half_a_creator_provenance() {
         "UPDATE tracks SET creator_key = NULL WHERE id = ?1",
         "UPDATE tracks SET creator_track_id = NULL WHERE id = ?1",
     ] {
-        let error = sqlx::query(sql)
-            .bind(&added)
-            .execute(boot.repo.pool())
+        let error = (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(sql).bind(&added))
             .await
             .expect_err(sql);
         assert!(error.to_string().contains(REFUSED_BY), "{sql}: {error}");
     }
-    sqlx::query("UPDATE tracks SET creator_track_id = NULL, creator_key = NULL WHERE id = ?1")
-        .bind(&added)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tracks SET creator_track_id = NULL, creator_key = NULL WHERE id = ?1",
+            )
+            .bind(&added),
+        )
         .await
         .expect("clearing both at once is allowed");
     let indexed: i64 = boot
@@ -720,14 +725,17 @@ async fn track_creator_does_not_keep_the_state_alive() {
 async fn u9_canonical_creator_refuses_mismatched_live_provider() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'claude') \
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'claude') \
          WHERE track_id = ?1 AND role = 'planner'",
-    )
-    .bind(&creator)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&creator),
+        )
+        .await
+        .unwrap();
     let before = boot.track_count().await;
     let error = boot
         .add(&planner, boot.args("k1"))

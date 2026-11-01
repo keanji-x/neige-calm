@@ -212,16 +212,24 @@ pub(crate) async fn admit_action(
         },
     };
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    // Claim plus create-if-absent serialize cleanup with a newer claimant's admission.
-    sql::insert(&mut tx, &op.id, KEY, &encoded(&record)?).await?;
-    forge::remove_stale_result_files(&frozen.result_path).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-    tx.commit().await?;
-    engine.drive(ticket.committed());
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                // Claim plus create-if-absent serialize cleanup with a newer claimant's admission.
+                sql::insert(&mut tx, &op.id, KEY, &encoded(&record)?).await?;
+                forge::remove_stale_result_files(&frozen.result_path).await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
+                tx.commit().await?;
+                engine.drive(ticket.committed());
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 #[derive(Debug)]
@@ -274,43 +282,52 @@ pub(crate) async fn admit_probe(
     // Collect environment/cwd I/O outside the writer, but defer its error until
     // the live-claim transaction has distinguished a deleted track.
     let intent = intent(ctx, op, frozen, kind).await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    if calm_truth::db::sqlite::track_find_tx(&mut tx, &frozen.track_id)
-        .await?
-        .is_none()
-    {
-        return Ok(ProbeAdmission::TrackGone);
-    }
-    // A deleted track also wins over path errors such as a now-dangling cwd alias.
-    let (root, location) = location?;
-    let engine = engine(ctx)?;
-    let intent = intent?;
-    // A cwd alias may have been repointed during intent construction. Never
-    // admit a root different from the one whose owners we fenced.
-    if intent.metadata.source.root != root {
-        return Err(CalmError::WorkspaceBusy(
-            frozen.cwd_lease.display().to_string(),
-        ));
-    }
-    location.recheck(&mut tx).await?;
-    let mut new = old.clone();
-    new.set(
-        kind,
-        Probe {
-            execution_id: intent.metadata.id.clone(),
-            release: Release::Held,
-            decision: Decision::Observing,
-        },
-    );
-    if matches!(kind, Kind::Output) {
-        new.verdict = Verdict::Landed;
-    }
-    let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-    sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(&old)?, &encoded(&new)?).await?;
-    tx.commit().await?;
-    engine.drive(ticket.committed());
-    Ok(ProbeAdmission::Admitted)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                if calm_truth::db::sqlite::track_find_tx(&mut tx, &frozen.track_id)
+                    .await?
+                    .is_none()
+                {
+                    return Ok(ProbeAdmission::TrackGone);
+                }
+                // A deleted track also wins over path errors such as a now-dangling cwd alias.
+                let (root, location) = location?;
+                let engine = engine(ctx)?;
+                let intent = intent?;
+                // A cwd alias may have been repointed during intent construction. Never
+                // admit a root different from the one whose owners we fenced.
+                if intent.metadata.source.root != root {
+                    return Err(CalmError::WorkspaceBusy(
+                        frozen.cwd_lease.display().to_string(),
+                    ));
+                }
+                location.recheck(&mut tx).await?;
+                let mut new = old.clone();
+                new.set(
+                    kind,
+                    Probe {
+                        execution_id: intent.metadata.id.clone(),
+                        release: Release::Held,
+                        decision: Decision::Observing,
+                    },
+                );
+                if matches!(kind, Kind::Output) {
+                    new.verdict = Verdict::Landed;
+                }
+                let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
+                sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(&old)?, &encoded(&new)?)
+                    .await?;
+                tx.commit().await?;
+                engine.drive(ticket.committed());
+                Ok(ProbeAdmission::Admitted)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 async fn transition(
     ctx: &SpawnCtx,
@@ -320,15 +337,28 @@ async fn transition(
     stop: Option<&ExecutionId>,
 ) -> Result<()> {
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-    sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(old)?, &encoded(new)?).await?;
-    if let Some(id) = stop {
-        calm_truth::db::sqlite::workspace_execution::request(&mut tx, id.as_str(), "stop").await?;
-    }
-    tx.commit().await?;
-    ctx.execution.drive(new.ids());
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(old)?, &encoded(new)?).await?;
+                if let Some(id) = stop {
+                    calm_truth::db::sqlite::workspace_execution::request(
+                        &mut tx,
+                        id.as_str(),
+                        "stop",
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+                ctx.execution.drive(new.ids());
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 pub(crate) async fn stop(
     ctx: &SpawnCtx,

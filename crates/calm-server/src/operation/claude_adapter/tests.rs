@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::event::EventBus;
 use crate::git_candidate::commit_message::CommitMessage;
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
@@ -750,35 +750,47 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy.as_deref(), Some("kernel"));
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let lease =
-        crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(&mut tx, &lease_id)
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(
-        lease.delivery_policy,
-        Some(crate::operation::workspace_lease::DeliveryPolicy::Kernel)
-    );
-    assert!(lease.base.is_some());
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let lease = crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(
+                    &mut tx, &lease_id,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    lease.delivery_policy,
+                    Some(crate::operation::workspace_lease::DeliveryPolicy::Kernel)
+                );
+                assert!(lease.base.is_some());
 
-    let plain_card = format!("{card_id}-plain");
-    let (plain, _event) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
-        &mut tx,
-        &plain_card,
-        &harness.track_id,
-        "op-plain",
-        &harness.workspace.path().join("plain-lease"),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(plain.delivery_policy, None);
-    let policy: Option<String> =
-        sqlx::query_scalar("SELECT delivery_policy FROM workspace_leases WHERE card_id = ?1")
-            .bind(&plain_card)
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(policy, None, "the plain fixture lease is legacy");
+                let plain_card = format!("{card_id}-plain");
+                let (plain, _event) =
+                    crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+                        &mut tx,
+                        &plain_card,
+                        &harness.track_id,
+                        "op-plain",
+                        &harness.workspace.path().join("plain-lease"),
+                    )
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(plain.delivery_policy, None);
+                let policy: Option<String> = sqlx::query_scalar(
+                    "SELECT delivery_policy FROM workspace_leases WHERE card_id = ?1",
+                )
+                .bind(&plain_card)
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(policy, None, "the plain fixture lease is legacy");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

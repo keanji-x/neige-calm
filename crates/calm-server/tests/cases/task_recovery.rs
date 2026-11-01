@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::mcp_track_report::{Boot, planner_identity, upsert_block};
 use calm_server::db::sqlite::{
-    TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_fail_from_worker_tx,
+    TaskReporter, task_claim_pending_tx, task_fail_from_worker_tx,
     task_report_success_from_worker_tx,
 };
 use calm_server::model::Task;
@@ -41,48 +41,57 @@ pub(super) async fn finish(boot: &Boot, task: &Task, success: bool) {
         .await
         .unwrap();
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    assert_eq!(
-        task_claim_pending_tx(
-            &mut tx,
-            &task.id,
-            10,
-            &closure.refs,
-            closure.closure_truncated
-        )
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(
+                        &mut tx,
+                        &task.id,
+                        10,
+                        &closure.refs,
+                        closure.closure_truncated
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                if success {
+                    assert!(matches!(
+                        task_report_success_from_worker_tx(
+                            &mut tx,
+                            &task.id,
+                            &task.track_id,
+                            TaskReporter::Kernel,
+                            11
+                        )
+                        .await
+                        .unwrap(),
+                        calm_server::db::sqlite::SuccessReportFlip::Done
+                    ));
+                } else {
+                    assert_eq!(
+                        task_fail_from_worker_tx(
+                            &mut tx,
+                            &task.id,
+                            &task.track_id,
+                            TaskReporter::Kernel,
+                            "spawn-failed: controlled preparation failure",
+                            11
+                        )
+                        .await
+                        .unwrap(),
+                        1
+                    );
+                }
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    if success {
-        assert!(matches!(
-            task_report_success_from_worker_tx(
-                &mut tx,
-                &task.id,
-                &task.track_id,
-                TaskReporter::Kernel,
-                11
-            )
-            .await
-            .unwrap(),
-            calm_server::db::sqlite::SuccessReportFlip::Done
-        ));
-    } else {
-        assert_eq!(
-            task_fail_from_worker_tx(
-                &mut tx,
-                &task.id,
-                &task.track_id,
-                TaskReporter::Kernel,
-                "spawn-failed: controlled preparation failure",
-                11
-            )
-            .await
-            .unwrap(),
-            1
-        );
-    }
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 pub(super) async fn current(boot: &Boot, key: &str) -> Task {
@@ -120,55 +129,64 @@ pub(super) async fn time_out_claimed_worker_holding_lease(
         boot.ctx.write.clone(),
     );
     let closure = monitor.resolve_task_closure(&track_id, key).await.unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    assert_eq!(
-        task_claim_pending_tx(
-            &mut tx,
-            &task.id,
-            10,
-            &closure.refs,
-            closure.closure_truncated
-        )
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            assert_eq!(
+                                task_claim_pending_tx(
+                                    &mut tx,
+                                    &task.id,
+                                    10,
+                                    &closure.refs,
+                                    closure.closure_truncated
+                                )
+                                .await
+                                .unwrap(),
+                                1
+                            );
+                            sqlx::query("UPDATE tasks SET status='running', worker_card_id=?1 WHERE id=?2")
+                                .bind(&card_id)
+                                .bind(&task.id)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            assert_eq!(
+                                task_fail_from_worker_tx(
+                                    &mut tx,
+                                    &task.id,
+                                    &track_id,
+                                    TaskReporter::Kernel,
+                                    "worker-timeout",
+                                    now + 1,
+                                )
+                                .await
+                                .unwrap(),
+                                1
+                            );
+                            sqlx::query(
+                    "UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id=?2",
+                )
+                .bind(now + 1)
+                .bind(lease_id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let failed = current(boot, key).await;
+                            assert_eq!(failed.id, task.id);
+                            assert_eq!(
+                                failed
+                                    .status_detail
+                                    .as_deref()
+                                    .map(calm_server::db::sqlite::status_detail_class),
+                                Some("worker-timeout")
+                            );
+                            failed
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    sqlx::query("UPDATE tasks SET status='running', worker_card_id=?1 WHERE id=?2")
-        .bind(&card_id)
-        .bind(&task.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    assert_eq!(
-        task_fail_from_worker_tx(
-            &mut tx,
-            &task.id,
-            &track_id,
-            TaskReporter::Kernel,
-            "worker-timeout",
-            now + 1,
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    sqlx::query(
-        "UPDATE workspace_leases SET state='released', released_at_ms=?1 WHERE lease_id=?2",
-    )
-    .bind(now + 1)
-    .bind(lease_id)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let failed = current(boot, key).await;
-    assert_eq!(failed.id, task.id);
-    assert_eq!(
-        failed
-            .status_detail
-            .as_deref()
-            .map(calm_server::db::sqlite::status_detail_class),
-        Some("worker-timeout")
-    );
-    failed
+        .expect("independent write operation")
 }

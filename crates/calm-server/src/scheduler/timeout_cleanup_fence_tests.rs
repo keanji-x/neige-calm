@@ -50,143 +50,146 @@ impl Fixture {
         .await
         .unwrap();
         crate::test_support::ensure_track_worktree(repo.db(), track.id.as_str()).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let (card, _) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
-            &mut tx,
-            "card-timeout".into(),
-            "session-a",
-            None,
-            track.id.clone(),
-            None,
-            None,
-            "worker".into(),
-            cwd.path().to_str().unwrap().into(),
-            json!({}),
-            Some("do".into()),
-            None,
-            None,
-            cwd.path().join("settings.json").to_str().unwrap().into(),
-            "agent-a".into(),
-            repo.card_role_cache(),
-            crate::routes::theme::RequestTheme::default_dark(),
-        )
-        .await
-        .unwrap();
-        let mut task = tests::task("a", TaskStatus::Running, &[], 0);
-        task.id = format!("{}:a", track.id);
-        task.track_id = track.id.to_string();
-        task.kind = TaskKind::Claude;
-        task.access = access;
-        task.worker_card_id = Some(card.id.to_string());
-        crate::test_support::insert_task_tx(&mut tx, &task)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE worker_sessions SET state = 'running' WHERE id = 'session-a'")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
-        let op = operations
-            .insert_operation(
-                "claude-worker",
-                OperationKey {
-                    operation_key: "spawn-a".into(),
-                    idempotency_key: Some(task.id.clone()),
-                    payload_hash: "a".into(),
-                },
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let (card, _) = calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+                &mut tx,
+                "card-timeout".into(),
+                "session-a",
+                None,
+                track.id.clone(),
+                None,
+                None,
+                "worker".into(),
+                cwd.path().to_str().unwrap().into(),
                 json!({}),
+                Some("do".into()),
+                None,
+                None,
+                cwd.path().join("settings.json").to_str().unwrap().into(),
+                "agent-a".into(),
+                repo.card_role_cache(),
+                crate::routes::theme::RequestTheme::default_dark(),
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE operations SET target_type = 'card', target_id = ?, payload_json = ? WHERE id = ?")
-            .bind(card.id.as_str()).bind(json!({"actor": ActorId::KernelDispatcher}).to_string())
-            .bind(&op).execute(repo.pool()).await.unwrap();
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'session-a'")
-            .bind(&op)
-            .execute(repo.pool())
+            let mut task = tests::task("a", TaskStatus::Running, &[], 0);
+            task.id = format!("{}:a", track.id);
+            task.track_id = track.id.to_string();
+            task.kind = TaskKind::Claude;
+            task.access = access;
+            task.worker_card_id = Some(card.id.to_string());
+            crate::test_support::insert_task_tx(&mut tx, &task)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE worker_sessions SET state = 'running' WHERE id = 'session-a'")
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            let operations = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
+            let op = operations
+                .insert_operation(
+                    "claude-worker",
+                    OperationKey {
+                        operation_key: "spawn-a".into(),
+                        idempotency_key: Some(task.id.clone()),
+                        payload_hash: "a".into(),
+                    },
+                    json!({}),
+                )
+                .await
+                .unwrap();
+            (repo.db()).writer().execute(sqlx::query("UPDATE operations SET target_type = 'card', target_id = ?, payload_json = ? WHERE id = ?")
+                .bind(card.id.as_str()).bind(json!({"actor": ActorId::KernelDispatcher}).to_string())
+                .bind(&op)).await.unwrap();
+            (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'session-a'")
+                .bind(&op))
+                .await
+                .unwrap();
+            let mut tx = write_session.begin().await.unwrap();
+            let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
+                &mut tx,
+                &task.track_id,
+                access,
+                cwd.path(),
+            )
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
-            &mut tx,
-            &task.track_id,
-            access,
-            cwd.path(),
-        )
-        .await
-        .unwrap();
-        let (lease, _) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
-            &mut tx,
-            card.id.as_str(),
-            &task.track_id,
-            &op,
-            &plan,
-        )
-        .await
-        .unwrap();
-        // The production timeout entry point marks the live session after ending A.
-        sqlx::query(
-            "UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout' WHERE id = ?",
-        )
-        .bind(&task.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        let mark = mark_running_timeout_cleanup_tx(
-            &mut tx,
-            card.id.as_str(),
-            &task.id,
-            now_ms(),
-            WorkerCleanupReason::LivenessTimeout,
-        )
-        .await
-        .unwrap();
-        assert_eq!(mark.marked, 1);
-        tx.commit().await.unwrap();
-        let events = EventBus::new();
-        let completion = OperationCompletionBus::new();
-        let runtime = Arc::new(OperationRuntime::new_unchecked(
-            operations.clone(),
-            Vec::new(),
-            events.clone(),
-            completion.clone(),
-            SpawnCtx::new(
-                repo.clone(),
-                operations,
-                Arc::new(crate::state::DaemonClient::new_stub()),
-                crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(repo.clone()),
+            let (lease, _) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
+                &mut tx,
+                card.id.as_str(),
+                &task.track_id,
+                &op,
+                &plan,
+            )
+            .await
+            .unwrap();
+            // The production timeout entry point marks the live session after ending A.
+            sqlx::query(
+                "UPDATE tasks SET status = 'failed', status_detail = 'worker-timeout' WHERE id = ?",
+            )
+            .bind(&task.id)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+            let mark = mark_running_timeout_cleanup_tx(
+                &mut tx,
+                card.id.as_str(),
+                &task.id,
+                now_ms(),
+                WorkerCleanupReason::LivenessTimeout,
+            )
+            .await
+            .unwrap();
+            assert_eq!(mark.marked, 1);
+            tx.commit().await.unwrap();
+            let events = EventBus::new();
+            let completion = OperationCompletionBus::new();
+            let runtime = Arc::new(OperationRuntime::new_unchecked(
+                operations.clone(),
+                Vec::new(),
                 events.clone(),
-                completion,
-            ),
-        ));
-        let scheduler = Scheduler::new(
-            repo.clone(),
-            events,
-            WriteContext::new(
-                repo.card_role_cache().clone(),
-                repo.track_area_cache().clone(),
-            ),
-            Arc::downgrade(&runtime),
-            crate::per_card_lock::new_per_card_locks(),
-            Arc::new(Semaphore::new(1)),
-            cwd.path().join("gate-logs"),
-            WorkerLiveness::DEFAULT,
-            WorkerIdleWake::new(
-                crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
-                WORKER_IDLE_TURN_GRACE,
-                WORKER_IDLE_PROBE_TIMEOUT,
-            ),
-        );
-        Self {
-            repo,
-            scheduler,
-            _runtime: runtime,
-            _cwd: cwd,
-            card,
-            task,
-            lease: lease.lease_id,
-        }
+                completion.clone(),
+                SpawnCtx::new(
+                    repo.clone(),
+                    operations,
+                    Arc::new(crate::state::DaemonClient::new_stub()),
+                    crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(repo.clone()),
+                    events.clone(),
+                    completion,
+                ),
+            ));
+            let scheduler = Scheduler::new(
+                repo.clone(),
+                events,
+                WriteContext::new(
+                    repo.card_role_cache().clone(),
+                    repo.track_area_cache().clone(),
+                ),
+                Arc::downgrade(&runtime),
+                crate::per_card_lock::new_per_card_locks(),
+                Arc::new(Semaphore::new(1)),
+                cwd.path().join("gate-logs"),
+                WorkerLiveness::DEFAULT,
+                WorkerIdleWake::new(
+                    crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+                    WORKER_IDLE_TURN_GRACE,
+                    WORKER_IDLE_PROBE_TIMEOUT,
+                ),
+            );
+            Self {
+                repo,
+                scheduler,
+                _runtime: runtime,
+                _cwd: cwd,
+                card,
+                task,
+                lease: lease.lease_id,
+            }
+
+    })).await.expect("independent write operation")
     }
 
     async fn lease_state(&self) -> String {
@@ -216,16 +219,22 @@ async fn attach_worker(f: &Fixture, session_id: &str) -> tokio::process::Child {
         .fetch_one(f.repo.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE terminals SET pid = ? WHERE id = ?")
-        .bind(i64::from(child.id().unwrap()))
-        .bind(&terminal)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE terminals SET pid = ? WHERE id = ?")
+                .bind(i64::from(child.id().unwrap()))
+                .bind(&terminal),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET terminal_run_id = ? WHERE id = ?")
-        .bind(&terminal)
-        .bind(session_id)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET terminal_run_id = ? WHERE id = ?")
+                .bind(&terminal)
+                .bind(session_id),
+        )
         .await
         .unwrap();
     child
@@ -251,144 +260,162 @@ async fn w_timeout_cleanup_spares_successor_attempt() {
                 let sweep =
                     tokio::spawn(async move { scheduler.sweep_timeout_worker_cleanups().await });
                 hook.resolved.notified().await;
-                let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-                crate::operation::workspace_lease::release_workspace_lease_for_card_tx(
-                    &mut tx,
-                    f.card.id.as_str(),
-                    ReleaseDelivery::CommitAsTaskEnded,
-                )
-                .await
-                .unwrap();
-                let mut b = f.task.clone();
-                b.id = format!("{}:b", b.track_id);
-                b.key = "b".into();
-                b.status = status;
-                crate::test_support::insert_task_tx(&mut tx, &b)
+                let write_db = (f.repo.db()).clone();
+                write_db
+                    .writer()
+                    .with_writer(|write_session| {
+                        Box::pin(async move {
+                                    let mut tx = write_session.begin().await.unwrap();
+                                    crate::operation::workspace_lease::release_workspace_lease_for_card_tx(
+                                        &mut tx,
+                                        f.card.id.as_str(),
+                                        ReleaseDelivery::CommitAsTaskEnded,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    let mut b = f.task.clone();
+                                    b.id = format!("{}:b", b.track_id);
+                                    b.key = "b".into();
+                                    b.status = status;
+                                    crate::test_support::insert_task_tx(&mut tx, &b)
+                                        .await
+                                        .unwrap();
+                                    tx.commit().await.unwrap();
+                                    let operations = SqlxOperationRepo::new(f.repo.db().clone());
+                                    let op = operations
+                                        .insert_operation(
+                                            "claude-worker",
+                                            OperationKey {
+                                                operation_key: "spawn-b".into(),
+                                                idempotency_key: Some(b.id.clone()),
+                                                payload_hash: "b".into(),
+                                            },
+                                            json!({}),
+                                        )
+                                        .await
+                                        .unwrap();
+                                    let mut tx = write_session.begin().await.unwrap();
+                                    if same_session {
+                                        // A stale marker on a current carrier must not authorize B's spawn op.
+                                        sqlx::query(
+                                "UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'session-a'",
+                            )
+                            .bind(&op)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                                    } else {
+                                        sqlx::query(
+                                "UPDATE worker_sessions SET state = 'exited' WHERE id = 'session-a'",
+                            )
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                                        let mut session = calm_truth::db::sqlite::session_get_tx(
+                                            &mut tx,
+                                            &WorkerSessionId::from("session-a"),
+                                        )
+                                        .await
+                                        .unwrap()
+                                        .unwrap();
+                                        session.id = WorkerSessionId::from("session-b");
+                                        session.state = WorkerSessionState::Running;
+                                        session.spawn_op_id = Some(op.clone());
+                                        session.handle_state_json = None;
+                                        session.terminal_run_id = None;
+                                        calm_truth::db::sqlite::session_insert_tx(&mut tx, session)
+                                            .await
+                                            .unwrap();
+                                        sqlx::query(
+                                            "UPDATE cards SET session_id = 'session-b' WHERE id = ?",
+                                        )
+                                        .bind(f.card.id.as_str())
+                                        .execute(&mut **tx)
+                                        .await
+                                        .unwrap();
+                                    }
+                                    let plan =
+                                        crate::operation::workspace_lease::prepare_worker_lease_as_tx(
+                                            &mut tx,
+                                            &b.track_id,
+                                            access,
+                                            f._cwd.path(),
+                                        )
+                                        .await
+                                        .unwrap();
+                                    let (lease, _) =
+                                        crate::operation::workspace_lease::acquire_workspace_lease_tx(
+                                            &mut tx,
+                                            f.card.id.as_str(),
+                                            &b.track_id,
+                                            &op,
+                                            &plan,
+                                        )
+                                        .await
+                                        .unwrap();
+                                    f.lease = lease.lease_id;
+                                    tx.commit().await.unwrap();
+                                    let session_id = WorkerSessionId::from(if same_session {
+                                        "session-a"
+                                    } else {
+                                        "session-b"
+                                    });
+                                    let mut worker = attach_worker(&f, session_id.as_str()).await;
+                                    let before = f.repo.session_get(&session_id).await.unwrap().unwrap();
+                                    let task_before = f.repo.task_get(&b.id).await.unwrap();
+                                    hook.resume.notify_one();
+                                    sweep.await.unwrap();
+                                    let after = f.repo.session_get(&session_id).await.unwrap().unwrap();
+                                    assert!(
+                                        worker.try_wait().unwrap().is_none(),
+                                        "B worker must stay alive"
+                                    );
+                                    worker.kill().await.unwrap();
+                                    assert_eq!(
+                                        after.state, before.state,
+                                        "B session: {access:?}, same_session={same_session}, {status:?}"
+                                    );
+                                    assert_eq!(
+                                        f.lease_state().await,
+                                        "held",
+                                        "B lease: {access:?}, same_session={same_session}, {status:?}"
+                                    );
+                                    assert_eq!(f.repo.task_get(&b.id).await.unwrap(), task_before);
+                                    if !same_session {
+                                        assert_eq!(after, before, "the successor session is untouched");
+                                    }
+                                    // The no-live-session fast path is another stale-A release entry point.
+                                    (f.repo.db())
+                                        .writer()
+                                        .execute(
+                                            sqlx::query(
+                                                "UPDATE worker_sessions SET state = 'exited' WHERE id = ?",
+                                            )
+                                            .bind(session_id.as_str()),
+                                        )
+                                        .await
+                                        .unwrap();
+                                    let mut tx = write_session.begin().await.unwrap();
+                                    let mark = mark_running_timeout_cleanup_tx(
+                                        &mut tx,
+                                        f.card.id.as_str(),
+                                        &f.task.id,
+                                        now_ms(),
+                                        WorkerCleanupReason::LivenessTimeout,
+                                    )
+                                    .await
+                                    .unwrap();
+                                    assert_eq!(mark.marked, 0);
+                                    assert!(
+                                        mark.released.is_empty(),
+                                        "stale A cannot release B in the zero-row arm"
+                                    );
+                                    tx.commit().await.unwrap();
+                                    assert_eq!(f.lease_state().await, "held");
+                        })
+                    })
                     .await
-                    .unwrap();
-                tx.commit().await.unwrap();
-                let operations = SqlxOperationRepo::new(f.repo.db().clone());
-                let op = operations
-                    .insert_operation(
-                        "claude-worker",
-                        OperationKey {
-                            operation_key: "spawn-b".into(),
-                            idempotency_key: Some(b.id.clone()),
-                            payload_hash: "b".into(),
-                        },
-                        json!({}),
-                    )
-                    .await
-                    .unwrap();
-                let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-                if same_session {
-                    // A stale marker on a current carrier must not authorize B's spawn op.
-                    sqlx::query(
-                        "UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'session-a'",
-                    )
-                    .bind(&op)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                } else {
-                    sqlx::query(
-                        "UPDATE worker_sessions SET state = 'exited' WHERE id = 'session-a'",
-                    )
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                    let mut session = calm_truth::db::sqlite::session_get_tx(
-                        &mut tx,
-                        &WorkerSessionId::from("session-a"),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                    session.id = WorkerSessionId::from("session-b");
-                    session.state = WorkerSessionState::Running;
-                    session.spawn_op_id = Some(op.clone());
-                    session.handle_state_json = None;
-                    session.terminal_run_id = None;
-                    calm_truth::db::sqlite::session_insert_tx(&mut tx, session)
-                        .await
-                        .unwrap();
-                    sqlx::query("UPDATE cards SET session_id = 'session-b' WHERE id = ?")
-                        .bind(f.card.id.as_str())
-                        .execute(&mut **tx)
-                        .await
-                        .unwrap();
-                }
-                let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
-                    &mut tx,
-                    &b.track_id,
-                    access,
-                    f._cwd.path(),
-                )
-                .await
-                .unwrap();
-                let (lease, _) = crate::operation::workspace_lease::acquire_workspace_lease_tx(
-                    &mut tx,
-                    f.card.id.as_str(),
-                    &b.track_id,
-                    &op,
-                    &plan,
-                )
-                .await
-                .unwrap();
-                f.lease = lease.lease_id;
-                tx.commit().await.unwrap();
-                let session_id = WorkerSessionId::from(if same_session {
-                    "session-a"
-                } else {
-                    "session-b"
-                });
-                let mut worker = attach_worker(&f, session_id.as_str()).await;
-                let before = f.repo.session_get(&session_id).await.unwrap().unwrap();
-                let task_before = f.repo.task_get(&b.id).await.unwrap();
-                hook.resume.notify_one();
-                sweep.await.unwrap();
-                let after = f.repo.session_get(&session_id).await.unwrap().unwrap();
-                assert!(
-                    worker.try_wait().unwrap().is_none(),
-                    "B worker must stay alive"
-                );
-                worker.kill().await.unwrap();
-                assert_eq!(
-                    after.state, before.state,
-                    "B session: {access:?}, same_session={same_session}, {status:?}"
-                );
-                assert_eq!(
-                    f.lease_state().await,
-                    "held",
-                    "B lease: {access:?}, same_session={same_session}, {status:?}"
-                );
-                assert_eq!(f.repo.task_get(&b.id).await.unwrap(), task_before);
-                if !same_session {
-                    assert_eq!(after, before, "the successor session is untouched");
-                }
-                // The no-live-session fast path is another stale-A release entry point.
-                sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?")
-                    .bind(session_id.as_str())
-                    .execute(f.repo.pool())
-                    .await
-                    .unwrap();
-                let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-                let mark = mark_running_timeout_cleanup_tx(
-                    &mut tx,
-                    f.card.id.as_str(),
-                    &f.task.id,
-                    now_ms(),
-                    WorkerCleanupReason::LivenessTimeout,
-                )
-                .await
-                .unwrap();
-                assert_eq!(mark.marked, 0);
-                assert!(
-                    mark.released.is_empty(),
-                    "stale A cannot release B in the zero-row arm"
-                );
-                tx.commit().await.unwrap();
-                assert_eq!(f.lease_state().await, "held");
+                    .expect("independent write operation")
             }
         }
     }
@@ -399,8 +426,11 @@ async fn w_timeout_cleanup_after_legacy_restart_reaps_same_attempt() {
     for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
         let f = Fixture::new(access).await;
         // Legacy restart's S2 is current and has no native spawn-op binding.
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'session-a'")
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'session-a'",
+            ))
             .await
             .unwrap();
         let mut worker = attach_worker(&f, "session-a").await;
@@ -431,9 +461,11 @@ async fn w_timeout_cleanup_after_legacy_restart_reaps_same_attempt() {
 async fn w_timeout_cleanup_reaps_unstamped_spawn_attempt() {
     for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
         let f = Fixture::new(access).await;
-        sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?")
-            .bind(&f.task.id)
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?").bind(&f.task.id),
+            )
             .await
             .unwrap();
         let mut worker = attach_worker(&f, "session-a").await;
@@ -460,13 +492,18 @@ async fn w_timeout_cleanup_reaps_unstamped_spawn_attempt() {
 async fn w_timeout_cleanup_retains_ambiguous_legacy_attempt() {
     for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
         let f = Fixture::new(access).await;
-        sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?")
-            .bind(&f.task.id)
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET worker_card_id = NULL WHERE id = ?").bind(&f.task.id),
+            )
             .await
             .unwrap();
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'session-a'")
-            .execute(f.repo.pool())
+        (f.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET spawn_op_id = NULL WHERE id = 'session-a'",
+            ))
             .await
             .unwrap();
         let mut worker = attach_worker(&f, "session-a").await;
@@ -486,31 +523,40 @@ async fn w_timeout_cleanup_already_ended_session_converges() {
     for access in [TaskAccess::ReadOnly, TaskAccess::ReadWrite] {
         let f = Fixture::new(access).await;
         // An exit observer can complete the same session before the marker retry runs.
-        let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-        calm_truth::db::sqlite::session_complete_tx(
-            &mut tx,
-            &"session-a".to_owned(),
-            WorkerSessionState::Exited,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let mut worker = attach_worker(&f, "session-a").await;
-        let task_before = f.repo.task_get(&f.task.id).await.unwrap();
-        f.scheduler.sweep_timeout_worker_cleanups().await;
-        assert!(!worker.wait().await.unwrap().success());
-        assert_eq!(
-            f.repo
-                .session_get(&WorkerSessionId::from("session-a"))
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            WorkerSessionState::Exited,
-            "retain the existing terminal observation"
-        );
-        assert_eq!(f.lease_state().await, "released");
-        assert!(f.marker().await.is_none());
-        assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), task_before);
+        let write_db = (f.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    calm_truth::db::sqlite::session_complete_tx(
+                        &mut tx,
+                        &"session-a".to_owned(),
+                        WorkerSessionState::Exited,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let mut worker = attach_worker(&f, "session-a").await;
+                    let task_before = f.repo.task_get(&f.task.id).await.unwrap();
+                    f.scheduler.sweep_timeout_worker_cleanups().await;
+                    assert!(!worker.wait().await.unwrap().success());
+                    assert_eq!(
+                        f.repo
+                            .session_get(&WorkerSessionId::from("session-a"))
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .state,
+                        WorkerSessionState::Exited,
+                        "retain the existing terminal observation"
+                    );
+                    assert_eq!(f.lease_state().await, "released");
+                    assert!(f.marker().await.is_none());
+                    assert_eq!(f.repo.task_get(&f.task.id).await.unwrap(), task_before);
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }

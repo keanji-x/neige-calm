@@ -20,8 +20,6 @@ async fn ready_managed_worker_admission_releases_writer_during_clean_check() {
 }
 
 async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) {
-    use calm_server::db::sqlite::begin_immediate_tx;
-
     let world = Arc::new(if managed {
         managed_world().await
     } else {
@@ -63,8 +61,11 @@ async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) 
     let bytes = std::fs::read(&tracked).unwrap();
     tokio::time::sleep(Duration::from_millis(1100)).await;
     std::fs::write(tracked, bytes).unwrap();
-    sqlx::query("CREATE TABLE worker_writer_probe (value INTEGER NOT NULL)")
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE worker_writer_probe (value INTEGER NOT NULL)",
+        ))
         .await
         .unwrap();
 
@@ -81,45 +82,55 @@ async fn assert_writer_before_filter_release(kind: &'static str, managed: bool) 
     .await
     .expect("real worker admission reached the clean filter");
     let pool = fx.db();
-    let mut writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, calm_server::error::CalmError>(())
-    });
-    // This bound is far shorter than the production clean-check budget. Timeout cancellation
-    // of the Git command must not masquerade as releasing a writer before the filter release.
-    let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
-    assert!(!release.exists());
-    // Release and drain before asserting so the expected red run leaves no blocked subprocess.
-    std::fs::write(&release, "release").unwrap();
-    let started = tokio::time::timeout(WAIT, admission)
-        .await
-        .expect("worker admission completed after filter release")
-        .unwrap();
-    if committed_before_release.is_err() {
-        tokio::time::timeout(Duration::from_secs(10), writer)
+
+    {
+
+        let mut writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await?;
+            sqlx::query("INSERT INTO worker_writer_probe(value) VALUES (1)")
+                .execute(&mut **tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, calm_server::error::CalmError>(())
+
+        })).await.expect("independent write operation")
+});
+        // This bound is far shorter than the production clean-check budget. Timeout cancellation
+        // of the Git command must not masquerade as releasing a writer before the filter release.
+        let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        assert!(!release.exists());
+        // Release and drain before asserting so the expected red run leaves no blocked subprocess.
+        std::fs::write(&release, "release").unwrap();
+        let started = tokio::time::timeout(WAIT, admission)
             .await
-            .expect("writer finished after filter release")
-            .unwrap()
+            .expect("worker admission completed after filter release")
             .unwrap();
-    }
-    git(
-        &fx.worktree,
-        &["config", "--unset", "filter.workerbarrier.clean"],
-    );
-    assert_eq!(started.cwd, fx.worktree);
-    assert!(
-        matches!(committed_before_release, Ok(Ok(Ok(())))),
-        "worker admission held the DB writer while Git was blocked: {committed_before_release:?}"
-    );
-    let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_writer_probe")
-        .fetch_one(&fx.pool())
-        .await
-        .unwrap();
-    assert_eq!(writes, 1);
+        if committed_before_release.is_err() {
+            tokio::time::timeout(Duration::from_secs(10), writer)
+                .await
+                .expect("writer finished after filter release")
+                .unwrap()
+                .unwrap();
+        }
+        git(
+            &fx.worktree,
+            &["config", "--unset", "filter.workerbarrier.clean"],
+        );
+        assert_eq!(started.cwd, fx.worktree);
+        assert!(
+            matches!(committed_before_release, Ok(Ok(Ok(())))),
+            "worker admission held the DB writer while Git was blocked: {committed_before_release:?}"
+        );
+        let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM worker_writer_probe")
+            .fetch_one(&fx.pool())
+            .await
+            .unwrap();
+        assert_eq!(writes, 1);
+
+
+}
 }
 
 struct CleanBarrier {
@@ -250,10 +261,13 @@ async fn worker_discards_obsolete_declared_head_error_and_reprepares() {
             fx.table_count("cards").await,
             fx.table_count("worker_sessions").await,
         );
-        sqlx::query("UPDATE tasks SET head=?1 WHERE id=?2")
-            .bind(&actual)
-            .bind(&task.id)
-            .execute(&fx.pool())
+        (fx.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET head=?1 WHERE id=?2")
+                    .bind(&actual)
+                    .bind(&task.id),
+            )
             .await
             .unwrap();
         assert_eq!(fx.table_count("workspace_leases").await, 0);
@@ -302,8 +316,8 @@ async fn worker_claim_replacement_prevents_publication_and_wait_reclaims_after_e
             .await
             .unwrap()
             .unwrap();
-        sqlx::query("UPDATE operations SET lease_owner='replacement-worker-claim', lease_until_ms=?1 WHERE id=?2")
-            .bind(calm_server::model::now_ms() + 60_000).bind(&op.id).execute(&fx.pool()).await.unwrap();
+        (fx.db()).writer().execute(sqlx::query("UPDATE operations SET lease_owner='replacement-worker-claim', lease_until_ms=?1 WHERE id=?2")
+            .bind(calm_server::model::now_ms() + 60_000).bind(&op.id)).await.unwrap();
         barrier.release();
         let guard = tokio::time::timeout(WAIT, fx.runtime.lock_for_track_delete_for_test())
             .await
@@ -323,10 +337,13 @@ async fn worker_claim_replacement_prevents_publication_and_wait_reclaims_after_e
         assert_eq!(fx.table_count("cards").await, before.0);
         assert_eq!(fx.table_count("worker_sessions").await, before.1);
         assert_eq!(fx.table_count("workspace_leases").await, 0);
-        sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
-            .bind(calm_server::model::now_ms() - 1)
-            .bind(&op.id)
-            .execute(&fx.pool())
+        (fx.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+                    .bind(calm_server::model::now_ms() - 1)
+                    .bind(&op.id),
+            )
             .await
             .unwrap();
         drop(guard);
@@ -359,81 +376,91 @@ async fn obsolete_worker_task_or_allocation_publishes_no_prepared_rows() {
             });
             barrier.wait().await;
             let task = current(&fx.boot, "obsolete-race").await;
-            let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
+            let write_db = (fx.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        if change == "context" {
+                            sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
+                                .bind(calm_server::model::now_ms())
+                                .bind(&task.id)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                        } else {
+                            // A legitimate generation-2 allocation requires a failed predecessor. Preserve
+                            // all immutable allocation triggers; the new allocation need not have a task row.
+                            sqlx::query(
+                                "UPDATE tasks SET status='failed', finished_at_ms=?1 WHERE id=?2",
+                            )
+                            .bind(calm_server::model::now_ms())
+                            .bind(&task.id)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                            let origin = TaskAttemptOrigin::Recovery {
+                                previous_attempt_id: task.id.clone(),
+                                idempotency_key: "new-generation".into(),
+                                request_fingerprint: "worker-race-recovery".into(),
+                                reason: "explicit recovery fixture".into(),
+                                actor: calm_server::ids::ActorId::User,
+                                constraint: TaskRecoveryConstraint::V1 {
+                                    refs: vec![calm_types::event::TaskContextRef {
+                                        track_id: fx.track().to_string().into(),
+                                        block_id: "worker-race-root".into(),
+                                        rev: 1,
+                                        hash: "0".repeat(64),
+                                        is_root: true,
+                                    }],
+                                    spawn: TASK_IN_TRACK_ROUTE.into(),
+                                    declared_by: "user".into(),
+                                },
+                            };
+                            sqlx::query(include_str!(
+                                "../../fixtures/worker_recovery_allocation.sql"
+                            ))
+                            .bind(format!("{}:generation-2", task.id))
+                            .bind(&task.track_id)
+                            .bind(&task.key)
+                            .bind(serde_json::to_string(&origin).unwrap())
+                            .bind(calm_server::model::now_ms())
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                        }
+                        tx.commit().await.unwrap();
+                        assert_eq!(fx.table_count("workspace_leases").await, 0);
+                        barrier.release();
+                        declaration.await.unwrap();
+                        let guard =
+                            tokio::time::timeout(WAIT, fx.runtime.lock_for_track_delete_for_test())
+                                .await
+                                .unwrap();
+                        let op = fx
+                            .runtime
+                            .find_by_kind_and_idempotency(&format!("{kind}-worker"), &task.id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(
+                            op.phase.tag(),
+                            calm_server::operation::PhaseTag::Failed,
+                            "obsolete worker must refuse: {op:?}"
+                        );
+                        assert!(
+                            op.tx_output.is_none(),
+                            "obsolete preparation cannot publish its checkpoint"
+                        );
+                        assert_eq!(fx.table_count("cards").await, before.0);
+                        assert_eq!(fx.table_count("worker_sessions").await, before.1);
+                        assert_eq!(fx.table_count("workspace_leases").await, 0);
+                        drop(guard);
+                    })
+                })
                 .await
-                .unwrap();
-            if change == "context" {
-                sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
-                    .bind(calm_server::model::now_ms())
-                    .bind(&task.id)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-            } else {
-                // A legitimate generation-2 allocation requires a failed predecessor. Preserve
-                // all immutable allocation triggers; the new allocation need not have a task row.
-                sqlx::query("UPDATE tasks SET status='failed', finished_at_ms=?1 WHERE id=?2")
-                    .bind(calm_server::model::now_ms())
-                    .bind(&task.id)
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                let origin = TaskAttemptOrigin::Recovery {
-                    previous_attempt_id: task.id.clone(),
-                    idempotency_key: "new-generation".into(),
-                    request_fingerprint: "worker-race-recovery".into(),
-                    reason: "explicit recovery fixture".into(),
-                    actor: calm_server::ids::ActorId::User,
-                    constraint: TaskRecoveryConstraint::V1 {
-                        refs: vec![calm_types::event::TaskContextRef {
-                            track_id: fx.track().to_string().into(),
-                            block_id: "worker-race-root".into(),
-                            rev: 1,
-                            hash: "0".repeat(64),
-                            is_root: true,
-                        }],
-                        spawn: TASK_IN_TRACK_ROUTE.into(),
-                        declared_by: "user".into(),
-                    },
-                };
-                sqlx::query(include_str!(
-                    "../../fixtures/worker_recovery_allocation.sql"
-                ))
-                .bind(format!("{}:generation-2", task.id))
-                .bind(&task.track_id)
-                .bind(&task.key)
-                .bind(serde_json::to_string(&origin).unwrap())
-                .bind(calm_server::model::now_ms())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-            }
-            tx.commit().await.unwrap();
-            assert_eq!(fx.table_count("workspace_leases").await, 0);
-            barrier.release();
-            declaration.await.unwrap();
-            let guard = tokio::time::timeout(WAIT, fx.runtime.lock_for_track_delete_for_test())
-                .await
-                .unwrap();
-            let op = fx
-                .runtime
-                .find_by_kind_and_idempotency(&format!("{kind}-worker"), &task.id)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                op.phase.tag(),
-                calm_server::operation::PhaseTag::Failed,
-                "obsolete worker must refuse: {op:?}"
-            );
-            assert!(
-                op.tx_output.is_none(),
-                "obsolete preparation cannot publish its checkpoint"
-            );
-            assert_eq!(fx.table_count("cards").await, before.0);
-            assert_eq!(fx.table_count("worker_sessions").await, before.1);
-            assert_eq!(fx.table_count("workspace_leases").await, 0);
-            drop(guard);
+                .expect("independent write operation")
         }
     }
 }

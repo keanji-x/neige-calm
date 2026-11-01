@@ -362,14 +362,15 @@ async fn compact_request_retry_preserves_settlement_until_wake_commits() {
     )
     .await
     .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER compact_wake_fail BEFORE INSERT ON events
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER compact_wake_fail BEFORE INSERT ON events
         WHEN NEW.kind='track.wake_requested'
         BEGIN SELECT RAISE(ABORT,'compact wake blocked'); END",
-    )
-    .execute(f.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(
         on_notification(
             &f.harness.inner,
@@ -396,8 +397,9 @@ async fn compact_request_retry_preserves_settlement_until_wake_commits() {
         },
         "do not replace an uncommitted settle notice"
     );
-    sqlx::query("DROP TRIGGER compact_wake_fail")
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER compact_wake_fail"))
         .await
         .unwrap();
     self_compact::tick(&f.harness.inner, true).await.unwrap();

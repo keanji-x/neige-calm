@@ -63,15 +63,18 @@ async fn initial_input_receipt_legacy_and_corrupt_journals_never_manufacture_acc
     let card = created["id"].as_str().unwrap();
     let uri = format!("/api/tracks/{track}/conversations/{card}/initial-input");
     // This is a historical journal shape, not a fixture that invents a receipt from a queue.
-    sqlx::query(concat!(
-        "UPDATE operations SET tx_output_json = ",
-        "json_remove(tx_output_json, '$.data.initial_input_receipt') ",
-        "WHERE idempotency_key = ?1"
-    ))
-    .bind(&key)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE operations SET tx_output_json = ",
+                "json_remove(tx_output_json, '$.data.initial_input_receipt') ",
+                "WHERE idempotency_key = ?1"
+            ))
+            .bind(&key),
+        )
+        .await
+        .unwrap();
     let (status, replay) = b
         .create_internal_conversation(&track, "journal", "journal words")
         .await;
@@ -81,16 +84,19 @@ async fn initial_input_receipt_legacy_and_corrupt_journals_never_manufacture_acc
         b.request("GET", &uri, Some("journal"), None).await.1,
         json!({"kind":"unavailable","reason":"legacy-operation","receipt":null})
     );
-    sqlx::query(concat!(
-        "UPDATE operations SET tx_output_json = ",
-        "json_set(tx_output_json, '$.data.initial_input_receipt', json(?2)) ",
-        "WHERE idempotency_key = ?1"
-    ))
-    .bind(&key)
-    .bind(json!({"version":"unknown-version"}).to_string())
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE operations SET tx_output_json = ",
+                "json_set(tx_output_json, '$.data.initial_input_receipt', json(?2)) ",
+                "WHERE idempotency_key = ?1"
+            ))
+            .bind(&key)
+            .bind(json!({"version":"unknown-version"}).to_string()),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         b.request("GET", &uri, Some("journal"), None).await.1,
         json!({"kind":"unavailable","reason":"integrity","receipt":null})
@@ -103,16 +109,19 @@ async fn initial_input_receipt_legacy_and_corrupt_journals_never_manufacture_acc
     ] {
         let mut receipt = created["initialInput"]["receipt"].clone();
         receipt[field] = invalid;
-        sqlx::query(concat!(
-            "UPDATE operations SET tx_output_json = ",
-            "json_set(tx_output_json, '$.data.initial_input_receipt', json(?2)) ",
-            "WHERE idempotency_key = ?1"
-        ))
-        .bind(&key)
-        .bind(receipt.to_string())
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
+        (b.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(concat!(
+                    "UPDATE operations SET tx_output_json = ",
+                    "json_set(tx_output_json, '$.data.initial_input_receipt', json(?2)) ",
+                    "WHERE idempotency_key = ?1"
+                ))
+                .bind(&key)
+                .bind(receipt.to_string()),
+            )
+            .await
+            .unwrap();
         assert_eq!(
             b.request("GET", &uri, Some("journal"), None).await.1,
             json!({"kind":"unavailable","reason":"integrity","receipt":null}),
@@ -210,8 +219,8 @@ async fn initial_input_receipt_observation_waits_for_the_entire_issuance_command
         .unwrap()
         .checked_add(1)
         .unwrap();
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json, '$.data.initial_input_receipt.entryRev', ?2) WHERE idempotency_key=?1")
-        .bind(key).bind(i64::try_from(minimum).unwrap()).execute(b.repo.pool()).await.unwrap();
+    (b.repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json, '$.data.initial_input_receipt.entryRev', ?2) WHERE idempotency_key=?1")
+        .bind(key).bind(i64::try_from(minimum).unwrap())).await.unwrap();
     let (status, lower) = b.request("GET", &uri, Some("held-issue"), None).await;
     assert_eq!(status, StatusCode::OK, "{lower}");
     assert_eq!(lower["kind"], "unavailable", "{lower}");

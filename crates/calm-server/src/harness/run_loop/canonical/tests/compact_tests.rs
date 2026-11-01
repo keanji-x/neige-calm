@@ -337,27 +337,36 @@ async fn canonical_codex_compact_refused_native_activity_cannot_become_maintenan
 }
 
 pub(super) async fn accept_during_compact(fx: &Fixture) -> CanonicalHarnessSnapshot {
-    let mut tx = begin_immediate_tx(fx.original.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(
-        &mut tx,
-        fx.harness.inner.card_id.as_str(),
-        &fx.harness.inner.worker_session_id,
-    )
-    .await
-    .unwrap();
-    crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "pending during maintenance".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    fx.frame().await
+    let write_db = (fx.original.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier = current_input_carrier_tx(
+                    &mut tx,
+                    fx.harness.inner.card_id.as_str(),
+                    &fx.harness.inner.worker_session_id,
+                )
+                .await
+                .unwrap();
+                crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "pending during maintenance".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                fx.frame().await
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

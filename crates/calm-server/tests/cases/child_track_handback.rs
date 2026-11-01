@@ -17,15 +17,18 @@ async fn child_track_binding(boot: &Boot) -> String {
         .await
         .unwrap();
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-        .bind(parent.id.as_str())
-        .bind(boot.track_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(parent.id.as_str())
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,child_track_id, \
+    (pool).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,child_track_id, \
         created_at_ms,updated_at_ms) VALUES('assignment',?1,'assignment','codex','goal','{}','running','sub-track',?2,1,1)")
-        .bind(parent.id.as_str()).bind(boot.track_id.as_str()).execute(pool.writer_pool()).await.unwrap();
+        .bind(parent.id.as_str()).bind(boot.track_id.as_str())).await.unwrap();
     calm_server::db::write_with_event_typed(
         boot.repo.as_ref(),
         ActorId::KernelDispatcher,
@@ -132,28 +135,37 @@ async fn child_track_handback_fails_parent_leaves_child_open_and_fences_pending_
     let record: Value = serde_json::from_str(&record.content).unwrap();
     assert_eq!(record["events"]["failed"]["payload"]["details"], result);
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = db.writer_pool().begin().await.unwrap();
-    assert_eq!(
-        calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, "left", 2, &[], false)
-            .await
-            .unwrap(),
-        0
-    );
-    tx.rollback().await.unwrap();
-    assert!(
-        call_tool(
-            &boot,
-            "neige_task_fail",
-            planner_identity(&boot),
-            json!({"attempt_id":"assignment","reason":"again"})
-        )
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, "left", 2, &[], false)
+                        .await
+                        .unwrap(),
+                    0
+                );
+                tx.rollback().await.unwrap();
+                assert!(
+                    call_tool(
+                        &boot,
+                        "neige_task_fail",
+                        planner_identity(&boot),
+                        json!({"attempt_id":"assignment","reason":"again"})
+                    )
+                    .await
+                    .is_err()
+                );
+                assert!(
+                    rx.try_recv().is_err(),
+                    "duplicate handback must not emit an event"
+                );
+            })
+        })
         .await
-        .is_err()
-    );
-    assert!(
-        rx.try_recv().is_err(),
-        "duplicate handback must not emit an event"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -190,21 +202,33 @@ async fn child_track_claim_requires_live_parent_binding() {
     let boot = boot().await;
     child_track_binding(&boot).await;
     let db = boot.repo.sqlite_db().unwrap();
-    for (id, active) in [("before", true), ("after", false)] {
-        insert_task(&boot, id, id, "pending", None).await;
-        if !active {
-            sqlx::query("UPDATE tasks SET status='failed' WHERE id='assignment'")
-                .execute(db.writer_pool())
-                .await
-                .unwrap();
-        }
-        let mut tx = db.writer_pool().begin().await.unwrap();
-        let changed = calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, id, 2, &[], false)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(changed, u64::from(active), "claim {id}");
-    }
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for (id, active) in [("before", true), ("after", false)] {
+                    insert_task(&boot, id, id, "pending", None).await;
+                    if !active {
+                        (db).writer()
+                            .execute(sqlx::query(
+                                "UPDATE tasks SET status='failed' WHERE id='assignment'",
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    let mut tx = write_session.begin().await.unwrap();
+                    let changed =
+                        calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, id, 2, &[], false)
+                            .await
+                            .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(changed, u64::from(active), "claim {id}");
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -299,9 +323,12 @@ async fn child_track_handback_parent_can_close_without_admin_and_foreign_cannot(
             .is_some()
     );
     // Repoint the child edge: a non-parent cannot use the parent exception, even in the same Area.
-    sqlx::query("UPDATE tracks SET closed_at=NULL,parent_track_id=NULL WHERE id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=NULL,parent_track_id=NULL WHERE id=?1")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -349,13 +376,14 @@ async fn child_track_handback_concurrent_calls_emit_one_terminal_event() {
 async fn child_track_handback_event_write_failure_rolls_back_parent_flip() {
     let boot = boot().await;
     child_track_binding(&boot).await;
-    sqlx::query(
-        "CREATE TRIGGER refuse_handback_event BEFORE INSERT ON events \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_handback_event BEFORE INSERT ON events \
         WHEN NEW.kind='task.failed' BEGIN SELECT RAISE(ABORT,'event injection'); END",
-    )
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let mut rx = boot.ctx.events.subscribe();
     let error = call_tool(
         &boot,
@@ -384,62 +412,84 @@ async fn child_track_handback_and_claim_serialize_at_writer() {
     child_track_binding(&boot).await;
     insert_task(&boot, "race-work", "race-work", "pending", None).await;
     let db = boot.repo.sqlite_db().unwrap();
-    let claim = async {
-        // Production's claim primitive under the same IMMEDIATE writer fence as scheduler dispatch.
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&db)
-            .await
-            .unwrap();
-        let changed =
-            calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, "race-work", 2, &[], false)
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        changed
-    };
-    let (handback, changed) = tokio::join!(
-        call_tool(
-            &boot,
-            "neige_task_fail",
-            planner_identity(&boot),
-            json!({"attempt_id":"assignment","reason":"race"})
-        ),
-        claim,
-    );
-    let parent = boot.repo.task_get("assignment").await.unwrap().unwrap();
-    match handback {
-        Ok(_) => {
-            assert_eq!(changed, 0);
-            assert_eq!(parent.status, calm_server::model::TaskStatus::Failed);
-        }
-        Err(error) => {
-            assert_eq!(error.code, -32409);
-            assert_eq!(changed, 1);
-            assert_eq!(parent.status, calm_server::model::TaskStatus::Running);
-            sqlx::query("UPDATE tasks SET status='done' WHERE id='race-work'")
-                .execute(db.writer_pool())
-                .await
-                .unwrap();
-            call_tool(
-                &boot,
-                "neige_task_fail",
-                planner_identity(&boot),
-                json!({"attempt_id":"assignment","reason":"settled race"}),
-            )
-            .await
-            .unwrap();
-        }
-    }
-    insert_task(&boot, "race-after", "race-after", "pending", None).await;
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let claim = async {
+                    // Production's claim primitive under the same IMMEDIATE writer fence as scheduler dispatch.
+                    let write_db = (db).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await.unwrap();
+                    let changed = calm_truth::db::sqlite::task_claim_pending_tx(
+                        &mut tx,
+                        "race-work",
+                        2,
+                        &[],
+                        false,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    changed
+
+        })).await.expect("independent write operation")
+};
+                let (handback, changed) = tokio::join!(
+                    call_tool(
+                        &boot,
+                        "neige_task_fail",
+                        planner_identity(&boot),
+                        json!({"attempt_id":"assignment","reason":"race"})
+                    ),
+                    claim,
+                );
+                let parent = boot.repo.task_get("assignment").await.unwrap().unwrap();
+                match handback {
+                    Ok(_) => {
+                        assert_eq!(changed, 0);
+                        assert_eq!(parent.status, calm_server::model::TaskStatus::Failed);
+                    }
+                    Err(error) => {
+                        assert_eq!(error.code, -32409);
+                        assert_eq!(changed, 1);
+                        assert_eq!(parent.status, calm_server::model::TaskStatus::Running);
+                        (db).writer()
+                            .execute(sqlx::query(
+                                "UPDATE tasks SET status='done' WHERE id='race-work'",
+                            ))
+                            .await
+                            .unwrap();
+                        call_tool(
+                            &boot,
+                            "neige_task_fail",
+                            planner_identity(&boot),
+                            json!({"attempt_id":"assignment","reason":"settled race"}),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                }
+                insert_task(&boot, "race-after", "race-after", "pending", None).await;
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    calm_truth::db::sqlite::task_claim_pending_tx(
+                        &mut tx,
+                        "race-after",
+                        3,
+                        &[],
+                        false
+                    )
+                    .await
+                    .unwrap(),
+                    0
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        calm_truth::db::sqlite::task_claim_pending_tx(&mut tx, "race-after", 3, &[], false)
-            .await
-            .unwrap(),
-        0
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -574,9 +624,11 @@ async fn child_track_reports_reject_unbound_callers_and_ended_bindings() {
             let mut identity = planner_identity(&boot);
             match case {
                 "root" => {
-                    sqlx::query("UPDATE tracks SET parent_track_id=NULL WHERE id=?1")
-                        .bind(boot.track_id.as_str())
-                        .execute(db.writer_pool())
+                    (db).writer()
+                        .execute(
+                            sqlx::query("UPDATE tracks SET parent_track_id=NULL WHERE id=?1")
+                                .bind(boot.track_id.as_str()),
+                        )
                         .await
                         .unwrap();
                 }
@@ -584,15 +636,19 @@ async fn child_track_reports_reject_unbound_callers_and_ended_bindings() {
                     identity = parent_identity(&boot, &parent).await;
                 }
                 "foreign" | "sibling" => {
-                    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
+                    (db).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
                         VALUES('other',?1,'other',1,1,1,?2)")
-                        .bind(boot.area_id.as_str()).bind(if case == "sibling" { Some(parent.as_str()) } else { None }).execute(db.writer_pool()).await.unwrap();
+                        .bind(boot.area_id.as_str()).bind(if case == "sibling" { Some(parent.as_str()) } else { None })).await.unwrap();
                     identity = parent_identity(&boot, "other").await;
                 }
                 "retired" => {
-                    sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id=?1")
-                        .bind(PLANNER_SESSION_ID)
-                        .execute(db.writer_pool())
+                    (db).writer()
+                        .execute(
+                            sqlx::query(
+                                "UPDATE worker_sessions SET state='superseded' WHERE id=?1",
+                            )
+                            .bind(PLANNER_SESSION_ID),
+                        )
                         .await
                         .unwrap();
                     crate::support::planner::start_session(
@@ -606,15 +662,19 @@ async fn child_track_reports_reject_unbound_callers_and_ended_bindings() {
                     identity.role = CardRole::Assistant;
                 }
                 "ended" => {
-                    sqlx::query("UPDATE tasks SET status='done' WHERE id='assignment'")
-                        .execute(db.writer_pool())
+                    (db).writer()
+                        .execute(sqlx::query(
+                            "UPDATE tasks SET status='done' WHERE id='assignment'",
+                        ))
                         .await
                         .unwrap();
                 }
                 "closed" => {
-                    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
-                        .bind(boot.track_id.as_str())
-                        .execute(db.writer_pool())
+                    (db).writer()
+                        .execute(
+                            sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1")
+                                .bind(boot.track_id.as_str()),
+                        )
                         .await
                         .unwrap();
                 }
@@ -688,19 +748,21 @@ async fn child_track_done_atomic_result_and_event_rollback() {
         let parent = child_track_binding(&boot).await;
         let db = boot.repo.sqlite_db().unwrap();
         if injection == Some("missing-report") {
-            sqlx::query("DELETE FROM cards WHERE track_id=?1 AND kind='track-report'")
-                .bind(boot.track_id.as_str())
-                .execute(db.writer_pool())
+            (db).writer()
+                .execute(
+                    sqlx::query("DELETE FROM cards WHERE track_id=?1 AND kind='track-report'")
+                        .bind(boot.track_id.as_str()),
+                )
                 .await
                 .unwrap();
         } else if let Some(kind) = injection {
-            sqlx::query(&format!(
-                "CREATE TRIGGER refuse_result BEFORE INSERT ON events \
+            (db).writer()
+                .execute(sqlx::query(&format!(
+                    "CREATE TRIGGER refuse_result BEFORE INSERT ON events \
                 WHEN NEW.kind='{kind}' BEGIN SELECT RAISE(ABORT,'event injection'); END"
-            ))
-            .execute(db.writer_pool())
-            .await
-            .unwrap();
+                )))
+                .await
+                .unwrap();
         }
         let expected = if injection.is_none() {
             let report = boot
@@ -714,10 +776,12 @@ async fn child_track_done_atomic_result_and_event_rollback() {
             let payload = calm_server::track_report::TrackReportPayload::initial();
             let mut doc = calm_server::track_report_doc::ReportDoc::from_payload(&payload);
             doc.increment_doc_rev().unwrap();
-            sqlx::query("UPDATE cards SET body_crdt=?1 WHERE id=?2")
-                .bind(doc.to_bytes())
-                .bind(report.id.as_str())
-                .execute(db.writer_pool())
+            (db).writer()
+                .execute(
+                    sqlx::query("UPDATE cards SET body_crdt=?1 WHERE id=?2")
+                        .bind(doc.to_bytes())
+                        .bind(report.id.as_str()),
+                )
                 .await
                 .unwrap();
             crate::support::child_track::seed_candidates(

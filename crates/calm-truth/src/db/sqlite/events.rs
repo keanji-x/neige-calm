@@ -7,7 +7,7 @@ use sqlx::Transaction;
 use std::collections::HashMap;
 
 use super::SqlxRepo;
-use super::begin_immediate_tx;
+
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{
     RepoEventWrite, TrackEvent, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn,
@@ -269,11 +269,19 @@ impl SqlxRepo {
         correlation: Option<&str>,
         event: &Event,
     ) -> Result<i64> {
-        let mut tx = self.db.read_pool().begin().await?;
-        let authorized = gated::ungated_fixture_replay(&actor, &scope, event);
-        let id = Self::event_append_in_tx(&mut tx, &authorized, correlation).await?;
-        tx.commit().await?;
-        Ok(id)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let authorized = gated::ungated_fixture_replay(&actor, &scope, event);
+                    let id = Self::event_append_in_tx(&mut tx, &authorized, correlation).await?;
+                    tx.commit().await?;
+                    Ok(id)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 }
 
@@ -350,63 +358,72 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventFn<'_>,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
-        let event = match fut.await {
-            Ok(ev) => ev,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        // The gate runs after the closure produces an event so the closure can mint per-row roles through the cache first.
-        let authorized = match gated::authorize_with_caches(
-            &mut tx,
-            &actor,
-            &scope,
-            &event,
-            write.role_cache(),
-            write.area_cache(),
-        )
-        .await
-        {
-            Ok(authorized) => authorized,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        let event_id = match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        if let Some(track_id) = scope.track_id()
-            && let Err(e) = track_vcs::commit_in_tx(
-                &mut tx,
-                track_id,
-                &actor,
-                event_id,
-                &event,
-                track_vcs::MANIFEST_SCHEMA_VERSION,
-            )
-            .await
-        {
-            let _ = tx.rollback().await;
-            return Err(e);
-        }
-        tx.commit().await?;
-        // Commit-then-emit invariant: broadcast only after commit.
-        bus.emit_envelope(BroadcastEnvelope {
-            id: event_id,
-            event_version: SYNC_EVENT_VERSION,
-            actor,
-            scope,
-            event,
-        });
-        Ok(event_id)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let fut: BoxFuture<'_, Result<Event>> = f(&mut tx);
+                    let event = match fut.await {
+                        Ok(ev) => ev,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    // The gate runs after the closure produces an event so the closure can mint per-row roles through the cache first.
+                    let authorized = match gated::authorize_with_caches(
+                        &mut tx,
+                        &actor,
+                        &scope,
+                        &event,
+                        write.role_cache(),
+                        write.area_cache(),
+                    )
+                    .await
+                    {
+                        Ok(authorized) => authorized,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    let event_id =
+                        match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = tx.rollback().await;
+                                return Err(e);
+                            }
+                        };
+                    if let Some(track_id) = scope.track_id()
+                        && let Err(e) = track_vcs::commit_in_tx(
+                            &mut tx,
+                            track_id,
+                            &actor,
+                            event_id,
+                            &event,
+                            track_vcs::MANIFEST_SCHEMA_VERSION,
+                        )
+                        .await
+                    {
+                        let _ = tx.rollback().await;
+                        return Err(e);
+                    }
+                    tx.commit().await?;
+                    // Commit-then-emit invariant: broadcast only after commit.
+                    bus.emit_envelope(BroadcastEnvelope {
+                        id: event_id,
+                        event_version: SYNC_EVENT_VERSION,
+                        actor,
+                        scope,
+                        event,
+                    });
+                    Ok(event_id)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn write_with_events(
@@ -418,89 +435,97 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
-        let events = match fut.await {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        // At least one event per tx; an empty vec is a caller bug, so the closure's writes disappear with the rollback.
-        if events.is_empty() {
-            let _ = tx.rollback().await;
-            return Err(CalmError::Internal(
-                "write_with_events: closure returned an empty event batch".into(),
-            ));
-        }
-        // Per-event gate; the cache is already write-through for any role insert the closure performed.
-        let mut authorized_batch = Vec::with_capacity(events.len());
-        for (scope, event) in &events {
-            match gated::authorize_with_caches(
-                &mut tx,
-                &actor,
-                scope,
-                event,
-                write.role_cache(),
-                write.area_cache(),
-            )
-            .await
-            {
-                Ok(authorized) => authorized_batch.push(authorized),
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            }
-        }
-        let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
-        for authorized in &authorized_batch {
-            match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
-                Ok(id) => event_ids.push(id),
-                Err(e) => {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            }
-        }
-        let mut track_events = HashMap::<TrackId, (i64, Vec<Event>)>::new();
-        for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
-            if let Some(track_id) = scope.track_id() {
-                let entry = track_events
-                    .entry(track_id.clone())
-                    .or_insert_with(|| (*event_id, Vec::new()));
-                entry.0 = *event_id;
-                entry.1.push(event.clone());
-            }
-        }
-        for (track_id, (event_id, events_for_track)) in &track_events {
-            if let Err(e) = track_vcs::commit_events_in_tx(
-                &mut tx,
-                track_id,
-                &actor,
-                *event_id,
-                events_for_track,
-                track_vcs::MANIFEST_SCHEMA_VERSION,
-            )
-            .await
-            {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        }
-        tx.commit().await?;
-        // Commit-then-emit invariant: broadcast in the order the closure produced.
-        for (id, (scope, event)) in event_ids.iter().zip(events) {
-            bus.emit_envelope(BroadcastEnvelope {
-                id: *id,
-                event_version: SYNC_EVENT_VERSION,
-                actor: actor.clone(),
-                scope,
-                event,
-            });
-        }
-        Ok(event_ids)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let fut: BoxFuture<'_, Result<Vec<(EventScope, Event)>>> = f(&mut tx);
+                    let events = match fut.await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    // At least one event per tx; an empty vec is a caller bug, so the closure's writes disappear with the rollback.
+                    if events.is_empty() {
+                        let _ = tx.rollback().await;
+                        return Err(CalmError::Internal(
+                            "write_with_events: closure returned an empty event batch".into(),
+                        ));
+                    }
+                    // Per-event gate; the cache is already write-through for any role insert the closure performed.
+                    let mut authorized_batch = Vec::with_capacity(events.len());
+                    for (scope, event) in &events {
+                        match gated::authorize_with_caches(
+                            &mut tx,
+                            &actor,
+                            scope,
+                            event,
+                            write.role_cache(),
+                            write.area_cache(),
+                        )
+                        .await
+                        {
+                            Ok(authorized) => authorized_batch.push(authorized),
+                            Err(e) => {
+                                let _ = tx.rollback().await;
+                                return Err(e);
+                            }
+                        }
+                    }
+                    let mut event_ids: Vec<i64> = Vec::with_capacity(events.len());
+                    for authorized in &authorized_batch {
+                        match Self::event_append_in_tx(&mut tx, authorized, correlation).await {
+                            Ok(id) => event_ids.push(id),
+                            Err(e) => {
+                                let _ = tx.rollback().await;
+                                return Err(e);
+                            }
+                        }
+                    }
+                    let mut track_events = HashMap::<TrackId, (i64, Vec<Event>)>::new();
+                    for ((scope, event), event_id) in events.iter().zip(event_ids.iter()) {
+                        if let Some(track_id) = scope.track_id() {
+                            let entry = track_events
+                                .entry(track_id.clone())
+                                .or_insert_with(|| (*event_id, Vec::new()));
+                            entry.0 = *event_id;
+                            entry.1.push(event.clone());
+                        }
+                    }
+                    for (track_id, (event_id, events_for_track)) in &track_events {
+                        if let Err(e) = track_vcs::commit_events_in_tx(
+                            &mut tx,
+                            track_id,
+                            &actor,
+                            *event_id,
+                            events_for_track,
+                            track_vcs::MANIFEST_SCHEMA_VERSION,
+                        )
+                        .await
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    }
+                    tx.commit().await?;
+                    // Commit-then-emit invariant: broadcast in the order the closure produced.
+                    for (id, (scope, event)) in event_ids.iter().zip(events) {
+                        bus.emit_envelope(BroadcastEnvelope {
+                            id: *id,
+                            event_version: SYNC_EVENT_VERSION,
+                            actor: actor.clone(),
+                            scope,
+                            event,
+                        });
+                    }
+                    Ok(event_ids)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn write_with_actor_events(
@@ -511,26 +536,35 @@ impl RepoEventWrite for SqlxRepo {
         f: WriteWithActorEventsFn<'_>,
     ) -> Result<Vec<i64>> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
-        let events = match fut.await {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        let (event_ids, _commits) =
-            match append_actor_events_in_tx(&mut tx, correlation, write, &events).await {
-                Ok(value) => value,
-                Err(error) => {
-                    let _ = tx.rollback().await;
-                    return Err(error);
-                }
-            };
-        tx.commit().await?;
-        broadcast_actor_events(bus, &event_ids, events);
-        Ok(event_ids)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let fut: BoxFuture<'_, Result<Vec<(ActorId, EventScope, Event)>>> = f(&mut tx);
+                    let events = match fut.await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    let (event_ids, _commits) =
+                        match append_actor_events_in_tx(&mut tx, correlation, write, &events).await
+                        {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let _ = tx.rollback().await;
+                                return Err(error);
+                            }
+                        };
+                    tx.commit().await?;
+                    broadcast_actor_events(bus, &event_ids, events);
+                    Ok(event_ids)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn log_pure_event(
@@ -544,70 +578,87 @@ impl RepoEventWrite for SqlxRepo {
         event: Event,
     ) -> Result<i64> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
-        let authorized = match gated::authorize_with_caches(
-            &mut tx,
-            &actor,
-            &scope,
-            &event,
-            card_role_cache,
-            track_area_cache,
-        )
-        .await
-        {
-            Ok(authorized) => authorized,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        let event_id = match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        };
-        if let Some(track_id) = scope.track_id()
-            && let Err(e) = track_vcs::commit_in_tx(
-                &mut tx,
-                track_id,
-                &actor,
-                event_id,
-                &event,
-                track_vcs::MANIFEST_SCHEMA_VERSION,
-            )
-            .await
-        {
-            let _ = tx.rollback().await;
-            return Err(e);
-        }
-        tx.commit().await?;
-        bus.emit_envelope(BroadcastEnvelope {
-            id: event_id,
-            event_version: SYNC_EVENT_VERSION,
-            actor,
-            scope,
-            event,
-        });
-        Ok(event_id)
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    // Pure events have no entity write to populate the cache from, so the role lookup uses the cache's current contents.
+                    let authorized = match gated::authorize_with_caches(
+                        &mut tx,
+                        &actor,
+                        &scope,
+                        &event,
+                        card_role_cache,
+                        track_area_cache,
+                    )
+                    .await
+                    {
+                        Ok(authorized) => authorized,
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    };
+                    let event_id =
+                        match Self::event_append_in_tx(&mut tx, &authorized, correlation).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = tx.rollback().await;
+                                return Err(e);
+                            }
+                        };
+                    if let Some(track_id) = scope.track_id()
+                        && let Err(e) = track_vcs::commit_in_tx(
+                            &mut tx,
+                            track_id,
+                            &actor,
+                            event_id,
+                            &event,
+                            track_vcs::MANIFEST_SCHEMA_VERSION,
+                        )
+                        .await
+                    {
+                        let _ = tx.rollback().await;
+                        return Err(e);
+                    }
+                    tx.commit().await?;
+                    bus.emit_envelope(BroadcastEnvelope {
+                        id: event_id,
+                        event_version: SYNC_EVENT_VERSION,
+                        actor,
+                        scope,
+                        event,
+                    });
+                    Ok(event_id)
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     /// Event-less tx wrapper: commits on `Ok(())`, rolls back on `Err(_)`; no event row, no broadcast.
     async fn write_in_tx(&self, f: WriteInTxFn<'_>) -> Result<()> {
         // BEGIN IMMEDIATE takes the writer lock at tx start; deferred SELECT-then-UPDATE upgrades can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout does not cover.
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
-        match fut.await {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
-        }
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let fut: BoxFuture<'_, Result<()>> = f(&mut tx);
+                    match fut.await {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let _ = tx.rollback().await;
+                            return Err(e);
+                        }
+                    }
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn events_since(

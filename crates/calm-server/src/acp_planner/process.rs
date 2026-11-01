@@ -398,54 +398,68 @@ mod pump_tests {
         intent.metadata.program.args = vec!["-u".into(), "-c".into(), script.into()];
         intent.metadata.program.replay_bytes = 4 * 1024 * 1024;
         let id = intent.metadata.id.clone();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let ticket = execution.engine.admit(&mut tx, intent).await.unwrap();
+                    tx.commit().await.unwrap();
+                    execution.engine.drive(ticket.committed());
+                    crate::provider_execution::release::wait_spawned(&execution.engine, &id)
+                        .await
+                        .unwrap();
+                    let connection = Connection::new(
+                        crate::provider_execution::stdio::EngineStdio::new(
+                            (*execution.engine).clone(),
+                            id.clone(),
+                        ),
+                        crate::provider_execution::stdio::EngineStdio::new(
+                            (*execution.engine).clone(),
+                            id.clone(),
+                        ),
+                    );
+                    Peer {
+                        connection,
+                        execution,
+                        repo,
+                        id,
+                        _root: root,
+                    }
+                })
+            })
             .await
-            .unwrap();
-        let ticket = execution.engine.admit(&mut tx, intent).await.unwrap();
-        tx.commit().await.unwrap();
-        execution.engine.drive(ticket.committed());
-        crate::provider_execution::release::wait_spawned(&execution.engine, &id)
-            .await
-            .unwrap();
-        let connection = Connection::new(
-            crate::provider_execution::stdio::EngineStdio::new(
-                (*execution.engine).clone(),
-                id.clone(),
-            ),
-            crate::provider_execution::stdio::EngineStdio::new(
-                (*execution.engine).clone(),
-                id.clone(),
-            ),
-        );
-        Peer {
-            connection,
-            execution,
-            repo,
-            id,
-            _root: root,
-        }
+            .expect("independent write operation")
     }
     async fn cleanup(process: &mut Peer) {
         use workspace_runtime::execution::Desired;
         process.connection.client.close();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(process.repo.db())
+        let write_db = (process.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let ticket = process
+                        .execution
+                        .engine
+                        .request(&mut tx, &process.id, Desired::Stop)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    process.execution.engine.drive(ticket.committed());
+                    crate::provider_execution::wait_settled(
+                        &process.execution.engine,
+                        &process.id,
+                        Duration::from_secs(12),
+                    )
+                    .await
+                    .unwrap();
+                })
+            })
             .await
-            .unwrap();
-        let ticket = process
-            .execution
-            .engine
-            .request(&mut tx, &process.id, Desired::Stop)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        process.execution.engine.drive(ticket.committed());
-        crate::provider_execution::wait_settled(
-            &process.execution.engine,
-            &process.id,
-            Duration::from_secs(12),
-        )
-        .await
-        .unwrap();
+            .expect("independent write operation")
     }
 
     #[tokio::test]

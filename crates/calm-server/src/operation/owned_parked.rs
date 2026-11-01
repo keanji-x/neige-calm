@@ -26,25 +26,34 @@ pub(crate) fn reconcile<'a>(
             match outcome? {
                 ParkedRecovery::Complete(complete) => {
                     let (outcome, owner_event) = *complete;
-                    let mut tx = begin_immediate_tx(&pool).await?;
-                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-                    let completion = complete_parked_tx(&mut tx, &op.id, &outcome).await?;
-                    let mut events = Vec::new();
-                    if matches!(completion, ParkedCompletion::Completed(_)) {
-                        events = adapter.complete_owned_parked_tx(&mut tx, op).await?;
-                        if let Some(event) = super::settlement::append_result_event_tx(
-                            &mut tx,
-                            op,
-                            adapter,
-                            &super::TerminalOutcome::from(&outcome),
-                            owner_event,
-                        )
-                        .await?
-                        {
-                            events.push(event);
-                        }
-                    }
-                    tx.commit().await?;
+                    let (completion, events) = pool
+                        .writer()
+                        .with_writer(|write_session| {
+                            Box::pin(async move {
+                                let mut tx = write_session.begin().await?;
+                                super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                                let completion =
+                                    complete_parked_tx(&mut tx, &op.id, &outcome).await?;
+                                let mut events = Vec::new();
+                                if matches!(completion, ParkedCompletion::Completed(_)) {
+                                    events = adapter.complete_owned_parked_tx(&mut tx, op).await?;
+                                    if let Some(event) = super::settlement::append_result_event_tx(
+                                        &mut tx,
+                                        op,
+                                        adapter,
+                                        &super::TerminalOutcome::from(&outcome),
+                                        owner_event,
+                                    )
+                                    .await?
+                                    {
+                                        events.push(event);
+                                    }
+                                }
+                                tx.commit().await?;
+                                Ok::<_, CalmError>((completion, events))
+                            })
+                        })
+                        .await??;
                     for event in events {
                         ctx.events.emit_envelope(event);
                     }
@@ -73,7 +82,7 @@ pub(crate) fn reconcile<'a>(
                 .bind(format!("owned execution retained: {error}"))
                 .bind(crate::model::now_ms());
         }
-        query.execute(pool.writer_pool()).await?;
+        (pool).writer().execute(query).await?;
         result
     })
 }

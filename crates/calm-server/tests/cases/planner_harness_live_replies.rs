@@ -387,8 +387,9 @@ async fn a_delta_writes_no_row_no_event_and_no_snapshot() {
         "CREATE TRIGGER test_count_snapshot_writes AFTER UPDATE OF handle_state_json \
          ON worker_sessions BEGIN UPDATE test_snapshot_writes SET n = n + 1; END",
     ] {
-        sqlx::query(statement)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(statement))
             .await
             .unwrap();
     }
@@ -438,8 +439,9 @@ async fn a_delta_writes_no_row_no_event_and_no_snapshot() {
 }
 
 async fn rename_table(boot: &Boot, from: &str, to: &str) {
-    sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}"))
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}")))
         .await
         .unwrap();
 }

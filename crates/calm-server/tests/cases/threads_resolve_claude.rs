@@ -74,49 +74,67 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
 
 async fn create_claude_card(repo: &SqlxRepo, track_id: &str) -> String {
     let cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track_id.into(),
-            title: None,
-            kind: "claude".into(),
-            sort: None,
-            payload: json!({}),
-        },
-        CardRole::Worker,
-        true,
-        &cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    card.id.to_string()
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track_id.into(),
+                        title: None,
+                        kind: "claude".into(),
+                        sort: None,
+                        payload: json!({}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    &cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                card.id.to_string()
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn bind_claude_session(repo: &SqlxRepo, card_id: &str, session_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: Some(session_id.to_string()),
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::ClaudeCard,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: Some(session_id.to_string()),
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {

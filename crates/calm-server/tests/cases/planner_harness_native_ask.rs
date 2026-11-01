@@ -13,8 +13,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, session_prepare_deferred_planner_tx,
-    session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, session_prepare_deferred_planner_tx, session_start_runtime_tx,
 };
 use calm_server::event::{AskQuestion, Event, EventBus};
 use calm_server::harness::{
@@ -128,69 +127,79 @@ async fn rig(profile: Profile) -> Rig {
             WorkerSessionKind::ManagedAssistant,
         ),
     };
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload,
-        },
-        role,
-        true,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    let session_id = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.clone(),
-            card_id: card.id.to_string(),
-            kind,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(THREAD.into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(snapshot()).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload,
+                    },
+                    role,
+                    true,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                let session_id = new_id();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(THREAD.into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(snapshot()).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let events = EventBus::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let harness = run_harness(
-        &repo,
-        &events,
-        &role_cache,
-        &area_cache,
-        &daemon,
-        &session_id,
-        &card.id,
-        &track.id,
-    )
-    .await;
-    Rig {
-        repo,
-        events,
-        role_cache,
-        area_cache,
-        daemon,
-        harness,
-        session_id,
-        card: card.id,
-        track: track.id,
-    }
+                let events = EventBus::new();
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+                let harness = run_harness(
+                    &repo,
+                    &events,
+                    &role_cache,
+                    &area_cache,
+                    &daemon,
+                    &session_id,
+                    &card.id,
+                    &track.id,
+                )
+                .await;
+                Rig {
+                    repo,
+                    events,
+                    role_cache,
+                    area_cache,
+                    daemon,
+                    harness,
+                    session_id,
+                    card: card.id,
+                    track: track.id,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn snapshot() -> HarnessSnapshot {
@@ -463,19 +472,28 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
     assert_eq!(rig.asks().await.len(), 1);
     rig.harness.shutdown().await.unwrap();
 
-    let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
-    for (item, expect_ask) in [(ITEM_ID, false), ("call-another-item", true)] {
-        let asked = calm_server::ask::provider_ask_requested_tx(
-            &mut tx,
-            &rig.card,
-            captured_questions(),
-            item.to_string(),
-        )
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                for (item, expect_ask) in [(ITEM_ID, false), ("call-another-item", true)] {
+                    let asked = calm_server::ask::provider_ask_requested_tx(
+                        &mut tx,
+                        &rig.card,
+                        captured_questions(),
+                        item.to_string(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(asked.is_some(), expect_ask, "{item}");
+                }
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-        assert_eq!(asked.is_some(), expect_ask, "{item}");
-    }
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 /// A reset supersedes the old session before it stops the old harness; a question the old
@@ -484,46 +502,55 @@ async fn the_entry_asks_once_per_item_inside_its_transaction() {
 async fn a_superseded_session_asks_nothing() {
     let (logs, _guard) = Logs::capture();
     let rig = rig(Profile::Planner).await;
-    let mut tx = begin_immediate_tx(rig.repo.db()).await.unwrap();
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &WorkerSessionInit {
-            id: new_id(),
-            card_id: rig.card.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(
-                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-            ),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let old = rig
-        .repo
-        .session_get_by_id(&WorkerSessionId::from(rig.session_id.as_str()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(old.state, WorkerSessionState::Superseded);
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &WorkerSessionInit {
+                        id: new_id(),
+                        card_id: rig.card.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Starting,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(
+                            serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                        ),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let old = rig
+                    .repo
+                    .session_get_by_id(&WorkerSessionId::from(rig.session_id.as_str()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(old.state, WorkerSessionState::Superseded);
 
-    rig.emit("item/completed", captured_params());
-    wait_for("the retired native fact to be refused", || async {
-        logs.text().contains("no current content carrier")
-    })
-    .await;
-    assert!(!rig.item_added(ITEM_ID).await);
-    let asks = rig.asks().await;
-    assert!(asks.is_empty(), "{asks:?}");
-    rig.harness.shutdown().await.unwrap();
+                rig.emit("item/completed", captured_params());
+                wait_for("the retired native fact to be refused", || async {
+                    logs.text().contains("no current content carrier")
+                })
+                .await;
+                assert!(!rig.item_added(ITEM_ID).await);
+                let asks = rig.asks().await;
+                assert!(asks.is_empty(), "{asks:?}");
+                rig.harness.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

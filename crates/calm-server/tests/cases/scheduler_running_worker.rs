@@ -113,16 +113,19 @@ async fn seed_idle_codex_worker(boot: &Boot, label: &str, gated: bool) -> IdleWo
         seed_codex_worker_card_with_terminal(boot, label).await;
     let (lease_id, lease_dir) = seed_held_workspace_lease(boot, &card_id, label).await;
     let thread_id = format!("thread-{label}");
-    sqlx::query(
-        "UPDATE worker_sessions SET thread_id = ?1, last_thread_status = 'idle', \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET thread_id = ?1, last_thread_status = 'idle', \
          last_activity_ms = ?2, last_turn_completed_ms = NULL WHERE id = ?3",
-    )
-    .bind(&thread_id)
-    .bind(R4_COMPLETED_AT_MS)
-    .bind(&session_row_id)
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .expect("persist idle thread status");
+            )
+            .bind(&thread_id)
+            .bind(R4_COMPLETED_AT_MS)
+            .bind(&session_row_id),
+        )
+        .await
+        .expect("persist idle thread status");
     let mut task = plan_task(&boot.track_id, label, TaskKind::Codex, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());
@@ -291,10 +294,13 @@ async fn run_turn_end_wording(
 ) {
     let boot = boot().await;
     let worker = seed_idle_codex_worker(&boot, label, false).await;
-    sqlx::query("UPDATE worker_sessions SET last_thread_status = ?1 WHERE id = ?2")
-        .bind(persisted)
-        .bind(&worker.session_row_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET last_thread_status = ?1 WHERE id = ?2")
+                .bind(persisted)
+                .bind(&worker.session_row_id),
+        )
         .await
         .unwrap();
     let facts = thread_facts(live, last_turn(Some(R4_COMPLETED_AT_S), turn_status));
@@ -371,10 +377,13 @@ async fn idle_turn_that_ended_before_the_running_stamp_is_detected() {
     let worker = seed_idle_codex_worker(&boot, "ended-before-running", false).await;
     let now = now_ms();
     // Turn ended 400 s ago; the running stamp (deadline - 2 h) landed 100 s ago.
-    sqlx::query("UPDATE tasks SET running_deadline_ms = ?1 WHERE key = ?2")
-        .bind(now - 100_000 + 7_200_000)
-        .bind(&worker.task_key)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET running_deadline_ms = ?1 WHERE key = ?2")
+                .bind(now - 100_000 + 7_200_000)
+                .bind(&worker.task_key),
+        )
         .await
         .unwrap();
     let completed_s = (now - 400_000) / 1000;
@@ -490,8 +499,11 @@ async fn idle_candidate_whose_thread_read_times_out_is_untouched() {
 async fn idle_arm_leaves_claude_workers_alone() {
     let boot = boot().await;
     let claude = seed_idle_codex_worker(&boot, "claude-idle", false).await;
-    sqlx::query("UPDATE tasks SET kind = 'claude' WHERE key = 'claude-idle'")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tasks SET kind = 'claude' WHERE key = 'claude-idle'",
+        ))
         .await
         .unwrap();
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
@@ -513,9 +525,12 @@ async fn idle_arm_leaves_claude_workers_alone() {
 async fn idle_arm_requires_a_persisted_native_worker_thread() {
     let boot = boot().await;
     let worker = seed_idle_codex_worker(&boot, "non-native-row", false).await;
-    sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
-        .bind(&worker.session_row_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider = 'claude' WHERE id = ?1")
+                .bind(&worker.session_row_id),
+        )
         .await
         .unwrap();
     let probe = ScriptedProbe::new(Answer::Facts(r4_facts()), None);
@@ -529,9 +544,12 @@ async fn idle_arm_requires_a_persisted_native_worker_thread() {
 /// A running codex task whose worker card, shared turn and held lease the reap must clean up.
 async fn seed_running_codex_worker(boot: &Boot, label: &str) -> IdleWorker {
     let worker = seed_idle_codex_worker(boot, label, false).await;
-    sqlx::query("UPDATE worker_sessions SET last_thread_status = 'active' WHERE id = ?1")
-        .bind(&worker.session_row_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET last_thread_status = 'active' WHERE id = ?1")
+                .bind(&worker.session_row_id),
+        )
         .await
         .unwrap();
     seed_active_codex_turn(boot, &worker.session_row_id, &worker.thread_id, "turn-live").await;
@@ -598,70 +616,80 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
     let card_id = format!("card-claude-cancel-{}", new_id());
     let session_row_id = format!("runtime-claude-cancel-{}", new_id());
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = pool.writer_pool().begin().await.unwrap();
-    calm_truth::db::sqlite::card_with_claude_worker_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &session_row_id,
-        None,
-        boot.track_id.clone(),
-        None,
-        None,
-        "claude".into(),
-        "/tmp".into(),
-        json!({}),
-        Some("do".into()),
-        None,
-        None,
-        "/tmp/neige-claude-cancel-settings.json".into(),
-        "claude-session-cancel".into(),
-        &boot.card_role_cache,
-        RequestTheme::default_dark(),
-    )
-    .await
-    .expect("create claude worker card");
-    tx.commit().await.unwrap();
-    boot.repo
-        .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_truth::db::sqlite::card_with_claude_worker_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &session_row_id,
+                    None,
+                    boot.track_id.clone(),
+                    None,
+                    None,
+                    "claude".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    Some("do".into()),
+                    None,
+                    None,
+                    "/tmp/neige-claude-cancel-settings.json".into(),
+                    "claude-session-cancel".into(),
+                    &boot.card_role_cache,
+                    RequestTheme::default_dark(),
+                )
+                .await
+                .expect("create claude worker card");
+                tx.commit().await.unwrap();
+                boot.repo
+                    .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
+                    .await
+                    .unwrap();
+                let (lease_id, _lease_dir) =
+                    seed_held_workspace_lease(&boot, &card_id, "claude").await;
+                let mut task = plan_task(&boot.track_id, "claude-cancel", TaskKind::Claude, &[]);
+                task.status = TaskStatus::Running;
+                task.worker_card_id = Some(card_id.clone());
+                task.running_deadline_ms = Some(now_ms() + 7_200_000);
+                seed_task(&boot, task).await;
+                let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+                assert!(
+                    boot.ctx
+                        .scheduler_poke
+                        .set(Arc::new(scheduler.clone()))
+                        .is_ok()
+                );
+
+                call_tool(
+                    &boot,
+                    TOOL_TASK_CANCEL,
+                    planner_identity(&boot),
+                    json!({ "key": "claude-cancel", "message": "stop" }),
+                )
+                .await
+                .expect("running claude task is cancelable");
+
+                let row = task_row(&boot, "claude-cancel").await;
+                assert_eq!(row.status, TaskStatus::Canceled);
+                assert_eq!(row.status_detail.as_deref(), Some("planner-canceled"));
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    while workspace_lease_state(&boot, &lease_id).await != "released" {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("poked cleanup releases the claude lease");
+                assert_eq!(
+                    session_state(&boot, &session_row_id).await,
+                    WorkerSessionState::Failed
+                );
+            })
+        })
         .await
-        .unwrap();
-    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "claude").await;
-    let mut task = plan_task(&boot.track_id, "claude-cancel", TaskKind::Claude, &[]);
-    task.status = TaskStatus::Running;
-    task.worker_card_id = Some(card_id.clone());
-    task.running_deadline_ms = Some(now_ms() + 7_200_000);
-    seed_task(&boot, task).await;
-    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    assert!(
-        boot.ctx
-            .scheduler_poke
-            .set(Arc::new(scheduler.clone()))
-            .is_ok()
-    );
-
-    call_tool(
-        &boot,
-        TOOL_TASK_CANCEL,
-        planner_identity(&boot),
-        json!({ "key": "claude-cancel", "message": "stop" }),
-    )
-    .await
-    .expect("running claude task is cancelable");
-
-    let row = task_row(&boot, "claude-cancel").await;
-    assert_eq!(row.status, TaskStatus::Canceled);
-    assert_eq!(row.status_detail.as_deref(), Some("planner-canceled"));
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while workspace_lease_state(&boot, &lease_id).await != "released" {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("poked cleanup releases the claude lease");
-    assert_eq!(
-        session_state(&boot, &session_row_id).await,
-        WorkerSessionState::Failed
-    );
+        .expect("independent write operation")
 }
 
 /// A running codex row owned by the boot worker card, so that card's identity can report on it.

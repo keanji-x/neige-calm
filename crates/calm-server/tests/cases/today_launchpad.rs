@@ -284,9 +284,12 @@ async fn repeated_ensure_preserves_planner_transcript_and_ids_and_singleton() {
 async fn u11_canonical_today_malformed_legacy_refuses_without_erasing_history() {
     let b = boot().await;
     let (_, original) = ensure(b.app.clone()).await;
-    sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
-        .bind(original["track_id"].as_str().unwrap())
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
+                .bind(original["track_id"].as_str().unwrap()),
+        )
         .await
         .unwrap();
     b.repo
@@ -304,10 +307,9 @@ async fn u11_canonical_today_malformed_legacy_refuses_without_erasing_history() 
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
+    (b.repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
         .bind(original["planner_card_id"].as_str().unwrap())
-        .bind(r#"{"schemaVersion":1,"harness":{"snapshotVersion":9,"pendingQueue":["legacy"]}}"#)
-        .execute(b.repo.pool())
+        .bind(r#"{"schemaVersion":1,"harness":{"snapshotVersion":9,"pendingQueue":["legacy"]}}"#))
         .await
         .unwrap();
 
@@ -375,35 +377,42 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
     assert!(track["workspace"]["frozen_at"].is_null(), "dto={dto}");
 
     // Branch 2 — adoption re-declares an unfrozen selection through the same writer as creation.
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.db())
-        .await
-        .unwrap();
-    calm_server::db::sqlite::track_workspace_write_tx(
-        &mut tx,
-        &track_id,
-        &calm_server::model::TrackWorkspace {
-            kind: calm_server::model::TrackWorkspaceKind::Attached,
-            path: "/also-scrambled".into(),
-            frozen_at: None,
-            worktree: None,
-        },
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
-        .bind(&track_id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::track_workspace_write_tx(
+                    &mut tx,
+                    &track_id,
+                    &calm_server::model::TrackWorkspace {
+                        kind: calm_server::model::TrackWorkspaceKind::Attached,
+                        path: "/also-scrambled".into(),
+                        frozen_at: None,
+                        worktree: None,
+                    },
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
+                    .bind(&track_id)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    let before = workspace_row(&b.repo, &track_id).await;
-    let (status, body) = ensure(b.app.clone()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["code"], "today_adoption_workspace_drift");
-    assert_eq!(workspace_row(&b.repo, &track_id).await, before);
-    let track = b.repo.track_get(&track_id).await.unwrap().unwrap();
-    assert!(track.purpose.is_none());
+                let before = workspace_row(&b.repo, &track_id).await;
+                let (status, body) = ensure(b.app.clone()).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                assert_eq!(body["code"], "today_adoption_workspace_drift");
+                assert_eq!(workspace_row(&b.repo, &track_id).await, before);
+                let track = b.repo.track_get(&track_id).await.unwrap().unwrap();
+                assert!(track.purpose.is_none());
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// `kind = Managed` ⇒ the path is under `<workspace-root>`, with no exceptions; the recycle path
@@ -685,18 +694,21 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
 
     let task_id = format!("{parent_track_id}:child");
     let now = calm_server::model::now_ms();
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
          depends_on_json,priority,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,'child','codex','child goal','{}','done','[]',0,'dispatched',\
          'spec','sub-track',?3,?3)",
-    )
-    .bind(&task_id)
-    .bind(parent_track_id)
-    .bind(now)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&task_id)
+            .bind(parent_track_id)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let payload = serde_json::to_value(ChildTrackOperationPayload {
         task_id: task_id.clone(),
@@ -741,13 +753,22 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
             .with_file_name("objective-checks"),
         b.teardown_targets.clone(),
     );
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let output = adapter
-        .prepare_tx(&mut tx, &payload, &operation)
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let output = adapter
+                    .prepare_tx(&mut tx, &payload, &operation)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                output.data["child_track_id"].as_str().unwrap().to_string()
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    output.data["child_track_id"].as_str().unwrap().to_string()
+        .expect("independent write operation")
 }
 
 /// No two tracks share a `managed` workspace path, over the WHOLE table: this is what allows
@@ -861,28 +882,37 @@ async fn shared_managed_path_is_reported_as_a_violation() {
         .fetch_one(b.repo.pool())
         .await
         .unwrap();
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::track_workspace_write_tx(
-        &mut tx,
-        &second_id,
-        &calm_server::model::TrackWorkspace {
-            kind: calm_server::model::TrackWorkspaceKind::Managed,
-            path: first_path.clone(),
-            frozen_at: None,
-            worktree: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::track_workspace_write_tx(
+                    &mut tx,
+                    &second_id,
+                    &calm_server::model::TrackWorkspace {
+                        kind: calm_server::model::TrackWorkspaceKind::Managed,
+                        path: first_path.clone(),
+                        frozen_at: None,
+                        worktree: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let violations = shared_managed_paths(&all_workspace_rows(&b.repo).await);
-    assert_eq!(violations.len(), 1, "{violations:?}");
-    assert_eq!(violations[0].0, first_path);
-    assert!(
-        violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
-        "the report must name both tracks: {violations:?}"
-    );
+                let violations = shared_managed_paths(&all_workspace_rows(&b.repo).await);
+                assert_eq!(violations.len(), 1, "{violations:?}");
+                assert_eq!(violations[0].0, first_path);
+                assert!(
+                    violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
+                    "the report must name both tracks: {violations:?}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(crate) async fn resolve(app: axum::Router) -> (StatusCode, Value) {
@@ -915,10 +945,13 @@ async fn report_card_id(b: &Boot, track_id: &str) -> String {
 }
 
 async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
-    sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
-        .bind(card_id)
-        .bind(payload.to_string())
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
+                .bind(card_id)
+                .bind(payload.to_string()),
+        )
         .await
         .unwrap();
 }
@@ -1025,9 +1058,9 @@ async fn resolve_404s_when_the_launchpad_has_no_report_card() {
     let b = boot().await;
     let (_, ensured) = ensure(b.app.clone()).await;
     let card = report_card_id(&b, ensured["track_id"].as_str().unwrap()).await;
-    sqlx::query("DELETE FROM cards WHERE id=?1")
-        .bind(&card)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM cards WHERE id=?1").bind(&card))
         .await
         .unwrap();
 
@@ -1139,8 +1172,8 @@ async fn today_launchpad_adopt_branch_survives_the_column_rename() {
 
     let (_, dto) = ensure(b.app.clone()).await;
     let track_id = dto["track_id"].as_str().unwrap().to_owned();
-    sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',template_input='{\"issue\":1209}' WHERE id=?1")
-        .bind(&track_id).execute(b.repo.pool()).await.unwrap();
+    (b.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',template_input='{\"issue\":1209}' WHERE id=?1")
+        .bind(&track_id)).await.unwrap();
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
     assert_eq!(adopted["track_id"].as_str(), Some(track_id.as_str()));

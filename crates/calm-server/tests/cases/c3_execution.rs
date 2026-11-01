@@ -26,9 +26,9 @@ pub(super) async fn c3_wait(mut predicate: impl AsyncFnMut() -> bool) {
     .expect("C3 invariant observed");
 }
 pub(super) async fn c3_rewrite(boot: &TestBoot, id: &str, record: &Value) {
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.forge_execution',json(?2)), \
+    (boot.repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.forge_execution',json(?2)), \
         lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-        .bind(id).bind(record.to_string()).execute(boot.repo.pool()).await.unwrap();
+        .bind(id).bind(record.to_string())).await.unwrap();
 }
 pub(super) async fn c3_count(boot: &TestBoot, id: &str) -> i64 {
     sqlx::query_scalar(
@@ -218,19 +218,28 @@ pub(super) async fn c3_settle_held(boot: &TestBoot, id: &str) {
     let mut record = c3_record(&c3_op(boot, id).await);
     let execution: ExecutionId = serde_json::from_value(record["execution_id"].clone()).unwrap();
     let engine = boot.spawn_ctx.execution.engine().unwrap();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = engine
+                    .request(&mut tx, &execution, Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                record["release"] = json!({"Released":{"authorized_at_ms":now_ms()}});
+                c3_rewrite(boot, id, &record).await;
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&execution))
-        .await
-        .unwrap()
-        .unwrap();
-    record["release"] = json!({"Released":{"authorized_at_ms":now_ms()}});
-    c3_rewrite(boot, id, &record).await;
+        .expect("independent write operation")
 }
 pub(super) async fn c3_probe_ready(boot: &TestBoot, name: &str, probe: &str) -> String {
     let (id, observer) = c3_probe_ready_with_observer(boot, name, probe).await;
@@ -292,9 +301,11 @@ async fn c3_probe_admission_is_durably_exclusive() {
                 .unwrap()
                 .unwrap();
             if !steal_boot {
-                sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?1")
-                    .bind(&id)
-                    .execute(boot.repo.pool())
+                (boot.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?1").bind(&id),
+                    )
                     .await
                     .unwrap();
             }
@@ -360,22 +371,31 @@ async fn c3_probe_admission_is_durably_exclusive() {
                     tokens: ExecutionControlTokens::fresh().unwrap(),
                 },
             };
-            let mut tx = boot.repo.pool().begin().await.unwrap();
-            assert!(
-                boot.spawn_ctx
-                    .execution
-                    .engine()
-                    .unwrap()
-                    .admit(&mut tx, intent)
-                    .await
-                    .is_err()
-            );
-            tx.rollback().await.unwrap();
-            // Keep the accelerator out of every admission/alias assertion, then
-            // let it finish after relinquishing the test's winning claim.
-            c3_rewrite(&boot, &id, &c3_record(&c3_op(&boot, &id).await)).await;
-            pause.release.notify_one();
-            c3_result(&boot, &id).await;
+            let write_db = (boot.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        assert!(
+                            boot.spawn_ctx
+                                .execution
+                                .engine()
+                                .unwrap()
+                                .admit(&mut tx, intent)
+                                .await
+                                .is_err()
+                        );
+                        tx.rollback().await.unwrap();
+                        // Keep the accelerator out of every admission/alias assertion, then
+                        // let it finish after relinquishing the test's winning claim.
+                        c3_rewrite(&boot, &id, &c3_record(&c3_op(&boot, &id).await)).await;
+                        pause.release.notify_one();
+                        c3_result(&boot, &id).await;
+                    })
+                })
+                .await
+                .expect("independent write operation")
         }
     }
 }
@@ -435,9 +455,9 @@ async fn c3_probe_waits_for_available_executor() {
         .bind(Arc::new(boot.spawn_ctx.execution.engine().unwrap().clone()));
     runtime.sweep_parked().await.unwrap();
     assert_eq!(c3_count(&boot, &id).await, 1, "lease backs off retry");
-    sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     runtime.sweep_parked().await.unwrap();
@@ -482,13 +502,22 @@ pub(super) async fn c3_stop_execution(boot: &TestBoot, id: &str) {
     let record = c3_record(&c3_op(boot, id).await);
     let execution: ExecutionId = serde_json::from_value(record["execution_id"].clone()).unwrap();
     let engine = boot.spawn_ctx.execution.engine().unwrap();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let ticket = engine
-        .request(&mut tx, &execution, Desired::Stop)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = engine
+                    .request(&mut tx, &execution, Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
+        .expect("independent write operation")
 }
 
 pub(super) async fn c3_running_probe(boot: &TestBoot, name: &str) -> String {
@@ -526,9 +555,9 @@ pub(super) async fn c3_all_retired(boot: &TestBoot, id: &str) {
 async fn c3_no_completion_while_probe_unsettled() {
     let boot = TestBoot::new().await;
     let id = c3_running_probe(&boot, "unsettled-probe").await;
-    sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     let claimed = boot
@@ -544,9 +573,12 @@ async fn c3_no_completion_while_probe_unsettled() {
             .unwrap(),
         ParkedRecovery::LeaveParked
     ));
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
-        .bind(&id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?")
+                .bind(&id),
+        )
         .await
         .unwrap();
     boot.runtime.sweep_parked().await.unwrap();
@@ -628,9 +660,9 @@ async fn c3_timeout_stops_then_completes_after_settlement() {
             .unwrap();
         let observer = tokio::spawn(observer);
         wait_for_file(&boot.temp_path("started")).await;
-        sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?")
-            .bind(&id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
             .await
             .unwrap();
         // Let the active observer reach the expired deadline before the first sweep.

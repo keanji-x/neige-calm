@@ -223,8 +223,8 @@ async fn exercise(fault: Fault) {
             .unwrap();
         let prepared = op_repo.get_operation(&id).await.unwrap().unwrap();
         assert_eq!(prepared.phase, Phase::TxCommitted);
-        sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
-            .bind(&id).execute(harness.repo.pool()).await.unwrap();
+        (harness.repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
+            .bind(&id)).await.unwrap();
         Some(id)
     } else {
         None
@@ -248,17 +248,20 @@ async fn exercise(fault: Fault) {
         _ => None,
     };
     if let Some(sql) = interruption {
-        sqlx::query(sql).execute(harness.repo.pool()).await.unwrap();
+        (harness.repo.db())
+            .writer()
+            .execute(sqlx::query(sql))
+            .await
+            .unwrap();
     }
     if fault == Fault::EvidenceReadFailure {
-        sqlx::query("CREATE TRIGGER conflict_evidence AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
+        (harness.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER conflict_evidence AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
             BEGIN INSERT INTO operations (id,operation_key,kind,payload_hash,target_type,target_id,target_json, \
             payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('conflict','conflict',NEW.kind, \
             NEW.payload_hash,NEW.target_type,NEW.target_id,NEW.target_json,NEW.payload_json,NEW.tx_output_json, \
-            'failed',1,1); END").execute(harness.repo.pool()).await.unwrap();
-        sqlx::query("CREATE TRIGGER block_stuck BEFORE UPDATE OF phase ON operations WHEN NEW.phase='stuck' \
-            BEGIN SELECT RAISE(ABORT,'hold failed cleanup for reboot'); END")
-            .execute(harness.repo.pool()).await.unwrap();
+            'failed',1,1); END")).await.unwrap();
+        (harness.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER block_stuck BEFORE UPDATE OF phase ON operations WHEN NEW.phase='stuck' \
+            BEGIN SELECT RAISE(ABORT,'hold failed cleanup for reboot'); END")).await.unwrap();
     }
     let submitted_key = key.clone();
     let drive = runtime.clone();
@@ -368,16 +371,19 @@ async fn exercise(fault: Fault) {
                     .unwrap()
                     .is_some()
             );
-            sqlx::query("DROP TRIGGER conflict_evidence")
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER conflict_evidence"))
                 .await
                 .unwrap();
-            sqlx::query("DROP TRIGGER block_stuck")
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER block_stuck"))
                 .await
                 .unwrap();
-            sqlx::query("DELETE FROM operations WHERE id='conflict'")
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(sqlx::query("DELETE FROM operations WHERE id='conflict'"))
                 .await
                 .unwrap();
             runtime
@@ -461,8 +467,9 @@ async fn exercise(fault: Fault) {
                 assert!(view.is_err(), "UI cannot reopen a rejected one-use launch");
                 assert_eq!(proxy.as_ref().unwrap().ensures.load(Ordering::SeqCst), 1);
             }
-            sqlx::query("DROP TRIGGER interrupt_launch")
-                .execute(harness.repo.pool())
+            (harness.repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER interrupt_launch"))
                 .await
                 .unwrap();
             // Reopen the on-disk database and reconstruct runtime/state, using real boot ordering.
@@ -728,8 +735,8 @@ async fn exercise(fault: Fault) {
             if legacy {
                 // Released/pre-upgrade output had no launch checkpoint. Its
                 // absence is unknown, never permission to run the command again.
-                sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
-                    .bind(&op_id).execute(harness.repo.pool()).await.unwrap();
+                (harness.repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
+                    .bind(&op_id)).await.unwrap();
             }
             let attached_registry = TerminalRendererRegistry::new_with_repo(harness.repo.clone());
             let attached = tokio::time::timeout(

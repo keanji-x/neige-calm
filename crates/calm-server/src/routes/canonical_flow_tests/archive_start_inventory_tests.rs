@@ -215,115 +215,115 @@ async fn archive_with_retained_inventory(orphan: bool) {
             .all(|op| op.kind != "planner-harness-start"),
         "B's real starts already finished"
     );
-    let retained = if orphan {
-        // Only fail phase advances after real interaction. Within-phase
-        // crossing/binding writes, all other operations and native I/O remain real.
-        sqlx::query(
+    let retained =
+        if orphan {
+            // Only fail phase advances after real interaction. Within-phase
+            // crossing/binding writes, all other operations and native I/O remain real.
+            (fixture.repo.db()).writer().execute(sqlx::query(
             "CREATE TRIGGER hold_retained_archive_phase BEFORE UPDATE OF phase ON operations
              WHEN NEW.kind='planner-harness-start'
                AND json_extract(NEW.payload_json,'$.canonical_activation_version')=2
                AND OLD.phase='app_server_interact' AND NEW.phase<>OLD.phase
              BEGIN SELECT RAISE(ABORT,'fixture refuses retained phase advance'); END",
-        )
-        .execute(fixture.repo.pool())
+        ))
         .await
         .unwrap();
-        let created = post(
-            &app,
-            &cookie,
-            "/api/tracks",
-            "first",
-            json!({
-                "area_id":area["id"],"title":"Unrelated accepted A","planner_provider":"codex",
-                "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
-            }),
-        )
-        .await;
-        let track_a = created["id"].as_str().unwrap().to_owned();
-        let (card_a, worker_a, _) = fixture.carrier(&track_a).await;
-        let mut starts = 0;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let call = request(&mut peer).await;
-                let result = match call["method"].as_str().unwrap() {
-                    "config/read" => json!({"config":{}}),
-                    "thread/start" => {
-                        starts += 1;
-                        json!({"thread":{"id":START_A_THREAD}})
+            let created = post(
+                &app,
+                &cookie,
+                "/api/tracks",
+                "first",
+                json!({
+                    "area_id":area["id"],"title":"Unrelated accepted A","planner_provider":"codex",
+                    "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":FIRST_BODY
+                }),
+            )
+            .await;
+            let track_a = created["id"].as_str().unwrap().to_owned();
+            let (card_a, worker_a, _) = fixture.carrier(&track_a).await;
+            let mut starts = 0;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let call = request(&mut peer).await;
+                    let result = match call["method"].as_str().unwrap() {
+                        "config/read" => json!({"config":{}}),
+                        "thread/start" => {
+                            starts += 1;
+                            json!({"thread":{"id":START_A_THREAD}})
+                        }
+                        method => panic!("A must bind its native start before any turn: {method}"),
+                    };
+                    send(&mut peer, json!({"id":call["id"],"result":result})).await;
+                    if starts == 1 {
+                        break;
                     }
-                    method => panic!("A must bind its native start before any turn: {method}"),
-                };
-                send(&mut peer, json!({"id":call["id"],"result":result})).await;
-                if starts == 1 {
-                    break;
                 }
-            }
-        })
-        .await
-        .expect("the real canonical activation must issue its original native thread/start");
-        let operation: String = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let id: Option<String> = sqlx::query_scalar(
-                    "SELECT id FROM operations WHERE kind='planner-harness-start'
+            })
+            .await
+            .expect("the real canonical activation must issue its original native thread/start");
+            let operation: String = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let id: Option<String> = sqlx::query_scalar(
+                        "SELECT id FROM operations WHERE kind='planner-harness-start'
                      AND phase='app_server_interact' AND json_extract(payload_json,'$.card_id')=?1
                      AND json_extract(tx_output_json,'$.data.activation')='bound'",
-                )
-                .bind(&card_a)
-                .fetch_optional(fixture.repo.pool())
-                .await
-                .unwrap();
-                if let Some(id) = id {
-                    break id;
+                    )
+                    .bind(&card_a)
+                    .fetch_optional(fixture.repo.pool())
+                    .await
+                    .unwrap();
+                    if let Some(id) = id {
+                        break id;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("production must retain its bound output when phase advance fails");
-        // Ordinary in-flight A would still hold these locks and block archive.
-        // Both must be genuinely released after the storage refusal propagates.
-        let card_fence = tokio::time::timeout(
-            Duration::from_secs(5),
-            crate::per_card_lock::lock_card(&route.planner_recovery_locks, &card_a),
-        )
-        .await
-        .unwrap();
-        let drive = tokio::time::timeout(
-            Duration::from_secs(5),
-            route.operation_runtime.lock_for_track_delete(),
-        )
-        .await
-        .unwrap();
-        let inventory = operations
-            .abandoned_running_operations_on_boot()
+            })
+            .await
+            .expect("production must retain its bound output when phase advance fails");
+            // Ordinary in-flight A would still hold these locks and block archive.
+            // Both must be genuinely released after the storage refusal propagates.
+            let card_fence = tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::per_card_lock::lock_card(&route.planner_recovery_locks, &card_a),
+            )
             .await
             .unwrap();
-        let original = inventory
-            .iter()
-            .find(|op| op.id == operation)
-            .expect("the actual recovery inventory contains A");
-        assert_eq!(original.payload["canonical_activation_version"], 2);
-        assert_eq!(original.payload["card_id"], card_a);
-        assert_eq!(original.payload["worker_session_id"], worker_a);
-        let snapshot = fixture.carrier(&track_a).await.2;
-        assert_eq!(
-            snapshot.header.last_thread_id.as_deref(),
-            Some(START_A_THREAD)
-        );
-        assert_eq!(snapshot.canonical_inputs.pending.len(), 1);
-        assert!(snapshot.canonical_inputs.active.is_none());
-        assert!(snapshot.canonical_inputs.attempts.is_empty());
-        let before = held_start(&fixture, &operation, &worker_a).await;
-        let receipt = fixture.receipt(area["id"].as_str().unwrap()).await;
-        let counts = fixture.counts(&card_a).await;
-        assert_eq!(counts, (1, 1, 1, 0, 0));
-        drop((drive, card_fence));
-        Some((
-            track_a, card_a, worker_a, operation, snapshot, before, receipt, counts,
-        ))
-    } else {
-        None
-    };
+            let drive = tokio::time::timeout(
+                Duration::from_secs(5),
+                route.operation_runtime.lock_for_track_delete(),
+            )
+            .await
+            .unwrap();
+            let inventory = operations
+                .abandoned_running_operations_on_boot()
+                .await
+                .unwrap();
+            let original = inventory
+                .iter()
+                .find(|op| op.id == operation)
+                .expect("the actual recovery inventory contains A");
+            assert_eq!(original.payload["canonical_activation_version"], 2);
+            assert_eq!(original.payload["card_id"], card_a);
+            assert_eq!(original.payload["worker_session_id"], worker_a);
+            let snapshot = fixture.carrier(&track_a).await.2;
+            assert_eq!(
+                snapshot.header.last_thread_id.as_deref(),
+                Some(START_A_THREAD)
+            );
+            assert_eq!(snapshot.canonical_inputs.pending.len(), 1);
+            assert!(snapshot.canonical_inputs.active.is_none());
+            assert!(snapshot.canonical_inputs.attempts.is_empty());
+            let before = held_start(&fixture, &operation, &worker_a).await;
+            let receipt = fixture.receipt(area["id"].as_str().unwrap()).await;
+            let counts = fixture.counts(&card_a).await;
+            assert_eq!(counts, (1, 1, 1, 0, 0));
+            drop((drive, card_fence));
+            Some((
+                track_a, card_a, worker_a, operation, snapshot, before, receipt, counts,
+            ))
+        } else {
+            None
+        };
     let archive_request = Request::patch(format!(
         "/api/tracks/{track_b}/conversations/{card_b}/archive"
     ))
@@ -356,8 +356,9 @@ async fn archive_with_retained_inventory(orphan: bool) {
         let starts: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM operations WHERE kind='planner-harness-start' AND json_extract(payload_json,'$.card_id')=?1",
         ).bind(&card).fetch_one(fixture.repo.pool()).await.unwrap();
-        sqlx::query("DROP TRIGGER hold_retained_archive_phase")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER hold_retained_archive_phase"))
             .await
             .unwrap();
         preserved = Some((

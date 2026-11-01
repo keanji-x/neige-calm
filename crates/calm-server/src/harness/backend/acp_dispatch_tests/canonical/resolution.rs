@@ -39,90 +39,101 @@ async fn canonical_acp_unknown_keep_is_idempotent_and_forced_retry_has_no_succes
         receipt.state,
         crate::db::sqlite::AcpSubmissionState::Unknown
     ));
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let attempt = carrier
+                    .checkpoint()
+                    .attempt(&fx.submission)
+                    .unwrap()
+                    .clone();
+                tx.commit().await.unwrap();
+                let retry = RetryConversationInputRequest {
+                    carrier_id: fx.owner.worker.clone(),
+                    submission_id: fx.submission.as_str().into(),
+                    attempt_id: attempt.attempt.attempt_id.as_str().into(),
+                    revision: attempt.revision.to_string(),
+                };
+                assert!(
+                    crate::conversation_inputs::resolution::retry(
+                        fx.owner.repo.as_ref(),
+                        fx.registry.clone(),
+                        fx.source.clone(),
+                        fx.owner.card.clone(),
+                        "forced-retry".into(),
+                        retry.clone()
+                    )
+                    .await
+                    .is_err()
+                );
+                let count: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM conversation_input_retry_relations")
+                        .fetch_one(fx.owner.repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(count, 0);
+                let keep = KeepConversationInputRequest::from(&retry);
+                let first = crate::conversation_inputs::resolution::keep(
+                    fx.owner.repo.as_ref(),
+                    fx.registry.clone(),
+                    fx.source.clone(),
+                    fx.owner.card.clone(),
+                    "keep".into(),
+                    keep.clone(),
+                )
+                .await
+                .unwrap()
+                .0;
+                let second = crate::conversation_inputs::resolution::keep(
+                    fx.owner.repo.as_ref(),
+                    fx.registry.clone(),
+                    fx.source.clone(),
+                    fx.owner.card.clone(),
+                    "keep".into(),
+                    keep,
+                )
+                .await
+                .unwrap()
+                .0;
+                assert_eq!(first, second);
+                assert!(first.waiting_for_settlement);
+                let admission = crate::harness::native_admission::NativePromptAdmission::new(
+                    || Ok(()),
+                    || Box::pin(async { Ok(()) }),
+                );
+                assert!(matches!(
+                    fx.backend
+                        .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
+                        .await
+                        .unwrap(),
+                    SettledActivity::Settled
+                ));
+                assert!(fx.complete().await.is_none());
+                assert_eq!(fx.prompts(), 1);
+                let after = crate::db::sqlite::acp_submission_get(
+                    fx.owner.repo.pool(),
+                    &fx.owner.worker,
+                    fx.submission.as_str(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(receipt.input_json, after.input_json);
+                assert_eq!(receipt.outcome_json, after.outcome_json);
+                assert!(matches!(
+                    after.state,
+                    crate::db::sqlite::AcpSubmissionState::Unknown
+                ));
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let attempt = carrier
-        .checkpoint()
-        .attempt(&fx.submission)
-        .unwrap()
-        .clone();
-    tx.commit().await.unwrap();
-    let retry = RetryConversationInputRequest {
-        carrier_id: fx.owner.worker.clone(),
-        submission_id: fx.submission.as_str().into(),
-        attempt_id: attempt.attempt.attempt_id.as_str().into(),
-        revision: attempt.revision.to_string(),
-    };
-    assert!(
-        crate::conversation_inputs::resolution::retry(
-            fx.owner.repo.as_ref(),
-            fx.registry.clone(),
-            fx.source.clone(),
-            fx.owner.card.clone(),
-            "forced-retry".into(),
-            retry.clone()
-        )
-        .await
-        .is_err()
-    );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM conversation_input_retry_relations")
-        .fetch_one(fx.owner.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
-    let keep = KeepConversationInputRequest::from(&retry);
-    let first = crate::conversation_inputs::resolution::keep(
-        fx.owner.repo.as_ref(),
-        fx.registry.clone(),
-        fx.source.clone(),
-        fx.owner.card.clone(),
-        "keep".into(),
-        keep.clone(),
-    )
-    .await
-    .unwrap()
-    .0;
-    let second = crate::conversation_inputs::resolution::keep(
-        fx.owner.repo.as_ref(),
-        fx.registry.clone(),
-        fx.source.clone(),
-        fx.owner.card.clone(),
-        "keep".into(),
-        keep,
-    )
-    .await
-    .unwrap()
-    .0;
-    assert_eq!(first, second);
-    assert!(first.waiting_for_settlement);
-    let admission = crate::harness::native_admission::NativePromptAdmission::new(
-        || Ok(()),
-        || Box::pin(async { Ok(()) }),
-    );
-    assert!(matches!(
-        fx.backend
-            .settled_activity(&fx.owner.card, &fx.owner.thread, &admission)
-            .await
-            .unwrap(),
-        SettledActivity::Settled
-    ));
-    assert!(fx.complete().await.is_none());
-    assert_eq!(fx.prompts(), 1);
-    let after = crate::db::sqlite::acp_submission_get(
-        fx.owner.repo.pool(),
-        &fx.owner.worker,
-        fx.submission.as_str(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(receipt.input_json, after.input_json);
-    assert_eq!(receipt.outcome_json, after.outcome_json);
-    assert!(matches!(
-        after.state,
-        crate::db::sqlite::AcpSubmissionState::Unknown
-    ));
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

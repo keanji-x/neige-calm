@@ -274,11 +274,19 @@ impl ProviderExecution {
         fence: OccupancyFence<'_>,
     ) -> Result<(Claim, DriverGuard)> {
         let engine = self::engine(Some(engine))?;
-        let tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        self.admit_tx(tx, engine, session, admission, purpose, fence)
-            .await?
-            .commit()
-            .await
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let tx = write_session.begin().await?;
+                    self.admit_tx(tx, engine, session, admission, purpose, fence)
+                        .await?
+                        .commit()
+                        .await
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
     /// ③ Re-read on CAS loss; never adopt another execution or overwrite Stopping.
     pub async fn stop(
@@ -289,15 +297,23 @@ impl ProviderExecution {
         claimed: &Claim,
         reason: StopReason,
     ) -> Result<()> {
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let Some(id) = request_stop_tx(&mut tx, session, claimed, reason).await? else {
-            return Ok(());
-        };
-        tx.commit().await?;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c4-stop-committed", id.as_str()).await;
-        crate::execution_quiesce::drive(engine, [id]);
-        Ok(())
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let Some(id) = request_stop_tx(&mut tx, session, claimed, reason).await? else {
+                        return Ok(());
+                    };
+                    tx.commit().await?;
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("c4-stop-committed", id.as_str()).await;
+                    crate::execution_quiesce::drive(engine, [id]);
+                    Ok(())
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
     /// Owner confirmation precedes ④. Re-check settlement and exact claim in its transaction.
     pub async fn finish(
@@ -330,27 +346,36 @@ impl ProviderExecution {
         )
         .await
         .map_err(conflict)??;
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(pool).await?;
-        let Some(current) = sql::load(&mut **tx, session)
-            .await?
-            .filter(|c| c.record().execution_id == id.as_str())
-        else {
-            return Ok(());
-        };
-        let settled = executions::settlement(&mut tx, id.as_str()).await?;
-        if settled.is_none() {
-            return Err(conflict("not settled"));
-        }
-        let sql::Cas::Applied(()) = sql::clear_on_completion(&mut tx, session, &current).await?
-        else {
-            return Ok(());
-        };
-        executions::request(&mut tx, id.as_str(), "retire").await?;
-        tx.commit().await?;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c4-retire-committed", id.as_str()).await;
-        crate::execution_quiesce::drive(engine, [id]);
-        Ok(())
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let Some(current) = sql::load(&mut **tx, session)
+                        .await?
+                        .filter(|c| c.record().execution_id == id.as_str())
+                    else {
+                        return Ok(());
+                    };
+                    let settled = executions::settlement(&mut tx, id.as_str()).await?;
+                    if settled.is_none() {
+                        return Err(conflict("not settled"));
+                    }
+                    let sql::Cas::Applied(()) =
+                        sql::clear_on_completion(&mut tx, session, &current).await?
+                    else {
+                        return Ok(());
+                    };
+                    executions::request(&mut tx, id.as_str(), "retire").await?;
+                    tx.commit().await?;
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("c4-retire-committed", id.as_str()).await;
+                    crate::execution_quiesce::drive(engine, [id]);
+                    Ok(())
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 }
 

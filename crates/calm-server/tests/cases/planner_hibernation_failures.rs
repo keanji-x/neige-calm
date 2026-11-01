@@ -33,10 +33,9 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
         .await;
         if work == "task" {
             let task = new_id();
-            sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
+            (boot.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
                 VALUES(?,?,?,'codex','work','{}','running',?,?)")
-                .bind(&task).bind(&boot.track_id).bind(&task).bind(now_ms()).bind(now_ms())
-                .execute(boot.repo.pool()).await.unwrap();
+                .bind(&task).bind(&boot.track_id).bind(&task).bind(now_ms()).bind(now_ms())).await.unwrap();
         }
         if work == "assistant" || work == "plain_chat" {
             let role = if work == "assistant" {
@@ -44,35 +43,40 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
             } else {
                 CardRole::Worker
             };
-            sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
+            (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
                 .bind(role.as_db_str())
                 .bind(if role == CardRole::Assistant {
                     json!({"schemaVersion":1,"harness_profile":work,"assistant_provider":"codex"})
                 } else {
                     json!({"schemaVersion":1,"harness_profile":work})
                 }.to_string())
-                .bind(card.id.as_str())
-                .execute(boot.repo.pool())
+                .bind(card.id.as_str()))
                 .await
                 .unwrap();
-            sqlx::query("UPDATE worker_sessions SET contract=? WHERE id=?")
-                .bind(if role == CardRole::Assistant {
-                    "assistant"
-                } else {
-                    "executor"
-                })
-                .bind(&id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET contract=? WHERE id=?")
+                        .bind(if role == CardRole::Assistant {
+                            "assistant"
+                        } else {
+                            "executor"
+                        })
+                        .bind(&id),
+                )
                 .await
                 .unwrap();
             boot.state
                 .card_role_cache
                 .insert(card.id.clone(), role, card.track_id.clone());
         }
-        sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-            .bind(now_ms())
-            .bind(&boot.track_id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                    .bind(now_ms())
+                    .bind(&boot.track_id),
+            )
             .await
             .unwrap();
         let runtime = runtime_by_id_tx_snapshot(&boot.repo, &id).await.unwrap();
@@ -142,10 +146,13 @@ async fn planner_hibernat_failed_unsubscribe_retries_and_cold_wire_wake() {
     let sock = boot._tmp.path().join("run/codex-appserver.sock");
     let failure = sock.with_extension("unsubscribe-fail");
     std::fs::write(&failure, "fail").unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -218,10 +225,13 @@ async fn planner_hibernat_sleeping_tick_skips_global_drive_fence() {
     use axum::extract::FromRef;
     let boot = boot_fake_running().await;
     let (_, runtime, _) = loaded_planner(&boot).await;
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -251,10 +261,13 @@ async fn planner_hibernat_provider_release_drops_global_drive_fence() {
     let sock = boot._tmp.path().join("run/codex-appserver.sock");
     let park = sock.with_extension("unsubscribe-park");
     std::fs::write(&park, "park").unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     let state = boot.state.clone();
@@ -304,10 +317,13 @@ async fn planner_hibernat_loop_wait_is_bounded_and_cancelled_request_stays_live(
         card.id.as_str(),
         decided.clone(),
     );
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     let state = boot.state.clone();

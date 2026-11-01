@@ -112,47 +112,50 @@ async fn area_ownership_migration_adopts_live_and_deleted_keys_once_and_preserve
             .unwrap(),
         0
     );
-    let mut replay_tx = repo.pool().begin().await.unwrap();
-    assert_eq!(
-        area_create_replay_tx(
-            &mut replay_tx,
-            LEGACY_OWNER_USER_ID,
-            "raw-live-key",
-            "v1:original\\hash"
-        )
-        .await
-        .unwrap()
-        .unwrap()
-        .id
-        .as_str(),
-        "live"
-    );
-    assert!(matches!(
-        area_create_replay_tx(
-            &mut replay_tx,
-            LEGACY_OWNER_USER_ID,
-            "raw-deleted-key",
-            "v1:tombstone"
-        )
-        .await,
-        Err(TruthError::IdempotencyKeyExhausted(_))
-    ));
-    replay_tx.rollback().await.unwrap();
-    // Reopening must not recreate a removed relation or adopt later corrupt rows.
-    sqlx::query("DELETE FROM area_members WHERE area_id='live'")
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('unowned','Corrupt','#000',2,'user',20,20)").execute(repo.pool()).await.unwrap();
-    repo.pool().close().await;
-    let reopened = SqlxRepo::open(&url).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members")
-            .fetch_one(reopened.pool())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut replay_tx = write_session.begin().await.unwrap();
+        assert_eq!(
+            area_create_replay_tx(
+                &mut replay_tx,
+                LEGACY_OWNER_USER_ID,
+                "raw-live-key",
+                "v1:original\\hash"
+            )
             .await
-            .unwrap(),
-        0
-    );
+            .unwrap()
+            .unwrap()
+            .id
+            .as_str(),
+            "live"
+        );
+        assert!(matches!(
+            area_create_replay_tx(
+                &mut replay_tx,
+                LEGACY_OWNER_USER_ID,
+                "raw-deleted-key",
+                "v1:tombstone"
+            )
+            .await,
+            Err(TruthError::IdempotencyKeyExhausted(_))
+        ));
+        replay_tx.rollback().await.unwrap();
+        // Reopening must not recreate a removed relation or adopt later corrupt rows.
+        (repo.db()).writer().execute(sqlx::query("DELETE FROM area_members WHERE area_id='live'"))
+            .await
+            .unwrap();
+        (repo.db()).writer().execute(sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('unowned','Corrupt','#000',2,'user',20,20)")).await.unwrap();
+        repo.pool().close().await;
+        let reopened = SqlxRepo::open(&url).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members")
+                .fetch_one(reopened.pool())
+                .await
+                .unwrap(),
+            0
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -170,192 +173,221 @@ async fn area_ownership_requires_registered_creator_and_commits_exactly_one_owne
             .unwrap(),
         0
     );
-    let mut tx = repo.pool().begin().await.unwrap();
-    application_user_register(&mut tx, "alice", "Alice")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                application_user_register(&mut tx, "alice", "Alice")
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let area = repo.area_create("alice", new_area()).await.unwrap();
+                let owners: Vec<(String, String)> =
+                    sqlx::query_as("SELECT user_id,role FROM area_members WHERE area_id=?1")
+                        .bind(area.id.as_str())
+                        .fetch_all(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(owners, vec![("alice".into(), "owner".into())]);
+                assert!(
+                    (repo.db()).writer().execute(sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
+                        .bind(area.id.as_str())
+                        .bind(LEGACY_OWNER_USER_ID))
+                        .await
+                        .is_err()
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let area = repo.area_create("alice", new_area()).await.unwrap();
-    let owners: Vec<(String, String)> =
-        sqlx::query_as("SELECT user_id,role FROM area_members WHERE area_id=?1")
-            .bind(area.id.as_str())
-            .fetch_all(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(owners, vec![("alice".into(), "owner".into())]);
-    assert!(
-        sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
-            .bind(area.id.as_str())
-            .bind(LEGACY_OWNER_USER_ID)
-            .execute(repo.pool())
-            .await
-            .is_err()
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn area_ownership_members_collaborate_owner_deletes_and_system_has_no_members() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    application_user_register(&mut tx, "alice", "Alice")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                application_user_register(&mut tx, "alice", "Alice")
+                    .await
+                    .unwrap();
+                application_user_register(&mut tx, "outsider", "Outsider")
+                    .await
+                    .unwrap();
+                let area = area_create_tx(&mut tx, LEGACY_OWNER_USER_ID, new_area())
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
+                    .bind(area.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                area_require_access(&mut tx, area.id.as_str(), "alice", AreaAccess::Collaborate)
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    area_require_access(&mut tx, area.id.as_str(), "alice", AreaAccess::Delete)
+                        .await,
+                    Err(TruthError::Forbidden(_))
+                ));
+                assert!(matches!(
+                    area_require_access(
+                        &mut tx,
+                        area.id.as_str(),
+                        "outsider",
+                        AreaAccess::Collaborate
+                    )
+                    .await,
+                    Err(TruthError::Forbidden(_))
+                ));
+                assert_eq!(
+                    areas_list_for_member(&mut tx, "alice").await.unwrap().len(),
+                    1
+                );
+                assert!(
+                    areas_list_for_member(&mut tx, "outsider")
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                let system = area_create_system_tx(&mut tx).await.unwrap();
+                assert!(
+                    sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
+                        .bind(system.id.as_str())
+                        .execute(&mut **tx)
+                        .await
+                        .is_err()
+                );
+                assert!(matches!(
+                    area_require_access(
+                        &mut tx,
+                        system.id.as_str(),
+                        LEGACY_OWNER_USER_ID,
+                        AreaAccess::Collaborate
+                    )
+                    .await,
+                    Err(TruthError::Forbidden(_))
+                ));
+                area_require_access(
+                    &mut tx,
+                    area.id.as_str(),
+                    LEGACY_OWNER_USER_ID,
+                    AreaAccess::Delete,
+                )
+                .await
+                .unwrap();
+                area_delete_tx(&mut tx, area.id.as_str()).await.unwrap();
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM application_users")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap(),
+                    3
+                );
+            })
+        })
         .await
-        .unwrap();
-    application_user_register(&mut tx, "outsider", "Outsider")
-        .await
-        .unwrap();
-    let area = area_create_tx(&mut tx, LEGACY_OWNER_USER_ID, new_area())
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
-        .bind(area.id.as_str())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    area_require_access(&mut tx, area.id.as_str(), "alice", AreaAccess::Collaborate)
-        .await
-        .unwrap();
-    assert!(matches!(
-        area_require_access(&mut tx, area.id.as_str(), "alice", AreaAccess::Delete).await,
-        Err(TruthError::Forbidden(_))
-    ));
-    assert!(matches!(
-        area_require_access(
-            &mut tx,
-            area.id.as_str(),
-            "outsider",
-            AreaAccess::Collaborate
-        )
-        .await,
-        Err(TruthError::Forbidden(_))
-    ));
-    assert_eq!(
-        areas_list_for_member(&mut tx, "alice").await.unwrap().len(),
-        1
-    );
-    assert!(
-        areas_list_for_member(&mut tx, "outsider")
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let system = area_create_system_tx(&mut tx).await.unwrap();
-    assert!(
-        sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
-            .bind(system.id.as_str())
-            .execute(&mut *tx)
-            .await
-            .is_err()
-    );
-    assert!(matches!(
-        area_require_access(
-            &mut tx,
-            system.id.as_str(),
-            LEGACY_OWNER_USER_ID,
-            AreaAccess::Collaborate
-        )
-        .await,
-        Err(TruthError::Forbidden(_))
-    ));
-    area_require_access(
-        &mut tx,
-        area.id.as_str(),
-        LEGACY_OWNER_USER_ID,
-        AreaAccess::Delete,
-    )
-    .await
-    .unwrap();
-    area_delete_tx(&mut tx, area.id.as_str()).await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM application_users")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        3
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn area_ownership_creator_keys_are_independent_permanent_and_replay_checks_current_membership()
  {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    application_user_register(&mut tx, "alice", "Alice")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                application_user_register(&mut tx, "alice", "Alice")
+                    .await
+                    .unwrap();
+                let first = area_create_tx(&mut tx, LEGACY_OWNER_USER_ID, new_area())
+                    .await
+                    .unwrap();
+                area_create_bind_tx(
+                    &mut tx,
+                    LEGACY_OWNER_USER_ID,
+                    "same",
+                    "v1:owner",
+                    first.id.as_str(),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    area_create_replay_tx(&mut tx, "alice", "same", "v1:alice")
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                let second = area_create_tx(&mut tx, "alice", new_area()).await.unwrap();
+                area_create_bind_tx(&mut tx, "alice", "same", "v1:alice", second.id.as_str())
+                    .await
+                    .unwrap();
+                assert_ne!(first.id, second.id);
+                assert_eq!(
+                    area_create_replay_tx(&mut tx, "alice", "same", "v1:alice")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    second.id
+                );
+                assert!(matches!(
+                    area_create_replay_tx(&mut tx, "alice", "same", "different").await,
+                    Err(TruthError::IdempotencyKeyReused(_))
+                ));
+                sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+                    .bind(second.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                assert!(matches!(
+                    area_create_replay_tx(&mut tx, "alice", "same", "v1:alice").await,
+                    Err(TruthError::Forbidden(_))
+                ));
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT count(*) FROM area_members WHERE area_id=?1"
+                    )
+                    .bind(second.id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap(),
+                    0
+                );
+                area_delete_tx(&mut tx, first.id.as_str()).await.unwrap();
+                assert!(matches!(
+                    area_create_replay_tx(&mut tx, LEGACY_OWNER_USER_ID, "same", "v1:owner").await,
+                    Err(TruthError::IdempotencyKeyExhausted(_))
+                ));
+                assert!(
+                    sqlx::query("DELETE FROM area_create_idempotency")
+                        .execute(&mut **tx)
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    sqlx::query("UPDATE area_create_idempotency SET request_fingerprint='changed'")
+                        .execute(&mut **tx)
+                        .await
+                        .is_err()
+                );
+            })
+        })
         .await
-        .unwrap();
-    let first = area_create_tx(&mut tx, LEGACY_OWNER_USER_ID, new_area())
-        .await
-        .unwrap();
-    area_create_bind_tx(
-        &mut tx,
-        LEGACY_OWNER_USER_ID,
-        "same",
-        "v1:owner",
-        first.id.as_str(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        area_create_replay_tx(&mut tx, "alice", "same", "v1:alice")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let second = area_create_tx(&mut tx, "alice", new_area()).await.unwrap();
-    area_create_bind_tx(&mut tx, "alice", "same", "v1:alice", second.id.as_str())
-        .await
-        .unwrap();
-    assert_ne!(first.id, second.id);
-    assert_eq!(
-        area_create_replay_tx(&mut tx, "alice", "same", "v1:alice")
-            .await
-            .unwrap()
-            .unwrap()
-            .id,
-        second.id
-    );
-    assert!(matches!(
-        area_create_replay_tx(&mut tx, "alice", "same", "different").await,
-        Err(TruthError::IdempotencyKeyReused(_))
-    ));
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-        .bind(second.id.as_str())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    assert!(matches!(
-        area_create_replay_tx(&mut tx, "alice", "same", "v1:alice").await,
-        Err(TruthError::Forbidden(_))
-    ));
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members WHERE area_id=?1")
-            .bind(second.id.as_str())
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap(),
-        0
-    );
-    area_delete_tx(&mut tx, first.id.as_str()).await.unwrap();
-    assert!(matches!(
-        area_create_replay_tx(&mut tx, LEGACY_OWNER_USER_ID, "same", "v1:owner").await,
-        Err(TruthError::IdempotencyKeyExhausted(_))
-    ));
-    assert!(
-        sqlx::query("DELETE FROM area_create_idempotency")
-            .execute(&mut *tx)
-            .await
-            .is_err()
-    );
-    assert!(
-        sqlx::query("UPDATE area_create_idempotency SET request_fingerprint='changed'")
-            .execute(&mut *tx)
-            .await
-            .is_err()
-    );
+        .expect("independent write operation")
 }

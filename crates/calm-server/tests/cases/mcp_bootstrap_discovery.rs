@@ -23,10 +23,13 @@ async fn fixture() -> (CardBoot, configured::HistoryHost) {
 }
 
 async fn bind(boot: &CardBoot, owner: &str) {
-    sqlx::query("UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2")
-        .bind(owner)
-        .bind(boot.track_id.as_str())
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET plugin_scope = ?1 WHERE id = ?2")
+                .bind(owner)
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
 }
@@ -180,7 +183,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
 #[tokio::test]
 async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery() {
     use calm_server::db::sqlite::{
-        begin_immediate_tx, session_bind_attribution_tx, session_mark_superseded_runtime_tx,
+        session_bind_attribution_tx, session_mark_superseded_runtime_tx,
         session_projection_active_for_card_tx,
     };
     use calm_server::session_projection_repo::{AgentProvider, ThreadAttribution};
@@ -203,56 +206,65 @@ async fn builtin_calls_reject_cross_session_and_expired_identity_after_discovery
             .any(|t| t["name"] == PUBLISH)
     );
 
-    let mut tx = begin_immediate_tx(boot.sqlx.db()).await.unwrap();
-    let foreign = session_projection_active_for_card_tx(&mut tx, &boot.other_card_id)
+    let write_db = (boot.sqlx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let foreign = session_projection_active_for_card_tx(&mut tx, &boot.other_card_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                session_bind_attribution_tx(
+                    &mut tx,
+                    &foreign.id,
+                    ThreadAttribution {
+                        worker_session_id: foreign.id.clone(),
+                        provider: AgentProvider::Codex,
+                        thread_id: Some("foreign-thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                send_frame(
+                    &mut wr,
+                    tools_call_frame(3, PUBLISH, "foreign-thread", json!({})),
+                )
+                .await;
+                let rejected = recv_frame(&mut rd).await;
+                assert_eq!(rejected["error"]["code"], -32602, "{rejected:#}");
+                assert!(
+                    rejected["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("other than this connection")
+                );
+                let mut tx = write_session.begin().await.unwrap();
+                session_mark_superseded_runtime_tx(&mut tx, &boot.session_id)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                send_frame(
+                    &mut wr,
+                    json!({"jsonrpc":"2.0", "id":4, "method":"tools/call",
+                "params":{"name":PUBLISH, "arguments":{}}}),
+                )
+                .await;
+                let rejected = recv_frame(&mut rd).await;
+                assert_eq!(rejected["error"]["code"], -32401, "{rejected:#}");
+                let expired = rpc(
+                    &boot,
+                    boot.daemon_token.as_deref().unwrap(),
+                    tools_call_frame(5, PUBLISH, &boot.thread_id, json!({})),
+                )
+                .await;
+                assert_eq!(expired["error"]["code"], -32601, "{expired:#}");
+            })
+        })
         .await
-        .unwrap()
-        .unwrap();
-    session_bind_attribution_tx(
-        &mut tx,
-        &foreign.id,
-        ThreadAttribution {
-            worker_session_id: foreign.id.clone(),
-            provider: AgentProvider::Codex,
-            thread_id: Some("foreign-thread".into()),
-            session_id: None,
-            active_turn_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    send_frame(
-        &mut wr,
-        tools_call_frame(3, PUBLISH, "foreign-thread", json!({})),
-    )
-    .await;
-    let rejected = recv_frame(&mut rd).await;
-    assert_eq!(rejected["error"]["code"], -32602, "{rejected:#}");
-    assert!(
-        rejected["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("other than this connection")
-    );
-    let mut tx = boot.sqlx.pool().begin().await.unwrap();
-    session_mark_superseded_runtime_tx(&mut tx, &boot.session_id)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    send_frame(
-        &mut wr,
-        json!({"jsonrpc":"2.0", "id":4, "method":"tools/call",
-        "params":{"name":PUBLISH, "arguments":{}}}),
-    )
-    .await;
-    let rejected = recv_frame(&mut rd).await;
-    assert_eq!(rejected["error"]["code"], -32401, "{rejected:#}");
-    let expired = rpc(
-        &boot,
-        boot.daemon_token.as_deref().unwrap(),
-        tools_call_frame(5, PUBLISH, &boot.thread_id, json!({})),
-    )
-    .await;
-    assert_eq!(expired["error"]["code"], -32601, "{expired:#}");
+        .expect("independent write operation")
 }

@@ -89,55 +89,64 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     let lease_id = new_id();
     let now = now_ms();
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("thread-e1".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now,
-        },
-    )
-    .await
-    .unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some("thread-e1".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now,
+                    },
+                )
+                .await
+                .unwrap();
 
-    // `lease_owner` points at no operation row (NULL owner_phase → "not recoverable"), so the
-    // reclaim is purely on the boot_id mismatch; no filesystem dir is required.
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+                // `lease_owner` points at no operation row (NULL owner_phase → "not recoverable"), so the
+                // reclaim is purely on the boot_id mismatch; no filesystem dir is required.
+                sqlx::query(
+                    r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
                lease_until_ms, boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', 'owner-none', NULL, ?5, ?6, ?6)"#,
-    )
-    .bind(&lease_id)
-    .bind(card.id.as_str())
-    .bind(track.id.as_str())
-    .bind(format!("/tmp/neige-e1-lease/{}", card.id))
-    .bind(STALE_BOOT_ID)
-    .bind(now)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
+                )
+                .bind(&lease_id)
+                .bind(card.id.as_str())
+                .bind(track.id.as_str())
+                .bind(format!("/tmp/neige-e1-lease/{}", card.id))
+                .bind(STALE_BOOT_ID)
+                .bind(now)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
 
-    tx.commit().await.unwrap();
+                tx.commit().await.unwrap();
 
-    // Drop the pool before spawning the server so the seeding connection is not holding the file open.
-    Seeded {
-        runtime_id,
-        lease_id,
-        card_id: card.id.to_string(),
-        track_id: track.id.to_string(),
-    }
+                // Drop the pool before spawning the server so the seeding connection is not holding the file open.
+                Seeded {
+                    runtime_id,
+                    lease_id,
+                    card_id: card.id.to_string(),
+                    track_id: track.id.to_string(),
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 struct FinalState {

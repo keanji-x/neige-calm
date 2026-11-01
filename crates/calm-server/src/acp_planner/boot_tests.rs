@@ -226,59 +226,63 @@ async fn owner_with_plan(
         )
         .await
         .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let track = crate::db::sqlite::track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id,
-            title: "ACP boot".into(),
-            sort: None,
-            cwd: root.display().to_string(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: crate::routes::theme::RequestTheme::default_dark(),
-        },
-        None,
-        plan,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
-        track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
-        payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
-    }, CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
-    let worker = new_id();
-    let thread = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(provider),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: crate::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    Owner {
-        worker,
-        card: card.id.to_string(),
-        track: track.id.to_string(),
-        thread,
-    }
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let track = crate::db::sqlite::track_create_tx(
+            &mut tx,
+            NewTrack {
+                template_input: None,
+                area_id: area.id,
+                title: "ACP boot".into(),
+                sort: None,
+                cwd: root.display().to_string(),
+                template_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            },
+            None,
+            plan,
+            None,
+            repo.track_area_cache(),
+        )
+        .await
+        .unwrap();
+        let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
+            track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
+            payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":provider,"permission_mode":"never"}),
+        }, CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
+        let worker = new_id();
+        let thread = new_id();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(provider),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: crate::model::now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        Owner {
+            worker,
+            card: card.id.to_string(),
+            track: track.id.to_string(),
+            thread,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn historical(repo: &SqlxRepo, root: &Path, provider: AgentProvider, owned: bool) -> Owner {
@@ -287,10 +291,13 @@ async fn historical(repo: &SqlxRepo, root: &Path, provider: AgentProvider, owned
 }
 
 async fn historical_row(repo: &SqlxRepo, row: Owner, owned: bool) -> Owner {
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
-        .bind(old_hash(&row))
-        .bind(&row.worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
+                .bind(old_hash(&row))
+                .bind(&row.worker),
+        )
         .await
         .unwrap();
     if owned {
@@ -333,9 +340,12 @@ async fn acp_boot_unconfigured_revokes_only_owned_credentials() {
     let repo = SqlxRepo::open(&cfg.db_url).await.unwrap();
     let owned = historical(&repo, &root, AgentProvider::OpenCode, true).await;
     let retired = historical(&repo, &root, AgentProvider::OpenCode, true).await;
-    sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?1")
-        .bind(&retired.worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?1")
+                .bind(&retired.worker),
+        )
         .await
         .unwrap();
     let unowned = historical(&repo, &root, AgentProvider::OpenCode, false).await;
@@ -387,15 +397,16 @@ async fn acp_boot_revocation_error_prevents_listener() {
     let cfg = config(&root, false);
     let repo = SqlxRepo::open(&cfg.db_url).await.unwrap();
     let owned = historical(&repo, &root, AgentProvider::OpenCode, true).await;
-    sqlx::query(
-        "CREATE TRIGGER refuse_acp_revoke
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_acp_revoke
          BEFORE UPDATE OF mcp_token_hash ON worker_sessions
          WHEN OLD.id IN (SELECT worker_session_id FROM acp_managed_sessions)
          BEGIN SELECT RAISE(ABORT, 'injected ACP revoke failure'); END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let error = match AppState::boot(&cfg).await {
         Ok(state) => {
             close(state.into_parts().0).await;
@@ -504,10 +515,13 @@ async fn acp_boot_track_sweep_without_execution_revokes_without_native_scan() {
     super::config::boot_with_sweep(&repo, &host, |_| async { Ok(()) })
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
-        .bind(old_hash(&row))
-        .bind(&row.worker)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mcp_token_hash=?1 WHERE id=?2")
+                .bind(old_hash(&row))
+                .bind(&row.worker),
+        )
         .await
         .unwrap();
     // The pre-C4 native scan remains boot-only.

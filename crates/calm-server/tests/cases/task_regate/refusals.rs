@@ -58,10 +58,13 @@ async fn regate_refused_while_a_previous_gate_process_survives() {
     let (task, _, _) = red(&fx, "survivor", gate_on(&green, None)).await;
     let previous_verdict = current(&fx.boot, "survivor").await.gate_result_json;
     std::fs::write(&green, b"").unwrap();
-    sqlx::query("UPDATE tasks SET gate_json=?1 WHERE id=?2")
-        .bind(gate_on(&green, Some(&release))["gate"].to_string())
-        .bind(&task.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET gate_json=?1 WHERE id=?2")
+                .bind(gate_on(&green, Some(&release))["gate"].to_string())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     regate(&fx, &task.id).await.unwrap();
@@ -90,17 +93,16 @@ async fn regate_refused_while_a_previous_gate_process_survives() {
     .unwrap();
     // Model a terminal op row with a still-running execution, as the occupancy reader must
     // defend against. The real executor, rather than PID artifacts, supplies the missing proof.
-    sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
-        .bind(&op.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1").bind(&op.id))
         .await
         .unwrap();
-    sqlx::query(
+    (fx.db()).writer().execute(sqlx::query(
         "UPDATE tasks SET status='failed',status_detail='gate-red',gate_result_json=?2 WHERE id=?1",
     )
     .bind(&task.id)
-    .bind(previous_verdict)
-    .execute(&fx.pool())
+    .bind(previous_verdict))
     .await
     .unwrap();
     let result = regate(&fx, &task.id).await;
@@ -154,13 +156,12 @@ async fn regate_refuses_rows_that_cannot_rerun() {
         })
         .await
         .unwrap();
-    sqlx::query(concat!(
+    (fx.db()).writer().execute(sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,status_detail,gate_json,",
         "created_at_ms,updated_at_ms) VALUES('foreign-1',?1,'foreign','codex','goal','{}',",
         "'failed','gate-red','{\"steps\":[]}',1,1)"
     ))
-    .bind(other.id.as_str())
-    .execute(&fx.pool())
+    .bind(other.id.as_str()))
     .await
     .unwrap();
     for attempt in ["foreign-1", "no-such-attempt"] {
@@ -260,9 +261,11 @@ async fn regate_refuses_rows_that_cannot_rerun() {
             gate_on(&outside(&fx, "never"), None),
         )
         .await;
-    sqlx::query("UPDATE tasks SET status = 'verifying' WHERE id = ?1")
-        .bind(&unbound.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status = 'verifying' WHERE id = ?1").bind(&unbound.id),
+        )
         .await
         .unwrap();
     drive(&fx, "unbound").await;
@@ -281,9 +284,11 @@ async fn regate_refuses_rows_that_cannot_rerun() {
 
     // A red gate whose context went stale.
     let (stale, _, _) = Box::pin(red(&fx, "stale", gate_on(&outside(&fx, "never"), None))).await;
-    sqlx::query("UPDATE tasks SET context_stale_at_ms = 1 WHERE id = ?1")
-        .bind(&stale.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET context_stale_at_ms = 1 WHERE id = ?1").bind(&stale.id),
+        )
         .await
         .unwrap();
     refused(&fx, &stale.id, -32409, "context went stale").await;

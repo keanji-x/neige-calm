@@ -231,8 +231,12 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
              It entered the read while the writer already held W(overlays), so \
              finishing early would mean it never took the lock at all"
         );
-        peak_in_use = peak_in_use
-            .max(connections_in_use(db.read_pool()) + connections_in_use(db.writer_pool()));
+        peak_in_use = peak_in_use.max(
+            connections_in_use(db.read_pool()) + {
+                let writer = db.writer().pool_state_for_test();
+                writer.size as usize - writer.idle
+            },
+        );
         if checked_out_at.is_none() && peak_in_use >= 2 {
             checked_out_at = Some(std::time::Instant::now());
         }

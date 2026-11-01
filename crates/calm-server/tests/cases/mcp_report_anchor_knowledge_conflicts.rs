@@ -334,8 +334,8 @@ async fn unknown_target_is_unread_but_database_failure_is_internal() {
     assert_eq!(d["next_step"]["action"], "index/revise_target");
     read_sections(&b, planner_identity(&b), &["概要"]).await;
     let db = b.repo.sqlite_db().unwrap();
-    sqlx::query("DROP TABLE report_read_ledger_blocks")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TABLE report_read_ledger_blocks"))
         .await
         .unwrap();
     let err = commit(&b, planner_identity(&b), json!({"summary":"ours"}))
@@ -473,10 +473,12 @@ async fn full_empty_text_refreshes_document_anchor_without_certifying_tasks() {
     p.body =
         calm_types::report_blocks::render_fence("task", &p.blocks.as_ref().unwrap()[0].payload);
     let db = b.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE cards SET payload=?, body_crdt=NULL WHERE id=?")
-        .bind(serde_json::to_string(&p).unwrap())
-        .bind(b.report_card_id.as_str())
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?, body_crdt=NULL WHERE id=?")
+                .bind(serde_json::to_string(&p).unwrap())
+                .bind(b.report_card_id.as_str()),
+        )
         .await
         .unwrap();
     let read = call_tool(&b, TOOL_REPORT_READ, who.clone(), json!({}))

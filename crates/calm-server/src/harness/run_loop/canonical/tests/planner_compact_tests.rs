@@ -262,14 +262,15 @@ async fn canonical_planner_compact_settlement_and_wake_roll_back_together() {
     .await;
     super::compact_tests::wait_turn(&fx, "maintenance").await;
     let issuance = inner.issuance.lock().await;
-    sqlx::query(
-        "CREATE TRIGGER canonical_wake_fail BEFORE INSERT ON events \
+    (fx.original.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER canonical_wake_fail BEFORE INSERT ON events \
          WHEN NEW.kind='track.wake_requested' \
          BEGIN SELECT RAISE(ABORT,'blocked wake'); END",
-    )
-    .execute(fx.original.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     notify_thread(
         &fx.daemon,
         &mut peer,
@@ -296,8 +297,9 @@ async fn canonical_planner_compact_settlement_and_wake_roll_back_together() {
     );
     assert_eq!(fx.frame().await.header.phase, HarnessPhaseTag::Compacting);
     assert!(!fx.original.repo.events_since(0,1000).await.unwrap().iter().any(|event| matches!(&event.3, Event::TaskCompleted { idempotency_key, .. } if idempotency_key == &id)));
-    sqlx::query("DROP TRIGGER canonical_wake_fail")
-        .execute(fx.original.repo.pool())
+    (fx.original.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER canonical_wake_fail"))
         .await
         .unwrap();
     drop(issuance);

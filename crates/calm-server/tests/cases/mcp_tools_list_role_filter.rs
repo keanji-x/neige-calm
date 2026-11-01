@@ -340,9 +340,12 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
 #[tokio::test]
 async fn tools_list_shows_track_add_to_an_admin() {
     let boot = boot_with_role(CardRole::Planner).await;
-    sqlx::query("UPDATE tracks SET admin_granted_at=1 WHERE id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(boot.sqlx.pool())
+    (boot.sqlx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET admin_granted_at=1 WHERE id=?1")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     let (mut rd, mut wr) = connect(&boot.socket_path).await;

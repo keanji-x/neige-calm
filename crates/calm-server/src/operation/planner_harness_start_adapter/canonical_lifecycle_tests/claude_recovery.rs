@@ -278,15 +278,16 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
             std::fs::write(fx._dir.path().join("scenario"), scenario).unwrap();
         }
         if crossing {
-            sqlx::query(
-                "CREATE TRIGGER fail_fact BEFORE UPDATE OF handle_state_json ON worker_sessions
+            (fx.repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    "CREATE TRIGGER fail_fact BEFORE UPDATE OF handle_state_json ON worker_sessions
                 WHEN json_extract(NEW.handle_state_json,
                     '$.canonical_inputs.attempts[0].delivery.kind')='unknown'
                 BEGIN SELECT RAISE(ABORT,'fact failed'); END",
-            )
-            .execute(fx.repo.pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
         }
         wake(&fx, source.clone()).await.unwrap();
         let expected_lines = match case {
@@ -342,8 +343,9 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
             .await
             .unwrap();
         if crossing {
-            sqlx::query("DROP TRIGGER fail_fact")
-                .execute(fx.repo.pool())
+            (fx.repo.db())
+                .writer()
+                .execute(sqlx::query("DROP TRIGGER fail_fact"))
                 .await
                 .unwrap();
         }
@@ -400,14 +402,15 @@ async fn canonical_claude_recovery_crossing_and_unknown_never_write_again() {
 async fn canonical_claude_recovery_crash_before_marker_requires_live_source() {
     let fx = Fixture::claude().await;
     let (thread, _) = fx.bind_with_lost_response().await;
-    sqlx::query(
-        "CREATE TRIGGER fail_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN NEW.handle_state_json LIKE '%crossing_unknown%'
         BEGIN SELECT RAISE(ABORT,'marker failed'); END",
-    )
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let (auth, token, old_source) = source().await;
     wake(&fx, old_source.clone()).await.unwrap();
     let saved = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -428,8 +431,9 @@ async fn canonical_claude_recovery_crash_before_marker_requires_live_source() {
         .unwrap();
     assert!(saved.canonical_inputs.attempts.is_empty());
     auth.sessions.remove(&token).unwrap();
-    sqlx::query("DROP TRIGGER fail_marker")
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_marker"))
         .await
         .unwrap();
     assert!(wake(&fx, old_source).await.is_err());
@@ -588,8 +592,7 @@ async fn canonical_claude_recovery_workspace_rechecks_membership_owner_and_carri
                     tx.commit().await.unwrap();
                 }
                 Change::OperationOwner => {
-                    sqlx::query("UPDATE operations SET lease_owner='replacement' WHERE phase='app_server_interact'")
-                        .execute(fx.repo.pool()).await.unwrap();
+                    (fx.repo.db()).writer().execute(sqlx::query("UPDATE operations SET lease_owner='replacement' WHERE phase='app_server_interact'")).await.unwrap();
                 }
                 Change::Carrier => {
                     let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
@@ -698,45 +701,55 @@ async fn canonical_claude_compact_route_requires_real_human_and_retained_recover
         .await
         .unwrap();
     let before = fx.frame().await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
-        &mut tx,
-        fx.card.as_str(),
-        &fx.worker,
-    )
-    .await
-    .unwrap();
-    let fence = crate::db::sqlite::conversation::RuntimeExecutionFence::from_carrier(&carrier);
-    let mut header = fence.header().clone();
-    header["phase"] = json!("compacting");
-    header["compact_outcome"]["status"] = json!("started");
-    crate::db::sqlite::conversation::persist_runtime_frame_tx(
-        &mut tx,
-        fx.card.as_str(),
-        &fx.worker,
-        &fence,
-        header,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    wake(&fx, human).await.unwrap();
-    let after = fx.frame().await;
-    assert_eq!(after.header.phase, HarnessPhaseTag::Wedged);
-    assert_eq!(
-        after.header.compact_outcome.unwrap().status,
-        crate::harness::compact_outcome::CompactStatus::Unconfirmed
-    );
-    assert_eq!(after.canonical_inputs, before.canonical_inputs);
-    assert_eq!(after.header.last_turn_id, before.header.last_turn_id);
-    assert_eq!(
-        fx.lines(),
-        2,
-        "retained recovery never writes another compact line"
-    );
-    fx.state
-        .harness
-        .shutdown_and_remove(&fx.worker)
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier = crate::db::sqlite::conversation::current_input_carrier_tx(
+                    &mut tx,
+                    fx.card.as_str(),
+                    &fx.worker,
+                )
+                .await
+                .unwrap();
+                let fence =
+                    crate::db::sqlite::conversation::RuntimeExecutionFence::from_carrier(&carrier);
+                let mut header = fence.header().clone();
+                header["phase"] = json!("compacting");
+                header["compact_outcome"]["status"] = json!("started");
+                crate::db::sqlite::conversation::persist_runtime_frame_tx(
+                    &mut tx,
+                    fx.card.as_str(),
+                    &fx.worker,
+                    &fence,
+                    header,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                wake(&fx, human).await.unwrap();
+                let after = fx.frame().await;
+                assert_eq!(after.header.phase, HarnessPhaseTag::Wedged);
+                assert_eq!(
+                    after.header.compact_outcome.unwrap().status,
+                    crate::harness::compact_outcome::CompactStatus::Unconfirmed
+                );
+                assert_eq!(after.canonical_inputs, before.canonical_inputs);
+                assert_eq!(after.header.last_turn_id, before.header.last_turn_id);
+                assert_eq!(
+                    fx.lines(),
+                    2,
+                    "retained recovery never writes another compact line"
+                );
+                fx.state
+                    .harness
+                    .shutdown_and_remove(&fx.worker)
+                    .await
+                    .unwrap();
+            })
+        })
         .await
-        .unwrap();
+        .expect("independent write operation")
 }

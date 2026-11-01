@@ -12,7 +12,7 @@ use sqlx::pool::PoolConnection;
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
-use super::{SqlxRepo, begin_immediate_tx, is_sqlite_busy};
+use super::{SqlxRepo, is_sqlite_busy};
 
 /// Bound for statements that must complete promptly once unblocked; far below the pool reaper's 600 s idle_timeout.
 const STALL_BOUND: Duration = Duration::from_secs(30);
@@ -469,61 +469,70 @@ async fn deadlock_semantics_pool_guard_drop_after_release_repair_and_whole_tx_re
         tx.rollback().await.unwrap();
     });
 
-    let mut tx_a = begin_immediate_tx(repo.db()).await.unwrap();
-    sqlx::query("INSERT INTO deadlock_x (v) VALUES ('a')")
-        .execute(&mut **tx_a)
-        .await
-        .unwrap();
-    b_locked_y_rx.await.unwrap();
-    go_b_tx.send(()).unwrap();
-    b_parking_rx.await.unwrap();
-    sleep(PARK_GRACE).await;
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx_a = write_session.begin().await.unwrap();
+                sqlx::query("INSERT INTO deadlock_x (v) VALUES ('a')")
+                    .execute(&mut **tx_a)
+                    .await
+                    .unwrap();
+                b_locked_y_rx.await.unwrap();
+                go_b_tx.send(()).unwrap();
+                b_parking_rx.await.unwrap();
+                sleep(PARK_GRACE).await;
 
-    let err = sqlx::query("INSERT INTO deadlock_y (v) VALUES ('a')")
-        .execute(&mut **tx_a)
-        .await
-        .expect_err("cycle-closing writer must fail with the deadlock error");
-    let capture = assert_deadlock_shape(&err, "pool writer(A), guard-drop path");
-    eprintln!("[deadlock-semantics pool-level] {capture}");
+                let err = sqlx::query("INSERT INTO deadlock_y (v) VALUES ('a')")
+                    .execute(&mut **tx_a)
+                    .await
+                    .expect_err("cycle-closing writer must fail with the deadlock error");
+                let capture = assert_deadlock_shape(&err, "pool writer(A), guard-drop path");
+                eprintln!("[deadlock-semantics pool-level] {capture}");
 
-    // Production error path: drop the guard, no explicit rollback; the ping in after_release flushes the queued rollback.
-    drop(tx_a);
+                // Production error path: drop the guard, no explicit rollback; the ping in after_release flushes the queued rollback.
+                drop(tx_a);
 
-    timeout(STALL_BOUND, b)
-        .await
-        .expect("reader must unpark after the writer's guard drop")
-        .unwrap();
+                timeout(STALL_BOUND, b)
+                    .await
+                    .expect("reader must unpark after the writer's guard drop")
+                    .unwrap();
 
-    // Sweep EVERY pooled connection — none may still be inside a transaction.
-    wait_for_pool_settled(&pool).await;
-    let settled = pool.size() as usize;
-    let mut held: Vec<PoolConnection<sqlx::Sqlite>> = Vec::with_capacity(settled);
-    for _ in 0..settled {
-        held.push(pool.acquire().await.unwrap());
-    }
-    for conn in &held {
-        assert!(
-            !conn.is_in_transaction(),
-            "no pooled connection may be left inside the deadlocked transaction"
-        );
-    }
-    drop(held);
-    wait_for_pool_settled(&pool).await;
+                // Sweep EVERY pooled connection — none may still be inside a transaction.
+                wait_for_pool_settled(&pool).await;
+                let settled = pool.size() as usize;
+                let mut held: Vec<PoolConnection<sqlx::Sqlite>> = Vec::with_capacity(settled);
+                for _ in 0..settled {
+                    held.push(pool.acquire().await.unwrap());
+                }
+                for conn in &held {
+                    assert!(
+                        !conn.is_in_transaction(),
+                        "no pooled connection may be left inside the deadlocked transaction"
+                    );
+                }
+                drop(held);
+                wait_for_pool_settled(&pool).await;
 
-    let mut tx_retry = timeout(STALL_BOUND, begin_immediate_tx(repo.db()))
-        .await
-        .expect("begin_immediate_tx must not stall after the deadlock")
-        .expect("begin_immediate_tx must succeed on the healed pool");
-    sqlx::query("INSERT INTO deadlock_x (v) VALUES ('retry')")
-        .execute(&mut **tx_retry)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO deadlock_y (v) VALUES ('retry')")
-        .execute(&mut **tx_retry)
-        .await
-        .unwrap();
-    tx_retry.commit().await.unwrap();
+                let mut tx_retry = timeout(STALL_BOUND, write_session.begin())
+                    .await
+                    .expect("begin_immediate_tx must not stall after the deadlock")
+                    .expect("begin_immediate_tx must succeed on the healed pool");
+                sqlx::query("INSERT INTO deadlock_x (v) VALUES ('retry')")
+                    .execute(&mut **tx_retry)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO deadlock_y (v) VALUES ('retry')")
+                    .execute(&mut **tx_retry)
+                    .await
+                    .unwrap();
+                tx_retry.commit().await.unwrap();
 
-    assert_eq!(count(&pool, "deadlock_x").await, 2);
-    assert_eq!(count(&pool, "deadlock_y").await, 2);
+                assert_eq!(count(&pool, "deadlock_x").await, 2);
+                assert_eq!(count(&pool, "deadlock_y").await, 2);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

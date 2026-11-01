@@ -19,7 +19,7 @@ pub use usage::{TurnUsage, TurnUsageResult, read_state, record_turn_usage};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
 
-use crate::db::sqlite::{SqliteDb, begin_immediate_tx};
+use crate::db::sqlite::SqliteDb;
 use crate::error::{Result, TruthError};
 use crate::ids::TrackId;
 use crate::worker::{Principal, WorkerSessionId};
@@ -147,11 +147,19 @@ impl CommittedReaction {
 }
 
 pub async fn react(db: &SqliteDb, input: ObjectiveInput) -> Result<CommittedReaction> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let at_ms = now_ms()?;
-    let reaction = react_tx(&mut tx, &input, at_ms).await?;
-    tx.commit().await?;
-    Ok(CommittedReaction { reaction })
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let at_ms = now_ms()?;
+                let reaction = react_tx(&mut tx, &input, at_ms).await?;
+                tx.commit().await?;
+                Ok(CommittedReaction { reaction })
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }
 
 fn now_ms() -> Result<i64> {
@@ -213,10 +221,18 @@ async fn apply_tx(
 /// A version-mismatched snapshot is rebuilt in memory. This read never inserts intents.
 /// Use writer admission for a stable multi-query view without a deferred-lock cycle.
 pub async fn load_state(db: &SqliteDb, track: &TrackId) -> Result<(LogSeq, State)> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let result = load_state_tx(&mut tx, track).await?;
-    tx.commit().await?;
-    Ok(result)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let result = load_state_tx(&mut tx, track).await?;
+                tx.commit().await?;
+                Ok(result)
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }
 
 /// Read the engine state under the caller's writer admission, so an executor
@@ -233,11 +249,19 @@ pub async fn replay_log(
     db: &SqliteDb,
     track: &TrackId,
 ) -> Result<(State, Vec<(IntentId, Intent)>)> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let rows = log::read_tx(&mut tx, track).await?;
-    let result = fold_log(&rows);
-    tx.commit().await?;
-    Ok(result)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let rows = log::read_tx(&mut tx, track).await?;
+                let result = fold_log(&rows);
+                tx.commit().await?;
+                Ok(result)
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }
 
 fn fold_log(rows: &[LoggedEvent]) -> (State, Vec<(IntentId, Intent)>) {

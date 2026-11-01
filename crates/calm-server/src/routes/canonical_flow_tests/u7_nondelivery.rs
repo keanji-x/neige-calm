@@ -3,10 +3,9 @@ use super::*;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 
 pub(super) async fn hold(fixture: &Fixture) {
-    sqlx::query("CREATE TRIGGER revoke_u7_crossing AFTER UPDATE OF handle_state_json ON worker_sessions
+    (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER revoke_u7_crossing AFTER UPDATE OF handle_state_json ON worker_sessions
         WHEN json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>json_array_length(OLD.handle_state_json,'$.canonical_inputs.attempts')
-        BEGIN DELETE FROM area_members; END")
-        .execute(fixture.repo.pool()).await.unwrap();
+        BEGIN DELETE FROM area_members; END")).await.unwrap();
 }
 
 pub(super) async fn release_twice(
@@ -87,14 +86,15 @@ pub(super) async fn release_twice(
             "Context never becomes Human"
         );
         originals = rows;
-        sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) SELECT ?1,id,'owner',0 FROM application_users")
-            .bind(body["area_id"].as_str().unwrap()).execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(sqlx::query("INSERT INTO area_members(area_id,user_id,role,joined_at) SELECT ?1,id,'owner',0 FROM application_users")
+            .bind(body["area_id"].as_str().unwrap())).await.unwrap();
         if round == 1 {
             post(app, cookie, "/api/tracks", "first", body.clone()).await;
         }
     }
-    sqlx::query("DROP TRIGGER revoke_u7_crossing")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER revoke_u7_crossing"))
         .await
         .unwrap();
 }

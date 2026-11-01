@@ -4,14 +4,18 @@ use calm_truth::db::RepoRead;
 
 async fn assistant(b: &Boot, track: &str, provider: &str) -> String {
     let id = calm_server::model::new_id();
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(&mut tx, id.clone(), calm_server::model::NewCard {
-        track_id: track.to_string().into(), title: Some("Saved discussion".into()),
-        kind: "codex".into(), sort: None,
-        payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
-    }, CardRole::Assistant, false, &b.card_role_cache).await.unwrap();
-    tx.commit().await.unwrap();
-    id
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        card_create_with_id_tx(&mut tx, id.clone(), calm_server::model::NewCard {
+            track_id: track.to_string().into(), title: Some("Saved discussion".into()),
+            kind: "codex".into(), sort: None,
+            payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+        }, CardRole::Assistant, false, &b.card_role_cache).await.unwrap();
+        tx.commit().await.unwrap();
+        id
+
+    })).await.expect("independent write operation")
 }
 
 async fn archive(b: &Boot, track: &str, card: &str, archived: bool) -> (StatusCode, Value) {
@@ -412,26 +416,35 @@ async fn archive_refuses_an_unconfirmed_wedged_provider() {
     handle.shutdown().await.unwrap();
     snapshot.phase = HarnessPhaseTag::Wedged;
     snapshot.wedged_reason = Some("provider stop did not confirm".into());
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    session_set_handle_state_of_any_runtime_tx(
-        &mut tx,
-        &runtime.id,
-        Some(serde_json::to_value(snapshot).unwrap()),
-        calm_server::model::now_ms(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let (status, body) = archive(&b, &track, &card, true).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(
-        b.state
-            .repo
-            .conversation_archived_at(&card)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_set_handle_state_of_any_runtime_tx(
+                    &mut tx,
+                    &runtime.id,
+                    Some(serde_json::to_value(snapshot).unwrap()),
+                    calm_server::model::now_ms(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let (status, body) = archive(&b, &track, &card, true).await;
+                assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                assert!(
+                    b.state
+                        .repo
+                        .conversation_archived_at(&card)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -601,57 +614,59 @@ async fn archive_checks_actual_area_membership_and_system_authority() {
     let b = boot().await;
     let track = b.create_track("Archive authority").await;
     let card = assistant(&b, &track, "codex").await;
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    application_user_register(&mut tx, "alice", "Alice")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let alice = as_principal(&b, "alice", "member");
-    // Even deployment owners need UserArea membership; Actor::User supplies no identity grant.
-    assert_eq!(
-        alice.archive(&track, &card, true).await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        as_principal(&b, "alice", "owner")
-            .archive(&track, &card, true)
-            .await,
-        StatusCode::FORBIDDEN
-    );
-    sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
-        .bind(&b.area_id)
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        alice.archive(&track, &card, true).await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        alice.archive(&track, &card, false).await,
-        StatusCode::NO_CONTENT
-    );
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::area_create_system_tx(&mut tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    // System Area is the shared deployment policy, independent of membership.
-    sqlx::query("UPDATE tracks SET area_id=(SELECT id FROM areas WHERE kind='system') WHERE id=?")
-        .bind(&track)
-        .execute(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        alice.archive(&track, &card, true).await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        as_principal(&b, LEGACY_OWNER_USER_ID, "owner")
-            .archive(&track, &card, true)
-            .await,
-        StatusCode::NO_CONTENT
-    );
+    let write_db = (b.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        application_user_register(&mut tx, "alice", "Alice")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let alice = as_principal(&b, "alice", "member");
+        // Even deployment owners need UserArea membership; Actor::User supplies no identity grant.
+        assert_eq!(
+            alice.archive(&track, &card, true).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            as_principal(&b, "alice", "owner")
+                .archive(&track, &card, true)
+                .await,
+            StatusCode::FORBIDDEN
+        );
+        (b.repo.db()).writer().execute(sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
+            .bind(&b.area_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            alice.archive(&track, &card, true).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            alice.archive(&track, &card, false).await,
+            StatusCode::NO_CONTENT
+        );
+        let mut tx = write_session.begin().await.unwrap();
+        calm_server::db::sqlite::area_create_system_tx(&mut tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        // System Area is the shared deployment policy, independent of membership.
+        (b.repo.db()).writer().execute(sqlx::query("UPDATE tracks SET area_id=(SELECT id FROM areas WHERE kind='system') WHERE id=?")
+            .bind(&track))
+            .await
+            .unwrap();
+        assert_eq!(
+            alice.archive(&track, &card, true).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            as_principal(&b, LEGACY_OWNER_USER_ID, "owner")
+                .archive(&track, &card, true)
+                .await,
+            StatusCode::NO_CONTENT
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -676,10 +691,13 @@ async fn archive_and_restore_revalidate_revocation_at_commit() {
         tokio::time::timeout(std::time::Duration::from_secs(5), hook.entered.notified())
             .await
             .unwrap();
-        sqlx::query("DELETE FROM area_members WHERE area_id=? AND user_id=?")
-            .bind(&b.area_id)
-            .bind(LEGACY_OWNER_USER_ID)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM area_members WHERE area_id=? AND user_id=?")
+                    .bind(&b.area_id)
+                    .bind(LEGACY_OWNER_USER_ID),
+            )
             .await
             .unwrap();
         hook.release.notify_one();
@@ -693,10 +711,13 @@ async fn archive_and_restore_revalidate_revocation_at_commit() {
                 .is_some(),
             !archived
         );
-        sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
-            .bind(&b.area_id)
-            .bind(LEGACY_OWNER_USER_ID)
-            .execute(b.repo.pool())
+        (b.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("INSERT INTO area_members VALUES(?1,?2,'owner',0)")
+                    .bind(&b.area_id)
+                    .bind(LEGACY_OWNER_USER_ID),
+            )
             .await
             .unwrap();
     }

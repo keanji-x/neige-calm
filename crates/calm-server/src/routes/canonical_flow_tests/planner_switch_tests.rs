@@ -165,132 +165,136 @@ impl Pair {
             .await;
         let (planner, old, _) = fixture.carrier(&track).await;
         fixture.wait_for_stored_reply(&planner).await;
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
-            &mut tx,
-            area["id"].as_str().unwrap(),
-            "planner",
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        tx.rollback().await.unwrap();
-        let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
-            receipt.acknowledgement;
-        prepare_consumed_message(&state, &old, first_message, human.as_ref().unwrap()).await;
-        let assistant = post(
-            &app,
-            &cookie,
-            &format!("/api/tracks/{track}/conversations"),
-            "assistant",
-            json!({"provider":provider,"text":"Assistant history"}),
-        )
-        .await;
-        let target = assistant["id"].as_str().unwrap().to_owned();
-        if provider == "claude" {
-            claude_creation_tests::assistant::wait_frame(&fixture, &target, |f| {
-                f.idle_for_lifecycle() && f.canonical_inputs.attempts.len() == 1
-            })
-            .await;
-        } else {
-            complete_controlled(
-                &state,
-                &mut peer,
-                "switch-assistant",
-                "assistant-turn",
-                tail.map(|pause| (target.as_str(), pause)),
-                held,
+        let write_db = (fixture.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
+                &mut tx,
+                area["id"].as_str().unwrap(),
+                "planner",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            tx.rollback().await.unwrap();
+            let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
+                receipt.acknowledgement;
+            prepare_consumed_message(&state, &old, first_message, human.as_ref().unwrap()).await;
+            let assistant = post(
+                &app,
+                &cookie,
+                &format!("/api/tracks/{track}/conversations"),
+                "assistant",
+                json!({"provider":provider,"text":"Assistant history"}),
             )
             .await;
-        }
-        let (worker, _) = assistant_canonical::carrier(&fixture, &target).await;
-        let handle = state.harness.get(&worker).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if handle.idle_carrier_owner().await.is_ok() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        if provider == "codex" {
-            fixture.wait_for_stored_reply(&target).await;
-        }
-        // The original reply row is committed before its presentation event. Re-observe
-        // this exact consumed Human input on the serial owner, then ask that owner
-        // for idle; a stored phase/reply alone does not finish the running handler.
-        let (_, frame) = assistant_canonical::carrier(&fixture, &target).await;
-        assert!(frame.canonical_inputs.active.is_none());
-        assert!(frame.canonical_inputs.pending.is_empty());
-        let [attempt] = frame.canonical_inputs.attempts.as_slice() else {
-            panic!("one consumed assistant input")
-        };
-        let (message_id, revision): (String, i64) = sqlx::query_as(
-            "SELECT message_id,revision FROM conversation_submission_inputs
-             WHERE submission_id=?1 AND input_kind='human' AND effective=1",
-        )
-        .bind(attempt.attempt.submission_id.as_str())
-        .fetch_one(fixture.repo.pool())
-        .await
-        .unwrap();
-        let message = calm_types::conversation::MessageRevisionRef {
-            message_id: calm_types::conversation::ConversationMessageId::parse(&message_id)
-                .unwrap(),
-            revision: std::num::NonZeroU32::new(u32::try_from(revision).unwrap()).unwrap(),
-        };
-        prepare_consumed_message_controlled(
-            &state,
-            &worker,
-            message,
-            human.as_ref().unwrap(),
-            tail,
-        )
-        .await;
-        let ack =
-            crate::shared_codex_appserver::native_owner_tests::feeder_prefix_started(&mut peer)
+            let target = assistant["id"].as_str().unwrap().to_owned();
+            if provider == "claude" {
+                claude_creation_tests::assistant::wait_frame(&fixture, &target, |f| {
+                    f.idle_for_lifecycle() && f.canonical_inputs.attempts.len() == 1
+                })
                 .await;
-        let committed = ack.entered.notified();
-        tokio::pin!(committed);
-        if let Some(held) = held {
-            // The original completed write is still before BEGIN. The same-peer
-            // prefix was sent, but readiness cannot precede the feeder's commit.
-            assert!(futures_util::poll!(committed.as_mut()).is_pending());
-            held.release.notify_one();
-        }
-        tokio::time::timeout(Duration::from_secs(5), committed)
+            } else {
+                complete_controlled(
+                    &state,
+                    &mut peer,
+                    "switch-assistant",
+                    "assistant-turn",
+                    tail.map(|pause| (target.as_str(), pause)),
+                    held,
+                )
+                .await;
+            }
+            let (worker, _) = assistant_canonical::carrier(&fixture, &target).await;
+            let handle = state.harness.get(&worker).unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if handle.idle_carrier_owner().await.is_ok() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
             .await
             .unwrap();
-        for id in [&old, &worker] {
-            let handle = state.harness.get(id).unwrap();
-            let owner = handle.idle_carrier_owner_typed().await.unwrap();
-            owner.recheck_typed().await.unwrap();
-        }
-        if held.is_some() {
-            let stored: (String, String, String, Option<i64>) = sqlx::query_as(
-                "SELECT card_id,thread_id,last_thread_status,last_turn_completed_ms FROM worker_sessions WHERE id=?1")
-                .bind(&worker).fetch_one(fixture.repo.pool()).await.unwrap();
-            assert_eq!(
-                (&stored.0, stored.1.as_str(), stored.2.as_str()),
-                (&target, "switch-assistant", "idle")
-            );
-            assert!(stored.3.is_some());
-        }
-        let credentials = credential_facts(&fixture, &track).await;
-        Self {
-            credentials,
-            fixture,
-            state,
-            app,
-            cookie,
-            human: human.unwrap(),
-            peer,
-            _client: client,
-            track,
-            cards: [planner, target],
-            workers: [old, worker],
-        }
+            if provider == "codex" {
+                fixture.wait_for_stored_reply(&target).await;
+            }
+            // The original reply row is committed before its presentation event. Re-observe
+            // this exact consumed Human input on the serial owner, then ask that owner
+            // for idle; a stored phase/reply alone does not finish the running handler.
+            let (_, frame) = assistant_canonical::carrier(&fixture, &target).await;
+            assert!(frame.canonical_inputs.active.is_none());
+            assert!(frame.canonical_inputs.pending.is_empty());
+            let [attempt] = frame.canonical_inputs.attempts.as_slice() else {
+                panic!("one consumed assistant input")
+            };
+            let (message_id, revision): (String, i64) = sqlx::query_as(
+                "SELECT message_id,revision FROM conversation_submission_inputs
+             WHERE submission_id=?1 AND input_kind='human' AND effective=1",
+            )
+            .bind(attempt.attempt.submission_id.as_str())
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+            let message = calm_types::conversation::MessageRevisionRef {
+                message_id: calm_types::conversation::ConversationMessageId::parse(&message_id)
+                    .unwrap(),
+                revision: std::num::NonZeroU32::new(u32::try_from(revision).unwrap()).unwrap(),
+            };
+            prepare_consumed_message_controlled(
+                &state,
+                &worker,
+                message,
+                human.as_ref().unwrap(),
+                tail,
+            )
+            .await;
+            let ack =
+                crate::shared_codex_appserver::native_owner_tests::feeder_prefix_started(&mut peer)
+                    .await;
+            let committed = ack.entered.notified();
+            tokio::pin!(committed);
+            if let Some(held) = held {
+                // The original completed write is still before BEGIN. The same-peer
+                // prefix was sent, but readiness cannot precede the feeder's commit.
+                assert!(futures_util::poll!(committed.as_mut()).is_pending());
+                held.release.notify_one();
+            }
+            tokio::time::timeout(Duration::from_secs(5), committed)
+                .await
+                .unwrap();
+            for id in [&old, &worker] {
+                let handle = state.harness.get(id).unwrap();
+                let owner = handle.idle_carrier_owner_typed().await.unwrap();
+                owner.recheck_typed().await.unwrap();
+            }
+            if held.is_some() {
+                let stored: (String, String, String, Option<i64>) = sqlx::query_as(
+                    "SELECT card_id,thread_id,last_thread_status,last_turn_completed_ms FROM worker_sessions WHERE id=?1")
+                    .bind(&worker).fetch_one(fixture.repo.pool()).await.unwrap();
+                assert_eq!(
+                    (&stored.0, stored.1.as_str(), stored.2.as_str()),
+                    (&target, "switch-assistant", "idle")
+                );
+                assert!(stored.3.is_some());
+            }
+            let credentials = credential_facts(&fixture, &track).await;
+            Self {
+                credentials,
+                fixture,
+                state,
+                app,
+                cookie,
+                human: human.unwrap(),
+                peer,
+                _client: client,
+                track,
+                cards: [planner, target],
+                workers: [old, worker],
+            }
+
+    })).await.expect("independent write operation")
     }
     async fn report_card_id(&self) -> crate::ids::CardId {
         crate::track_report::resolve_report_for_track(self.fixture.repo.as_ref(), &self.track)
@@ -378,20 +382,22 @@ async fn planner_switch_pair_commit_root_history_and_next_send() {
         let target = p.fixture.repo.card_get(&p.cards[1]).await.unwrap().unwrap();
         assert!(target.payload.get("permission_mode").is_none());
         if stale_mode {
-            sqlx::query(
+            (p.fixture.repo.db()).writer().execute(sqlx::query(
                 "UPDATE cards SET payload=json_set(payload,'$.permission_mode','full') WHERE id=?1",
             )
-            .bind(&p.cards[1])
-            .execute(p.fixture.repo.pool())
+            .bind(&p.cards[1]))
             .await
             .unwrap();
         }
-        sqlx::query("UPDATE cards SET payload=json_set(payload,
+        (p.fixture.repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload,
             '$.permission_mode','ask','$.model','preserved-planner-model','$.model_ever_set',json('true')),
-            title='Original Planner title' WHERE id=?1").bind(&p.cards[0]).execute(p.fixture.repo.pool()).await.unwrap();
-        sqlx::query("UPDATE cards SET title='Original Assistant title' WHERE id=?1")
-            .bind(&p.cards[1])
-            .execute(p.fixture.repo.pool())
+            title='Original Planner title' WHERE id=?1").bind(&p.cards[0])).await.unwrap();
+        (p.fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET title='Original Assistant title' WHERE id=?1")
+                    .bind(&p.cards[1]),
+            )
             .await
             .unwrap();
 
@@ -558,34 +564,41 @@ async fn planner_switch_session_proof_unavailable_refused() {
 async fn planner_switch_open_wake_refused_before_revoke() {
     let mut p = Pair::new().await;
     // Persist through the actual Planner ask and plural event owner.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+    let write_db = (p.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (scope, event) = crate::ask::ask_requested_tx(
+                    &mut tx,
+                    &p.cards[0].clone().into(),
+                    vec![crate::event::AskQuestion {
+                        detail: None,
+                        title: "Open wake".into(),
+                        options: vec!["Yes".into()],
+                    }],
+                )
+                .await
+                .unwrap();
+                crate::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
+                    &scope,
+                    None,
+                    &event,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let error = p.switch().await.err().unwrap();
+                assert_eq!(code(&error), Some("planner_open_ask"));
+                p.unchanged().await;
+                p.close().await;
+            })
+        })
         .await
-        .unwrap();
-    let (scope, event) = crate::ask::ask_requested_tx(
-        &mut tx,
-        &p.cards[0].clone().into(),
-        vec![crate::event::AskQuestion {
-            detail: None,
-            title: "Open wake".into(),
-            options: vec!["Yes".into()],
-        }],
-    )
-    .await
-    .unwrap();
-    crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
-        &scope,
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let error = p.switch().await.err().unwrap();
-    assert_eq!(code(&error), Some("planner_open_ask"));
-    p.unchanged().await;
-    p.close().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -636,15 +649,21 @@ async fn planner_switch_pending_event_refused() {
 async fn planner_switch_owner_predicate_failure_is_failed() {
     let mut p = Pair::new().await;
     // Break the operation owner's SQL read, after the fixture is fully idle.
-    sqlx::query("ALTER TABLE operations RENAME TO unavailable_operations")
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE operations RENAME TO unavailable_operations",
+        ))
         .await
         .unwrap();
     let error = p.switch().await.err().unwrap();
     assert!(matches!(error, PlannerSwitchError::Failed(_)), "{error:?}");
     p.unchanged().await;
-    sqlx::query("ALTER TABLE unavailable_operations RENAME TO operations")
-        .execute(p.fixture.repo.pool())
+    (p.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE unavailable_operations RENAME TO operations",
+        ))
         .await
         .unwrap();
     p.close().await;
@@ -657,13 +676,16 @@ async fn planner_switch_malformed_permission_mode_refused() {
         "json_remove(payload,'$.permission_mode')",
         "json_set(payload,'$.permission_mode','invalid')",
     ] {
-        sqlx::query(&format!(
-            "UPDATE cards SET payload={expression} WHERE id=?1"
-        ))
-        .bind(&p.cards[0])
-        .execute(p.fixture.repo.pool())
-        .await
-        .unwrap();
+        (p.fixture.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(&format!(
+                    "UPDATE cards SET payload={expression} WHERE id=?1"
+                ))
+                .bind(&p.cards[0]),
+            )
+            .await
+            .unwrap();
         let error = p.switch().await.err().unwrap();
         assert_eq!(code(&error), Some("planner_binding_unsupported"));
         p.unchanged().await;

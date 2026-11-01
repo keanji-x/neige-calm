@@ -1,36 +1,71 @@
 //! The same persistence assertions run against the fake and production SQLite port.
 use super::*;
 
+pub type StoreWrite<'a, S> = Box<
+    dyn for<'tx, 'db> FnOnce(
+            &'tx S,
+            &'tx mut <S as Store>::Tx<'db>,
+        ) -> futures::future::BoxFuture<'tx, ()>
+        + Send
+        + 'a,
+>;
+
+pub enum TransactionEnd {
+    Commit,
+    Rollback,
+}
+
 #[async_trait]
-pub trait StoreHarness: Store {
-    async fn begin(&self) -> Self::Tx<'_>;
-    async fn commit(&self, tx: Self::Tx<'_>);
-    async fn rollback(&self, tx: Self::Tx<'_>);
+pub trait StoreHarness: Store + Sized {
+    /// The fixture owns the transaction lifetime; shared assertions only borrow it.
+    async fn transaction(&self, end: TransactionEnd, f: StoreWrite<'_, Self>);
 }
 #[async_trait]
 impl StoreHarness for MemoryStore {
-    async fn begin(&self) -> Self::Tx<'_> {
-        MemoryTx::default()
+    async fn transaction(&self, end: TransactionEnd, f: StoreWrite<'_, Self>) {
+        let mut tx = MemoryTx::default();
+        f(self, &mut tx).await;
+        if matches!(end, TransactionEnd::Commit) {
+            MemoryStore::commit(self, tx);
+        }
     }
-    async fn commit(&self, tx: Self::Tx<'_>) {
-        MemoryStore::commit(self, tx);
-    }
-    async fn rollback(&self, _: Self::Tx<'_>) {}
 }
 
 pub async fn store<S: StoreHarness>(store: &S) {
     let intent = intent("/".into());
     let id = &intent.metadata.id;
     assert!(store.load(id).await.unwrap().is_none());
-    let mut tx = store.begin().await;
-    store.insert(&mut tx, &intent).await.unwrap();
-    store.rollback(tx).await;
+    let input = intent.clone();
+    store
+        .transaction(
+            TransactionEnd::Rollback,
+            Box::new(move |store, tx| {
+                Box::pin(async move {
+                    store.insert(tx, &input).await.unwrap();
+                })
+            }),
+        )
+        .await;
     assert!(store.load(id).await.unwrap().is_none());
-    let mut tx = store.begin().await;
-    store.insert(&mut tx, &intent).await.unwrap();
-    store.request(&mut tx, id, Desired::Stop).await.unwrap();
-    store.request(&mut tx, id, Desired::Run).await.unwrap();
-    store.commit(tx).await;
+    let input = intent.clone();
+    store
+        .transaction(
+            TransactionEnd::Commit,
+            Box::new(move |store, tx| {
+                Box::pin(async move {
+                    store.insert(tx, &input).await.unwrap();
+                    store
+                        .request(tx, &input.metadata.id, Desired::Stop)
+                        .await
+                        .unwrap();
+                    store
+                        .request(tx, &input.metadata.id, Desired::Run)
+                        .await
+                        .unwrap();
+                })
+            }),
+        )
+        .await;
     let Some(Stored::Active {
         intent: metadata,
         secrets,
@@ -107,14 +142,36 @@ pub async fn store<S: StoreHarness>(store: &S) {
     assert!(secrets.ticket.matches(&intent.secrets.ticket));
     assert_eq!(settlement, Some(evidence.clone()));
     assert!(!store.pending().await.unwrap().contains(id));
-    let mut tx = store.begin().await;
-    store.request(&mut tx, id, Desired::Retire).await.unwrap();
-    store.rollback(tx).await;
+    let identifier = id.clone();
+    store
+        .transaction(
+            TransactionEnd::Rollback,
+            Box::new(move |store, tx| {
+                Box::pin(async move {
+                    store
+                        .request(tx, &identifier, Desired::Retire)
+                        .await
+                        .unwrap();
+                })
+            }),
+        )
+        .await;
     assert!(!store.pending().await.unwrap().contains(id));
-    let mut tx = store.begin().await;
-    store.request(&mut tx, id, Desired::Retire).await.unwrap();
-    store.request(&mut tx, id, Desired::Stop).await.unwrap();
-    store.commit(tx).await;
+    let identifier = id.clone();
+    store
+        .transaction(
+            TransactionEnd::Commit,
+            Box::new(move |store, tx| {
+                Box::pin(async move {
+                    store
+                        .request(tx, &identifier, Desired::Retire)
+                        .await
+                        .unwrap();
+                    store.request(tx, &identifier, Desired::Stop).await.unwrap();
+                })
+            }),
+        )
+        .await;
     assert!(store.pending().await.unwrap().contains(id));
     store.finish(id).await.unwrap();
     store.finish(id).await.unwrap();

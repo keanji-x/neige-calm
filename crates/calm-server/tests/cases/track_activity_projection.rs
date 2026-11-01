@@ -16,8 +16,7 @@ use calm_server::track_activity::{
     TrackActivityProjector, WriteOutcome, fold,
 };
 use calm_truth::db::sqlite::{
-    begin_immediate_tx, task_complete_from_worker_tx, task_mark_running_tx,
-    task_mark_sub_track_running_tx,
+    task_complete_from_worker_tx, task_mark_running_tx, task_mark_sub_track_running_tx,
 };
 use calm_truth::validation::OVERLAY_KIND_REGISTRY;
 use calm_types::harness::HarnessPhaseTag;
@@ -145,24 +144,34 @@ async fn sub_track_parent_running_with_idle_child_is_not_working() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
-    let n = task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(n, 1);
-    let (status, worker, _) = f.task_status(&Fx::task_id(&parent, "sub")).await;
-    assert_eq!((status.as_str(), worker), ("running", None));
+    let write_db = (f.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let n =
+                    task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
+                        .await
+                        .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(n, 1);
+                let (status, worker, _) = f.task_status(&Fx::task_id(&parent, "sub")).await;
+                assert_eq!((status.as_str(), worker), ("running", None));
 
-    let p = f.recompute(&parent).await;
-    assert!(
-        !p.working,
-        "a running sub-track row is not the parent's work: {p:?}"
-    );
-    assert!(p.cards.is_empty());
-    assert_eq!(p.attention, Attention::None);
-    // The child itself: idle planner ⇒ not working either.
-    assert!(!f.recompute(&child).await.working);
+                let p = f.recompute(&parent).await;
+                assert!(
+                    !p.working,
+                    "a running sub-track row is not the parent's work: {p:?}"
+                );
+                assert!(p.cards.is_empty());
+                assert_eq!(p.attention, Attention::None);
+                // The child itself: idle planner ⇒ not working either.
+                assert!(!f.recompute(&child).await.working);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -179,28 +188,37 @@ async fn sub_track_child_deleted_marks_parent_failed() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
-    task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query("DELETE FROM tracks WHERE id = ?1")
-        .bind(&child)
-        .execute(&f.pool)
-        .await
-        .unwrap();
-    let (_runtime, scheduler) = f.scheduler();
-    scheduler
-        .reconcile_child_track_for_test(&child)
-        .await
-        .unwrap();
-    let (status, worker, finished) = f.task_status(&Fx::task_id(&parent, "sub")).await;
-    assert_eq!((status.as_str(), worker), ("failed", None));
+    let write_db = (f.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                sqlx::query("DELETE FROM tracks WHERE id = ?1")
+                    .bind(&child)
+                    .execute(&f.pool)
+                    .await
+                    .unwrap();
+                let (_runtime, scheduler) = f.scheduler();
+                scheduler
+                    .reconcile_child_track_for_test(&child)
+                    .await
+                    .unwrap();
+                let (status, worker, finished) = f.task_status(&Fx::task_id(&parent, "sub")).await;
+                assert_eq!((status.as_str(), worker), ("failed", None));
 
-    let p = f.recompute(&parent).await;
-    assert!(!p.working);
-    assert!(p.cards.is_empty(), "no worker card ⇒ no cards[] entry");
-    assert_eq!(p.activity_at_ms, finished, "E3 counts the failure");
+                let p = f.recompute(&parent).await;
+                assert!(!p.working);
+                assert!(p.cards.is_empty(), "no worker card ⇒ no cards[] entry");
+                assert_eq!(p.activity_at_ms, finished, "E3 counts the failure");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The child is `done`; the parent row carries a gate ⇒ `verifying` is the PARENT's own gate run.
@@ -225,35 +243,44 @@ async fn parent_gate_verifying_is_working() {
         .execute(&f.pool)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
-    task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    f.set_closed(&child, true).await;
-    let (_runtime, scheduler) = f.scheduler();
-    scheduler
-        .reconcile_child_track_for_test(&child)
-        .await
-        .unwrap();
-    let (status, worker, _) = f.task_status(&Fx::task_id(&parent, "sub")).await;
-    assert_eq!((status.as_str(), worker), ("verifying", None));
-    let child_link: Option<String> =
-        sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id = ?1")
-            .bind(Fx::task_id(&parent, "sub"))
-            .fetch_one(&f.pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        child_link.as_deref(),
-        Some(child.as_str()),
-        "the flip keeps child_track_id"
-    );
+    let write_db = (f.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                task_mark_sub_track_running_tx(&mut tx, &Fx::task_id(&parent, "sub"), 3_000)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                f.set_closed(&child, true).await;
+                let (_runtime, scheduler) = f.scheduler();
+                scheduler
+                    .reconcile_child_track_for_test(&child)
+                    .await
+                    .unwrap();
+                let (status, worker, _) = f.task_status(&Fx::task_id(&parent, "sub")).await;
+                assert_eq!((status.as_str(), worker), ("verifying", None));
+                let child_link: Option<String> =
+                    sqlx::query_scalar("SELECT child_track_id FROM tasks WHERE id = ?1")
+                        .bind(Fx::task_id(&parent, "sub"))
+                        .fetch_one(&f.pool)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    child_link.as_deref(),
+                    Some(child.as_str()),
+                    "the flip keeps child_track_id"
+                );
 
-    let p = f.recompute(&parent).await;
-    assert!(p.working, "verifying is the parent's gate: {p:?}");
-    assert!(p.cards.is_empty());
-    assert_eq!(p.attention, Attention::None);
+                let p = f.recompute(&parent).await;
+                assert!(p.working, "verifying is the parent's gate: {p:?}");
+                assert!(p.cards.is_empty());
+                assert_eq!(p.attention, Attention::None);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// An interactive card whose session died `failed` (signal-killed / spawn compensation) carries a
@@ -471,74 +498,83 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     )
     .await;
     f.claim_attempt(&t, "build", &attempt_b, 6_000).await;
-    let mut tx = begin_immediate_tx(f.db()).await.unwrap();
-    assert_eq!(
-        task_mark_running_tx(&mut tx, &attempt_b, Some(&card_b), 7_000, i64::MAX)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        task_complete_from_worker_tx(
-            &mut tx,
-            &attempt_b,
-            &t,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: &card_b,
-                owns_key: true,
-            },
-            8_000,
-        )
+    let write_db = (f.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    task_mark_running_tx(&mut tx, &attempt_b, Some(&card_b), 7_000, i64::MAX)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    task_complete_from_worker_tx(
+                        &mut tx,
+                        &attempt_b,
+                        &t,
+                        calm_server::db::sqlite::TaskReporter::Card {
+                            card_id: &card_b,
+                            owns_key: true,
+                        },
+                        8_000,
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
+                // A's row is still `failed` in `tasks`, just not current.
+                assert_eq!(f.task_status(&Fx::task_id(&t, "build")).await.0, "failed");
+
+                let p = f.recompute(&t).await;
+                assert!(
+                    p.cards.is_empty(),
+                    "(1) A's failed session is fenced: {p:?}"
+                );
+                assert!(!p.working);
+                assert_eq!(p.activity_at_ms, Some(8_000));
+
+                // (2) the empty set: hand the fold A's session as if the S0 fence had admitted it.
+                let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
+                assert!(
+                    rows.sessions.iter().all(|s| s.id != ws_a),
+                    "S0 fences A's session out: {:?}",
+                    rows.sessions
+                );
+                assert!(
+                    rows.tasks
+                        .iter()
+                        .all(|task| task.worker_card_id.as_deref() != Some(card_a.as_str())),
+                    "no current row names card A"
+                );
+                let mut admitted = rows.clone();
+                admitted.sessions.push(SessionRow {
+                    id: ws_a.clone(),
+                    card_id: card_a.clone(),
+                    interactive_pty: true,
+                    state: "failed".into(),
+                    updated_at_ms: 4_500,
+                    created_at_ms: 1_000,
+                    mode: None,
+                    task_bound: true,
+                    terminal_run_id: None,
+                    pty_open: false,
+                });
+                let folded = fold(&t, &admitted);
+                assert!(
+                    folded
+                        .cards
+                        .iter()
+                        .any(|c| c.card_id == card_a && c.state == CardState::Failed),
+                    "(2) an empty current-row set never suppresses a failed session: {folded:?}"
+                );
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    // A's row is still `failed` in `tasks`, just not current.
-    assert_eq!(f.task_status(&Fx::task_id(&t, "build")).await.0, "failed");
-
-    let p = f.recompute(&t).await;
-    assert!(
-        p.cards.is_empty(),
-        "(1) A's failed session is fenced: {p:?}"
-    );
-    assert!(!p.working);
-    assert_eq!(p.activity_at_ms, Some(8_000));
-
-    // (2) the empty set: hand the fold A's session as if the S0 fence had admitted it.
-    let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
-    assert!(
-        rows.sessions.iter().all(|s| s.id != ws_a),
-        "S0 fences A's session out: {:?}",
-        rows.sessions
-    );
-    assert!(
-        rows.tasks
-            .iter()
-            .all(|task| task.worker_card_id.as_deref() != Some(card_a.as_str())),
-        "no current row names card A"
-    );
-    let mut admitted = rows.clone();
-    admitted.sessions.push(SessionRow {
-        id: ws_a.clone(),
-        card_id: card_a.clone(),
-        interactive_pty: true,
-        state: "failed".into(),
-        updated_at_ms: 4_500,
-        created_at_ms: 1_000,
-        mode: None,
-        task_bound: true,
-        terminal_run_id: None,
-        pty_open: false,
-    });
-    let folded = fold(&t, &admitted);
-    assert!(
-        folded
-            .cards
-            .iter()
-            .any(|c| c.card_id == card_a && c.state == CardState::Failed),
-        "(2) an empty current-row set never suppresses a failed session: {folded:?}"
-    );
+        .expect("independent write operation")
 }
 
 /// A worker card with a `failed` current attempt (`neige_task_fail` at
@@ -1636,90 +1672,99 @@ async fn track_activity_materializes_every_persisted_resource_kind() {
 
     let f = fx().await;
     let t = f.track("resource-kinds").await;
-    for (kind, provider, expected) in [
-        (
-            WorkerSessionKind::CodexCard,
-            Some(AgentProvider::Codex),
-            true,
-        ),
-        (
-            WorkerSessionKind::ClaudeCard,
-            Some(AgentProvider::Claude),
-            true,
-        ),
-        (WorkerSessionKind::Terminal, None, true),
-        (
-            WorkerSessionKind::ManagedAssistant,
-            Some(AgentProvider::OpenCode),
-            false,
-        ),
-        (
-            WorkerSessionKind::ManagedAssistant,
-            Some(AgentProvider::Grok),
-            false,
-        ),
-    ] {
-        let name = provider
-            .as_ref()
-            .map_or("terminal", |provider| provider.wire_name());
-        let card = f
-            .card(&t, &format!("resource-{name}"), "codex", CardRole::Worker)
-            .await;
-        let mut tx = f.db().writer_pool().begin().await.unwrap();
-        let terminal = terminal_create_tx(
-            &mut tx,
-            calm_server::model::NewTerminal {
-                card_id: card.clone().into(),
-                program: "unused-resource-fixture".into(),
-                cwd: "/neige-fixture-workspace".into(),
-                env: json!({}),
-                theme: calm_server::model::RequestTheme::default_dark(),
-            },
-        )
+    let write_db = (f.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for (kind, provider, expected) in [
+                    (
+                        WorkerSessionKind::CodexCard,
+                        Some(AgentProvider::Codex),
+                        true,
+                    ),
+                    (
+                        WorkerSessionKind::ClaudeCard,
+                        Some(AgentProvider::Claude),
+                        true,
+                    ),
+                    (WorkerSessionKind::Terminal, None, true),
+                    (
+                        WorkerSessionKind::ManagedAssistant,
+                        Some(AgentProvider::OpenCode),
+                        false,
+                    ),
+                    (
+                        WorkerSessionKind::ManagedAssistant,
+                        Some(AgentProvider::Grok),
+                        false,
+                    ),
+                ] {
+                    let name = provider
+                        .as_ref()
+                        .map_or("terminal", |provider| provider.wire_name());
+                    let card = f
+                        .card(&t, &format!("resource-{name}"), "codex", CardRole::Worker)
+                        .await;
+                    let mut tx = write_session.begin().await.unwrap();
+                    let terminal = terminal_create_tx(
+                        &mut tx,
+                        calm_server::model::NewTerminal {
+                            card_id: card.clone().into(),
+                            program: "unused-resource-fixture".into(),
+                            cwd: "/neige-fixture-workspace".into(),
+                            env: json!({}),
+                            theme: calm_server::model::RequestTheme::default_dark(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: format!("resource-ws-{name}"),
+                            card_id: card.clone(),
+                            kind,
+                            agent_provider: provider,
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: Some(terminal.id.clone()),
+                            thread_id: Some(format!("thread-{name}")),
+                            session_id: Some(format!("native-{name}")),
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: 1_000,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
+                    let row = rows
+                        .sessions
+                        .iter()
+                        .find(|row| row.card_id == card)
+                        .unwrap();
+                    assert_eq!(row.terminal_run_id.as_deref(), Some(terminal.id.as_str()));
+                    assert!(row.pty_open);
+                    assert_eq!(row.interactive_pty, expected, "{name}");
+                    assert_eq!(interactive_pty_card(row), expected, "{name}");
+                    let mut observed = rows.clone();
+                    observed.output.insert(card.clone(), observed.now_ms);
+                    assert_eq!(
+                        fold(&t, &observed).working,
+                        expected,
+                        "terminal FK and fresh output: {name}"
+                    );
+                    let mut excluded = row.clone();
+                    excluded.task_bound = true;
+                    assert!(!interactive_pty_card(&excluded), "task-bound {name}");
+                    excluded.task_bound = false;
+                    excluded.mode = Some(calm_types::harness::HARNESS_MODE.into());
+                    assert!(!interactive_pty_card(&excluded), "harness {name}");
+                }
+            })
+        })
         .await
-        .unwrap();
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: format!("resource-ws-{name}"),
-                card_id: card.clone(),
-                kind,
-                agent_provider: provider,
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(terminal.id.clone()),
-                thread_id: Some(format!("thread-{name}")),
-                session_id: Some(format!("native-{name}")),
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: 1_000,
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let rows = f.projector.read_rows(&t).await.unwrap().unwrap();
-        let row = rows
-            .sessions
-            .iter()
-            .find(|row| row.card_id == card)
-            .unwrap();
-        assert_eq!(row.terminal_run_id.as_deref(), Some(terminal.id.as_str()));
-        assert!(row.pty_open);
-        assert_eq!(row.interactive_pty, expected, "{name}");
-        assert_eq!(interactive_pty_card(row), expected, "{name}");
-        let mut observed = rows.clone();
-        observed.output.insert(card.clone(), observed.now_ms);
-        assert_eq!(
-            fold(&t, &observed).working,
-            expected,
-            "terminal FK and fresh output: {name}"
-        );
-        let mut excluded = row.clone();
-        excluded.task_bound = true;
-        assert!(!interactive_pty_card(&excluded), "task-bound {name}");
-        excluded.task_bound = false;
-        excluded.mode = Some(calm_types::harness::HARNESS_MODE.into());
-        assert!(!interactive_pty_card(&excluded), "harness {name}");
-    }
+        .expect("independent write operation")
 }

@@ -9,45 +9,54 @@ async fn fixture() -> (tempfile::TempDir, String, SqlxRepo) {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite:{}", dir.path().join("migration.db").display());
     let repo = SqlxRepo::open(&url).await.unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "migration".into(),
-            color: "#000".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "migration".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    sqlx::query("DELETE FROM report_data_migrations WHERE name=?1")
-        .bind(NAME)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "migration".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "migration".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                sqlx::query("DELETE FROM report_data_migrations WHERE name=?1")
+                    .bind(NAME)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                (dir, url, repo)
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    (dir, url, repo)
+        .expect("independent write operation")
 }
 
 async fn seed_report(repo: &SqlxRepo, id: &str, bytes: Option<Vec<u8>>) -> TrackReportPayload {
@@ -68,10 +77,10 @@ async fn seed_report(repo: &SqlxRepo, id: &str, bytes: Option<Vec<u8>>) -> Track
                 .to_bytes(),
         )
     });
-    sqlx::query("INSERT INTO cards(id,track_id,kind,role,sort,payload,body_crdt,deletable,created_at,updated_at) \
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO cards(id,track_id,kind,role,sort,payload,body_crdt,deletable,created_at,updated_at) \
         VALUES(?1,(SELECT id FROM tracks WHERE NOT EXISTS(\
         SELECT 1 FROM cards WHERE cards.track_id=tracks.id AND role='reportcard') LIMIT 1),'track-report','reportcard',0,?2,?3,0,1,1)")
-        .bind(id).bind(serde_json::to_string(&payload).unwrap()).bind(bytes).execute(repo.pool()).await.unwrap();
+        .bind(id).bind(serde_json::to_string(&payload).unwrap()).bind(bytes)).await.unwrap();
     payload
 }
 
@@ -79,10 +88,10 @@ async fn seed_report(repo: &SqlxRepo, id: &str, bytes: Option<Vec<u8>>) -> Track
 async fn subtrack_upgrade_through_repository_open_preserves_crdt_identity_and_evidence() {
     let (_dir, url, repo) = fixture().await;
     let before = seed_report(&repo, "report", None).await;
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,spawn,status,created_at_ms,updated_at_ms) \
-        VALUES('track:child',(SELECT id FROM tracks LIMIT 1),'child','codex','goal','{}','sub-wave','running',1,1)").execute(repo.pool()).await.unwrap();
-    sqlx::query("INSERT INTO track_recipes(id,title,body,revision,created_at,updated_at) VALUES('recipe','recipe',?1,2,1,1)")
-        .bind(&before.body).execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,spawn,status,created_at_ms,updated_at_ms) \
+        VALUES('track:child',(SELECT id FROM tracks LIMIT 1),'child','codex','goal','{}','sub-wave','running',1,1)")).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO track_recipes(id,title,body,revision,created_at,updated_at) VALUES('recipe','recipe',?1,2,1,1)")
+        .bind(&before.body)).await.unwrap();
     let upgraded = SqlxRepo::open(&url).await.unwrap();
     let (raw, bytes): (String, Vec<u8>) =
         sqlx::query_as("SELECT payload,body_crdt FROM cards WHERE id='report'")
@@ -139,60 +148,72 @@ async fn subtrack_upgrade_through_repository_open_preserves_crdt_identity_and_ev
 async fn subtrack_upgrade_rolls_back_every_report_and_marker_on_corrupt_crdt() {
     let (_dir, url, repo) = fixture().await;
     seed_report(&repo, "a-good", None).await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area_id: String = sqlx::query_scalar("SELECT area_id FROM tracks LIMIT 1")
-        .fetch_one(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let area_id: String = sqlx::query_scalar("SELECT area_id FROM tracks LIMIT 1")
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap();
+                track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area_id.into(),
+                        title: "second".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                seed_report(&repo, "z-bad", Some(vec![1, 2, 3])).await;
+                let before: (String, Vec<u8>) =
+                    sqlx::query_as("SELECT payload,body_crdt FROM cards WHERE id='a-good'")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert!(SqlxRepo::open(&url).await.is_err());
+                let after: (String, Vec<u8>) =
+                    sqlx::query_as("SELECT payload,body_crdt FROM cards WHERE id='a-good'")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(before, after, "earlier report update must roll back");
+                let markers: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM report_data_migrations WHERE name=?1")
+                        .bind(NAME)
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(markers, 0, "failed upgrade must not mark completion");
+            })
+        })
         .await
-        .unwrap();
-    track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area_id.into(),
-            title: "second".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    seed_report(&repo, "z-bad", Some(vec![1, 2, 3])).await;
-    let before: (String, Vec<u8>) =
-        sqlx::query_as("SELECT payload,body_crdt FROM cards WHERE id='a-good'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert!(SqlxRepo::open(&url).await.is_err());
-    let after: (String, Vec<u8>) =
-        sqlx::query_as("SELECT payload,body_crdt FROM cards WHERE id='a-good'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(before, after, "earlier report update must roll back");
-    let markers: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM report_data_migrations WHERE name=?1")
-            .bind(NAME)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(markers, 0, "failed upgrade must not mark completion");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn subtrack_upgrade_handles_payload_only_reports() {
     let (_dir, url, repo) = fixture().await;
     let before = seed_report(&repo, "report", None).await;
-    sqlx::query("UPDATE cards SET body_crdt=NULL WHERE id='report'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET body_crdt=NULL WHERE id='report'",
+        ))
         .await
         .unwrap();
     let upgraded = SqlxRepo::open(&url).await.unwrap();

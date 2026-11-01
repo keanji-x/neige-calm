@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use calm_exec::{SpawnCtx, WorkerProvider};
 use calm_truth::card_role_cache::CardRoleCache;
 use calm_truth::db::sqlite::{
-    SqlxRepo, append_decision_event_in_tx, begin_immediate_tx, session_insert_tx,
+    SqlxRepo, append_decision_event_in_tx, session_insert_tx,
     session_set_harness_observation_runtime_tx, session_start_runtime_tx,
     session_state_transition_tx,
 };
@@ -217,25 +217,34 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
         .len();
     let event = conformance_event("t1-saga");
 
-    let mut tx = begin_immediate_tx(repo.db()).await.expect("begin saga tx");
-    let inserted = session_insert_tx(&mut tx, state)
-        .await
-        .expect("insert session in saga tx");
-    let event_id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
-        .await
-        .expect("append decision event in saga tx");
-    tx.commit().await.expect("commit saga tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin saga tx");
+                let inserted = session_insert_tx(&mut tx, state)
+                    .await
+                    .expect("insert session in saga tx");
+                let event_id = append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+                    .await
+                    .expect("append decision event in saga tx");
+                tx.commit().await.expect("commit saga tx");
 
-    assert_eq!(inserted.id.as_str(), "ws-t1-saga");
-    assert!(event_id > 0);
-    assert!(
-        repo.session_get(&WorkerSessionId::from("ws-t1-saga"))
-            .await
-            .expect("session get")
-            .is_some()
-    );
-    let after = repo.events_since(0, i64::MAX).await.expect("event count");
-    assert_eq!(after.len(), before + 1);
+                assert_eq!(inserted.id.as_str(), "ws-t1-saga");
+                assert!(event_id > 0);
+                assert!(
+                    repo.session_get(&WorkerSessionId::from("ws-t1-saga"))
+                        .await
+                        .expect("session get")
+                        .is_some()
+                );
+                let after = repo.events_since(0, i64::MAX).await.expect("event count");
+                assert_eq!(after.len(), before + 1);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub async fn invariant_t1_denied_decision_rolls_back_state_and_event() {

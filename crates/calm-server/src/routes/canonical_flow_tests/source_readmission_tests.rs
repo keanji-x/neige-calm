@@ -89,15 +89,16 @@ async fn original_claim_readmission(cold: bool) {
     let (card, worker, _) = fixture.carrier(&track).await;
     // Fault only the first crossing-marker write, not the claim or its plan.
     // No test code manufactures an active execution or advances its state.
-    sqlx::query(&format!(
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!(
         "CREATE TRIGGER hold_original_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
          WHEN NEW.id='{worker}' AND
            json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts') > 0
          BEGIN SELECT RAISE(ABORT,'fixture holds the original crossing marker'); END"
-    ))
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+    )))
+        .await
+        .unwrap();
     let original = wait_for_claim(&fixture, &track, &mut peer).await;
     eprintln!("stage: real claim committed; original active and zero attempts verified");
     let original_active = original.canonical_inputs.active.clone().unwrap();
@@ -139,8 +140,9 @@ async fn original_claim_readmission(cold: bool) {
     let replay = post(&app, &cookie, "/api/tracks", "first", create).await;
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(fixture.receipt(area["id"].as_str().unwrap()).await, receipt);
-    sqlx::query("DROP TRIGGER hold_original_marker")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_original_marker"))
         .await
         .unwrap();
     eprintln!(

@@ -29,7 +29,11 @@ async fn context() -> SpawnCtx {
             'verifying', 1, 0, 0
         )",
     ] {
-        sqlx::query(sql).execute(repo.pool()).await.unwrap();
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(sql))
+            .await
+            .unwrap();
     }
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     SpawnCtx::new(

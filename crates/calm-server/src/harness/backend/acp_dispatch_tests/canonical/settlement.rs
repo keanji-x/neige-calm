@@ -33,31 +33,46 @@ async fn acp_assistant_end_settles_native_items_before_idle_and_late_event_repla
     assert!(before.iter().all(|row| row.2 == "item/completed"));
     assert!(before.iter().any(|row| row.3.contains("canonical human")));
     // Replay the real queued events through the same Truth entry as the live observer.
-    while let Ok(event) = events.try_recv() {
-        if let provider::events::PlannerEventKind::Item { phase, params, .. } = event.kind {
-            let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-            let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-                .await
-                .unwrap();
-            observe_native_item_tx(
-                &mut tx,
-                &carrier,
-                &fx.owner.thread,
-                params["turnId"].as_str(),
-                phase.method(),
-                &params,
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-        }
-    }
-    assert_eq!(
-        presentations(&fx).await,
-        before,
-        "late live frames cannot change the settled snapshot"
-    );
-    fx.session.shutdown().await.unwrap();
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                while let Ok(event) = events.try_recv() {
+                    if let provider::events::PlannerEventKind::Item { phase, params, .. } =
+                        event.kind
+                    {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let carrier = current_input_fact_carrier_tx(
+                            &mut tx,
+                            &fx.owner.card,
+                            &fx.owner.worker,
+                        )
+                        .await
+                        .unwrap();
+                        observe_native_item_tx(
+                            &mut tx,
+                            &carrier,
+                            &fx.owner.thread,
+                            params["turnId"].as_str(),
+                            phase.method(),
+                            &params,
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                    }
+                }
+                assert_eq!(
+                    presentations(&fx).await,
+                    before,
+                    "late live frames cannot change the settled snapshot"
+                );
+                fx.session.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -65,13 +80,14 @@ async fn acp_assistant_end_retries_item_persistence_without_reprompting() {
     let fx = Fixture::new("reply").await;
     fx.dispatch().await.unwrap();
     fx.wait_idle().await;
-    sqlx::query(
-        "CREATE TRIGGER refuse_settlement_item BEFORE INSERT ON harness_items
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_settlement_item BEFORE INSERT ON harness_items
         WHEN NEW.method='item/completed' BEGIN SELECT RAISE(ABORT,'item persistence failed'); END",
-    )
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let error = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match crate::harness::input_dispatch::complete_once(
@@ -95,21 +111,32 @@ async fn acp_assistant_end_retries_item_persistence_without_reprompting() {
         "{error}"
     );
     assert!(presentations(&fx).await.is_empty());
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                assert!(
+                    carrier.checkpoint().active.is_some(),
+                    "failed projection cannot release END"
+                );
+                tx.commit().await.unwrap();
+                (fx.owner.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DROP TRIGGER refuse_settlement_item"))
+                    .await
+                    .unwrap();
+                fx.wait_end().await;
+                assert_eq!(presentations(&fx).await.len(), 3);
+                assert_eq!(fx.prompts(), 1);
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        carrier.checkpoint().active.is_some(),
-        "failed projection cannot release END"
-    );
-    tx.commit().await.unwrap();
-    sqlx::query("DROP TRIGGER refuse_settlement_item")
-        .execute(fx.owner.repo.pool())
-        .await
-        .unwrap();
-    fx.wait_end().await;
-    assert_eq!(presentations(&fx).await.len(), 3);
-    assert_eq!(fx.prompts(), 1);
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

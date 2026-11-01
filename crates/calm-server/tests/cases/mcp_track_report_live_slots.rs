@@ -346,8 +346,9 @@ async fn live_slot_pending_is_not_storage_unavailable() {
     }
 
     // Corrupt only this test's in-memory repository, after the report exists.
-    sqlx::query("DROP TABLE overlays")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DROP TABLE overlays"))
         .await
         .unwrap();
     let broken = read(&boot, json!({})).await;
@@ -377,8 +378,9 @@ async fn live_slot_none_resolution_reads_no_overlay() {
     .await;
     let before = read(&boot, json!({})).await;
     assert_eq!(resolved(&before, id)["status"], "ok");
-    sqlx::query("DROP TABLE overlays")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DROP TABLE overlays"))
         .await
         .unwrap();
     let none = read(&boot, json!({"resolve": {id.as_str().unwrap(): "none"}})).await;
@@ -539,51 +541,58 @@ async fn run_stats_and_planner_context_live_slot_resolve_kernel_projector_data()
         at_ms: 1790035200000_i64,
     });
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    calm_server::db::sqlite::session_set_handle_state_tx(
+                        &mut tx,
+                        &"planner-session".to_string(),
+                        Some(serde_json::to_value(snapshot).unwrap())
+                    )
+                    .await
+                    .unwrap()
+                );
+                tx.commit().await.unwrap();
+                assert!(
+                    projector
+                        .recompute_track(boot.track_id.as_str())
+                        .await
+                        .unwrap()
+                );
+                let report = read_full(&boot, &created["id"]).await;
+                let cell = &cells(resolved(&report, &created["id"]))[0];
+                assert_eq!(cell["status"], "ok", "{cell}");
+                assert_eq!(cell["source"], "neige://plugin/kernel/planner.context");
+                let unit = &cell["data"];
+                assert_eq!(
+                    unit["snapshot"]["observedAt"].as_f64(),
+                    Some(1790035200000.0)
+                );
+                let items = &unit["cell"]["items"];
+                assert_eq!(items[0]["value"]["amount"], 50.0);
+                assert_eq!(items[1]["value"]["amount"], 62000.0);
+                assert_eq!(items[2]["value"]["amount"], 112000.0);
+                assert_eq!(items[3]["value"]["text"], "false");
+                assert_eq!(items[4]["value"]["amount"], 0.0);
+                let stats = &cells(resolved(&report, &created["id"]))[1];
+                assert_eq!(stats["status"], "ok", "{stats}");
+                assert_eq!(stats["source"], "neige://plugin/kernel/run.stats");
+                assert_eq!(
+                    stats["data"]["cell"]["table"]["rows"],
+                    json!([
+                        {"dimension":"commits", "value":"delivered", "count":0.0},
+                        {"dimension":"kind", "value":"terminal", "count":1.0},
+                        {"dimension":"status", "value":"pending", "count":1.0}
+                    ])
+                );
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        calm_server::db::sqlite::session_set_handle_state_tx(
-            &mut tx,
-            &"planner-session".to_string(),
-            Some(serde_json::to_value(snapshot).unwrap())
-        )
-        .await
-        .unwrap()
-    );
-    tx.commit().await.unwrap();
-    assert!(
-        projector
-            .recompute_track(boot.track_id.as_str())
-            .await
-            .unwrap()
-    );
-    let report = read_full(&boot, &created["id"]).await;
-    let cell = &cells(resolved(&report, &created["id"]))[0];
-    assert_eq!(cell["status"], "ok", "{cell}");
-    assert_eq!(cell["source"], "neige://plugin/kernel/planner.context");
-    let unit = &cell["data"];
-    assert_eq!(
-        unit["snapshot"]["observedAt"].as_f64(),
-        Some(1790035200000.0)
-    );
-    let items = &unit["cell"]["items"];
-    assert_eq!(items[0]["value"]["amount"], 50.0);
-    assert_eq!(items[1]["value"]["amount"], 62000.0);
-    assert_eq!(items[2]["value"]["amount"], 112000.0);
-    assert_eq!(items[3]["value"]["text"], "false");
-    assert_eq!(items[4]["value"]["amount"], 0.0);
-    let stats = &cells(resolved(&report, &created["id"]))[1];
-    assert_eq!(stats["status"], "ok", "{stats}");
-    assert_eq!(stats["source"], "neige://plugin/kernel/run.stats");
-    assert_eq!(
-        stats["data"]["cell"]["table"]["rows"],
-        json!([
-            {"dimension":"commits", "value":"delivered", "count":0.0},
-            {"dimension":"kind", "value":"terminal", "count":1.0},
-            {"dimension":"status", "value":"pending", "count":1.0}
-        ])
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -591,144 +600,148 @@ async fn objective_budget_live_slot_projects_stage_usage_and_exhaustion() {
     use calm_truth::objective_host::{TurnUsage, record_turn_usage};
     let boot = boot().await;
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        calm_server::db::sqlite::track_capabilities::stamp_tx(
+            &mut tx,
+            &boot.track_id,
+            &[calm_types::track_capability::TrackCapability::Objectives],
+        )
         .await
         .unwrap();
-    calm_server::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &boot.track_id,
-        &[calm_types::track_capability::TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    record_turn_usage(
-        &db,
-        &boot.track_id,
-        "planner-session".into(),
-        "before".into(),
-        TurnUsage {
-            context_growth: 40000,
-            secs: 10,
-        },
-    )
-    .await
-    .unwrap();
-    create(&boot, "objective", json!({
-        "key":"stage-1", "title":"Stage one", "mode":"converge",
-        "checks":[{"id":"accepted", "role":"goal", "config":{"kind":"fact", "params":{"fact":"task_accepted", "subject":"finish-stage-1"}}}],
-        "constraints":[], "budget":{"tokens":150000,"turns":1000000,"wall_secs":315360000},"compact":"none"
-    })).await;
-    let source = include_str!("../../templates/builtin/long-term-goal.md");
-    let start = source.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
-    let end = source[start..].find("\n```").unwrap() + start;
-    let created = create(
-        &boot,
-        "view",
-        serde_json::from_str(&source[start..end]).unwrap(),
-    )
-    .await;
-    let projector = calm_server::track_planner_context::TrackPlannerContextProjector::new(
-        boot.repo.clone(),
-        boot.ctx.events.clone(),
-        boot.ctx.write.clone(),
-    )
-    .unwrap();
-    for (turn, growth, used, exceeded) in [
-        ("after", 30000, 30000.0, "否"),
-        ("over", 130000, 160000.0, "是"),
-    ] {
+        tx.commit().await.unwrap();
         record_turn_usage(
             &db,
             &boot.track_id,
             "planner-session".into(),
-            turn.into(),
+            "before".into(),
             TurnUsage {
-                context_growth: growth,
+                context_growth: 40000,
                 secs: 10,
             },
         )
         .await
         .unwrap();
-        assert!(
+        create(&boot, "objective", json!({
+            "key":"stage-1", "title":"Stage one", "mode":"converge",
+            "checks":[{"id":"accepted", "role":"goal", "config":{"kind":"fact", "params":{"fact":"task_accepted", "subject":"finish-stage-1"}}}],
+            "constraints":[], "budget":{"tokens":150000,"turns":1000000,"wall_secs":315360000},"compact":"none"
+        })).await;
+        let source = include_str!("../../templates/builtin/long-term-goal.md");
+        let start = source.find("```neige-block view\n").unwrap() + "```neige-block view\n".len();
+        let end = source[start..].find("\n```").unwrap() + start;
+        let created = create(
+            &boot,
+            "view",
+            serde_json::from_str(&source[start..end]).unwrap(),
+        )
+        .await;
+        let projector = calm_server::track_planner_context::TrackPlannerContextProjector::new(
+            boot.repo.clone(),
+            boot.ctx.events.clone(),
+            boot.ctx.write.clone(),
+        )
+        .unwrap();
+        for (turn, growth, used, exceeded) in [
+            ("after", 30000, 30000.0, "否"),
+            ("over", 130000, 160000.0, "是"),
+        ] {
+            record_turn_usage(
+                &db,
+                &boot.track_id,
+                "planner-session".into(),
+                turn.into(),
+                TurnUsage {
+                    context_growth: growth,
+                    secs: 10,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                projector
+                    .recompute_track(boot.track_id.as_str())
+                    .await
+                    .unwrap()
+            );
+            let report = read_full(&boot, &created["id"]).await;
+            let cell = &cells(resolved(&report, &created["id"]))[2];
+            assert_eq!(cell["status"], "ok", "{cell}");
+            assert_eq!(cell["source"], "neige://plugin/kernel/objective.budget");
+            let table = &cell["data"]["cell"];
+            assert_eq!(table["title"], "阶段预算");
+            let columns: Vec<_> = table["table"]["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|column| {
+                    (
+                        column["key"].as_str().unwrap(),
+                        column["label"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                columns,
+                vec![
+                    ("key", "标识"),
+                    ("title", "标题"),
+                    ("status", "状态"),
+                    ("budget", "预算"),
+                    ("used", "已用"),
+                    ("turns", "回合"),
+                    ("exceeded", "超预算"),
+                ]
+            );
+            let row = &table["table"]["rows"][0];
+            assert_eq!(row["key"], "stage-1");
+            assert_eq!(row["status"], "进行中");
+            assert_eq!(row["used"], used);
+            assert_eq!(row["budget"], 150000.0);
+            assert_eq!(row["exceeded"], exceeded);
+            assert!(
+                !projector
+                    .recompute_track(boot.track_id.as_str())
+                    .await
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
+            "Appended"
+        );
+        assert_eq!(
+            call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
+            "Duplicate"
+        );
+        for turn in ["after-close-one", "after-close-two"] {
+            record_turn_usage(
+                &db,
+                &boot.track_id,
+                "planner-session".into(),
+                turn.into(),
+                TurnUsage {
+                    context_growth: 50000,
+                    secs: 10,
+                },
+            )
+            .await
+            .unwrap();
             projector
                 .recompute_track(boot.track_id.as_str())
                 .await
-                .unwrap()
-        );
-        let report = read_full(&boot, &created["id"]).await;
-        let cell = &cells(resolved(&report, &created["id"]))[2];
-        assert_eq!(cell["status"], "ok", "{cell}");
-        assert_eq!(cell["source"], "neige://plugin/kernel/objective.budget");
-        let table = &cell["data"]["cell"];
-        assert_eq!(table["title"], "阶段预算");
-        let columns: Vec<_> = table["table"]["columns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|column| {
-                (
-                    column["key"].as_str().unwrap(),
-                    column["label"].as_str().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            columns,
-            vec![
-                ("key", "标识"),
-                ("title", "标题"),
-                ("status", "状态"),
-                ("budget", "预算"),
-                ("used", "已用"),
-                ("turns", "回合"),
-                ("exceeded", "超预算"),
-            ]
-        );
-        let row = &table["table"]["rows"][0];
-        assert_eq!(row["key"], "stage-1");
-        assert_eq!(row["status"], "进行中");
-        assert_eq!(row["used"], used);
-        assert_eq!(row["budget"], 150000.0);
-        assert_eq!(row["exceeded"], exceeded);
-        assert!(
-            !projector
-                .recompute_track(boot.track_id.as_str())
-                .await
-                .unwrap()
-        );
-    }
-    assert_eq!(
-        call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
-        "Appended"
-    );
-    assert_eq!(
-        call(&boot, "neige_objective_close", json!({"key":"stage-1"})).await["status"],
-        "Duplicate"
-    );
-    for turn in ["after-close-one", "after-close-two"] {
-        record_turn_usage(
-            &db,
-            &boot.track_id,
-            "planner-session".into(),
-            turn.into(),
-            TurnUsage {
-                context_growth: 50000,
-                secs: 10,
-            },
-        )
-        .await
-        .unwrap();
-        projector
-            .recompute_track(boot.track_id.as_str())
-            .await
-            .unwrap();
-        let report = read_full(&boot, &created["id"]).await;
-        let row = &cells(resolved(&report, &created["id"]))[2]["data"]["cell"]["table"]["rows"][0];
-        assert_eq!(row["status"], "已关闭");
-        assert_eq!(row["used"], 160000.0);
-        assert_eq!(row["turns"], 2.0);
-    }
+                .unwrap();
+            let report = read_full(&boot, &created["id"]).await;
+            let row = &cells(resolved(&report, &created["id"]))[2]["data"]["cell"]["table"]["rows"][0];
+            assert_eq!(row["status"], "已关闭");
+            assert_eq!(row["used"], 160000.0);
+            assert_eq!(row["turns"], 2.0);
+        }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -754,43 +767,50 @@ async fn objective_close_tool_requires_planner_and_capability() {
     .unwrap_err();
     assert_eq!(error.code, -32403);
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::track_capabilities::stamp_tx(
+                    &mut tx,
+                    &boot.track_id,
+                    &[calm_types::track_capability::TrackCapability::Objectives],
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                // Bypass only the registry's role label: the host still checks persisted authority.
+                let mut spoofed = assistant_identity(&boot);
+                spoofed.role = calm_server::model::CardRole::Planner;
+                let error = call_tool(
+                    &boot,
+                    "neige_objective_close",
+                    spoofed,
+                    json!({"key":"missing"}),
+                )
+                .await
+                .unwrap_err();
+                assert_eq!(error.code, -32403);
+                let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM objective_events")
+                    .fetch_one(db.read_pool())
+                    .await
+                    .unwrap();
+                assert_eq!(events, 0);
+                for key in [json!(""), json!("  "), json!(7), Value::Null] {
+                    let error = call_tool(
+                        &boot,
+                        "neige_objective_close",
+                        planner_identity(&boot),
+                        json!({"key":key}),
+                    )
+                    .await
+                    .unwrap_err();
+                    assert_eq!(error.code, -32602);
+                }
+            })
+        })
         .await
-        .unwrap();
-    calm_server::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &boot.track_id,
-        &[calm_types::track_capability::TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    // Bypass only the registry's role label: the host still checks persisted authority.
-    let mut spoofed = assistant_identity(&boot);
-    spoofed.role = calm_server::model::CardRole::Planner;
-    let error = call_tool(
-        &boot,
-        "neige_objective_close",
-        spoofed,
-        json!({"key":"missing"}),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, -32403);
-    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM objective_events")
-        .fetch_one(db.read_pool())
-        .await
-        .unwrap();
-    assert_eq!(events, 0);
-    for key in [json!(""), json!("  "), json!(7), Value::Null] {
-        let error = call_tool(
-            &boot,
-            "neige_objective_close",
-            planner_identity(&boot),
-            json!({"key":key}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, -32602);
-    }
+        .expect("independent write operation")
 }

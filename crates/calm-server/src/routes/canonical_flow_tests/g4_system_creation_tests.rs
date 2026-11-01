@@ -77,31 +77,42 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
         );
         let crate::db::sqlite::conversation::HumanTrackCreationAck::V1 { first_message, .. } =
             &receipt.acknowledgement;
-        let mut tx = fixture.repo.pool().begin().await.unwrap();
-        let message =
-            crate::db::sqlite::conversation::message_tx(&mut tx, &first_message.message_id)
-                .await
-                .unwrap();
-        assert_eq!(
-            message.author,
-            calm_types::conversation::MessageAuthor::AuthenticatedHuman {
-                registered_user_id: receipt.source_user_id.clone(),
-            }
-        );
-        tx.rollback().await.unwrap();
-        let before = counts(&fixture).await;
-        let replay = post(&app, &cookie, "/api/tracks", "first", request.clone()).await;
-        assert_eq!(replay["id"], created["id"]);
-        assert_eq!(fixture.carrier(track).await.1, worker);
-        assert_eq!(fixture.counts(&card).await, (1, 1, 1, 0, 0));
-        assert_eq!(counts(&fixture).await, before);
-        assert_eq!(fixture.receipt(area["id"].as_str().unwrap()).await, receipt);
-        request["first_message"] = json!("different input");
-        assert_eq!(
-            create(&app, &cookie, "first", request).await.0,
-            StatusCode::CONFLICT
-        );
-        fixture.shutdown_process(&state).await;
+        let write_db = (fixture.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let message = crate::db::sqlite::conversation::message_tx(
+                        &mut tx,
+                        &first_message.message_id,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        message.author,
+                        calm_types::conversation::MessageAuthor::AuthenticatedHuman {
+                            registered_user_id: receipt.source_user_id.clone(),
+                        }
+                    );
+                    tx.rollback().await.unwrap();
+                    let before = counts(&fixture).await;
+                    let replay = post(&app, &cookie, "/api/tracks", "first", request.clone()).await;
+                    assert_eq!(replay["id"], created["id"]);
+                    assert_eq!(fixture.carrier(track).await.1, worker);
+                    assert_eq!(fixture.counts(&card).await, (1, 1, 1, 0, 0));
+                    assert_eq!(counts(&fixture).await, before);
+                    assert_eq!(fixture.receipt(area["id"].as_str().unwrap()).await, receipt);
+                    request["first_message"] = json!("different input");
+                    assert_eq!(
+                        create(&app, &cookie, "first", request).await.0,
+                        StatusCode::CONFLICT
+                    );
+                    fixture.shutdown_process(&state).await;
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -158,46 +169,60 @@ async fn g4_system_creation_refuses_non_owner_and_unregistered_owner() {
     let fixture = Fixture::new().await;
     let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
     let area = system(&app, &cookie).await;
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::db::sqlite::area_membership::application_user_register(
+                    &mut tx, "alice", "Alice",
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let token = auth.sessions.create(
+                    crate::auth::SessionIdentity {
+                        user_id: "alice".into(),
+                        display_name: "Owner".into(),
+                        role: "owner".into(),
+                    },
+                    crate::auth::SessionAuthority::PasswordLogin,
+                );
+                let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
+                for human in [false, true] {
+                    let mut request = body(&area, "codex");
+                    if human {
+                        request["first_message"] = json!(FIRST_BODY);
+                    }
+                    let before = counts(&fixture).await;
+                    assert_eq!(
+                        create(&app, &alice, "unauthorized", request).await.0,
+                        StatusCode::FORBIDDEN
+                    );
+                    assert_eq!(counts(&fixture).await, before);
+                }
+                (fixture.repo.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("DELETE FROM application_users WHERE id=?1")
+                            .bind(calm_types::organization::LEGACY_OWNER_USER_ID),
+                    )
+                    .await
+                    .unwrap();
+                let before = counts(&fixture).await;
+                assert_eq!(
+                    create(&app, &cookie, "unregistered", body(&area, "codex"))
+                        .await
+                        .0,
+                    StatusCode::FORBIDDEN
+                );
+                assert_eq!(counts(&fixture).await, before);
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let token = auth.sessions.create(
-        crate::auth::SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Owner".into(),
-            role: "owner".into(),
-        },
-        crate::auth::SessionAuthority::PasswordLogin,
-    );
-    let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
-    for human in [false, true] {
-        let mut request = body(&area, "codex");
-        if human {
-            request["first_message"] = json!(FIRST_BODY);
-        }
-        let before = counts(&fixture).await;
-        assert_eq!(
-            create(&app, &alice, "unauthorized", request).await.0,
-            StatusCode::FORBIDDEN
-        );
-        assert_eq!(counts(&fixture).await, before);
-    }
-    sqlx::query("DELETE FROM application_users WHERE id=?1")
-        .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
-    let before = counts(&fixture).await;
-    assert_eq!(
-        create(&app, &cookie, "unregistered", body(&area, "codex"))
-            .await
-            .0,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(counts(&fixture).await, before);
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[cfg(feature = "fixtures")]
@@ -230,9 +255,12 @@ async fn g4_system_creation_rechecks_live_authority_before_commit() {
                 .remove(cookie.split_once('=').unwrap().1)
                 .unwrap();
         } else {
-            sqlx::query("DELETE FROM application_users WHERE id=?1")
-                .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
-                .execute(fixture.repo.pool())
+            (fixture.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("DELETE FROM application_users WHERE id=?1")
+                        .bind(calm_types::organization::LEGACY_OWNER_USER_ID),
+                )
                 .await
                 .unwrap();
         }
@@ -306,21 +334,23 @@ async fn g4_canonical_storage_failure_rolls_back_without_historical_fallback() {
         if human {
             request["first_message"] = json!(FIRST_BODY);
         }
-        sqlx::query(
-            "CREATE TRIGGER reject_g4_carrier BEFORE INSERT ON worker_sessions \
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER reject_g4_carrier BEFORE INSERT ON worker_sessions \
             BEGIN SELECT RAISE(ABORT,'carrier unavailable'); END",
-        )
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         let before = counts(&fixture).await;
         assert_eq!(
             create(&app, &cookie, "atomic", request.clone()).await.0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(counts(&fixture).await, before);
-        sqlx::query("DROP TRIGGER reject_g4_carrier")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER reject_g4_carrier"))
             .await
             .unwrap();
         let created = post(&app, &cookie, "/api/tracks", "atomic", request).await;

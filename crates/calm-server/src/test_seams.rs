@@ -176,14 +176,23 @@ pub async fn create_track_with_workspace_for_test(
     plan: &crate::db::sqlite::TrackWorkspacePlan,
     cache: &crate::track_area_cache::TrackAreaCache,
 ) -> crate::error::Result<crate::model::Track> {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let track =
-        crate::db::sqlite::track_create_tx(&mut tx, params, None, plan, None, cache).await?;
-    tx.commit().await?;
-    if track.workspace.worktree.is_some() {
-        ensure_track_worktree_for_test(pool, track.id.as_str()).await?;
-    }
-    Ok(track)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let track =
+                    crate::db::sqlite::track_create_tx(&mut tx, params, None, plan, None, cache)
+                        .await?;
+                tx.commit().await?;
+                if track.workspace.worktree.is_some() {
+                    ensure_track_worktree_for_test(pool, track.id.as_str()).await?;
+                }
+                Ok(track)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Finish an already-declared track worktree without changing its stored selection.
@@ -192,24 +201,34 @@ pub async fn ensure_track_worktree_for_test(
     pool: &crate::db::sqlite::SqliteDb,
     track_id: &str,
 ) -> crate::error::Result<std::path::PathBuf> {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let track = calm_truth::db::sqlite::track_get_tx(
-        &mut tx,
-        &crate::ids::TrackId::from(track_id.to_string()),
-    )
-    .await?;
-    tx.commit().await?;
-    let path = track.workspace.worktree.as_deref().ok_or_else(|| {
-        crate::error::CalmError::BadRequest("track creation did not declare a worktree".into())
-    })?;
-    workspace_runtime::track_worktree::ensure_track_worktree(
-        &track,
-        crate::workspace_service::ports::ServerWorkspacePorts,
-        crate::workspace_service::ports::observe,
-    )
-    .await?;
-    crate::workspace_service::identity::observe_for_task(pool, track_id).await?;
-    Ok(path.into())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let track = calm_truth::db::sqlite::track_get_tx(
+                    &mut tx,
+                    &crate::ids::TrackId::from(track_id.to_string()),
+                )
+                .await?;
+                tx.commit().await?;
+                let path = track.workspace.worktree.as_deref().ok_or_else(|| {
+                    crate::error::CalmError::BadRequest(
+                        "track creation did not declare a worktree".into(),
+                    )
+                })?;
+                workspace_runtime::track_worktree::ensure_track_worktree(
+                    &track,
+                    crate::workspace_service::ports::ServerWorkspacePorts,
+                    crate::workspace_service::ports::observe,
+                )
+                .await?;
+                crate::workspace_service::identity::observe_for_task(pool, track_id).await?;
+                Ok(path.into())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Reach the production workspace-lease acquisition from an integration test.
@@ -221,17 +240,25 @@ pub async fn acquire_workspace_lease_for_test(
     lease_owner: &str,
     path: &std::path::Path,
 ) -> crate::error::Result<()> {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
-        &mut tx,
-        card_id,
-        track_id,
-        lease_owner,
-        path,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+                    &mut tx,
+                    card_id,
+                    track_id,
+                    lease_owner,
+                    path,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Take a lease that RECORDS ITS BASE through the production `acquire_workspace_lease_tx` (the
@@ -267,10 +294,18 @@ pub async fn acquire_based_workspace_lease_for_test(
         reader: None,
         catch_up: None,
     };
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Release a card's active workspace lease through the production release (#1830 S2 D7), with
@@ -326,24 +361,33 @@ pub async fn take_kernel_workspace_lease_for_test(
     use crate::operation::workspace_lease::{
         acquire_workspace_lease_tx, prepare_worker_lease_as_tx,
     };
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let plan = prepare_worker_lease_as_tx(
-        &mut tx,
-        track_id,
-        crate::model::TaskAccess::ReadWrite,
-        workspace_root,
-    )
-    .await?;
-    let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan).await?;
-    tx.commit().await?;
-    Ok(KernelWorkspaceLease {
-        lease_id: lease.lease_id,
-        path: plan.path,
-        branch: plan.branch,
-        base_sha: plan.base.base_sha,
-        git_common_dir: plan.base.git_common_dir,
-    })
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let plan = prepare_worker_lease_as_tx(
+                    &mut tx,
+                    track_id,
+                    crate::model::TaskAccess::ReadWrite,
+                    workspace_root,
+                )
+                .await?;
+                let (lease, _event) =
+                    acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
+                        .await?;
+                tx.commit().await?;
+                Ok(KernelWorkspaceLease {
+                    lease_id: lease.lease_id,
+                    path: plan.path,
+                    branch: plan.branch,
+                    base_sha: plan.base.base_sha,
+                    git_common_dir: plan.base.git_common_dir,
+                })
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Admit one gate run (#2464) through the production admission transaction, without driving it:
@@ -357,20 +401,28 @@ pub async fn admit_gate_run_for_test(
     track_id: &str,
     message: crate::git_candidate::commit_message::CommitMessage,
 ) -> crate::error::Result<String> {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let admitted = crate::operation::task_gate_run::admit_run_tx(
-        &mut tx,
-        attempt_id,
-        card_id,
-        track_id,
-        Some(message),
-    )
-    .await?;
-    tx.commit().await?;
-    match admitted {
-        crate::operation::task_gate_run::Admitted::New { key, .. }
-        | crate::operation::task_gate_run::Admitted::Joined { key, .. } => Ok(key),
-    }
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let admitted = crate::operation::task_gate_run::admit_run_tx(
+                    &mut tx,
+                    attempt_id,
+                    card_id,
+                    track_id,
+                    Some(message),
+                )
+                .await?;
+                tx.commit().await?;
+                match admitted {
+                    crate::operation::task_gate_run::Admitted::New { key, .. }
+                    | crate::operation::task_gate_run::Admitted::Joined { key, .. } => Ok(key),
+                }
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Where an idle Planner is about to persist its hibernation snapshot; keyed by card id.
@@ -394,13 +446,13 @@ pub const MAINTENANCE_LOST_SETTLING: &str = "maintenance-lost-settling";
 /// Fail the existing projection DELETE so all input-owner checkpoints exercise rollback.
 #[cfg(feature = "fixtures")]
 pub async fn reject_projection_retirement_for_test(db: &crate::db::sqlite::SqliteDb) {
-    sqlx::query(
-        "CREATE TRIGGER refuse_projection_cleanup BEFORE DELETE ON harness_items \
+    (db).writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_projection_cleanup BEFORE DELETE ON harness_items \
          BEGIN SELECT RAISE(ABORT, 'forced projection cleanup failure'); END",
-    )
-    .execute(db.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "fixtures")]

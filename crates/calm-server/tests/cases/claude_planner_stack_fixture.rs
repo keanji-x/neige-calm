@@ -330,28 +330,31 @@ impl Stack {
     }
 
     pub async fn block_provider_stop(&self) {
-        sqlx::query(
-            "CREATE TRIGGER c4_provider_fault BEFORE UPDATE OF desired ON workspace_executions
+        (self.repo().sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER c4_provider_fault BEFORE UPDATE OF desired ON workspace_executions
              WHEN NEW.desired='stop' BEGIN SELECT RAISE(FAIL, 'provider Stop blocked'); END",
-        )
-        .execute(self.repo().sqlite_db().unwrap().writer_pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
     }
 
     pub async fn block_provider_admission(&self) {
-        sqlx::query(
-            "CREATE TRIGGER c4_provider_fault BEFORE INSERT ON workspace_executions
+        (self.repo().sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER c4_provider_fault BEFORE INSERT ON workspace_executions
              BEGIN SELECT RAISE(FAIL, 'provider admission blocked'); END",
-        )
-        .execute(self.repo().sqlite_db().unwrap().writer_pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
     }
 
     pub async fn clear_provider_fault(&self) {
-        sqlx::query("DROP TRIGGER c4_provider_fault")
-            .execute(self.repo().sqlite_db().unwrap().writer_pool())
+        (self.repo().sqlite_db().unwrap())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER c4_provider_fault"))
             .await
             .unwrap();
     }

@@ -585,16 +585,17 @@ async fn failed_turn_checkpoint_compensates_the_original_shared_turn() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot().await;
-    sqlx::query(
-        "CREATE TRIGGER reject_turn_checkpoint \
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_turn_checkpoint \
         BEFORE UPDATE OF tx_output_json ON operations \
         WHEN NEW.kind='codex-create' \
         AND json_type(NEW.tx_output_json,'$.data.turn_started_at_ms') IS NOT NULL \
         BEGIN SELECT RAISE(ABORT,'forced turn checkpoint failure'); END",
-    )
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
     let response = tokio::time::timeout(
         Duration::from_secs(5),
@@ -766,50 +767,59 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .unwrap();
     let card_id = card.id.to_string();
     let runtime_id = calm_server::model::new_id();
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card_id.clone(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some(terminal.id.to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    pending
-        .register(PendingEntry::new(
-            card_id.clone(),
-            None,
-            terminal.id.to_string(),
-            runtime_id,
-        ))
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: runtime_id.clone(),
+                        card_id: card_id.clone(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some(terminal.id.to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                pending
+                    .register(PendingEntry::new(
+                        card_id.clone(),
+                        None,
+                        terminal.id.to_string(),
+                        runtime_id,
+                    ))
+                    .await
+                    .unwrap();
+                assert!(
+                    boot.state
+                        .shared_codex_appserver
+                        .handle_thread_started_notification_for_test("T-new")
+                        .await
+                        .unwrap()
+                );
+                let runtime = boot
+                    .repo
+                    .session_projection_active_for_card(&card_id)
+                    .await
+                    .unwrap()
+                    .expect("runtime");
+                assert_eq!(runtime.thread_id.as_deref(), Some("T-new"));
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        boot.state
-            .shared_codex_appserver
-            .handle_thread_started_notification_for_test("T-new")
-            .await
-            .unwrap()
-    );
-    let runtime = boot
-        .repo
-        .session_projection_active_for_card(&card_id)
-        .await
-        .unwrap()
-        .expect("runtime");
-    assert_eq!(runtime.thread_id.as_deref(), Some("T-new"));
+        .expect("independent write operation")
 }
 
 #[tokio::test]

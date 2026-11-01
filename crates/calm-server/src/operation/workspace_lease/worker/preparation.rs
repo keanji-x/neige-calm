@@ -2,7 +2,7 @@
 //! retain their original transaction boundary; normal observation errors never choose them.
 use super::*;
 use crate::db::sqlite::{
-    CheckoutOccupancy, WorkspaceObservation, begin_immediate_tx, checkout_occupancy, task_get_tx,
+    CheckoutOccupancy, WorkspaceObservation, checkout_occupancy, task_get_tx,
     track_workspace_read_tx, workspace_observation_snapshot,
 };
 use crate::model::{Task, TrackWorkspace};
@@ -122,27 +122,35 @@ pub(crate) async fn collect<A: WorkerAdmission>(
     root: &Path,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = begin_immediate_tx(&pool).await?;
-    if !crate::operation::repo_sqlite::has_live_claim_tx(&mut tx, op).await? {
-        tx.rollback().await?;
-        return Ok(None); // Repository's original-claim guard rejects before direct prepare.
-    }
-    let admitted = read_facts(&mut tx, track_id, attempt).await;
-    tx.rollback().await?;
-    admitted?;
-    observe_worker_checkout(ctx, track_id).await?;
-    let mut tx = begin_immediate_tx(&pool).await?;
-    let facts = read_facts(&mut tx, track_id, attempt).await;
-    tx.rollback().await?;
-    let facts = facts?;
-    let evidence = observe(&facts).await;
-    Ok(Some(Box::new(PreparedWorker {
-        adapter,
-        claim: PreparationClaim::new(op)?,
-        facts,
-        evidence,
-        root: root.to_owned(),
-    })))
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                if !crate::operation::repo_sqlite::has_live_claim_tx(&mut tx, op).await? {
+                    tx.rollback().await?;
+                    return Ok(None); // Repository's original-claim guard rejects before direct prepare.
+                }
+                let admitted = read_facts(&mut tx, track_id, attempt).await;
+                tx.rollback().await?;
+                admitted?;
+                observe_worker_checkout(ctx, track_id).await?;
+                let mut tx = write_session.begin().await?;
+                let facts = read_facts(&mut tx, track_id, attempt).await;
+                tx.rollback().await?;
+                let facts = facts?;
+                let evidence = observe(&facts).await;
+                Ok(Some(Box::new(PreparedWorker {
+                    adapter,
+                    claim: PreparationClaim::new(op)?,
+                    facts,
+                    evidence,
+                    root: root.to_owned(),
+                })))
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 async fn observe(facts: &Facts) -> Evidence {

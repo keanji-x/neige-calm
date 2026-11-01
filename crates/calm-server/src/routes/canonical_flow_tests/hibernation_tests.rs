@@ -397,10 +397,13 @@ async fn production_http_invalid_closed_snapshot_cannot_abort_other_planner_hibe
     patch_closed(&app, &cookie, bad_track, true).await;
     let mut unsupported = serde_json::to_value(&original).unwrap();
     unsupported["schema_version"] = json!(99);
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(unsupported.to_string())
-        .bind(&bad_worker)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(unsupported.to_string())
+                .bind(&bad_worker),
+        )
         .await
         .unwrap();
     assert!(
@@ -466,10 +469,13 @@ async fn production_http_invalid_closed_snapshot_cannot_abort_other_planner_hibe
     let cached = state.shared_codex_appserver.cached_card_for_thread(THREAD);
     // Restore the injected fault and clean the real listener even when the
     // regression is red; the corrupted record is never treated as eligible.
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&original).unwrap())
-        .bind(&bad_worker)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&original).unwrap())
+                .bind(&bad_worker),
+        )
         .await
         .unwrap();
     shutdown(&fixture, &state, &worker, &mut peer).await;

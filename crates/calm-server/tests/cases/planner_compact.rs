@@ -20,12 +20,11 @@ async fn acp_grok_compact_run_declares_capability_for_dormant_backend_bindings()
         ("opencode", true),
         ("grok", true),
     ] {
-        sqlx::query(
+        (boot.repo.db()).writer().execute(sqlx::query(
             "UPDATE cards SET payload = json_set(payload, '$.planner_provider', ?1) WHERE id = ?2",
         )
         .bind(provider)
-        .bind(boot.planner_card.id.as_str())
-        .execute(boot.repo.pool())
+        .bind(boot.planner_card.id.as_str()))
         .await
         .unwrap();
         let (status, body) = send_json(
@@ -162,10 +161,13 @@ async fn compact_dormant_feedback_never_exposes_retained_ordinary_occupancy() {
             let boot = boot_with(snapshot).await;
             boot.harness.shutdown().await.unwrap();
             boot.registry.remove(&boot.worker_session_id);
-            sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
-                .bind(state)
-                .bind(&boot.worker_session_id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                        .bind(state)
+                        .bind(&boot.worker_session_id),
+                )
                 .await
                 .unwrap();
             let (code, body) = send_json(

@@ -64,15 +64,17 @@ async fn first_visible_steer() -> (Fixture, QueueEntryId, String) {
 #[tokio::test]
 async fn conversation_title_restored_first_you_is_durable_before_projection_delete() {
     let (f, id, turn) = first_visible_steer().await;
-    sqlx::query("CREATE TABLE restore_title_audit (snapshot TEXT NOT NULL)")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE restore_title_audit (snapshot TEXT NOT NULL)",
+        ))
         .await
         .unwrap();
     // Capture the actual durable snapshot at the deletion boundary, not the final state.
-    sqlx::query("CREATE TRIGGER restore_title_deleted AFTER DELETE ON harness_items
+    (f.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER restore_title_deleted AFTER DELETE ON harness_items
         WHEN json_extract(OLD.params, '$._projection') = 1
-        BEGIN INSERT INTO restore_title_audit SELECT handle_state_json FROM worker_sessions WHERE id=OLD.worker_session_id; END")
-        .execute(f.repo.db().writer_pool()).await.unwrap();
+        BEGIN INSERT INTO restore_title_audit SELECT handle_state_json FROM worker_sessions WHERE id=OLD.worker_session_id; END")).await.unwrap();
     let restored = restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
         .await
         .unwrap();
@@ -116,13 +118,14 @@ async fn conversation_title_restored_first_you_keeps_projection_if_pending_persi
         if unwritten {
             f.harness.inner.shutting_down.store(true, Ordering::SeqCst);
         } else {
-            sqlx::query(
-                "CREATE TRIGGER reject_restore_snapshot BEFORE UPDATE ON worker_sessions
+            (f.repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    "CREATE TRIGGER reject_restore_snapshot BEFORE UPDATE ON worker_sessions
         BEGIN SELECT RAISE(ABORT, 'test pending persist failure'); END",
-            )
-            .execute(f.repo.db().writer_pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
         }
         restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
             .await
@@ -246,14 +249,15 @@ async fn conversation_title_restoration_delete_failure_rolls_back_pending_and_re
         if failed {
             failed_owner(&f).await;
         }
-        sqlx::query(&format!(
-            "CREATE TRIGGER reject_restored_delete BEFORE DELETE ON harness_items
+        (f.repo.db())
+            .writer()
+            .execute(sqlx::query(&format!(
+                "CREATE TRIGGER reject_restored_delete BEFORE DELETE ON harness_items
             WHEN OLD.item_uuid='{second}'
             BEGIN SELECT RAISE(ABORT, 'test projection retirement failure'); END",
-        ))
-        .execute(f.repo.db().writer_pool())
-        .await
-        .unwrap();
+            )))
+            .await
+            .unwrap();
         restore_steered_entries_codex_dropped(&f.harness.inner, &turn)
             .await
             .unwrap();
@@ -277,8 +281,9 @@ async fn conversation_title_restoration_delete_failure_rolls_back_pending_and_re
                 .is_some(),
             "second source also survives rollback"
         );
-        sqlx::query("DROP TRIGGER reject_restored_delete")
-            .execute(f.repo.db().writer_pool())
+        (f.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER reject_restored_delete"))
             .await
             .unwrap();
         if failed {
@@ -322,54 +327,61 @@ async fn conversation_title_restoration_cancel_retains_unique_source_for_both_ow
         if failed {
             failed_owner(&f).await;
         }
-        let mut blocker = crate::db::sqlite::begin_immediate_tx(f.repo.db())
+        let write_db = (f.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut blocker = write_session.begin().await.unwrap();
+                    // The restoration can still read its projection; it stalls at acquiring its writer.
+                    sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
+                        .execute(&mut **blocker)
+                        .await
+                        .unwrap();
+                    let inner = f.harness.inner.clone();
+                    let task = tokio::spawn(async move {
+                        restore_steered_entries_codex_dropped(&inner, &turn)
+                            .await
+                            .unwrap()
+                    });
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        while f.harness.inner.restored_projections.lock().await.is_empty() {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    task.abort();
+                    assert!(task.await.unwrap_err().is_cancelled());
+                    blocker.rollback().await.unwrap();
+                    assert!(f.stored().await.pending_entries().is_empty());
+                    assert!(
+                        f.repo
+                            .transcript_projection_id(f.harness.inner.card_id.as_str(), id.as_str())
+                            .await
+                            .unwrap()
+                            .is_some(),
+                        "cancel before persistence cannot delete the only source"
+                    );
+                    if failed {
+                        persist_failed_system_error_snapshot(&f.harness.inner)
+                            .await
+                            .unwrap();
+                    } else {
+                        persist_snapshot(&f.harness.inner).await.unwrap();
+                    }
+                    assert_eq!(f.stored().await.pending_entries()[0].id(), Some(&id));
+                    assert!(
+                        f.repo
+                            .transcript_projection_id(f.harness.inner.card_id.as_str(), id.as_str())
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                })
+            })
             .await
-            .unwrap();
-        // The restoration can still read its projection; it stalls at acquiring its writer.
-        sqlx::query("UPDATE worker_sessions SET updated_at_ms=updated_at_ms")
-            .execute(&mut **blocker)
-            .await
-            .unwrap();
-        let inner = f.harness.inner.clone();
-        let task = tokio::spawn(async move {
-            restore_steered_entries_codex_dropped(&inner, &turn)
-                .await
-                .unwrap()
-        });
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while f.harness.inner.restored_projections.lock().await.is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        blocker.rollback().await.unwrap();
-        assert!(f.stored().await.pending_entries().is_empty());
-        assert!(
-            f.repo
-                .transcript_projection_id(f.harness.inner.card_id.as_str(), id.as_str())
-                .await
-                .unwrap()
-                .is_some(),
-            "cancel before persistence cannot delete the only source"
-        );
-        if failed {
-            persist_failed_system_error_snapshot(&f.harness.inner)
-                .await
-                .unwrap();
-        } else {
-            persist_snapshot(&f.harness.inner).await.unwrap();
-        }
-        assert_eq!(f.stored().await.pending_entries()[0].id(), Some(&id));
-        assert!(
-            f.repo
-                .transcript_projection_id(f.harness.inner.card_id.as_str(), id.as_str())
-                .await
-                .unwrap()
-                .is_none()
-        );
+            .expect("independent write operation")
     }
 }
 
@@ -378,9 +390,12 @@ async fn conversation_title_failed_restoration_unwritten_guard_keeps_projection(
     let (f, id, turn) = first_visible_steer().await;
     failed_owner(&f).await;
     // The existing failed-owner guard refuses harvested carriers.
-    sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?")
-        .bind(&f.harness.inner.worker_session_id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET queue_harvested_at_ms=1 WHERE id=?")
+                .bind(&f.harness.inner.worker_session_id),
+        )
         .await
         .unwrap();
     restore_steered_entries_codex_dropped(&f.harness.inner, &turn)

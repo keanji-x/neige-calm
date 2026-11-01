@@ -33,107 +33,115 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
         "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('a','a','',0,0,0)",
         "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('t','a','t',0,0,0),('other','a','other',1,0,0)",
     ] {
-        sqlx::query(sql).execute(repo.pool()).await.unwrap();
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(sql))
+            .await
+            .unwrap();
     }
-    if enabled {
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        for track in ["t", "other"] {
-            crate::db::sqlite::track_capabilities::stamp_tx(
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        if enabled {
+            let mut tx = write_session.begin().await.unwrap();
+            for track in ["t", "other"] {
+                crate::db::sqlite::track_capabilities::stamp_tx(
+                    &mut tx,
+                    &track.into(),
+                    &[calm_types::track_capability::TrackCapability::Objectives],
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+        }
+        let mut tx = write_session.begin().await.unwrap();
+        let cache = crate::card_role_cache::CardRoleCache::new();
+        for (id, track, role, payload) in [
+            (
+                "p",
+                "t",
+                crate::model::CardRole::Planner,
+                serde_json::json!({"planner_provider":"codex"}),
+            ),
+            (
+                "a",
+                "t",
+                crate::model::CardRole::Assistant,
+                serde_json::json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+            ),
+            (
+                "w",
+                "t",
+                crate::model::CardRole::Worker,
+                serde_json::json!({}),
+            ),
+            (
+                "foreign",
+                "other",
+                crate::model::CardRole::Planner,
+                serde_json::json!({"planner_provider":"codex"}),
+            ),
+        ] {
+            crate::db::sqlite::card_create_with_id_tx(
                 &mut tx,
-                &track.into(),
-                &[calm_types::track_capability::TrackCapability::Objectives],
+                id.into(),
+                crate::model::NewCard {
+                    track_id: track.into(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload,
+                },
+                role,
+                false,
+                &cache,
             )
             .await
             .unwrap();
+            use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
+            use calm_types::worker::WorkerSessionState;
+            let init = match role {
+                crate::model::CardRole::Planner => WorkerSessionInit::shared_planner(
+                    id.into(),
+                    id.into(),
+                    AgentProvider::Codex,
+                    WorkerSessionState::Idle,
+                    None,
+                    serde_json::json!({}),
+                    0,
+                ),
+                crate::model::CardRole::Assistant => WorkerSessionInit::managed_assistant(
+                    id.into(),
+                    id.into(),
+                    AgentProvider::Codex,
+                    WorkerSessionState::Idle,
+                    None,
+                    serde_json::json!({}),
+                    0,
+                ),
+                _ => WorkerSessionInit {
+                    id: id.into(),
+                    card_id: id.into(),
+                    kind: WorkerSessionKind::CodexCard,
+                    agent_provider: None,
+                    status: WorkerSessionState::Idle,
+                    terminal_run_id: None,
+                    thread_id: None,
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    spawn_op_id: None,
+                    now_ms: 0,
+                },
+            };
+            crate::db::sqlite::session_start_runtime_tx(&mut tx, init)
+                .await
+                .unwrap();
         }
         tx.commit().await.unwrap();
-    }
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let cache = crate::card_role_cache::CardRoleCache::new();
-    for (id, track, role, payload) in [
-        (
-            "p",
-            "t",
-            crate::model::CardRole::Planner,
-            serde_json::json!({"planner_provider":"codex"}),
-        ),
-        (
-            "a",
-            "t",
-            crate::model::CardRole::Assistant,
-            serde_json::json!({"harness_profile":"assistant","assistant_provider":"codex"}),
-        ),
-        (
-            "w",
-            "t",
-            crate::model::CardRole::Worker,
-            serde_json::json!({}),
-        ),
-        (
-            "foreign",
-            "other",
-            crate::model::CardRole::Planner,
-            serde_json::json!({"planner_provider":"codex"}),
-        ),
-    ] {
-        crate::db::sqlite::card_create_with_id_tx(
-            &mut tx,
-            id.into(),
-            crate::model::NewCard {
-                track_id: track.into(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload,
-            },
-            role,
-            false,
-            &cache,
-        )
-        .await
-        .unwrap();
-        use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
-        use calm_types::worker::WorkerSessionState;
-        let init = match role {
-            crate::model::CardRole::Planner => WorkerSessionInit::shared_planner(
-                id.into(),
-                id.into(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                None,
-                serde_json::json!({}),
-                0,
-            ),
-            crate::model::CardRole::Assistant => WorkerSessionInit::managed_assistant(
-                id.into(),
-                id.into(),
-                AgentProvider::Codex,
-                WorkerSessionState::Idle,
-                None,
-                serde_json::json!({}),
-                0,
-            ),
-            _ => WorkerSessionInit {
-                id: id.into(),
-                card_id: id.into(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: None,
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: None,
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: 0,
-            },
-        };
-        crate::db::sqlite::session_start_runtime_tx(&mut tx, init)
-            .await
-            .unwrap();
-    }
-    tx.commit().await.unwrap();
-    repo
+        repo
+
+    })).await.expect("independent write operation")
 }
 
 fn definition() -> ObjectiveDefinition {
@@ -199,10 +207,19 @@ async fn fixture_react(repo: &SqlxRepo, event: Event, id: &str) -> Reaction {
     } else {
         planner(event, id)
     };
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let result = react_fixture_tx(&mut tx, &input, 0).await.unwrap();
-    tx.commit().await.unwrap();
-    result
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let result = react_fixture_tx(&mut tx, &input, 0).await.unwrap();
+                tx.commit().await.unwrap();
+                result
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 fn scenario() -> Vec<Event> {
     vec![
@@ -253,8 +270,16 @@ fn scenario() -> Vec<Event> {
 
 // Tests of storage semantics seed engine events explicitly without the production authorization door.
 async fn fixture_input_react(repo: &SqlxRepo, input: ObjectiveInput) -> Result<CommittedReaction> {
-    let mut tx = begin_immediate_tx(repo.db()).await?;
-    let reaction = react_fixture_tx(&mut tx, &input, 0).await?;
-    tx.commit().await?;
-    Ok(CommittedReaction { reaction })
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let reaction = react_fixture_tx(&mut tx, &input, 0).await?;
+                tx.commit().await?;
+                Ok(CommittedReaction { reaction })
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }

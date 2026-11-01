@@ -139,24 +139,30 @@ pub(super) async fn claim_retry(
     };
     let (_, detail) = Phase::AppServerInteract { kind: kind.clone() }.serialize_split();
     let now = now_ms();
-    let row = sqlx::query(
-        "UPDATE operations SET phase='app_server_interact', phase_detail_json=?1,
+    let row = {
+        let query = sqlx::query(
+            "UPDATE operations SET phase='app_server_interact', phase_detail_json=?1,
          attempt=attempt+1, lease_owner=?2, lease_until_ms=?3, updated_at_ms=?4
          WHERE id=?5 AND kind=?6 AND idempotency_key=?7 AND payload_hash=?8
          AND phase='awaiting_retry' AND attempt=?9 AND phase_detail_json=?1
          AND lease_owner IS NULL AND completed_at_ms IS NULL RETURNING *",
-    )
-    .bind(detail.map(|value| value.to_string()))
-    .bind(new_id())
-    .bind(now + OPERATION_LEASE_MS)
-    .bind(now)
-    .bind(&op.id)
-    .bind(&op.kind)
-    .bind(key)
-    .bind(&op.payload_hash)
-    .bind(expected_attempt)
-    .fetch_optional(pool.writer_pool())
-    .await?;
+        )
+        .bind(detail.map(|value| value.to_string()))
+        .bind(new_id())
+        .bind(now + OPERATION_LEASE_MS)
+        .bind(now)
+        .bind(&op.id)
+        .bind(&op.kind)
+        .bind(key)
+        .bind(&op.payload_hash)
+        .bind(expected_attempt);
+        (pool)
+            .writer()
+            .autocommit(move |connection| {
+                Box::pin(async move { query.fetch_optional(&mut **connection).await })
+            })
+            .await
+    }?;
     row.as_ref()
         .map(super::repo_sqlite::operation_from_row)
         .transpose()

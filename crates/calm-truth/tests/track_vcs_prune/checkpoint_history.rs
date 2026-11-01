@@ -166,14 +166,23 @@ async fn current_checkpoint_prune_dry_run_rolls_back_before_reclamation() {
     )
     .await;
     let objects = object_count(fixture.pool()).await;
-    let mut tx = begin_immediate_tx(fixture.db()).await.unwrap();
-    assert_eq!(
-        track_vcs::prune_track_history_tx(&mut tx, &fixture.track_id, 2)
-            .await
-            .unwrap(),
-        4
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(commit_count(fixture.pool(), &fixture.track_id).await, 6);
-    assert_eq!(object_count(fixture.pool()).await, objects);
+    let write_db = (fixture.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    track_vcs::prune_track_history_tx(&mut tx, &fixture.track_id, 2)
+                        .await
+                        .unwrap(),
+                    4
+                );
+                tx.rollback().await.unwrap();
+                assert_eq!(commit_count(fixture.pool(), &fixture.track_id).await, 6);
+                assert_eq!(object_count(fixture.pool()).await, objects);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

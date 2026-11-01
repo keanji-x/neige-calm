@@ -309,7 +309,6 @@ async fn resolve_tolerates_corrupt_overlapping_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
     use calm_server::area_folder_claim::AreaFolderClaim;
-    use calm_server::db::sqlite::begin_immediate_tx;
 
     let tmp = TempDir::new().expect("tempdir");
     let url = format!("sqlite://{}?mode=rwc", tmp.path().join("calm.db").display());
@@ -327,38 +326,52 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
         .unwrap();
     let area_id = area.id.to_string();
 
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    sqlx::query("INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)")
-        .bind(&area_id)
-        .bind("/a/b")
-        .bind(0_i64)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlx::query(
+                    "INSERT INTO area_folders (area_id, path, created_at) VALUES (?1, ?2, ?3)",
+                )
+                .bind(&area_id)
+                .bind("/a/b")
+                .bind(0_i64)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
 
-    let repo_b = repo.clone();
-    let area_b = area_id.clone();
-    let claim = tokio::spawn(async move { repo_b.area_folder_create_checked(&area_b, "/a").await });
+                let repo_b = repo.clone();
+                let area_b = area_id.clone();
+                let claim =
+                    tokio::spawn(
+                        async move { repo_b.area_folder_create_checked(&area_b, "/a").await },
+                    );
 
-    // The sleep is load-bearing only for a non-atomic mutant (scan on one connection, insert on another): it lets
-    // the pre-commit snapshot land first. B blocks inside SQLite's own lock, which exposes no observable edge.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    tx.commit().await.unwrap();
+                // The sleep is load-bearing only for a non-atomic mutant (scan on one connection, insert on another): it lets
+                // the pre-commit snapshot land first. B blocks inside SQLite's own lock, which exposes no observable edge.
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                tx.commit().await.unwrap();
 
-    let outcome = claim.await.unwrap().expect("claim must not error");
-    assert!(
-        matches!(outcome, AreaFolderClaim::Conflict(_)),
-        "claiming `/a` must see the just-committed `/a/b`; a scan on a \
+                let outcome = claim.await.unwrap().expect("claim must not error");
+                assert!(
+                    matches!(outcome, AreaFolderClaim::Conflict(_)),
+                    "claiming `/a` must see the just-committed `/a/b`; a scan on a \
          separate connection would have missed it and created the row"
-    );
+                );
 
-    let all = repo.area_folders_list_all().await.unwrap();
-    let paths: Vec<&str> = all.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(
-        paths,
-        vec!["/a/b"],
-        "exactly one claim may survive; overlapping rows are the corrupt state"
-    );
+                let all = repo.area_folders_list_all().await.unwrap();
+                let paths: Vec<&str> = all.iter().map(|f| f.path.as_str()).collect();
+                assert_eq!(
+                    paths,
+                    vec!["/a/b"],
+                    "exactly one claim may survive; overlapping rows are the corrupt state"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

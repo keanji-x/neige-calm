@@ -44,17 +44,19 @@ async fn delete_rollback(scope: &str) {
     })
     .await;
     let mut subscription = entry.subscribe();
-    sqlx::query("CREATE TRIGGER reject_delete BEFORE DELETE ON terminals BEGIN SELECT RAISE(ABORT, 'later delete failed'); END")
-            .execute(f.repo.db().writer_pool()).await.unwrap();
+    (f.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER reject_delete BEFORE DELETE ON terminals BEGIN SELECT RAISE(ABORT, 'later delete failed'); END")).await.unwrap();
     if scope == "sweeper" {
-        sqlx::query("UPDATE worker_sessions SET state='exited' WHERE terminal_run_id=?")
-            .bind(&term.id)
-            .execute(f.repo.db().writer_pool())
+        (f.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET state='exited' WHERE terminal_run_id=?")
+                    .bind(&term.id),
+            )
             .await
             .unwrap();
-        sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?")
-            .bind(&term.id)
-            .execute(f.repo.db().writer_pool())
+        (f.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?").bind(&term.id))
             .await
             .unwrap();
         calm_server::terminal_sweeper::sweep(&f.state)
@@ -119,8 +121,9 @@ async fn delete_rollback(scope: &str) {
         Arc::ptr_eq(&entry, &f.state.terminal_renderer.get(&term.id).unwrap()),
         "Drained retains the same final screen until Retired"
     );
-    sqlx::query("DROP TRIGGER reject_delete")
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_delete"))
         .await
         .unwrap();
     f.stop(&id).await;
@@ -138,139 +141,150 @@ async fn ws_before_spawn_retains_latest_resize_and_recovers_input() {
     intent.metadata.program.program = "/bin/sh".into();
     intent.metadata.program.args = vec!["-c".into(), "exec /bin/sh".into()];
     let id = intent.metadata.id.clone();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-    tx.commit().await.unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let app = calm_server::ws::router().with_state(f.state.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/api/terminals/{}", term.id))
-            .await
-            .unwrap();
-    let client_id = uuid::Uuid::new_v4();
-    let hello = calm_session::ClientMsg::ClientHello {
-        protocol_version: calm_session::PROTOCOL_VERSION,
-        terminal_id: term.id.clone(),
-        client_id,
-        desired_size: calm_session::PtySize {
-            cols: 80,
-            rows: 24,
-            pixel_width: None,
-            pixel_height: None,
-        },
-        cell_size: None,
-        initial_scrollback: calm_session::InitialScrollback::None,
-        resume_from: None,
-        role_hint: Some(calm_session::Role::Owner),
-        capabilities: calm_session::ClientCapabilities {
-            render_encodings: vec![calm_session::RenderEncoding::Vt],
-            supports_scrollback: true,
-            supports_sixel: false,
-            supports_images: false,
-            kernel_originated_input: false,
-        },
-    };
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                tx.commit().await.unwrap();
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let app = calm_server::ws::router().with_state(f.state.clone());
+                let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+                    "ws://{address}/api/terminals/{}",
+                    term.id
+                ))
+                .await
+                .unwrap();
+                let client_id = uuid::Uuid::new_v4();
+                let hello = calm_session::ClientMsg::ClientHello {
+                    protocol_version: calm_session::PROTOCOL_VERSION,
+                    terminal_id: term.id.clone(),
+                    client_id,
+                    desired_size: calm_session::PtySize {
+                        cols: 80,
+                        rows: 24,
+                        pixel_width: None,
+                        pixel_height: None,
+                    },
+                    cell_size: None,
+                    initial_scrollback: calm_session::InitialScrollback::None,
+                    resume_from: None,
+                    role_hint: Some(calm_session::Role::Owner),
+                    capabilities: calm_session::ClientCapabilities {
+                        render_encodings: vec![calm_session::RenderEncoding::Vt],
+                        supports_scrollback: true,
+                        supports_sixel: false,
+                        supports_images: false,
+                        kernel_originated_input: false,
+                    },
+                };
 
-    ws.send(Message::Text(serde_json::to_string(&hello).unwrap()))
-        .await
-        .unwrap();
-    next(&mut ws, |m| {
-        if let DaemonMsg::ServerHello {
-            client_role,
-            owner_client_id,
-            ..
-        } = m
-        {
-            assert_eq!(*client_role, calm_session::Role::Observer);
-            assert!(owner_client_id.is_none(), "no input owner before Spawned");
-            true
-        } else {
-            false
-        }
-    })
-    .await;
-    // NotOwner is recoverable by the shipped browser; BadSequence disables it.
-    for epoch in 1..=2 {
-        ws.send(Message::Text(
-            serde_json::to_string(&ClientMsg::ResizeCommit {
-                epoch,
-                cols: 90 + epoch as u16,
-                rows: 30,
-            })
-            .unwrap(),
-        ))
-        .await
-        .unwrap();
-        next(&mut ws, |m| matches!(m, DaemonMsg::ResizeApplied { .. })).await;
-        ws.send(Message::Text(
-            serde_json::to_string(&ClientMsg::Input {
-                data: b"ignored\r".to_vec(),
-                input_seq: epoch.into(),
-            })
-            .unwrap(),
-        ))
-        .await
-        .unwrap();
-        next(&mut ws, |m| {
-            assert!(
-                !matches!(m, DaemonMsg::InputAck { .. }),
-                "refused input must not be acknowledged"
-            );
-            matches!(
-                m,
-                DaemonMsg::ProtocolError {
-                    code: calm_session::ProtocolErrorCode::NotOwner,
-                    ..
+                ws.send(Message::Text(serde_json::to_string(&hello).unwrap()))
+                    .await
+                    .unwrap();
+                next(&mut ws, |m| {
+                    if let DaemonMsg::ServerHello {
+                        client_role,
+                        owner_client_id,
+                        ..
+                    } = m
+                    {
+                        assert_eq!(*client_role, calm_session::Role::Observer);
+                        assert!(owner_client_id.is_none(), "no input owner before Spawned");
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .await;
+                // NotOwner is recoverable by the shipped browser; BadSequence disables it.
+                for epoch in 1..=2 {
+                    ws.send(Message::Text(
+                        serde_json::to_string(&ClientMsg::ResizeCommit {
+                            epoch,
+                            cols: 90 + epoch as u16,
+                            rows: 30,
+                        })
+                        .unwrap(),
+                    ))
+                    .await
+                    .unwrap();
+                    next(&mut ws, |m| matches!(m, DaemonMsg::ResizeApplied { .. })).await;
+                    ws.send(Message::Text(
+                        serde_json::to_string(&ClientMsg::Input {
+                            data: b"ignored\r".to_vec(),
+                            input_seq: epoch.into(),
+                        })
+                        .unwrap(),
+                    ))
+                    .await
+                    .unwrap();
+                    next(&mut ws, |m| {
+                        assert!(
+                            !matches!(m, DaemonMsg::InputAck { .. }),
+                            "refused input must not be acknowledged"
+                        );
+                        matches!(
+                            m,
+                            DaemonMsg::ProtocolError {
+                                code: calm_session::ProtocolErrorCode::NotOwner,
+                                ..
+                            }
+                        )
+                    })
+                    .await;
                 }
-            )
-        })
-        .await;
-    }
-    f.engine.drive(ticket.committed());
-    wait(|| async {
-        matches!(
-            f.engine.output(&id, None).await,
-            Ok(ExecutionReply::Observation {
-                state: ExecutionState::Spawned,
-                ..
+                f.engine.drive(ticket.committed());
+                wait(|| async {
+                    matches!(
+                        f.engine.output(&id, None).await,
+                        Ok(ExecutionReply::Observation {
+                            state: ExecutionState::Spawned,
+                            ..
+                        })
+                    )
+                })
+                .await;
+                // The browser restores stdin only on an ownership acknowledgement after NotOwner.
+                next(&mut ws, |m| {
+                    matches!(
+                        m,
+                        DaemonMsg::OwnerChanged {
+                            owner_client_id: Some(owner)
+                        } if *owner == client_id
+                    )
+                })
+                .await;
+                ws.send(Message::Text(
+                    serde_json::to_string(&ClientMsg::Input {
+                        data: b"stty size\r".to_vec(),
+                        input_seq: 3,
+                    })
+                    .unwrap(),
+                ))
+                .await
+                .unwrap();
+                let mut ack = false;
+                let mut output = Vec::new();
+                next(&mut ws, |m| {
+                    match m {
+                        DaemonMsg::InputAck { input_seq: 3 } => ack = true,
+                        DaemonMsg::RenderPatch(p) => output.extend_from_slice(&p.data),
+                        _ => {}
+                    }
+                    ack && String::from_utf8_lossy(&output).contains("30 92")
+                })
+                .await;
+                f.stop(&id).await;
+                server.abort();
             })
-        )
-    })
-    .await;
-    // The browser restores stdin only on an ownership acknowledgement after NotOwner.
-    next(&mut ws, |m| {
-        matches!(
-            m,
-            DaemonMsg::OwnerChanged {
-                owner_client_id: Some(owner)
-            } if *owner == client_id
-        )
-    })
-    .await;
-    ws.send(Message::Text(
-        serde_json::to_string(&ClientMsg::Input {
-            data: b"stty size\r".to_vec(),
-            input_seq: 3,
         })
-        .unwrap(),
-    ))
-    .await
-    .unwrap();
-    let mut ack = false;
-    let mut output = Vec::new();
-    next(&mut ws, |m| {
-        match m {
-            DaemonMsg::InputAck { input_seq: 3 } => ack = true,
-            DaemonMsg::RenderPatch(p) => output.extend_from_slice(&p.data),
-            _ => {}
-        }
-        ack && String::from_utf8_lossy(&output).contains("30 92")
-    })
-    .await;
-    f.stop(&id).await;
-    server.abort();
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

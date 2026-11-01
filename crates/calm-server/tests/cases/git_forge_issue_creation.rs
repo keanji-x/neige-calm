@@ -215,11 +215,10 @@ async fn issue_view_contract_version_does_not_replay_body_only_result() {
         &fx.card_id,
         "gh.issue.view:v2:owner/repo:42",
     );
-    sqlx::query("UPDATE operations SET idempotency_key=?1, tx_output_json=json_set(tx_output_json,'$.result',json(?2)) WHERE id=?3")
+    (fx.repo.db()).writer().execute(sqlx::query("UPDATE operations SET idempotency_key=?1, tx_output_json=json_set(tx_output_json,'$.result',json(?2)) WHERE id=?3")
         .bind(legacy_key)
         .bind(json!({"stdout":"Old body only"}).to_string())
-        .bind(op)
-        .execute(fx.repo.pool())
+        .bind(op))
         .await
         .unwrap();
     let expected = issue(42, "CLOSED", "New", "Fresh body");
@@ -238,11 +237,10 @@ async fn issue_view_contract_version_does_not_replay_body_only_result() {
         .as_str()
         .unwrap();
     let old = format!("gh.issue.view:v3:{}", json!(["owner/repo", 42, "refresh"]));
-    sqlx::query("UPDATE operations SET idempotency_key=?1, tx_output_json=json_set(tx_output_json,'$.result',json(?2)) WHERE id=?3")
+    (fx.repo.db()).writer().execute(sqlx::query("UPDATE operations SET idempotency_key=?1, tx_output_json=json_set(tx_output_json,'$.result',json(?2)) WHERE id=?3")
         .bind(scoped_idem_key(PLUGIN_ID, &fx.track_id, &fx.card_id, &old))
         .bind(json!({"stdout":"Old attempt body"}).to_string())
-        .bind(attempt_op)
-        .execute(fx.repo.pool())
+        .bind(attempt_op))
         .await
         .unwrap();
     assert_eq!(

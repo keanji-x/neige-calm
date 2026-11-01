@@ -87,14 +87,23 @@ async fn resolve_active_thread_for_card_prefers_runtime() {
         Some(AgentProvider::Codex),
     );
     init.thread_id = Some("thread-runtime".into());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(&mut tx, init).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(&mut tx, init).await.unwrap();
+                tx.commit().await.unwrap();
 
-    let thread = resolve_active_thread_for_card(&repo, card.id.as_str())
+                let thread = resolve_active_thread_for_card(&repo, card.id.as_str())
+                    .await
+                    .unwrap();
+                assert_eq!(thread.as_deref(), Some("thread-runtime"));
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(thread.as_deref(), Some("thread-runtime"));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -118,14 +127,24 @@ async fn resolve_card_for_thread_prefers_runtime() {
         Some(AgentProvider::Codex),
     );
     init.thread_id = Some("thread-runtime".into());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(&mut tx, init).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(&mut tx, init).await.unwrap();
+                tx.commit().await.unwrap();
 
-    let card_id = resolve_card_for_thread(&repo, AgentProvider::Codex, "thread-runtime")
+                let card_id =
+                    resolve_card_for_thread(&repo, AgentProvider::Codex, "thread-runtime")
+                        .await
+                        .unwrap();
+                assert_eq!(card_id.as_deref(), Some(card.id.as_str()));
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(card_id.as_deref(), Some(card.id.as_str()));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -153,14 +172,23 @@ async fn resolve_claude_session_for_card_prefers_runtime() {
         Some(AgentProvider::Claude),
     );
     init.session_id = Some("runtime-session".into());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(&mut tx, init).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(&mut tx, init).await.unwrap();
+                tx.commit().await.unwrap();
 
-    let session = resolve_claude_session_for_card(&repo, card.id.as_str())
+                let session = resolve_claude_session_for_card(&repo, card.id.as_str())
+                    .await
+                    .unwrap();
+                assert_eq!(session.as_deref(), Some("runtime-session"));
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(session.as_deref(), Some("runtime-session"));
+        .expect("independent write operation")
 }
 
 #[tokio::test]

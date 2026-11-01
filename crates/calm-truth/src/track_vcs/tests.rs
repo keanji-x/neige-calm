@@ -8,7 +8,7 @@ use super::store::{
 };
 use super::*;
 use crate::db::prelude::*;
-use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+use crate::db::sqlite::SqlxRepo;
 use crate::event::{Event, ForgeMergeSubject};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{NewArea, NewTrack, RequestTheme};
@@ -181,31 +181,39 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
     };
-    let mut tx = begin_immediate_tx(repo.db())
-        .await
-        .expect("begin transaction");
-    let committed = commit_events_with_author_in_tx(
-        &mut tx,
-        &track.id,
-        Some(&ActorId::KernelDispatcher),
-        42,
-        &[event],
-        MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .expect("commit forge.pr.merged batch");
-    tx.commit().await.expect("commit transaction");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin transaction");
+                let committed = commit_events_with_author_in_tx(
+                    &mut tx,
+                    &track.id,
+                    Some(&ActorId::KernelDispatcher),
+                    42,
+                    &[event],
+                    MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .expect("commit forge.pr.merged batch");
+                tx.commit().await.expect("commit transaction");
 
-    let after = head(repo.pool(), &track.id).await.expect("head after");
-    let commit_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1")
-            .bind(track.id.as_str())
-            .fetch_one(repo.pool())
-            .await
-            .expect("commit count");
-    assert_eq!(committed, None);
-    assert_eq!(after, before);
-    assert_eq!(commit_count, 0);
+                let after = head(repo.pool(), &track.id).await.expect("head after");
+                let commit_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1",
+                )
+                .bind(track.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+                assert_eq!(committed, None);
+                assert_eq!(after, before);
+                assert_eq!(commit_count, 0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -248,31 +256,39 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
         delivery_id: None,
         base_is_ancestor: None,
     };
-    let mut tx = begin_immediate_tx(repo.db())
-        .await
-        .expect("begin transaction");
-    let committed = commit_events_with_author_in_tx(
-        &mut tx,
-        &track.id,
-        Some(&ActorId::KernelDispatcher),
-        42,
-        &[event],
-        MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .expect("commit worktree.committed batch");
-    tx.commit().await.expect("commit transaction");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin transaction");
+                let committed = commit_events_with_author_in_tx(
+                    &mut tx,
+                    &track.id,
+                    Some(&ActorId::KernelDispatcher),
+                    42,
+                    &[event],
+                    MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .expect("commit worktree.committed batch");
+                tx.commit().await.expect("commit transaction");
 
-    let after = head(repo.pool(), &track.id).await.expect("head after");
-    let commit_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1")
-            .bind(track.id.as_str())
-            .fetch_one(repo.pool())
-            .await
-            .expect("commit count");
-    assert_eq!(committed, None);
-    assert_eq!(after, before);
-    assert_eq!(commit_count, 0);
+                let after = head(repo.pool(), &track.id).await.expect("head after");
+                let commit_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1",
+                )
+                .bind(track.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+                assert_eq!(committed, None);
+                assert_eq!(after, before);
+                assert_eq!(commit_count, 0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -329,31 +345,39 @@ async fn ask_batch_does_not_advance_head() {
             track_id: track.id.clone(),
         },
     ];
-    let mut tx = begin_immediate_tx(repo.db())
-        .await
-        .expect("begin transaction");
-    let committed = commit_events_with_author_in_tx(
-        &mut tx,
-        &track.id,
-        Some(&ActorId::AiPlanner(CardId::from("planner-card"))),
-        42,
-        &events,
-        MANIFEST_SCHEMA_VERSION,
-    )
-    .await
-    .expect("commit ask batch");
-    tx.commit().await.expect("commit transaction");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin transaction");
+                let committed = commit_events_with_author_in_tx(
+                    &mut tx,
+                    &track.id,
+                    Some(&ActorId::AiPlanner(CardId::from("planner-card"))),
+                    42,
+                    &events,
+                    MANIFEST_SCHEMA_VERSION,
+                )
+                .await
+                .expect("commit ask batch");
+                tx.commit().await.expect("commit transaction");
 
-    let after = head(repo.pool(), &track.id).await.expect("head after");
-    let commit_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1")
-            .bind(track.id.as_str())
-            .fetch_one(repo.pool())
-            .await
-            .expect("commit count");
-    assert_eq!(committed, None);
-    assert_eq!(after, before);
-    assert_eq!(commit_count, 0);
+                let after = head(repo.pool(), &track.id).await.expect("head after");
+                let commit_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM track_vcs_commits WHERE track_id = ?1",
+                )
+                .bind(track.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+                assert_eq!(committed, None);
+                assert_eq!(after, before);
+                assert_eq!(commit_count, 0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[test]
@@ -453,116 +477,128 @@ async fn cas_state(pool: &sqlx::SqlitePool) -> CasState {
 #[tokio::test]
 async fn unchanged_public_snapshot_does_not_attempt_existing_cas_object_inserts() {
     let f = super::transcript_writer_tests::Fixture::new().await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    let warm = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let before = cas_state(f.repo.pool()).await;
-    assert!(!before.refs.is_empty());
-    assert!(!before.commits.is_empty());
-    assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "tree"));
-    assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "blob"));
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    // This isolated test trigger observes actual source-row attempts, including ignored
-    // existing hashes. It does not replace the owner or reproduce its insertion policy.
-    sqlx::query("CREATE TABLE cas_insert_probe (kind TEXT NOT NULL)")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER cas_insert_probe BEFORE INSERT ON track_vcs_objects
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let warm = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let before = cas_state(f.repo.pool()).await;
+                assert!(!before.refs.is_empty());
+                assert!(!before.commits.is_empty());
+                assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "tree"));
+                assert!(before.objects.iter().any(|(_, kind, _, _)| kind == "blob"));
+                let mut tx = write_session.begin().await.unwrap();
+                // This isolated test trigger observes actual source-row attempts, including ignored
+                // existing hashes. It does not replace the owner or reproduce its insertion policy.
+                sqlx::query("CREATE TABLE cas_insert_probe (kind TEXT NOT NULL)")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query(
+                    "CREATE TRIGGER cas_insert_probe BEFORE INSERT ON track_vcs_objects
          BEGIN INSERT INTO cas_insert_probe(kind) VALUES(NEW.kind); END",
-    )
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    let repeated = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
+                )
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                let repeated = snapshot_tree(&mut tx, &f.track.id, MANIFEST_SCHEMA_VERSION)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                // Pin all semantics before the cost oracle: object identity/body/type/age, HEAD refs
+                // and every commit field remain unchanged. This is a snapshot, not a new checkpoint.
+                assert_eq!(warm.tree_hash, repeated.tree_hash);
+                assert_eq!(warm.manifest, repeated.manifest);
+                assert_eq!(cas_state(f.repo.pool()).await, before);
+                let attempts: Vec<(String, i64)> = sqlx::query_as(
+                    "SELECT kind,count(*) FROM cas_insert_probe GROUP BY kind ORDER BY kind",
+                )
+                .fetch_all(f.repo.pool())
+                .await
+                .unwrap();
+                let total: i64 = attempts.iter().map(|(_, count)| count).sum();
+                assert_eq!(
+                    total, 0,
+                    "unchanged CAS insert attempts by kind: {attempts:?}"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    // Pin all semantics before the cost oracle: object identity/body/type/age, HEAD refs
-    // and every commit field remain unchanged. This is a snapshot, not a new checkpoint.
-    assert_eq!(warm.tree_hash, repeated.tree_hash);
-    assert_eq!(warm.manifest, repeated.manifest);
-    assert_eq!(cas_state(f.repo.pool()).await, before);
-    let attempts: Vec<(String, i64)> =
-        sqlx::query_as("SELECT kind,count(*) FROM cas_insert_probe GROUP BY kind ORDER BY kind")
-            .fetch_all(f.repo.pool())
-            .await
-            .unwrap();
-    let total: i64 = attempts.iter().map(|(_, count)| count).sum();
-    assert_eq!(
-        total, 0,
-        "unchanged CAS insert attempts by kind: {attempts:?}"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn immutable_cas_keeps_existing_facts_and_guards_real_new_row_attempts() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let hash = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    // Explicit raw corruption is not repaired by a typed CAS no-op, just as with IGNORE.
-    sqlx::query("UPDATE track_vcs_objects SET kind='tree',bytes=X'00',created_at=17 WHERE hash=?1")
-        .bind(&hash)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let again = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(again, hash);
-    let facts: (String, Vec<u8>, i64) =
-        sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
-            .bind(&hash)
-            .fetch_one(repo.pool())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let hash = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
             .await
             .unwrap();
-    assert_eq!(facts, ("tree".into(), vec![0], 17));
-    // Isolated fault injection: supported DML cannot delete required epoch state.
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    sqlx::query("DROP TRIGGER frontier_state_no_delete")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM track_vcs_gc_frontier_state")
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert!(
-        put_blob(&mut tx, "blob", b"actual new CAS fact")
+        tx.commit().await.unwrap();
+        // Explicit raw corruption is not repaired by a typed CAS no-op, just as with IGNORE.
+        (repo.db()).writer().execute(sqlx::query("UPDATE track_vcs_objects SET kind='tree',bytes=X'00',created_at=17 WHERE hash=?1")
+            .bind(&hash))
+            .await
+            .unwrap();
+        let mut tx = write_session.begin().await.unwrap();
+        let again = put_blob(&mut tx, "blob", b"unchanged typed CAS input")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(again, hash);
+        let facts: (String, Vec<u8>, i64) =
+            sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
+                .bind(&hash)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(facts, ("tree".into(), vec![0], 17));
+        // Isolated fault injection: supported DML cannot delete required epoch state.
+        let mut tx = write_session.begin().await.unwrap();
+        sqlx::query("DROP TRIGGER frontier_state_no_delete")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM track_vcs_gc_frontier_state")
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut tx = write_session.begin().await.unwrap();
+        assert!(
+            put_blob(&mut tx, "blob", b"actual new CAS fact")
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+        assert!(
+            (repo.db()).writer().execute(sqlx::query(
+                "INSERT OR REPLACE INTO track_vcs_objects(hash,kind,bytes,created_at)
+         VALUES(?1,'blob',X'01',19)",
+            )
+            .bind(&hash))
             .await
             .is_err()
-    );
-    tx.rollback().await.unwrap();
-    assert!(
-        sqlx::query(
-            "INSERT OR REPLACE INTO track_vcs_objects(hash,kind,bytes,created_at)
-         VALUES(?1,'blob',X'01',19)",
-        )
-        .bind(&hash)
-        .execute(repo.pool())
-        .await
-        .is_err()
-    );
-    let after: (String, Vec<u8>, i64) =
-        sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
-            .bind(&hash)
+        );
+        let after: (String, Vec<u8>, i64) =
+            sqlx::query_as("SELECT kind,bytes,created_at FROM track_vcs_objects WHERE hash=?1")
+                .bind(&hash)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(after, facts);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM track_vcs_objects")
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(after, facts);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM track_vcs_objects")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
+        assert_eq!(count, 1);
+
+    })).await.expect("independent write operation")
 }

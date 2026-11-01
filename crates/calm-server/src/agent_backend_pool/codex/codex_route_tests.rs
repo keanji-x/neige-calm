@@ -58,22 +58,33 @@ async fn build_pool(cfg: &crate::config::Config, repo: Arc<SqlxRepo>) -> Arc<Cod
 }
 
 pub(crate) async fn bind(repo: &SqlxRepo, session: &str, thread: Option<&str>) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
-        .bind(session)
-        .execute(&mut *tx)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?")
+                    .bind(session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                calm_truth::db::sqlite::session_backend::insert_tx(
+                    &mut tx, session, "codex", "other",
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
+                    .bind(thread)
+                    .bind(session)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    calm_truth::db::sqlite::session_backend::insert_tx(&mut tx, session, "codex", "other")
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
-        .bind(thread)
-        .bind(session)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -137,56 +148,65 @@ pub(crate) async fn seed(repo: &SqlxRepo) -> (String, String) {
         })
         .await
         .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = calm_truth::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        uuid::Uuid::new_v4().to_string(),
-        crate::model::NewCard {
-            track_id: track.id,
-            kind: "codex".into(),
-            title: None,
-            payload: json!({"task":"task"}),
-            sort: None,
-        },
-        crate::model::CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    let session = uuid::Uuid::new_v4().to_string();
-    use crate::session_projection_repo::{
-        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-    };
-    calm_truth::db::sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some("thread".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 0,
-        },
-    )
-    .await
-    .unwrap();
-    calm_truth::db::sqlite::session_record_activity_tx(
-        &mut tx,
-        &calm_types::worker::WorkerSessionId::from(session.as_str()),
-        0,
-        "idle",
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card.id.to_string(), session)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let card = calm_truth::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::model::NewCard {
+                        track_id: track.id,
+                        kind: "codex".into(),
+                        title: None,
+                        payload: json!({"task":"task"}),
+                        sort: None,
+                    },
+                    crate::model::CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                let session = uuid::Uuid::new_v4().to_string();
+                use crate::session_projection_repo::{
+                    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+                };
+                calm_truth::db::sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some("thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: 0,
+                    },
+                )
+                .await
+                .unwrap();
+                calm_truth::db::sqlite::session_record_activity_tx(
+                    &mut tx,
+                    &calm_types::worker::WorkerSessionId::from(session.as_str()),
+                    0,
+                    "idle",
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card.id.to_string(), session)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -248,10 +268,10 @@ async fn agent_backend_idle_probe_reads_bound_instance() {
     bind(&repo, &session, Some("thread")).await;
     let (_a, mut default, _fa) = connect_with_reader(pool.default_only()).await;
     let (_b, mut other, _fb) = connect_with_reader(&pool.instances()[1]).await;
-    sqlx::query("INSERT INTO tasks
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO tasks
         (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms,updated_at_ms)
         SELECT 'task',track_id,'task','codex','goal','{}','[]','running',0,0 FROM cards WHERE id=?")
-        .bind(&card).execute(repo.pool()).await.unwrap();
+        .bind(&card)).await.unwrap();
     let task = repo.task_get("task").await.unwrap().unwrap();
     let idle = WorkerIdleWake::with_route(pool.clone(), Duration::ZERO, Duration::from_secs(5));
     let observe = PlannerFactory::worker_idle_observation(&idle, repo.pool(), &task, &card);
@@ -290,16 +310,19 @@ async fn agent_backend_scoped_feeders_isolate_both_directions() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let (_root, pool) = pool_for_repo(repo.clone()).await;
     let (_, a) = seed(&repo).await;
-    sqlx::query("UPDATE worker_sessions SET thread_id='a',last_activity_ms=1,last_turn_completed_ms=1 WHERE id=?").bind(&a).execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET thread_id='a',last_activity_ms=1,last_turn_completed_ms=1 WHERE id=?").bind(&a)).await.unwrap();
     let (_, b) = seed(&repo).await;
     bind(&repo, &b, Some("b")).await;
-    sqlx::query(
-        "UPDATE worker_sessions SET last_activity_ms=1,last_turn_completed_ms=1 WHERE id=?",
-    )
-    .bind(&b)
-    .execute(repo.pool())
-    .await
-    .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET last_activity_ms=1,last_turn_completed_ms=1 WHERE id=?",
+            )
+            .bind(&b),
+        )
+        .await
+        .unwrap();
     for instance in pool.instances() {
         let (tx, rx) = tokio::sync::broadcast::channel(8);
         let handle = crate::liveness_feeder::spawn_liveness_feeder(
@@ -329,8 +352,11 @@ async fn agent_backend_scoped_feeders_isolate_both_directions() {
                 assert_eq!((at, status.as_str(), done), (1, "idle", 1));
             }
         }
-        sqlx::query("UPDATE worker_sessions SET last_activity_ms=1,last_turn_completed_ms=1")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET last_activity_ms=1,last_turn_completed_ms=1",
+            ))
             .await
             .unwrap();
     }
@@ -389,9 +415,12 @@ async fn agent_backend_delete_quiesce_interrupts_only_bound_instance() {
     tokio::join!(teardown, serve);
     assert_no_request(&mut default).await;
     // Strict deletion propagates lookup failure instead of addressing default.
-    sqlx::query("DELETE FROM worker_session_backends WHERE worker_session_id=?")
-        .bind(&session)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM worker_session_backends WHERE worker_session_id=?")
+                .bind(&session),
+        )
         .await
         .unwrap();
     // A removed instance is still persisted; the resolver cannot silently choose another.

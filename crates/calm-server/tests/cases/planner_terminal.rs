@@ -127,35 +127,44 @@ async fn planner_terminal_refuses_unowned_and_cross_track_input() {
         })
         .await
         .unwrap();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (_, _, foreign_token) = card_with_codex_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        foreign_track.id,
-        None,
-        None,
-        h.root.path().to_str().unwrap().into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Planner,
-        false,
-        &CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    // Same database and live renderer, different authenticated Planner Track.
-    h.token = foreign_token.expect("second Planner token");
-    let foreign = h
-        .call("neige_terminal_read", json!({"terminal_id":terminal}))
-        .await;
-    assert!(foreign.get("error").is_some(), "{foreign}");
-    h.stop(&terminal).await;
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (_, _, foreign_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    foreign_track.id,
+                    None,
+                    None,
+                    h.root.path().to_str().unwrap().into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Planner,
+                    false,
+                    &CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                // Same database and live renderer, different authenticated Planner Track.
+                h.token = foreign_token.expect("second Planner token");
+                let foreign = h
+                    .call("neige_terminal_read", json!({"terminal_id":terminal}))
+                    .await;
+                assert!(foreign.get("error").is_some(), "{foreign}");
+                h.stop(&terminal).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]

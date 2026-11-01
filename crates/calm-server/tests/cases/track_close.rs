@@ -148,9 +148,12 @@ async fn concurrent_closes_persist_one_track_updated() {
 #[tokio::test]
 async fn a_superseded_session_close_is_denied_in_the_transaction() {
     let boot = boot().await;
-    sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
-        .bind(PLANNER_SESSION_ID)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'superseded' WHERE id = ?1")
+                .bind(PLANNER_SESSION_ID),
+        )
         .await
         .expect("supersede the planner session");
     let before = persisted(&boot, "track.updated").await;
@@ -184,10 +187,13 @@ async fn a_superseded_session_close_is_denied_in_the_transaction() {
 #[tokio::test]
 async fn planner_close_of_an_area_chat_track_is_refused() {
     let boot = boot().await;
-    sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
-        .bind(calm_server::AREA_CHAT_PURPOSE)
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = ?1 WHERE id = ?2")
+                .bind(calm_server::AREA_CHAT_PURPOSE)
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .expect("mark the track as an area chat");
 

@@ -85,10 +85,13 @@ async fn canonical_http_stop_controls_the_original_execution_and_waits_for_real_
     // Collaboration access alone cannot control this deployment's private
     // execution environment. This changes policy facts, never a runtime phase.
     let area_id = area["id"].as_str().unwrap();
-    sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2")
-        .bind(area_id)
-        .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE area_members SET role='member' WHERE area_id=?1 AND user_id=?2")
+                .bind(area_id)
+                .bind(calm_types::organization::LEGACY_OWNER_USER_ID),
+        )
         .await
         .unwrap();
     let denied = app
@@ -110,10 +113,13 @@ async fn canonical_http_stop_controls_the_original_execution_and_waits_for_real_
             .await
             .is_err()
     );
-    sqlx::query("UPDATE area_members SET role='owner' WHERE area_id=?1 AND user_id=?2")
-        .bind(area_id)
-        .bind(calm_types::organization::LEGACY_OWNER_USER_ID)
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE area_members SET role='owner' WHERE area_id=?1 AND user_id=?2")
+                .bind(area_id)
+                .bind(calm_types::organization::LEGACY_OWNER_USER_ID),
+        )
         .await
         .unwrap();
     let mut stop = tokio::spawn({

@@ -13,29 +13,38 @@ mod writer_tests;
 mod database;
 pub use database::SqliteDb;
 
+mod writer;
+#[cfg(any(test, feature = "fixtures"))]
+pub use writer::{HeldWriter, WriterPoolState};
+pub use writer::{
+    NestedWrite, WriteConnection, WriteManager, WriteSession, WriteTx, inherit_write_scope,
+};
+
 mod observation;
-pub use observation::ObservedTransaction;
+use observation::ObservedTransaction;
 
 /// Begin a writing transaction with the existing bounded busy-retry policy.
+#[cfg(test)]
 #[track_caller]
-pub fn begin_immediate_tx<'a>(
+fn begin_immediate_tx<'a>(
     pool: &'a SqliteDb,
 ) -> impl std::future::Future<Output = Result<ObservedTransaction<'static>>> + Send + 'a {
     let caller = std::panic::Location::caller();
     async move {
-        begin_observed(pool.writer_pool(), caller, RetryPolicy::Bounded)
+        begin_observed(&pool.writer().pool, caller, RetryPolicy::Bounded)
             .await
             .map_err(Into::into)
     }
 }
 
 /// One observed BEGIN attempt; the caller retains ownership of retry and cancellation policy.
+#[cfg(test)]
 #[track_caller]
-pub fn begin_immediate_tx_once<'a>(
+fn begin_immediate_tx_once<'a>(
     pool: &'a SqliteDb,
 ) -> impl std::future::Future<Output = sqlx::Result<ObservedTransaction<'static>>> + Send + 'a {
     let caller = std::panic::Location::caller();
-    begin_observed(pool.writer_pool(), caller, RetryPolicy::Once)
+    begin_observed(&pool.writer().pool, caller, RetryPolicy::Once)
 }
 
 enum RetryPolicy {

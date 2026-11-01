@@ -86,65 +86,74 @@ async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
         Some("thread-plain-chat-worker-flow"),
     )
     .await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_update_tx(
-        &mut tx,
-        seed.card.id.as_str(),
-        CardPatch {
-            payload: Some(json!({"schemaVersion": 1, "harness_profile": "plain_chat"})),
-            ..CardPatch::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let card = card_update_tx(
+                    &mut tx,
+                    seed.card.id.as_str(),
+                    CardPatch {
+                        payload: Some(json!({"schemaVersion": 1, "harness_profile": "plain_chat"})),
+                        ..CardPatch::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let state = wf::app_state(repo.clone(), events.clone());
-    state.worker_flow.start_on_boot().await.unwrap();
-    assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0, "boot");
+                let state = wf::app_state(repo.clone(), events.clone());
+                state.worker_flow.start_on_boot().await.unwrap();
+                assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0, "boot");
 
-    let entries = [
-        Event::WorkerSessionStarted {
-            worker_session_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-            kind: seed.runtime.kind.clone(),
-            agent_provider: seed.runtime.agent_provider.clone(),
-            status: WorkerSessionState::Running,
-        },
-        Event::WorkerSessionStatusChanged {
-            worker_session_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-            old_status: WorkerSessionState::Starting,
-            new_status: WorkerSessionState::Running,
-        },
-        Event::CardAdded(card),
-        Event::WorkerSessionSuperseded {
-            old_worker_session_id: "old-plain-chat-runtime".into(),
-            new_worker_session_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-        },
-    ];
-    for (index, event) in entries.into_iter().enumerate() {
-        events.emit(ActorId::Kernel, event);
-        wf::wait_until(wf::LIVENESS_BUDGET, || {
-            let driver = state.worker_flow.clone();
-            async move { driver.events_handled_for_test() > index as u64 }
+                let entries = [
+                    Event::WorkerSessionStarted {
+                        worker_session_id: seed.runtime.id.clone(),
+                        card_id: seed.runtime.card_id.clone(),
+                        kind: seed.runtime.kind.clone(),
+                        agent_provider: seed.runtime.agent_provider.clone(),
+                        status: WorkerSessionState::Running,
+                    },
+                    Event::WorkerSessionStatusChanged {
+                        worker_session_id: seed.runtime.id.clone(),
+                        card_id: seed.runtime.card_id.clone(),
+                        old_status: WorkerSessionState::Starting,
+                        new_status: WorkerSessionState::Running,
+                    },
+                    Event::CardAdded(card),
+                    Event::WorkerSessionSuperseded {
+                        old_worker_session_id: "old-plain-chat-runtime".into(),
+                        new_worker_session_id: seed.runtime.id.clone(),
+                        card_id: seed.runtime.card_id.clone(),
+                    },
+                ];
+                for (index, event) in entries.into_iter().enumerate() {
+                    events.emit(ActorId::Kernel, event);
+                    wf::wait_until(wf::LIVENESS_BUDGET, || {
+                        let driver = state.worker_flow.clone();
+                        async move { driver.events_handled_for_test() > index as u64 }
+                    })
+                    .await;
+                    assert_eq!(
+                        state.worker_flow.tasks_alive_for_test().await,
+                        0,
+                        "plain chat event entry {index}"
+                    );
+                }
+                let items = repo
+                    .worker_flow_item_list_by_card(seed.card.id.as_str(), 0, 100, false)
+                    .await
+                    .unwrap();
+                assert!(
+                    items.is_empty(),
+                    "PlainChat must not persist worker-flow items"
+                );
+            })
         })
-        .await;
-        assert_eq!(
-            state.worker_flow.tasks_alive_for_test().await,
-            0,
-            "plain chat event entry {index}"
-        );
-    }
-    let items = repo
-        .worker_flow_item_list_by_card(seed.card.id.as_str(), 0, 100, false)
         .await
-        .unwrap();
-    assert!(
-        items.is_empty(),
-        "PlainChat must not persist worker-flow items"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -175,51 +184,60 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0);
 
     let thread_id = "thread-status-attach";
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_bind_attribution_tx(
-        &mut tx,
-        &seed.runtime.id,
-        ThreadAttribution {
-            worker_session_id: seed.runtime.id.clone(),
-            provider: AgentProvider::Codex,
-            thread_id: Some(thread_id.to_string()),
-            session_id: Some(format!("sess-{thread_id}")),
-            active_turn_id: None,
-        },
-    )
-    .await
-    .unwrap();
-    session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Running)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_bind_attribution_tx(
+                    &mut tx,
+                    &seed.runtime.id,
+                    ThreadAttribution {
+                        worker_session_id: seed.runtime.id.clone(),
+                        provider: AgentProvider::Codex,
+                        thread_id: Some(thread_id.to_string()),
+                        session_id: Some(format!("sess-{thread_id}")),
+                        active_turn_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+                session_set_status_tx(&mut tx, &seed.runtime.id, WorkerSessionState::Running)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStatusChanged {
+                        worker_session_id: seed.runtime.id.clone(),
+                        card_id: seed.runtime.card_id.clone(),
+                        old_status: WorkerSessionState::Starting,
+                        new_status: WorkerSessionState::Running,
+                    },
+                );
+                wf::wait_until(wf::LIVENESS_BUDGET, || {
+                    let driver = state.worker_flow.clone();
+                    async move { driver.tasks_alive_for_test().await == 1 }
+                })
+                .await;
+
+                events.emit(
+                    ActorId::Kernel,
+                    Event::WorkerSessionStatusChanged {
+                        worker_session_id: seed.runtime.id.clone(),
+                        card_id: seed.runtime.card_id.clone(),
+                        old_status: WorkerSessionState::Running,
+                        new_status: WorkerSessionState::TurnPending,
+                    },
+                );
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                assert_eq!(state.worker_flow.tasks_alive_for_test().await, 1);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStatusChanged {
-            worker_session_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-            old_status: WorkerSessionState::Starting,
-            new_status: WorkerSessionState::Running,
-        },
-    );
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let driver = state.worker_flow.clone();
-        async move { driver.tasks_alive_for_test().await == 1 }
-    })
-    .await;
-
-    events.emit(
-        ActorId::Kernel,
-        Event::WorkerSessionStatusChanged {
-            worker_session_id: seed.runtime.id.clone(),
-            card_id: seed.runtime.card_id.clone(),
-            old_status: WorkerSessionState::Running,
-            new_status: WorkerSessionState::TurnPending,
-        },
-    );
-    tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(state.worker_flow.tasks_alive_for_test().await, 1);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -230,91 +248,100 @@ async fn worker_flow_driver_captures_legacy_claude_card_from_hook_transcript_pat
     let terminal_cwd = "/path/from/terminal";
     let card = wf::seed_claude_card(&repo, card_id, "/server/default").await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let term = terminal_create_tx(
-        &mut tx,
-        NewTerminal {
-            card_id: card.id.clone(),
-            program: "claude".into(),
-            cwd: terminal_cwd.into(),
-            env: json!({}),
-            theme: RequestTheme::default_dark(),
-        },
-    )
-    .await
-    .unwrap();
-    let card = card_update_tx(
-        &mut tx,
-        card.id.as_ref(),
-        CardPatch {
-            title: None,
-            payload: Some(json!({
-                "schemaVersion": 1,
-                "terminal_id": term.id,
-                "claude_session_id": session_id
-            })),
-            ..CardPatch::default()
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let term = terminal_create_tx(
+                    &mut tx,
+                    NewTerminal {
+                        card_id: card.id.clone(),
+                        program: "claude".into(),
+                        cwd: terminal_cwd.into(),
+                        env: json!({}),
+                        theme: RequestTheme::default_dark(),
+                    },
+                )
+                .await
+                .unwrap();
+                let card = card_update_tx(
+                    &mut tx,
+                    card.id.as_ref(),
+                    CardPatch {
+                        title: None,
+                        payload: Some(json!({
+                            "schemaVersion": 1,
+                            "terminal_id": term.id,
+                            "claude_session_id": session_id
+                        })),
+                        ..CardPatch::default()
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let runtime = wf::seed_claude_runtime_for_card_with_status(
-        &repo,
-        &card,
-        session_id,
-        WorkerSessionState::Running,
-    )
-    .await;
-    let transcript_root = tempfile::tempdir().unwrap();
-    let path = transcript_root
-        .path()
-        .join("-path-from-terminal")
-        .join(format!("{session_id}.jsonl"));
-    wf::write_transcript(
-        &path,
-        &[wf::claude_system("sys-driver-legacy-cwd", terminal_cwd)],
-    );
-    hooks::post_claude_hook(
-        &repo,
-        card_id,
-        hooks::session_start(session_id, terminal_cwd, &path),
-    )
-    .await;
+                let runtime = wf::seed_claude_runtime_for_card_with_status(
+                    &repo,
+                    &card,
+                    session_id,
+                    WorkerSessionState::Running,
+                )
+                .await;
+                let transcript_root = tempfile::tempdir().unwrap();
+                let path = transcript_root
+                    .path()
+                    .join("-path-from-terminal")
+                    .join(format!("{session_id}.jsonl"));
+                wf::write_transcript(
+                    &path,
+                    &[wf::claude_system("sys-driver-legacy-cwd", terminal_cwd)],
+                );
+                hooks::post_claude_hook(
+                    &repo,
+                    card_id,
+                    hooks::session_start(session_id, terminal_cwd, &path),
+                )
+                .await;
 
-    let driver = WorkerFlowDriver::new_with_source_options_for_test(
-        repo.clone(),
-        calm_server::agent_backend_pool::codex::CodexBackends::single(
-            SharedCodexAppServer::new_stub(repo.clone()),
-        ),
-        Arc::new(WorkerFlowSink::new(repo.clone())),
-        EventBus::new(),
-        CodexRolloutFlowSourceOptions {
-            path_override: None,
-            poll_interval: Duration::from_millis(20),
-            lazy_retry_delay: Duration::from_millis(10),
-            lazy_retry_attempts: 1,
-        },
-        ClaudeTranscriptFlowSourceOptions {
-            path_override: None,
-            poll_interval: Duration::from_millis(20),
-            lazy_retry_delay: Duration::from_millis(10),
-            lazy_retry_attempts: 1,
-        },
-    );
-    driver.attach_runtime_for_test(runtime).await.unwrap();
+                let driver = WorkerFlowDriver::new_with_source_options_for_test(
+                    repo.clone(),
+                    calm_server::agent_backend_pool::codex::CodexBackends::single(
+                        SharedCodexAppServer::new_stub(repo.clone()),
+                    ),
+                    Arc::new(WorkerFlowSink::new(repo.clone())),
+                    EventBus::new(),
+                    CodexRolloutFlowSourceOptions {
+                        path_override: None,
+                        poll_interval: Duration::from_millis(20),
+                        lazy_retry_delay: Duration::from_millis(10),
+                        lazy_retry_attempts: 1,
+                    },
+                    ClaudeTranscriptFlowSourceOptions {
+                        path_override: None,
+                        poll_interval: Duration::from_millis(20),
+                        lazy_retry_delay: Duration::from_millis(10),
+                        lazy_retry_attempts: 1,
+                    },
+                );
+                driver.attach_runtime_for_test(runtime).await.unwrap();
 
-    wf::wait_until(wf::LIVENESS_BUDGET, || {
-        let repo = repo.clone();
-        async move { item_count(&repo, card_id).await == 1 }
-    })
-    .await;
-    for stop in driver.task_stop_tokens_for_test().await {
-        stop.cancel();
-    }
+                wf::wait_until(wf::LIVENESS_BUDGET, || {
+                    let repo = repo.clone();
+                    async move { item_count(&repo, card_id).await == 1 }
+                })
+                .await;
+                for stop in driver.task_stop_tokens_for_test().await {
+                    stop.cancel();
+                }
 
-    assert_eq!(item_count(&repo, card_id).await, 1);
+                assert_eq!(item_count(&repo, card_id).await, 1);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {

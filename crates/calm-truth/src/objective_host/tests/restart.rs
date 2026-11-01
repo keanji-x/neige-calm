@@ -94,8 +94,11 @@ async fn restarts_preserve_state_ordered_intents_and_dispatched_results() {
             .compactions,
         2
     );
-    sqlx::query("UPDATE objective_states SET state_json='{}' WHERE track_id='t'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE objective_states SET state_json='{}' WHERE track_id='t'",
+        ))
         .await
         .unwrap();
     repo.db().close().await;

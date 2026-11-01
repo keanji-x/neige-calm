@@ -5,20 +5,23 @@ async fn planner_hibernat_refused_checkpoint_keeps_live_owner_retryable() {
     let boot = boot_fake_running().await;
     let (_, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER hibernation_write_refused BEFORE UPDATE OF handle_state_json ON worker_sessions \
-        BEGIN SELECT RAISE(IGNORE); END")
-        .execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hibernation_write_refused BEFORE UPDATE OF handle_state_json ON worker_sessions \
+        BEGIN SELECT RAISE(IGNORE); END")).await.unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
         .await
         .unwrap();
-    sqlx::query("DROP TRIGGER hibernation_write_refused")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hibernation_write_refused"))
         .await
         .unwrap();
     assert!(boot.state.harness.get(&runtime).is_some());
@@ -59,17 +62,22 @@ async fn planner_hibernat_checkpoint_commits_before_owner_and_provider_release()
     let (card, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
     // A separate read sees this marker only after the actual snapshot transaction commits.
-    sqlx::query("CREATE TABLE hibernation_checkpoint (runtime TEXT NOT NULL)")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE hibernation_checkpoint (runtime TEXT NOT NULL)",
+        ))
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER hibernation_checkpoint_committed AFTER UPDATE OF handle_state_json ON worker_sessions \
-        BEGIN INSERT INTO hibernation_checkpoint VALUES (NEW.id); END")
-        .execute(boot.repo.pool()).await.unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hibernation_checkpoint_committed AFTER UPDATE OF handle_state_json ON worker_sessions \
+        BEGIN INSERT INTO hibernation_checkpoint VALUES (NEW.id); END")).await.unwrap();
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     let decided = PausePoint {

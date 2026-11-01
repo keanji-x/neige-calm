@@ -1023,34 +1023,32 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
         })
         .await
         .expect("seed parent track");
-    sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
-        .bind(parent.id.as_str())
-        .bind(&track_id)
+    (repo.sqlite_db().expect("sqlite-backed fixture"))
+        .writer()
         .execute(
-            repo.sqlite_db()
-                .expect("sqlite-backed fixture")
-                .writer_pool(),
+            sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
+                .bind(parent.id.as_str())
+                .bind(&track_id),
         )
         .await
         .expect("attach child to parent");
-    sqlx::query(
-        "INSERT INTO tasks(\
+    (repo.sqlite_db().expect("sqlite-backed fixture"))
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(\
             id, track_id, key, kind, goal, context_json, status, child_track_id, \
             created_at_ms, updated_at_ms\
          ) VALUES(\
             'parent:reopen-capability', ?1, 'reopen-capability', 'codex', 'g', '{}', \
             'running', ?2, 1, 1\
          )",
-    )
-    .bind(parent.id.as_str())
-    .bind(&track_id)
-    .execute(
-        repo.sqlite_db()
-            .expect("sqlite-backed fixture")
-            .writer_pool(),
-    )
-    .await
-    .expect("bind child to parent task");
+            )
+            .bind(parent.id.as_str())
+            .bind(&track_id),
+        )
+        .await
+        .expect("bind child to parent task");
 
     let response = get_track_detail(app(state), &track_id).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -1064,12 +1062,10 @@ async fn track_detail_exposes_reopen_only_for_a_reopenable_closed_track() {
 #[tokio::test]
 async fn track_detail_withholds_close_from_area_chat_tracks() {
     let (state, track_id, repo) = boot_with_repo().await;
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&track_id)
+    (repo.sqlite_db().expect("sqlite-backed fixture"))
+        .writer()
         .execute(
-            repo.sqlite_db()
-                .expect("sqlite-backed fixture")
-                .writer_pool(),
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1").bind(&track_id),
         )
         .await
         .expect("mark retired area-chat track");
@@ -1090,12 +1086,10 @@ async fn track_detail_withholds_close_from_area_chat_tracks() {
 async fn track_detail_withholds_reopen_from_area_chat_tracks() {
     let (state, track_id, repo) = boot_with_repo().await;
     close_track(&repo, &track_id).await;
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&track_id)
+    (repo.sqlite_db().expect("sqlite-backed fixture"))
+        .writer()
         .execute(
-            repo.sqlite_db()
-                .expect("sqlite-backed fixture")
-                .writer_pool(),
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1").bind(&track_id),
         )
         .await
         .expect("mark retired area-chat track");

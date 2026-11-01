@@ -362,27 +362,31 @@ async fn admit(
         },
     };
     let db = ctx.operation_repo.sqlite_db();
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&db).await?;
-    crate::operation::require_live_claim_tx(&mut tx, op).await?;
-    location.recheck(&mut tx).await?;
-    let occupants = calm_truth::db::sqlite::workspace_execution::location_occupancy(
-        &mut tx,
-        calm_truth::db::sqlite::workspace_execution::Scope::Track(&target.track_id),
-        std::slice::from_ref(&target.request.path),
-    )
-    .await?;
-    if !occupants.is_empty() {
-        return Ok(None);
-    }
-    let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-    let updated = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.workspace_reclaim',json(?)) WHERE id=? AND json_extract(tx_output_json,'$.data.workspace_reclaim.execution_id') IS NULL")
-        .bind(serde_json::to_string(&Record { execution_id: Some(id.clone()) })?).bind(&op.id).execute(&mut **tx).await?;
-    if updated.rows_affected() != 1 {
-        return Err(conflict("reclaim already admitted"));
-    }
-    tx.commit().await?;
-    engine.drive(ticket.committed());
-    Ok(Some(id))
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await?;
+        crate::operation::require_live_claim_tx(&mut tx, op).await?;
+        location.recheck(&mut tx).await?;
+        let occupants = calm_truth::db::sqlite::workspace_execution::location_occupancy(
+            &mut tx,
+            calm_truth::db::sqlite::workspace_execution::Scope::Track(&target.track_id),
+            std::slice::from_ref(&target.request.path),
+        )
+        .await?;
+        if !occupants.is_empty() {
+            return Ok(None);
+        }
+        let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
+        let updated = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.workspace_reclaim',json(?)) WHERE id=? AND json_extract(tx_output_json,'$.data.workspace_reclaim.execution_id') IS NULL")
+            .bind(serde_json::to_string(&Record { execution_id: Some(id.clone()) })?).bind(&op.id).execute(&mut **tx).await?;
+        if updated.rows_affected() != 1 {
+            return Err(conflict("reclaim already admitted"));
+        }
+        tx.commit().await?;
+        engine.drive(ticket.committed());
+        Ok(Some(id))
+
+    })).await.map_err(calm_truth::TruthError::from)?
 }
 fn is_success(s: &Settlement) -> bool {
     matches!(
@@ -414,10 +418,22 @@ async fn wait(ctx: &SpawnCtx, op: &Operation, id: &ExecutionId) -> Result<()> {
     .and_then(|result| result);
     if result.is_err() {
         let db = ctx.operation_repo.sqlite_db();
-        let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&db).await?;
-        crate::operation::require_live_claim_tx(&mut tx, op).await?;
-        calm_truth::db::sqlite::workspace_execution::request(&mut tx, id.as_str(), "stop").await?;
-        tx.commit().await?;
+        db.writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    crate::operation::require_live_claim_tx(&mut tx, op).await?;
+                    calm_truth::db::sqlite::workspace_execution::request(
+                        &mut tx,
+                        id.as_str(),
+                        "stop",
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    Ok::<_, CalmError>(())
+                })
+            })
+            .await??;
         ctx.execution.drive([id.clone()]);
     }
     result

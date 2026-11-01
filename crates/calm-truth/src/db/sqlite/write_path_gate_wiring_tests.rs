@@ -14,61 +14,70 @@ struct WorkerCardHome {
 }
 
 async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
-    let mut tx = repo.pool().begin().await.expect("begin seed tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: format!("hp1-b-i {label}"),
-            color: "#101010".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create area");
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: format!("hp1-b-i {label}"),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create track");
-    let card = card_create_with_id_tx(
-        &mut tx,
-        format!("card-hp1-b-i-{label}"),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "case": label}),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .expect("create worker card");
-    tx.commit().await.expect("commit seed tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin seed tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: format!("hp1-b-i {label}"),
+                        color: "#101010".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create area");
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: format!("hp1-b-i {label}"),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create track");
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    format!("card-hp1-b-i-{label}"),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1, "case": label}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .expect("create worker card");
+                tx.commit().await.expect("commit seed tx");
 
-    WorkerCardHome {
-        card: card.id,
-        track: track.id,
-        area: area.id,
-    }
+                WorkerCardHome {
+                    card: card.id,
+                    track: track.id,
+                    area: area.id,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn card_scope(home: &WorkerCardHome) -> EventScope {

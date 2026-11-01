@@ -301,15 +301,14 @@ mod tests {
         } else {
             None
         };
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "INSERT INTO cards \
              (id, track_id, kind, sort, payload, role, deletable, body_crdt, created_at, updated_at) \
              VALUES ('report', ?1, 'track-report', -1, ?2, 'reportcard', 0, ?3, 1, 1)",
         )
         .bind(track.id.as_str())
         .bind(serde_json::to_string(&payload).unwrap())
-        .bind(crdt)
-        .execute(repo.pool())
+        .bind(crdt))
         .await
         .unwrap();
         let card = repo.card_get("report").await.unwrap().unwrap();
@@ -383,9 +382,12 @@ mod tests {
             "body": calm_types::report_blocks::flat_text(&block),
             "blocks": [block]
         });
-        sqlx::query("UPDATE cards SET payload=?1 WHERE id='report'")
-            .bind(serde_json::to_string(&payload).unwrap())
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET payload=?1 WHERE id='report'")
+                    .bind(serde_json::to_string(&payload).unwrap()),
+            )
             .await
             .unwrap();
 

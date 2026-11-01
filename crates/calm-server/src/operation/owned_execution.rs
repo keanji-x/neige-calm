@@ -100,12 +100,21 @@ pub(crate) async fn settlement(
     execution_id: &ExecutionId,
 ) -> Result<Option<Settlement>> {
     let pool = ctx.operation_repo.sqlite_db();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-    let value = sql::settlement(&mut tx, execution_id.as_str()).await?;
-    tx.commit().await?;
-    value
-        .map(|s| serde_json::from_str(&s).map_err(Into::into))
-        .transpose()
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let value = sql::settlement(&mut tx, execution_id.as_str()).await?;
+                tx.commit().await?;
+                value
+                    .map(|s| serde_json::from_str(&s).map_err(Into::into))
+                    .transpose()
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)?
 }
 
 /// Leader exit is not settlement: ask the executor to drain descendants before sampling.
@@ -124,13 +133,21 @@ pub(crate) async fn drain_exited(
         )
     {
         let pool = ctx.operation_repo.sqlite_db();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
-        let ticket = engine
-            .request(&mut tx, execution_id, Desired::Stop)
-            .await
-            .map_err(conflict)?;
-        tx.commit().await?;
+        let ticket = pool
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                    let ticket = engine
+                        .request(&mut tx, execution_id, Desired::Stop)
+                        .await
+                        .map_err(conflict)?;
+                    tx.commit().await?;
+                    Ok::<_, CalmError>(ticket)
+                })
+            })
+            .await??;
         engine.drive(ticket.committed());
     }
     Ok(())

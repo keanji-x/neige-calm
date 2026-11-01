@@ -14,21 +14,29 @@ async fn seed_with_owner(
     alias: &str,
     owner: &str,
 ) {
-    sqlx::query("INSERT INTO operations(
+    (repo.db()).writer().execute(sqlx::query("INSERT INTO operations(
         id,operation_key,kind,payload_hash,target_type,target_id,target_json,
         payload_json,tx_output_json,phase,created_at_ms,updated_at_ms)
         VALUES(?1,?1,'pipe-test','hash',?2,?3,'{}',?4,?5,'spawn_started',1,1)")
         .bind(format!("op-{id}")).bind(target_type).bind(target)
         .bind(json!({"card_id":"wanted","target_id":"wanted"}).to_string())
-        .bind(json!({"data":{"terminal_launch":{"version":1,"execution_id":id,"release":"Held","decision":"Observing"}}}).to_string())
-        .execute(repo.pool()).await.unwrap();
+        .bind(json!({"data":{"terminal_launch":{"version":1,"execution_id":id,"release":"Held","decision":"Observing"}}}).to_string())).await.unwrap();
     let metadata =
         json!({"id":id,"consumer":"pipe-test","owner":owner,"track":"track","alias":alias});
-    let mut tx = repo.pool().begin().await.unwrap();
-    super::super::insert(&mut tx, id, "track", alias, &metadata.to_string(), "{}")
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                super::super::insert(&mut tx, id, "track", alias, &metadata.to_string(), "{}")
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -82,10 +90,9 @@ async fn w_owned_card_scope_rejects_record_metadata_damage() {
         "pipe:damaged",
     )
     .await;
-    sqlx::query("UPDATE operations
+    (repo.db()).writer().execute(sqlx::query("UPDATE operations
         SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.execution_id','different')
-        WHERE id='op-dddddddddddddddddddddddddddddddd'")
-        .execute(repo.pool()).await.unwrap();
+        WHERE id='op-dddddddddddddddddddddddddddddddd'")).await.unwrap();
     let mut conn = repo.pool().acquire().await.unwrap();
     assert!(matches!(
         executions(&mut conn, "wanted").await,
@@ -107,85 +114,97 @@ async fn w_owned_card_scope_unions_terminal_alias_and_keeps_settled_owners() {
         })
         .await
         .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let terminal = crate::db::sqlite::terminal_create_tx(
-        &mut tx,
-        crate::model::NewTerminal {
-            card_id: card.id.clone(),
-            program: "/bin/sh".into(),
-            cwd: "/tmp".into(),
-            env: json!({}),
-            theme: crate::model::RequestTheme::default_dark(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let alias = super::super::terminal_alias(&terminal.id);
-    // Found through both ownership and alias, once.
-    seed(
-        &repo,
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-        "card",
-        card.id.as_str(),
-        &alias,
-    )
-    .await;
-    // Alias still finds a typed terminal whose owner isn't an operation targeting this card.
-    let mut tx = repo.pool().begin().await.unwrap();
-    super::super::settle_tx(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "{}", 1)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let terminal = crate::db::sqlite::terminal_create_tx(
+                    &mut tx,
+                    crate::model::NewTerminal {
+                        card_id: card.id.clone(),
+                        program: "/bin/sh".into(),
+                        cwd: "/tmp".into(),
+                        env: json!({}),
+                        theme: crate::model::RequestTheme::default_dark(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let alias = super::super::terminal_alias(&terminal.id);
+                // Found through both ownership and alias, once.
+                seed(
+                    &repo,
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    "card",
+                    card.id.as_str(),
+                    &alias,
+                )
+                .await;
+                // Alias still finds a typed terminal whose owner isn't an operation targeting this card.
+                let mut tx = write_session.begin().await.unwrap();
+                super::super::settle_tx(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "{}", 1)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut conn = repo.pool().acquire().await.unwrap();
+                let owners = executions(&mut conn, card.id.as_str()).await.unwrap();
+                assert_eq!(owners.len(), 1);
+                assert!(owners[0].settled);
+                assert!(
+                    super::super::unsettled_executions(
+                        &mut conn,
+                        super::super::Scope::Card(card.id.as_str())
+                    )
+                    .await
+                    .unwrap()
+                    .is_empty()
+                );
+                drop(conn);
+                // Retire is a durable request, not proof that the owner/executor have finished.
+                let mut tx = write_session.begin().await.unwrap();
+                super::super::request(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "retire")
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let mut conn = repo.pool().acquire().await.unwrap();
+                assert_eq!(
+                    executions(&mut conn, card.id.as_str()).await.unwrap().len(),
+                    1
+                );
+                drop(conn);
+                super::super::finish(repo.db(), "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+                    .await
+                    .unwrap();
+                let mut conn = repo.pool().acquire().await.unwrap();
+                assert!(
+                    executions(&mut conn, card.id.as_str())
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+                drop(conn);
+                seed(
+                    &repo,
+                    "ffffffffffffffffffffffffffffffff",
+                    "track",
+                    "another",
+                    &alias,
+                )
+                .await;
+                let mut conn = repo.pool().acquire().await.unwrap();
+                assert_eq!(
+                    executions(&mut conn, card.id.as_str()).await.unwrap()[0]
+                        .id
+                        .as_str(),
+                    "ffffffffffffffffffffffffffffffff"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut conn = repo.pool().acquire().await.unwrap();
-    let owners = executions(&mut conn, card.id.as_str()).await.unwrap();
-    assert_eq!(owners.len(), 1);
-    assert!(owners[0].settled);
-    assert!(
-        super::super::unsettled_executions(&mut conn, super::super::Scope::Card(card.id.as_str()))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    drop(conn);
-    // Retire is a durable request, not proof that the owner/executor have finished.
-    let mut tx = repo.pool().begin().await.unwrap();
-    super::super::request(&mut tx, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "retire")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let mut conn = repo.pool().acquire().await.unwrap();
-    assert_eq!(
-        executions(&mut conn, card.id.as_str()).await.unwrap().len(),
-        1
-    );
-    drop(conn);
-    super::super::finish(repo.db(), "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
-        .await
-        .unwrap();
-    let mut conn = repo.pool().acquire().await.unwrap();
-    assert!(
-        executions(&mut conn, card.id.as_str())
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    drop(conn);
-    seed(
-        &repo,
-        "ffffffffffffffffffffffffffffffff",
-        "track",
-        "another",
-        &alias,
-    )
-    .await;
-    let mut conn = repo.pool().acquire().await.unwrap();
-    assert_eq!(
-        executions(&mut conn, card.id.as_str()).await.unwrap()[0]
-            .id
-            .as_str(),
-        "ffffffffffffffffffffffffffffffff"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -195,10 +214,13 @@ async fn w_owned_card_scope_accepts_typed_terminal_checkpoint() {
     seed(&repo, id, "card", "wanted", "term:typed").await;
     // terminal_execution_create persists its identity directly in output.data;
     // it does not write a Pipe owner-state record.
-    sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
-        .bind(json!({"data":{"execution_id":id}}).to_string())
-        .bind(format!("op-{id}"))
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
+                .bind(json!({"data":{"execution_id":id}}).to_string())
+                .bind(format!("op-{id}")),
+        )
         .await
         .unwrap();
     let mut conn = repo.pool().acquire().await.unwrap();
@@ -220,10 +242,13 @@ async fn w_owned_card_scope_requires_exactly_one_record() {
             "terminal_launch":{"execution_id":id}
         }})),
     ] {
-        sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
-            .bind(output.map(|value| value.to_string()))
-            .bind(format!("op-{id}"))
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET tx_output_json=?1 WHERE id=?2")
+                    .bind(output.map(|value| value.to_string()))
+                    .bind(format!("op-{id}")),
+            )
             .await
             .unwrap();
         let mut conn = repo.pool().acquire().await.unwrap();

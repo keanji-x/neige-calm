@@ -488,6 +488,10 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
+      - name: write transaction capability doctests
+        if: env.RUN_RUST_CHECKS == 'true'
+        run: cargo test --locked -p calm-truth --doc
+
   # PRs compile the Rust suite once; the shards below only download and run it. This job also runs
   # hosted on main pushes, because it is the only one that saves the `rust-test` cache PRs restore.
   rust-build:

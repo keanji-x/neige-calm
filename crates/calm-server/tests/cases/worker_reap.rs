@@ -31,20 +31,23 @@ async fn attempt(
                 declared_by: "user".into(),
             },
         };
-        sqlx::query(concat!(
-            "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,",
-            "origin_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,0)"
-        ))
-        .bind(&id)
-        .bind(&h.track)
-        .bind(key)
-        .bind(number)
-        .bind(serde_json::to_string(&origin).unwrap())
-        .execute(h.sql.pool())
-        .await
-        .unwrap();
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query(concat!(
+                    "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,",
+                    "origin_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,0)"
+                ))
+                .bind(&id)
+                .bind(&h.track)
+                .bind(key)
+                .bind(number)
+                .bind(serde_json::to_string(&origin).unwrap()),
+            )
+            .await
+            .unwrap();
     }
-    sqlx::query(concat!(
+    (h.sql.db()).writer().execute(sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
         "declared_by,created_at_ms,updated_at_ms,finished_at_ms) ",
         "VALUES (?1,?2,?3,(SELECT kind FROM cards WHERE id=?5),'test','[]',?4,?5,'user',?6,?6,?7)"
@@ -55,14 +58,16 @@ async fn attempt(
     .bind(status)
     .bind(&p.card)
     .bind(calm_server::model::now_ms() - 180_000)
-    .bind(age.map(|age| calm_server::model::now_ms() - age))
-    .execute(h.sql.pool())
+    .bind(age.map(|age| calm_server::model::now_ms() - age)))
     .await
     .unwrap();
-    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
-        .bind(calm_server::model::now_ms() - 180_000)
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+                .bind(calm_server::model::now_ms() - 180_000)
+                .bind(&p.session),
+        )
         .await
         .unwrap();
     id
@@ -85,9 +90,12 @@ async fn worker_reap_settled_then_reaped_open_and_closed() {
         for status in ["done", "failed", "canceled"] {
             let h = Harness::start().await;
             let p = open_sleeper(&h, "settled").await;
-            sqlx::query("UPDATE worker_sessions SET provider='claude' WHERE id=?1")
-                .bind(&p.session)
-                .execute(h.sql.pool())
+            (h.sql.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET provider='claude' WHERE id=?1")
+                        .bind(&p.session),
+                )
                 .await
                 .unwrap();
             attempt(&h, &p, "settled", 1, status, Some(120_000)).await;
@@ -167,9 +175,14 @@ async fn worker_reap_dead_pty_running_converged() {
     let h = Harness::start().await;
     let p = open_sleeper(&h, "dead").await;
     // A resumable Codex worker retains live session authority after PTY exit.
-    sqlx::query("UPDATE worker_sessions SET provider='codex', mode='resumable' WHERE id=?1")
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET provider='codex', mode='resumable' WHERE id=?1",
+            )
+            .bind(&p.session),
+        )
         .await
         .unwrap();
     let term = h
@@ -354,103 +367,122 @@ async fn worker_reap_planner_harness_untouched() {
         .to_string();
     let planner_card = new_id();
     let planner_ws = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        planner_card.clone(),
-        NewCard {
-            track_id: track.clone().into(),
-            title: None,
-            kind: "planner".into(),
-            sort: None,
-            payload: json!({}),
-        },
-        CardRole::Planner,
-        true,
-        &h.state.card_role_cache,
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: planner_ws.clone(),
-            card_id: planner_card.clone(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("th-planner".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(
-                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-            ),
-            spawn_op_id: None,
-            now_ms: 1_000,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    complete_track(&h, &track).await;
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                card_create_with_id_tx(
+                    &mut tx,
+                    planner_card.clone(),
+                    NewCard {
+                        track_id: track.clone().into(),
+                        title: None,
+                        kind: "planner".into(),
+                        sort: None,
+                        payload: json!({}),
+                    },
+                    CardRole::Planner,
+                    true,
+                    &h.state.card_role_cache,
+                )
+                .await
+                .unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: planner_ws.clone(),
+                        card_id: planner_card.clone(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some("th-planner".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(
+                            serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
+                        ),
+                        spawn_op_id: None,
+                        now_ms: 1_000,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                complete_track(&h, &track).await;
 
-    // Both excluding facts hold on the row itself.
-    let (state, terminal_run_id, mode): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT state, terminal_run_id, json_extract(handle_state_json, '$.mode') \
+                // Both excluding facts hold on the row itself.
+                let (state, terminal_run_id, mode): (String, Option<String>, Option<String>) =
+                    sqlx::query_as(
+                        "SELECT state, terminal_run_id, json_extract(handle_state_json, '$.mode') \
            FROM worker_sessions WHERE id = ?1",
-    )
-    .bind(&planner_ws)
-    .fetch_one(h.sql.pool())
-    .await
-    .unwrap();
-    assert_eq!(mode.as_deref(), Some("harness"));
-    assert_ne!(
-        state, "running",
-        "a harness row is idle / turn_pending, never `running`"
-    );
-    assert_eq!(terminal_run_id, None, "a harness row has no PTY");
-    assert!(
-        sweep_set(&h).await.is_empty(),
-        "structurally outside the set"
-    );
+                    )
+                    .bind(&planner_ws)
+                    .fetch_one(h.sql.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(mode.as_deref(), Some("harness"));
+                assert_ne!(
+                    state, "running",
+                    "a harness row is idle / turn_pending, never `running`"
+                );
+                assert_eq!(terminal_run_id, None, "a harness row has no PTY");
+                assert!(
+                    sweep_set(&h).await.is_empty(),
+                    "structurally outside the set"
+                );
 
-    calm_server::terminal_sweeper::sweep(&h.state)
+                calm_server::terminal_sweeper::sweep(&h.state)
+                    .await
+                    .unwrap();
+                let (state, completed_at, _) = session_row(&h, &planner_ws).await;
+                assert_eq!(
+                    state, "idle",
+                    "the planner can still be asked on a closed track"
+                );
+                assert_eq!(completed_at, None);
+                // The harness' own Planner card session (`starting`, PTY-backed) is
+                // outside the set as well.
+                let (state, _, _) = session_row(&h, &h.session_id).await;
+                assert_eq!(state, "starting");
+            })
+        })
         .await
-        .unwrap();
-    let (state, completed_at, _) = session_row(&h, &planner_ws).await;
-    assert_eq!(
-        state, "idle",
-        "the planner can still be asked on a closed track"
-    );
-    assert_eq!(completed_at, None);
-    // The harness' own Planner card session (`starting`, PTY-backed) is
-    // outside the set as well.
-    let (state, _, _) = session_row(&h, &h.session_id).await;
-    assert_eq!(state, "starting");
+        .expect("independent write operation")
 }
 
 /// Open through the real PTY operation, then model the provider worker card and
 /// persisted timestamps from a process that has outlived the orphan grace.
 async fn provider_sleeper(h: &Harness, key: &str, kind: &str) -> PtySession {
     let p = open_sleeper(h, key).await;
-    sqlx::query("UPDATE cards SET kind=?1 WHERE id=?2")
-        .bind(kind)
-        .bind(&p.card)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET kind=?1 WHERE id=?2")
+                .bind(kind)
+                .bind(&p.card),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE worker_sessions SET provider=?1, created_at_ms=?2 WHERE id=?3")
-        .bind(kind)
-        .bind(calm_server::model::now_ms() - 180_000)
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider=?1, created_at_ms=?2 WHERE id=?3")
+                .bind(kind)
+                .bind(calm_server::model::now_ms() - 180_000)
+                .bind(&p.session),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE terminals SET created_at=?1 WHERE id=?2")
-        .bind(calm_server::model::now_ms() - 180_000)
-        .bind(&p.terminal)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE terminals SET created_at=?1 WHERE id=?2")
+                .bind(calm_server::model::now_ms() - 180_000)
+                .bind(&p.terminal),
+        )
         .await
         .unwrap();
     p
@@ -482,15 +514,18 @@ async fn worker_reap_final_output_survives_orphan_grace() {
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
-            .bind(&op)
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1").bind(&op))
             .await
             .unwrap();
-        sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
-            .bind(op)
-            .bind(&p.session)
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
+                    .bind(op)
+                    .bind(&p.session),
+            )
             .await
             .unwrap();
         if closed {
@@ -556,10 +591,13 @@ async fn worker_reap_restarted_after_finish_survives() {
     let h = Harness::start().await;
     let p = provider_sleeper(&h, "restart", "claude").await;
     attempt(&h, &p, "restart", 1, "done", Some(120_000)).await;
-    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
-        .bind(calm_server::model::now_ms())
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+                .bind(calm_server::model::now_ms())
+                .bind(&p.session),
+        )
         .await
         .unwrap();
     let before = write_snapshot(&h, &p).await;
@@ -578,10 +616,13 @@ async fn worker_reap_closed_track_user_ptys_are_ended() {
         let p = provider_sleeper(&h, "close", kind).await;
         let closed = complete_track(&h, &h.track).await;
         // Inclusive boundary: a session minted at the close is owned by it.
-        sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
-            .bind(closed)
-            .bind(&p.session)
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+                    .bind(closed)
+                    .bind(&p.session),
+            )
             .await
             .unwrap();
         calm_server::terminal_sweeper::sweep(&h.state)
@@ -597,10 +638,13 @@ async fn worker_reap_session_started_after_done_survives_sweep() {
     let h = Harness::start().await;
     let closed = complete_track(&h, &h.track).await;
     let p = provider_sleeper(&h, "after-close", "codex").await;
-    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
-        .bind(closed + 1)
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+                .bind(closed + 1)
+                .bind(&p.session),
+        )
         .await
         .unwrap();
     let before = write_snapshot(&h, &p).await;
@@ -656,9 +700,11 @@ async fn worker_reap_dead_codex_interrupts_only_owner_once() {
     h.state
         .shared_codex_appserver
         .set_active_turn_for_test("unrelated", "other-turn");
-    sqlx::query("UPDATE worker_sessions SET mode='resumable' WHERE id=?1")
-        .bind(&p.session)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET mode='resumable' WHERE id=?1").bind(&p.session),
+        )
         .await
         .unwrap();
     let term = h

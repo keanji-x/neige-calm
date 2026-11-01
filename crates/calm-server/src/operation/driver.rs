@@ -5,7 +5,6 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
 
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::EventBus;
 use crate::model::now_ms;
@@ -1542,18 +1541,26 @@ impl OperationRuntime {
         outcome: &ParkedOutcome,
     ) -> Result<Option<OperationResult>> {
         let pool = self.repo.sqlite_db();
-        let mut tx = begin_immediate_tx(&pool).await?;
-        match complete_parked_tx(&mut tx, op_id, outcome).await? {
-            ParkedCompletion::Completed(result) => {
-                tx.commit().await?;
-                self.publish_completion(result.clone());
-                Ok(Some(result))
-            }
-            ParkedCompletion::AlreadyResolved { .. } => {
-                tx.rollback().await?;
-                Ok(None)
-            }
-        }
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    match complete_parked_tx(&mut tx, op_id, outcome).await? {
+                        ParkedCompletion::Completed(result) => {
+                            tx.commit().await?;
+                            self.publish_completion(result.clone());
+                            Ok(Some(result))
+                        }
+                        ParkedCompletion::AlreadyResolved { .. } => {
+                            tx.rollback().await?;
+                            Ok(None)
+                        }
+                    }
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn kill_recheck_then_fail_parked(

@@ -155,10 +155,13 @@ async fn granted_assistant_reads_all_workspace_tools_without_foreign_write_ancho
         .await
         .unwrap();
     let mut id = identity(&route, &daily).await;
-    sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-        .bind(CardRole::Assistant.as_db_str())
-        .bind(&id.card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+                .bind(CardRole::Assistant.as_db_str())
+                .bind(&id.card_id),
+        )
         .await
         .unwrap();
     id.role = CardRole::Assistant;
@@ -268,9 +271,14 @@ async fn granted_assistant_reads_all_workspace_tools_without_foreign_write_ancho
             -32403
         );
     }
-    sqlx::query("UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1")
-        .bind(daily.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1",
+            )
+            .bind(daily.id.as_str()),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -300,9 +308,14 @@ async fn ungranted_planner_cannot_read_workspace_reports() {
     .await
     .unwrap();
     assert!(listed.into_structured()["reports"].is_array());
-    sqlx::query("UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1")
-        .bind(track.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1",
+            )
+            .bind(track.id.as_str()),
+        )
         .await
         .unwrap();
     for (tool, args) in [
@@ -722,10 +735,13 @@ async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports
         (CardRole::Worker, CardRole::Assistant),
         (CardRole::Worker, CardRole::Worker),
     ] {
-        sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-            .bind(persisted_role.as_db_str())
-            .bind(&id.card_id)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+                    .bind(persisted_role.as_db_str())
+                    .bind(&id.card_id),
+            )
             .await
             .unwrap();
         id.role = caller_role;
@@ -739,16 +755,22 @@ async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports
             -32403
         );
     }
-    sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-        .bind(CardRole::Assistant.as_db_str())
-        .bind(&id.card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+                .bind(CardRole::Assistant.as_db_str())
+                .bind(&id.card_id),
+        )
         .await
         .unwrap();
     id.role = CardRole::Assistant;
-    sqlx::query("DELETE FROM managed_track_identities WHERE track_id=?1")
-        .bind(daily.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM managed_track_identities WHERE track_id=?1")
+                .bind(daily.id.as_str()),
+        )
         .await
         .unwrap();
     for (tool, args) in [

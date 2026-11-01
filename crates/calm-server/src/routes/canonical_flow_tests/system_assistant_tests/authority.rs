@@ -101,11 +101,12 @@ async fn outer_error_and_cancel_rollback_the_entire_acceptance_before_publicatio
     let card =
         crate::conversation_keys::derive_track_conversation_keys(&track, "today-summary").card_id;
     let mut events = state.events.subscribe();
-    sqlx::query("CREATE TRIGGER reject_system_receipt BEFORE INSERT ON conversation_system_assistant_receipts WHEN NEW.bootstrap=0 BEGIN SELECT RAISE(ABORT,'reject original receipt'); END").execute(fixture.repo.pool()).await.unwrap();
+    (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER reject_system_receipt BEFORE INSERT ON conversation_system_assistant_receipts WHEN NEW.bootstrap=0 BEGIN SELECT RAISE(ABORT,'reject original receipt'); END")).await.unwrap();
     assert!(requests.submit("error", "body").await.is_err());
     assert_empty(&fixture, &card).await;
-    sqlx::query("DROP TRIGGER reject_system_receipt")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_system_receipt"))
         .await
         .unwrap();
     let pause = crate::test_seams::PausePoint::default();
@@ -126,20 +127,27 @@ async fn outer_error_and_cancel_rollback_the_entire_acceptance_before_publicatio
     // Acquiring another real IMMEDIATE writer waits for SQLx's queued rollback cleanup.
     let writer = crate::state::WorkerState::from_ref(&state).repo;
     let database = writer.sqlite_db().unwrap();
-    let tx = crate::db::sqlite::begin_immediate_tx(&database)
+    let write_db = (database).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let tx = write_session.begin().await.unwrap();
+                tx.rollback().await.unwrap();
+                assert_empty(&fixture, &card).await;
+                while let Ok(event) = events.try_recv() {
+                    assert_ne!(
+                        event.scope.card_id().map(|id| id.as_str()),
+                        Some(card.as_str())
+                    );
+                }
+                requests.submit("control", "body").await.unwrap();
+                assert_eq!(recovery::receipts(&fixture, &card).await.len(), 2);
+                shutdown(&fixture, &state).await;
+            })
+        })
         .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    assert_empty(&fixture, &card).await;
-    while let Ok(event) = events.try_recv() {
-        assert_ne!(
-            event.scope.card_id().map(|id| id.as_str()),
-            Some(card.as_str())
-        );
-    }
-    requests.submit("control", "body").await.unwrap();
-    assert_eq!(recovery::receipts(&fixture, &card).await.len(), 2);
-    shutdown(&fixture, &state).await;
+        .expect("independent write operation")
 }
 pub(super) async fn assert_empty(fixture: &Fixture, card: &str) {
     let counts:(i64,i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM cards WHERE id=?1),(SELECT count(*) FROM worker_sessions WHERE card_id=?1),(SELECT count(*) FROM events WHERE scope_card=?1),(SELECT count(*) FROM conversation_presentations WHERE card_id=?1),(SELECT count(*) FROM conversation_system_assistant_entries WHERE card_id=?1),(SELECT count(*) FROM conversation_system_assistant_receipts WHERE card_id=?1)")
@@ -182,9 +190,9 @@ async fn current_binding_and_area_reject_new_acceptance_on_original_target() {
         ),
     ];
     for (change, restore) in changes {
-        sqlx::query(change)
-            .bind(&original.card_id)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(change).bind(&original.card_id))
             .await
             .unwrap();
         let result = requests.submit(&crate::model::new_id(), "body").await;
@@ -199,7 +207,7 @@ async fn current_binding_and_area_reject_new_acceptance_on_original_target() {
         if restore.contains("?2") {
             query = query.bind(&worker);
         }
-        query.execute(fixture.repo.pool()).await.unwrap();
+        (fixture.repo.db()).writer().execute(query).await.unwrap();
         assert_eq!(
             frame(&fixture, &original.card_id).await.1.canonical_inputs,
             before.canonical_inputs
@@ -235,8 +243,8 @@ async fn current_binding_and_area_reject_new_acceptance_on_original_target() {
         Err(CalmError::Forbidden(_))
     ));
     shutdown(&other, &other_state).await;
-    sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
-        .bind(&original.card_id).execute(fixture.repo.pool()).await.unwrap();
+    (fixture.repo.db()).writer().execute(sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
+        .bind(&original.card_id)).await.unwrap();
     assert!(matches!(
         requests.submit("shared-history", "body").await,
         Err(CalmError::Forbidden(_))
@@ -270,15 +278,18 @@ async fn native_ack_revocation(corrupt_source: bool) {
                         .unwrap();
                 if corrupt_source {
                     let original = recovery::receipts(&fixture, card).await;
-                    sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
-                        .bind(original[0].event_id)
-                        .bind(serde_json::to_string(&crate::ids::ActorId::User).unwrap())
-                        .execute(fixture.repo.pool())
+                    (fixture.repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query("UPDATE events SET actor=?2 WHERE id=?1")
+                                .bind(original[0].event_id)
+                                .bind(serde_json::to_string(&crate::ids::ActorId::User).unwrap()),
+                        )
                         .await
                         .unwrap();
                 } else {
-                    sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
-                    .bind(card).execute(fixture.repo.pool()).await.unwrap();
+                    (fixture.repo.db()).writer().execute(sqlx::query("UPDATE areas SET conversation_history_contract='shared_history' WHERE id=(SELECT t.area_id FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1)")
+                    .bind(card)).await.unwrap();
                 }
                 send(
                     &mut peer,
@@ -474,9 +485,9 @@ impl Revocation {
                 return;
             }
         };
-        sqlx::query(query)
-            .bind(card)
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(query).bind(card))
             .await
             .unwrap();
     }

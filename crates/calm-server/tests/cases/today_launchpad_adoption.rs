@@ -17,8 +17,8 @@ pub(crate) use snapshot::database;
 async fn legacy(repo: &SqlxRepo, dto: &Value, historical: bool) {
     let track = dto["track_id"].as_str().unwrap();
     let card = dto["planner_card_id"].as_str().unwrap();
-    sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',template_input='{\"issue\":2843}',plugin_scope='legacy' WHERE id=?1")
-        .bind(track).execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE tracks SET purpose=NULL,template_id='small-change',template_input='{\"issue\":2843}',plugin_scope='legacy' WHERE id=?1")
+        .bind(track)).await.unwrap();
     let mut frame: Value = sqlx::query_scalar::<_, String>(
         "SELECT ws.handle_state_json FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id WHERE c.id=?1",
     ).bind(card).fetch_one(repo.pool()).await.map(|s| serde_json::from_str(&s).unwrap()).unwrap();
@@ -30,15 +30,18 @@ async fn legacy(repo: &SqlxRepo, dto: &Value, historical: bool) {
         frame["last_thread_id"] = json!("native-today");
         frame["last_turn_id"] = json!("old-turn");
     }
-    sqlx::query(
-        "UPDATE worker_sessions SET thread_id='native-today',handle_state_json=?2 \
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET thread_id='native-today',handle_state_json=?2 \
         WHERE id=(SELECT session_id FROM cards WHERE id=?1)",
-    )
-    .bind(card)
-    .bind(frame.to_string())
-    .execute(repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(card)
+            .bind(frame.to_string()),
+        )
+        .await
+        .unwrap();
     // Both a native row and an unrelated historical raw row must survive exactly.
     for (thread, method, params) in [
         ("native-today", "item/completed", "{\"id\":1}"),
@@ -130,112 +133,114 @@ async fn refusal(mutation: &str, code: &str) {
         matches!(mutation, "pending" | "missing-queue" | "compaction"),
     )
     .await;
-    if matches!(mutation, "workspace" | "already-purpose") {
-        let mut track = repo
-            .track_get(dto["track_id"].as_str().unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        track.workspace.path = "/drift".into();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(repo.db())
-            .await
-            .unwrap();
-        calm_server::db::sqlite::track_workspace_write_tx(
-            &mut tx,
-            track.id.as_str(),
-            &track.workspace,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-    }
-    let sql = match mutation {
-        "workspace" | "multiple" => "SELECT 1",
-        "already-purpose" => "UPDATE tracks SET purpose='launchpad'",
-        "identity" => "UPDATE cards SET session_id=NULL WHERE role='planner'",
-        "binding" => {
-            "UPDATE cards SET payload=json_set(payload,'$.planner_provider','claude') WHERE role='planner'"
-        }
-        "native" => "UPDATE worker_sessions SET thread_id='different-native'",
-        "malformed" => "UPDATE worker_sessions SET handle_state_json='{}'",
-        "snapshot-json" => "UPDATE worker_sessions SET handle_state_json='{'",
-        "binding-json" => "UPDATE cards SET payload='{' WHERE role='planner'",
-        "phase" => {
-            "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.phase','turn_running')"
-        }
-        "graph" => "DELETE FROM terminals",
-        "area-root"
-        | "new-area-root"
-        | "area-unrecorded"
-        | "area-missing-source"
-        | "area-bad-source"
-        | "area-report"
-        | "area-terminal"
-        | "area-closed"
-        | "area"
-        | "new-area" => "UPDATE areas SET kind='user'",
-        "pending" => {
-            r#"UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.pending_queue',json('[{"type":"user_message","text":"pending"}]'))"#
-        }
-        "missing-queue" => {
-            "UPDATE worker_sessions SET handle_state_json=json_remove(handle_state_json,'$.pending_queue')"
-        }
-        "compaction" => {
-            r#"UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.planner_compaction',json('{"request_id":"pending","requested_turn_id":"old-turn","requested_at_ms":1,"wake_enqueued":false,"phase":{"state":"requested"}}'))"#
-        }
-        "retired" => "UPDATE worker_sessions SET state='superseded'",
-        _ => unreachable!(),
-    };
-    sqlx::query(sql).execute(repo.pool()).await.unwrap();
-    if matches!(mutation, "new-area" | "new-area-root") {
-        sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('replacement','System','#abc',1,'system',1,1)")
-                .execute(repo.pool())
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        if matches!(mutation, "workspace" | "already-purpose") {
+            let mut track = repo
+                .track_get(dto["track_id"].as_str().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            track.workspace.path = "/drift".into();
+            let mut tx = write_session.begin()
                 .await
                 .unwrap();
-    }
-    let extra = match mutation {
-        "area-unrecorded" => {
-            "UPDATE cards SET payload=json_set(payload,'$.terminal_presentation.source','unrecorded') WHERE kind='terminal'"
-        }
-        "area-missing-source" => {
-            "UPDATE cards SET payload=json_remove(payload,'$.terminal_presentation') WHERE kind='terminal'"
-        }
-        "area-bad-source" => "UPDATE cards SET payload='{' WHERE kind='terminal'",
-        "area-report" => "UPDATE cards SET role='worker' WHERE role='reportcard'",
-        "area-terminal" => "DELETE FROM terminals",
-        "area-closed" => "UPDATE tracks SET closed_at=1",
-        // Put a valid purpose candidate first: ordering must not hide the other candidate.
-        "multiple" => {
-            "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) SELECT 'other',area_id,'Today',2,0,0 FROM tracks"
-        }
-        _ => "SELECT 1",
-    };
-    sqlx::query(extra).execute(repo.pool()).await.unwrap();
-    if mutation == "multiple" {
-        sqlx::query("UPDATE tracks SET purpose='launchpad' WHERE id=?1")
-            .bind(dto["track_id"].as_str().unwrap())
-            .execute(repo.pool())
+            calm_server::db::sqlite::track_workspace_write_tx(
+                &mut tx,
+                track.id.as_str(),
+                &track.workspace,
+            )
             .await
             .unwrap();
-    }
-    let state = if matches!(mutation, "area-root" | "new-area-root") {
-        state.with_workspace_root(tmp.path().join("moved"))
-    } else {
-        state
-    };
-    let app = router(&state).await;
-    let before = database(&repo).await;
-    let caches = cache_values(&repo, &state).await;
-    let (a, b) = tokio::join!(ensure(app.clone()), ensure(app.clone()));
-    for (status, body) in [a, b] {
-        assert_eq!(status, StatusCode::CONFLICT, "{mutation}: {body}");
-        assert_eq!(body["code"], format!("today_adoption_{code}"));
-    }
-    let replay = ensure(router(&state).await).await;
-    assert_eq!(replay.0, StatusCode::CONFLICT, "{mutation}: {}", replay.1);
-    assert_eq!(replay.1["code"], format!("today_adoption_{code}"));
-    assert_eq!(database(&repo).await, before, "{mutation}");
-    assert_eq!(cache_values(&repo, &state).await, caches);
+            tx.commit().await.unwrap();
+        }
+        let sql = match mutation {
+            "workspace" | "multiple" => "SELECT 1",
+            "already-purpose" => "UPDATE tracks SET purpose='launchpad'",
+            "identity" => "UPDATE cards SET session_id=NULL WHERE role='planner'",
+            "binding" => {
+                "UPDATE cards SET payload=json_set(payload,'$.planner_provider','claude') WHERE role='planner'"
+            }
+            "native" => "UPDATE worker_sessions SET thread_id='different-native'",
+            "malformed" => "UPDATE worker_sessions SET handle_state_json='{}'",
+            "snapshot-json" => "UPDATE worker_sessions SET handle_state_json='{'",
+            "binding-json" => "UPDATE cards SET payload='{' WHERE role='planner'",
+            "phase" => {
+                "UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.phase','turn_running')"
+            }
+            "graph" => "DELETE FROM terminals",
+            "area-root"
+            | "new-area-root"
+            | "area-unrecorded"
+            | "area-missing-source"
+            | "area-bad-source"
+            | "area-report"
+            | "area-terminal"
+            | "area-closed"
+            | "area"
+            | "new-area" => "UPDATE areas SET kind='user'",
+            "pending" => {
+                r#"UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.pending_queue',json('[{"type":"user_message","text":"pending"}]'))"#
+            }
+            "missing-queue" => {
+                "UPDATE worker_sessions SET handle_state_json=json_remove(handle_state_json,'$.pending_queue')"
+            }
+            "compaction" => {
+                r#"UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.planner_compaction',json('{"request_id":"pending","requested_turn_id":"old-turn","requested_at_ms":1,"wake_enqueued":false,"phase":{"state":"requested"}}'))"#
+            }
+            "retired" => "UPDATE worker_sessions SET state='superseded'",
+            _ => unreachable!(),
+        };
+        (repo.db()).writer().execute(sqlx::query(sql)).await.unwrap();
+        if matches!(mutation, "new-area" | "new-area-root") {
+            (repo.db()).writer().execute(sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('replacement','System','#abc',1,'system',1,1)"))
+                    .await
+                    .unwrap();
+        }
+        let extra = match mutation {
+            "area-unrecorded" => {
+                "UPDATE cards SET payload=json_set(payload,'$.terminal_presentation.source','unrecorded') WHERE kind='terminal'"
+            }
+            "area-missing-source" => {
+                "UPDATE cards SET payload=json_remove(payload,'$.terminal_presentation') WHERE kind='terminal'"
+            }
+            "area-bad-source" => "UPDATE cards SET payload='{' WHERE kind='terminal'",
+            "area-report" => "UPDATE cards SET role='worker' WHERE role='reportcard'",
+            "area-terminal" => "DELETE FROM terminals",
+            "area-closed" => "UPDATE tracks SET closed_at=1",
+            // Put a valid purpose candidate first: ordering must not hide the other candidate.
+            "multiple" => {
+                "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) SELECT 'other',area_id,'Today',2,0,0 FROM tracks"
+            }
+            _ => "SELECT 1",
+        };
+        (repo.db()).writer().execute(sqlx::query(extra)).await.unwrap();
+        if mutation == "multiple" {
+            (repo.db()).writer().execute(sqlx::query("UPDATE tracks SET purpose='launchpad' WHERE id=?1")
+                .bind(dto["track_id"].as_str().unwrap()))
+                .await
+                .unwrap();
+        }
+        let state = if matches!(mutation, "area-root" | "new-area-root") {
+            state.with_workspace_root(tmp.path().join("moved"))
+        } else {
+            state
+        };
+        let app = router(&state).await;
+        let before = database(&repo).await;
+        let caches = cache_values(&repo, &state).await;
+        let (a, b) = tokio::join!(ensure(app.clone()), ensure(app.clone()));
+        for (status, body) in [a, b] {
+            assert_eq!(status, StatusCode::CONFLICT, "{mutation}: {body}");
+            assert_eq!(body["code"], format!("today_adoption_{code}"));
+        }
+        let replay = ensure(router(&state).await).await;
+        assert_eq!(replay.0, StatusCode::CONFLICT, "{mutation}: {}", replay.1);
+        assert_eq!(replay.1["code"], format!("today_adoption_{code}"));
+        assert_eq!(database(&repo).await, before, "{mutation}");
+        assert_eq!(cache_values(&repo, &state).await, caches);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -291,11 +296,12 @@ async fn u11_canonical_today_ordinary_same_title_is_not_legacy() {
     let app = router(&state).await;
     let (_, ordinary) = ensure(app.clone()).await;
     legacy(&repo, &ordinary, false).await;
-    sqlx::query("UPDATE areas SET kind='user'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE areas SET kind='user'"))
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.terminal_presentation.source','manual') WHERE kind='terminal'").execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload,'$.terminal_presentation.source','manual') WHERE kind='terminal'")).await.unwrap();
     let (status, today) = ensure(app).await;
     assert_eq!(status, StatusCode::CREATED, "{today}");
     assert_ne!(today["track_id"], ordinary["track_id"]);

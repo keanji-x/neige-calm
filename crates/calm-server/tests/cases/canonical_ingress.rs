@@ -297,71 +297,88 @@ async fn actual_session_authors_bind_plain_send_keys_and_recheck_revocation() {
     let owner = format!("calm-session={owner_token}");
     let alice = format!("calm-session={alice_token}");
     let app = fixture.application_with_auth(auth.clone()).await;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            calm_server::db::sqlite::area_membership::application_user_register(
+                                &mut tx, "alice", "Alice",
+                            )
+                            .await
+                            .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+                )
+                .bind(&fixture.area)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let (status, created) =
+                                post(&app, &owner, "/api/tracks", "first", fixture.create_body()).await;
+                            assert_eq!(status, StatusCode::CREATED, "{created}");
+                            let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
+                            let uri = format!("/api/cards/{card}/planner/input");
+                            let body = json!({"text":"same words", "attachments":[]});
+                            let (status, original) = post(&app, &owner, &uri, "ordinary", body.clone()).await;
+                            assert_eq!(status, StatusCode::OK, "{original}");
+                            let (status, changed) =
+                                post(&app, &owner, &uri, "ordinary", json!({"text":"different"})).await;
+                            assert_eq!(status, StatusCode::CONFLICT, "{changed}");
+                            assert_eq!(changed["code"], "idempotency_key_reused");
+                            let (status, foreign) = post(&app, &alice, &uri, "ordinary", body.clone()).await;
+                            assert_eq!(status, StatusCode::CONFLICT, "{foreign}");
+                            assert_eq!(foreign["code"], "idempotency_key_reused");
+                            let (status, own) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
+                            assert_eq!(status, StatusCode::OK, "{own}");
+                            assert_ne!(own["entry_id"], original["entry_id"]);
+                            let authors: Vec<String> = sqlx::query_scalar(
+                    "SELECT author_user_id FROM conversation_messages WHERE card_id=?1 ORDER BY rowid",
+                )
+                .bind(&card)
+                .fetch_all(fixture.repo.pool())
+                .await
+                .unwrap();
+                            assert_eq!(
+                                authors,
+                                vec![
+                                    LEGACY_OWNER_USER_ID.to_string(),
+                                    LEGACY_OWNER_USER_ID.to_string(),
+                                    "alice".to_string()
+                                ]
+                            );
+                            (fixture.repo.db())
+                                .writer()
+                                .execute(
+                                    sqlx::query(
+                                        "DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'",
+                                    )
+                                    .bind(&fixture.area),
+                                )
+                                .await
+                                .unwrap();
+                            let (status, denied) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
+                            assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+                            auth.sessions.remove(&owner_token).unwrap();
+                            let (status, denied) = post(&app, &owner, &uri, "ordinary", body).await;
+                            assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+                            let count: i64 = sqlx::query_scalar(
+                                "SELECT count(*) FROM conversation_messages WHERE card_id=?1",
+                            )
+                            .bind(&card)
+                            .fetch_one(fixture.repo.pool())
+                            .await
+                            .unwrap();
+                            assert_eq!(
+                                count, 3,
+                                "refusals and retries cannot create accepted messages"
+                            );
+            })
+        })
         .await
-        .unwrap();
-    calm_server::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(&fixture.area)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let (status, created) = post(&app, &owner, "/api/tracks", "first", fixture.create_body()).await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let (card, _, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
-    let uri = format!("/api/cards/{card}/planner/input");
-    let body = json!({"text":"same words", "attachments":[]});
-    let (status, original) = post(&app, &owner, &uri, "ordinary", body.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{original}");
-    let (status, changed) = post(&app, &owner, &uri, "ordinary", json!({"text":"different"})).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{changed}");
-    assert_eq!(changed["code"], "idempotency_key_reused");
-    let (status, foreign) = post(&app, &alice, &uri, "ordinary", body.clone()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{foreign}");
-    assert_eq!(foreign["code"], "idempotency_key_reused");
-    let (status, own) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{own}");
-    assert_ne!(own["entry_id"], original["entry_id"]);
-    let authors: Vec<String> = sqlx::query_scalar(
-        "SELECT author_user_id FROM conversation_messages WHERE card_id=?1 ORDER BY rowid",
-    )
-    .bind(&card)
-    .fetch_all(fixture.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        authors,
-        vec![
-            LEGACY_OWNER_USER_ID.to_string(),
-            LEGACY_OWNER_USER_ID.to_string(),
-            "alice".to_string()
-        ]
-    );
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'")
-        .bind(&fixture.area)
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
-    let (status, denied) = post(&app, &alice, &uri, "alice-key", body.clone()).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
-    auth.sessions.remove(&owner_token).unwrap();
-    let (status, denied) = post(&app, &owner, &uri, "ordinary", body).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
-            .bind(&card)
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        count, 3,
-        "refusals and retries cannot create accepted messages"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -405,16 +422,19 @@ async fn unsupported_fresh_shapes_and_historical_keys_never_fall_back_to_v1() {
         let (status, answer) = post(&app, &cookie, &uri, "unsupported-send", body).await;
         assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     }
-    sqlx::query(
-        "INSERT INTO planner_input_idempotency
+    (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO planner_input_idempotency
          (card_id,idempotency_key,payload_hash,worker_session_id,entry_id,created_at_ms)
          VALUES(?1,'historical','v1:opaque-original',?2,'legacy-entry',0)",
-    )
-    .bind(&card)
-    .bind(&runtime)
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&card)
+            .bind(&runtime),
+        )
+        .await
+        .unwrap();
     let (status, body) = post(
         &app,
         &cookie,
@@ -455,39 +475,48 @@ async fn canonical_send_replay_does_not_restore_its_original_runtime() {
     let body = json!({"text":"original send"});
     let (status, ack) = post(&app, &cookie, &uri, "ordinary", body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{ack}");
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+                    .bind(&original)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
+                    .bind(&card)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let (status, replay) = post(&app, &cookie, &uri, "ordinary", body).await;
+                assert_eq!(status, StatusCode::OK, "{replay}");
+                assert_eq!(
+                    replay, ack,
+                    "the original ACK is not a request to revive its runtime"
+                );
+                let state: String =
+                    sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?1")
+                        .bind(&original)
+                        .fetch_one(fixture.repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(state, "failed");
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM conversation_messages WHERE card_id=?1",
+                )
+                .bind(&card)
+                .fetch_one(fixture.repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(count, 2);
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
-        .bind(&original)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1")
-        .bind(&card)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let (status, replay) = post(&app, &cookie, &uri, "ordinary", body).await;
-    assert_eq!(status, StatusCode::OK, "{replay}");
-    assert_eq!(
-        replay, ack,
-        "the original ACK is not a request to revive its runtime"
-    );
-    let state: String = sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id=?1")
-        .bind(&original)
-        .fetch_one(fixture.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(state, "failed");
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?1")
-            .bind(&card)
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(count, 2);
+        .expect("independent write operation")
 }
 
 async fn get(app: &axum::Router, cookie: &str, uri: &str) -> (StatusCode, Value) {

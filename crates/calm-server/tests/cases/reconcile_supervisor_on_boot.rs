@@ -328,30 +328,37 @@ impl TestFixture {
         let id = calm_server::model::new_id();
         let resumable = kind == WorkerSessionKind::CodexCard;
         let pool = self.repo.sqlite_db().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    calm_server::db::sqlite::session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: id.clone(),
+                            card_id: term.card_id.to_string(),
+                            kind,
+                            agent_provider: resumable.then_some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: Some(term.id.clone()),
+                            thread_id: resumable.then(|| "owned-thread".into()),
+                            session_id: None,
+                            active_turn_id: resumable.then(|| "owned-turn".into()),
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: calm_server::model::now_ms(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    id
+                })
+            })
             .await
-            .unwrap();
-        calm_server::db::sqlite::session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: id.clone(),
-                card_id: term.card_id.to_string(),
-                kind,
-                agent_provider: resumable.then_some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: Some(term.id.clone()),
-                thread_id: resumable.then(|| "owned-thread".into()),
-                session_id: None,
-                active_turn_id: resumable.then(|| "owned-turn".into()),
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: calm_server::model::now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        id
+            .expect("independent write operation")
     }
 
     async fn ensure_live_renderer(

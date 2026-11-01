@@ -27,7 +27,7 @@ async fn planner_cards_of_every_shape_are_stamped_codex_and_nothing_else_moves()
     .unwrap();
     db.ensure_migrations_table().await.unwrap();
     apply_through(&mut db, 116).await;
-    sqlx::raw_sql(
+    { let query = sqlx::raw_sql(
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at) VALUES ('a', 'a', '#000', 0, 1, 1);
          INSERT INTO tracks (id, area_id, title, sort, created_at, updated_at) VALUES
            ('t1', 'a', 't1', 0, 1, 1), ('t2', 'a', 't2', 1, 1, 1);
@@ -37,9 +37,7 @@ async fn planner_cards_of_every_shape_are_stamped_codex_and_nothing_else_moves()
            ('worker', 't1', 'codex', 1, '{\"schemaVersion\":1}', 1, 1, 'worker'),
            ('assistant', 't1', 'codex', 2, '{\"schemaVersion\":1,\"harness_profile\":\"assistant\"}', 1, 1, 'assistant'),
            ('report', 't1', 'track-report', 3, '{\"schemaVersion\":4}', 1, 1, 'reportcard');",
-    )
-    .execute(&mut db)
-    .await
+    ); sqlx::Executor::execute(&mut db, query).await }
     .unwrap();
     let before: Vec<(String, String)> = sqlx::query_as("SELECT id, payload FROM cards ORDER BY id")
         .fetch_all(&mut db)

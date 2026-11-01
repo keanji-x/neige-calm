@@ -94,7 +94,7 @@ async fn real_cli_preserves_full_inventory_and_stable_root() {
     let mut c = SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", db.display()))
         .await
         .unwrap();
-    sqlx::raw_sql(concat!(
+    { let query = sqlx::raw_sql(concat!(
         "CREATE TABLE unknown_sentinel(id INTEGER PRIMARY KEY, value); ",
         "INSERT INTO unknown_sentinel VALUES(1,NULL),(2,''),(3,x''),",
         "(4,CAST(x'ff00' AS TEXT)),(5,x'ff00'),(6,42),(7,1.25); ",
@@ -102,9 +102,7 @@ async fn real_cli_preserves_full_inventory_and_stable_root() {
         "CREATE TABLE acp_submissions(id TEXT); INSERT INTO acp_submissions VALUES('orphan'); ",
         "CREATE TABLE database_identity(id BLOB); INSERT INTO database_identity VALUES(x'0001'); ",
         "CREATE VIEW old_view AS SELECT * FROM threads;"
-    ))
-    .execute(&mut c)
-    .await
+    )); sqlx::Executor::execute(&mut c, query).await }
     .unwrap();
     let oracle = sqlx::query(
         "SELECT id,typeof(value),hex(CAST(value AS BLOB)) FROM unknown_sentinel ORDER BY id",
@@ -273,9 +271,7 @@ async fn partial_and_unproven_inputs_cannot_publish() {
     let mut c = SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", db.display()))
         .await
         .unwrap();
-    sqlx::raw_sql("CREATE VIRTUAL TABLE unproven USING fts5(content)")
-        .execute(&mut c)
-        .await
+    { let query = sqlx::raw_sql("CREATE VIRTUAL TABLE unproven USING fts5(content)"); sqlx::Executor::execute(&mut c, query).await }
         .unwrap();
     c.close().await.unwrap();
     assert!(!cli(&db, &owned, Some(&out)).status.success());

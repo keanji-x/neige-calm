@@ -14,7 +14,13 @@ async fn canonical_retry_storage_inline_upgrade_preserves_populated_graph() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/empty.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    through(183).run(db.read_pool()).await.unwrap();
+    { let migrator = &(through(183));
+    (db).writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|connection| Box::pin(async move {
+            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+        })).await
+    })).await.unwrap().unwrap()
+}.unwrap();
     let before: Vec<(String, i64)> =
         sqlx::query_as("SELECT name,seq FROM sqlite_sequence ORDER BY name")
             .fetch_all(db.read_pool())
@@ -50,7 +56,13 @@ async fn populated_upgrade(empty_presentations: bool) {
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
     let old = through(183);
-    old.run(db.read_pool()).await.unwrap();
+    { let migrator = &(old);
+    (db).writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|connection| Box::pin(async move {
+            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+        })).await
+    })).await.unwrap().unwrap()
+}.unwrap();
     let repo = SqlxRepo {
         db,
         card_role_cache: super::super::super::CardRoleCache::new(),
@@ -89,45 +101,59 @@ async fn populated_upgrade(empty_presentations: bool) {
         .await
         .unwrap();
     // Seed the released schema directly: today's allocator requires head columns.
-    sqlx::query(
-        "INSERT INTO conversation_presentations(
+    (s.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO conversation_presentations(
         card_id,source_kind,source_identity,native_item_row_id)
         VALUES(?1,'native_item',?2,?3)",
-    )
-    .bind(&s.card)
-    .bind(serde_json::to_string(&("thread", "reply")).unwrap())
-    .bind(native[0].id)
-    .execute(s.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&s.card)
+            .bind(serde_json::to_string(&("thread", "reply")).unwrap())
+            .bind(native[0].id),
+        )
+        .await
+        .unwrap();
     // Leave both historical released and effective claims in the old database.
-    sqlx::query(
+    (s.repo.db()).writer().execute(sqlx::query(
         "UPDATE conversation_submission_inputs SET effective=0, released_by_attempt_id=?1 WHERE
             submission_id=?2 AND input_kind='human'",
     )
     .bind(ATTEMPT)
-    .bind(s.root.as_str())
-    .execute(s.repo.pool())
+    .bind(s.root.as_str()))
     .await
     .unwrap();
-    sqlx::query("UPDATE conversation_input_submissions SET native_correlation_json=?1 WHERE id=?2")
-        .bind(r#"{"thread_id":"thread","native_turn_id":"original-native-turn"}"#)
-        .bind(s.root.as_str())
-        .execute(s.repo.pool())
+    (s.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE conversation_input_submissions SET native_correlation_json=?1 WHERE id=?2",
+            )
+            .bind(r#"{"thread_id":"thread","native_turn_id":"original-native-turn"}"#)
+            .bind(s.root.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE conversation_presentations SET submission_id=?1")
-        .bind(s.root.as_str())
-        .execute(s.repo.pool())
+    (s.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE conversation_presentations SET submission_id=?1")
+                .bind(s.root.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE sqlite_sequence SET seq=1000 WHERE name='conversation_presentations'")
-        .execute(s.repo.pool())
+    (s.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE sqlite_sequence SET seq=1000 WHERE name='conversation_presentations'",
+        ))
         .await
         .unwrap();
     if empty_presentations {
-        sqlx::query("DELETE FROM conversation_presentations")
-            .execute(s.repo.pool())
+        (s.repo.db())
+            .writer()
+            .execute(sqlx::query("DELETE FROM conversation_presentations"))
             .await
             .unwrap();
     }
@@ -172,7 +198,13 @@ async fn populated_upgrade(empty_presentations: bool) {
     super::super::super::infra::check_no_unknown_future_migrations(s.repo.pool(), &with_0184)
         .await
         .unwrap();
-    with_0184.run(s.repo.pool()).await.unwrap();
+    { let migrator = &(with_0184);
+    (s.repo.db()).writer().with_writer(|write_session| Box::pin(async move {
+        write_session.autocommit(|connection| Box::pin(async move {
+            Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
+        })).await
+    })).await.unwrap().unwrap()
+}.unwrap();
     for (name, sql) in objects {
         // 0184 changes the creation fence from V4 to V5.
         let sql = if name == "conversation_human_track_creation_fact_scope" {
@@ -239,26 +271,30 @@ async fn populated_upgrade(empty_presentations: bool) {
         .unwrap(),
         1000
     );
-    let mut tx = begin_immediate_tx(upgraded.db()).await.unwrap();
-    assert!(submission_plan_tx(&mut tx, &root).await.is_ok());
-    let row = sqlx::query("SELECT retirement_reason,released_by_attempt_id FROM conversation_submission_inputs WHERE input_kind='human'").fetch_one(&mut **tx).await.unwrap();
-    assert_eq!(row.get::<String, _>("retirement_reason"), "not_dispatched");
-    assert_eq!(row.get::<String, _>("released_by_attempt_id"), ATTEMPT);
-    let next = allocate_presentation_tx(
-        &mut tx,
-        &card,
-        PresentationSource::SystemObservation(
-            &SystemObservationId::parse("ffffffffffffffffffffffffffffffff").unwrap(),
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(next, 1001);
-    tx.commit().await.unwrap();
-    assert!(
-        super::super::super::infra::check_no_unknown_future_migrations(upgraded.pool(), &old)
-            .await
-            .is_err(),
-        "old binary must refuse upgraded database"
-    );
+    let write_db = (upgraded.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        assert!(submission_plan_tx(&mut tx, &root).await.is_ok());
+        let row = sqlx::query("SELECT retirement_reason,released_by_attempt_id FROM conversation_submission_inputs WHERE input_kind='human'").fetch_one(&mut **tx).await.unwrap();
+        assert_eq!(row.get::<String, _>("retirement_reason"), "not_dispatched");
+        assert_eq!(row.get::<String, _>("released_by_attempt_id"), ATTEMPT);
+        let next = allocate_presentation_tx(
+            &mut tx,
+            &card,
+            PresentationSource::SystemObservation(
+                &SystemObservationId::parse("ffffffffffffffffffffffffffffffff").unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(next, 1001);
+        tx.commit().await.unwrap();
+        assert!(
+            super::super::super::infra::check_no_unknown_future_migrations(upgraded.pool(), &old)
+                .await
+                .is_err(),
+            "old binary must refuse upgraded database"
+        );
+
+    })).await.expect("independent write operation")
 }

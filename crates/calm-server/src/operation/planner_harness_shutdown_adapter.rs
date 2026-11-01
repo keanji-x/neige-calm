@@ -279,13 +279,19 @@ mod tests {
             parked_deadline_ms: None,
         };
 
-        sqlx::query("ALTER TABLE worker_sessions RENAME TO worker_sessions_hidden")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "ALTER TABLE worker_sessions RENAME TO worker_sessions_hidden",
+            ))
             .await
             .unwrap();
         let outcome = adapter.spawn_side_effect(&output, &op, &ctx).await;
-        sqlx::query("ALTER TABLE worker_sessions_hidden RENAME TO worker_sessions")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "ALTER TABLE worker_sessions_hidden RENAME TO worker_sessions",
+            ))
             .await
             .unwrap();
         assert!(outcome.is_ok(), "{:?}", outcome.err());

@@ -142,17 +142,15 @@ async fn recovery_3192_legacy_no_status_precedes_timeout() {
     let v = c2b::held("legacy-no-status", "exit 7", 60).await;
     c2b::park(&v).await;
     // Released legacy settlements are immutable inputs to owner recovery, not executor proof.
-    sqlx::query(
+    (v.ctx.operation_repo.sqlite_db()).writer().execute(sqlx::query(
         "UPDATE workspace_executions SET settled_at_ms=1,settlement_json=?1 WHERE execution_id=?2",
     )
     .bind(r#"{"Journal":{"Drained":{"status":null}}}"#)
-    .bind(c2b::id(&v.op).as_str())
-    .execute(v.ctx.operation_repo.sqlite_db().writer_pool())
+    .bind(c2b::id(&v.op).as_str()))
     .await
     .unwrap();
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.gate_execution.decision',json(?1)) WHERE id=?2")
-        .bind(r#"{"Stopping":{"reason":"Timeout"}}"#).bind(&v.op.id)
-        .execute(v.ctx.operation_repo.sqlite_db().writer_pool()).await.unwrap();
+    (v.ctx.operation_repo.sqlite_db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.gate_execution.decision',json(?1)) WHERE id=?2")
+        .bind(r#"{"Stopping":{"reason":"Timeout"}}"#).bind(&v.op.id)).await.unwrap();
     let op = v
         .ctx
         .operation_repo

@@ -78,94 +78,98 @@ async fn seed_harness_with_snapshot(
         .await
         .unwrap();
     let role_cache = CardRoleCache::new();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        repo.card_role_get(card.id.as_str()).await.unwrap(),
-        Some(CardRole::Planner)
-    );
-    let worker_session_id = new_id();
-    let thread_id = SEED_THREAD_ID.to_string();
-
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
-    track_area_cache.insert(track.id.clone(), area.id);
-    let harness = PlannerHarness::run(PlannerHarnessParams {
-        track_delete_locks: Default::default(),
-        backend: calm_server::harness::backend::PlannerBackend::codex(
-            daemon.clone(),
-            card.id.as_ref(),
-            card.track_id.as_ref(),
-            worker_session_id.as_ref(),
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
+            },
+            CardRole::Planner,
+            false,
+            &role_cache,
         )
-        .unwrap(),
-        worker_session_id,
-        track_id: card.track_id.clone(),
-        card_id: card.id.clone(),
-        thread_id: Some(thread_id),
-        repo: repo_dyn,
-        events,
-        card_role_cache: role_cache,
-        track_area_cache,
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            repo.card_role_get(card.id.as_str()).await.unwrap(),
+            Some(CardRole::Planner)
+        );
+        let worker_session_id = new_id();
+        let thread_id = SEED_THREAD_ID.to_string();
 
-        registry: calm_server::harness::HarnessRegistry::new(),
-        config: HarnessConfig {
-            debounce_min_idle: Duration::from_secs(60),
-            debounce_max_wait: Duration::from_secs(60),
-            ..HarnessConfig::default()
-        },
-        snapshot: (snapshot)
-            .try_into()
-            .expect("historical fixture snapshot contract"),
-    })
-    .await
-    .expect("historical fixture harness");
+        let mut tx = write_session.begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker_session_id.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread_id.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-    (
-        harness,
-        daemon,
-        card.id.to_string(),
-        card.track_id.to_string(),
-    )
+        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();
+        track_area_cache.insert(track.id.clone(), area.id);
+        let harness = PlannerHarness::run(PlannerHarnessParams {
+            track_delete_locks: Default::default(),
+            backend: calm_server::harness::backend::PlannerBackend::codex(
+                daemon.clone(),
+                card.id.as_ref(),
+                card.track_id.as_ref(),
+                worker_session_id.as_ref(),
+            )
+            .unwrap(),
+            worker_session_id,
+            track_id: card.track_id.clone(),
+            card_id: card.id.clone(),
+            thread_id: Some(thread_id),
+            repo: repo_dyn,
+            events,
+            card_role_cache: role_cache,
+            track_area_cache,
+
+            registry: calm_server::harness::HarnessRegistry::new(),
+            config: HarnessConfig {
+                debounce_min_idle: Duration::from_secs(60),
+                debounce_max_wait: Duration::from_secs(60),
+                ..HarnessConfig::default()
+            },
+            snapshot: (snapshot)
+                .try_into()
+                .expect("historical fixture snapshot contract"),
+        })
+        .await
+        .expect("historical fixture harness");
+
+        (
+            harness,
+            daemon,
+            card.id.to_string(),
+            card.track_id.to_string(),
+        )
+
+    })).await.expect("independent write operation")
 }
 
 async fn wait_for_rows(
@@ -638,8 +642,9 @@ async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
         ))
         .await;
 
-    sqlx::query("ALTER TABLE events RENAME TO events_broken")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("ALTER TABLE events RENAME TO events_broken"))
         .await
         .unwrap();
     harness
@@ -668,8 +673,9 @@ async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
             )),
         "durably accepted input must remain in the committed snapshot"
     );
-    sqlx::query("ALTER TABLE events_broken RENAME TO events")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("ALTER TABLE events_broken RENAME TO events"))
         .await
         .unwrap();
 
@@ -861,22 +867,22 @@ async fn stale_turn_completed_writes_no_outcome_row() {
 /// Record, for every event row, how many `turn/completed` transcript rows were durable at the instant that event was
 /// written. A trigger reads inside the database at the exact statement, so the answer does not depend on scheduling.
 async fn record_outcome_rows_at_each_event(repo: &SqlxRepo) {
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "CREATE TABLE outcome_rows_at_event (event_id INTEGER PRIMARY KEY, outcome_rows INTEGER NOT NULL)",
-    )
-    .execute(repo.pool())
+    ))
     .await
     .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER record_outcome_rows_at_event AFTER INSERT ON events BEGIN \
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER record_outcome_rows_at_event AFTER INSERT ON events BEGIN \
            INSERT INTO outcome_rows_at_event (event_id, outcome_rows) VALUES (\
              NEW.id, (SELECT COUNT(*) FROM harness_items WHERE method = 'turn/completed')\
            ); \
          END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 }
 
 /// The count `record_outcome_rows_at_each_event` captured for one event.

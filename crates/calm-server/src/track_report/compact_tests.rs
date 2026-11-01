@@ -215,9 +215,12 @@ async fn compact_origination_fence_allows_existing_release_edit_and_tombstone() 
 #[tokio::test]
 async fn compact_task_requires_user_release_under_declare_and_wait() {
     let f = fixture().await;
-    sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
-        .bind(&f.track_id)
-        .execute(f.repo.pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
+                .bind(&f.track_id),
+        )
         .await
         .unwrap();
     let mut payload = compact();
@@ -270,33 +273,37 @@ async fn compact_structural_init_refuses_live_blocks_before_writing() {
     payload.blocks = Some(blocks.clone());
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    let mut tx = f.repo.pool().begin().await.unwrap();
-    let result = structural_init_report_tx(
-        &mut tx,
-        InitialReportTarget {
-            report_card_id: target.report_card.id.as_str(),
-            track_id: &f.track_id,
-            payload: &payload,
-            doc: &mut doc,
-            declarations: &declarations,
-            diagnostics: &diagnostics,
-        },
-    )
-    .await;
-    assert!(
-        matches!(result, Err(CalmError::Forbidden(ref reason)) if reason.contains("Only the Planner")),
-        "{result:?}"
-    );
-    let stored: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
-        .bind(target.report_card.id.as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&stored).unwrap(),
-        target.report_card.payload
-    );
-    tx.rollback().await.unwrap();
+    let write_db = (f.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let result = structural_init_report_tx(
+            &mut tx,
+            InitialReportTarget {
+                report_card_id: target.report_card.id.as_str(),
+                track_id: &f.track_id,
+                payload: &payload,
+                doc: &mut doc,
+                declarations: &declarations,
+                diagnostics: &diagnostics,
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(CalmError::Forbidden(ref reason)) if reason.contains("Only the Planner")),
+            "{result:?}"
+        );
+        let stored: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+            .bind(target.report_card.id.as_str())
+            .fetch_one(&mut **tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored).unwrap(),
+            target.report_card.payload
+        );
+        tx.rollback().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

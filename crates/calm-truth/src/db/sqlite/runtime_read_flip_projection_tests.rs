@@ -93,15 +93,24 @@ async fn runtime_active_shared_thread_attribution_from_pool_filters_and_orders_p
 async fn runtime_get_active_for_terminal_tx_reads_active_terminal_session_inside_tx() {
     let repo = fresh_repo().await;
     let (runtime, terminal_id) = seed_terminal_runtime(&repo, "terminal-key").await;
-    let mut tx = repo.pool().begin().await.expect("begin terminal read tx");
-    let actual = session_projection_active_for_terminal_tx(&mut tx, &terminal_id)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin terminal read tx");
+                let actual = session_projection_active_for_terminal_tx(&mut tx, &terminal_id)
+                    .await
+                    .expect("worker-session terminal read");
+                assert_eq!(
+                    actual.as_ref().map(|runtime| runtime.id.as_str()),
+                    Some(runtime.id.as_str())
+                );
+                tx.commit().await.expect("commit terminal read tx");
+            })
+        })
         .await
-        .expect("worker-session terminal read");
-    assert_eq!(
-        actual.as_ref().map(|runtime| runtime.id.as_str()),
-        Some(runtime.id.as_str())
-    );
-    tx.commit().await.expect("commit terminal read tx");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -143,53 +152,64 @@ async fn projectable_deferred_planner_gap_with_active_runtime_returns_placeholde
     let repo = fresh_repo().await;
     let label = "projectable-gap";
     let placeholder_id = format!("rt-projectable-placeholder-{label}-{}", new_id());
-    let mut tx = repo.pool().begin().await.expect("begin gap tx");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        label,
-        "codex",
-        serde_json::json!({"schemaVersion":1}),
-    )
-    .await;
-    let mut active_init = projectable_runtime_init(
-        &card_id,
-        label,
-        "active",
-        WorkerSessionState::Running,
-        30_000,
-    );
-    active_init.kind = WorkerSessionKind::SharedPlanner;
-    let active = session_start_runtime_tx(&mut tx, active_init)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin gap tx");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    label,
+                    "codex",
+                    serde_json::json!({"schemaVersion":1}),
+                )
+                .await;
+                let mut active_init = projectable_runtime_init(
+                    &card_id,
+                    label,
+                    "active",
+                    WorkerSessionState::Running,
+                    30_000,
+                );
+                active_init.kind = WorkerSessionKind::SharedPlanner;
+                let active = session_start_runtime_tx(&mut tx, active_init)
+                    .await
+                    .expect("start active shared-spec runtime");
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
+                )
+                .await
+                .expect("prepare deferred projectable placeholder");
+                tx.commit().await.expect("commit gap tx");
+
+                let flipped = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
+                    .await
+                    .expect("worker-session projectable read")
+                    .expect("placeholder projectable read");
+                assert_eq!(flipped.id, placeholder_id);
+
+                let batch = runtime_get_projectable_for_cards_from_pool(
+                    repo.pool(),
+                    std::slice::from_ref(&card_id),
+                )
+                .await
+                .expect("worker-session batch projectable read");
+                assert_eq!(
+                    batch
+                        .get(&card_id)
+                        .expect("placeholder batch projectable read")
+                        .id,
+                    placeholder_id
+                );
+
+                assert_eq!(active.status, WorkerSessionState::Running);
+            })
+        })
         .await
-        .expect("start active shared-spec runtime");
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 40_000),
-    )
-    .await
-    .expect("prepare deferred projectable placeholder");
-    tx.commit().await.expect("commit gap tx");
-
-    let flipped = runtime_get_projectable_for_card_from_pool(repo.pool(), &card_id)
-        .await
-        .expect("worker-session projectable read")
-        .expect("placeholder projectable read");
-    assert_eq!(flipped.id, placeholder_id);
-
-    let batch =
-        runtime_get_projectable_for_cards_from_pool(repo.pool(), std::slice::from_ref(&card_id))
-            .await
-            .expect("worker-session batch projectable read");
-    assert_eq!(
-        batch
-            .get(&card_id)
-            .expect("placeholder batch projectable read")
-            .id,
-        placeholder_id
-    );
-
-    assert_eq!(active.status, WorkerSessionState::Running);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -200,55 +220,64 @@ async fn terminals_orphaned_protects_terminal_when_old_session_active_and_placeh
     let old_runtime_id = format!("rt-read-flip-{label}-old");
     let placeholder_id = format!("rt-read-flip-{label}-placeholder-{}", new_id());
 
-    let mut tx = repo.pool().begin().await.expect("begin #744 seed tx");
-    session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
-        .await
-        .expect("complete initial codex runtime");
-    let old_runtime = session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: old_runtime_id,
-            card_id: card_id.clone(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(format!("thread-{label}-old")),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 10_000,
-        },
-    )
-    .await
-    .expect("start old active shared-spec runtime");
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
-    )
-    .await
-    .expect("prepare deferred shared-spec placeholder");
-    tx.commit().await.expect("commit #744 seed tx");
-    age_terminal_past_grace(&repo, &terminal_id).await;
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin #744 seed tx");
+                session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
+                    .await
+                    .expect("complete initial codex runtime");
+                let old_runtime = session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: old_runtime_id,
+                        card_id: card_id.clone(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(format!("thread-{label}-old")),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: 10_000,
+                    },
+                )
+                .await
+                .expect("start old active shared-spec runtime");
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &deferred_projectable_placeholder_init(&card_id, &placeholder_id, 20_000),
+                )
+                .await
+                .expect("prepare deferred shared-spec placeholder");
+                tx.commit().await.expect("commit #744 seed tx");
+                age_terminal_past_grace(&repo, &terminal_id).await;
 
-    let card_session_id: Option<String> =
-        sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
-            .bind(&card_id)
-            .fetch_one(repo.pool())
-            .await
-            .expect("read card session pointer");
-    assert_eq!(old_runtime.status, WorkerSessionState::Running);
-    assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
+                let card_session_id: Option<String> =
+                    sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+                        .bind(&card_id)
+                        .fetch_one(repo.pool())
+                        .await
+                        .expect("read card session pointer");
+                assert_eq!(old_runtime.status, WorkerSessionState::Running);
+                assert_eq!(card_session_id.as_deref(), Some(placeholder_id.as_str()));
 
-    let orphans = repo
-        .terminals_orphaned(60)
+                let orphans = repo
+                    .terminals_orphaned(60)
+                    .await
+                    .expect("scan orphaned terminals");
+                assert!(
+                    !orphans.iter().any(|terminal| terminal.id == terminal_id),
+                    "old active worker_session.card_id must protect terminal, got: {orphans:?}"
+                );
+            })
+        })
         .await
-        .expect("scan orphaned terminals");
-    assert!(
-        !orphans.iter().any(|terminal| terminal.id == terminal_id),
-        "old active worker_session.card_id must protect terminal, got: {orphans:?}"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -257,32 +286,36 @@ async fn terminals_orphaned_reaps_terminal_when_card_has_no_active_session() {
     let label = "terminals-orphaned-no-active";
     let (card_id, terminal_id, initial_runtime_id) = seed_codex_terminal_card(&repo, label).await;
 
-    let mut tx = repo.pool().begin().await.expect("begin no-active seed tx");
-    session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
-        .await
-        .expect("complete initial codex runtime");
-    tx.commit().await.expect("commit no-active seed tx");
-    age_terminal_past_grace(&repo, &terminal_id).await;
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.expect("begin no-active seed tx");
+        session_complete_tx(&mut tx, &initial_runtime_id, WorkerSessionState::Exited)
+            .await
+            .expect("complete initial codex runtime");
+        tx.commit().await.expect("commit no-active seed tx");
+        age_terminal_past_grace(&repo, &terminal_id).await;
 
-    let active_session_count: i64 = sqlx::query_scalar(
-        r#"SELECT COUNT(*) FROM worker_sessions
+        let active_session_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*) FROM worker_sessions
                WHERE card_id = ?1
                  AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
-    )
-    .bind(&card_id)
-    .fetch_one(repo.pool())
-    .await
-    .expect("count active worker sessions");
-    assert_eq!(active_session_count, 0);
-
-    let orphans = repo
-        .terminals_orphaned(60)
+        )
+        .bind(&card_id)
+        .fetch_one(repo.pool())
         .await
-        .expect("scan orphaned terminals");
-    assert!(
-        orphans.iter().any(|terminal| terminal.id == terminal_id),
-        "terminal without active worker_session.card_id should be orphaned, got: {orphans:?}"
-    );
+        .expect("count active worker sessions");
+        assert_eq!(active_session_count, 0);
+
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            orphans.iter().any(|terminal| terminal.id == terminal_id),
+            "terminal without active worker_session.card_id should be orphaned, got: {orphans:?}"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -291,33 +324,37 @@ async fn terminals_orphaned_keeps_exited_terminal_card_with_recorded_exit() {
     let (by_code, by_code_terminal) = seed_terminal_runtime(&repo, "orphan-exit-code").await;
     let (by_signal, by_signal_terminal) = seed_terminal_runtime(&repo, "orphan-signal").await;
 
-    let mut tx = repo.pool().begin().await.expect("begin #1701 seed tx");
-    session_complete_tx(&mut tx, &by_code.id, WorkerSessionState::Exited)
-        .await
-        .expect("complete terminal session (exit code)");
-    session_complete_tx(&mut tx, &by_signal.id, WorkerSessionState::Failed)
-        .await
-        .expect("complete terminal session (signal)");
-    tx.commit().await.expect("commit #1701 seed tx");
-    repo.terminal_set_exit(&by_code_terminal, Some(3), false)
-        .await
-        .expect("record exit code");
-    repo.terminal_set_exit(&by_signal_terminal, None, true)
-        .await
-        .expect("record signal kill");
-    age_terminal_past_grace(&repo, &by_code_terminal).await;
-    age_terminal_past_grace(&repo, &by_signal_terminal).await;
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.expect("begin #1701 seed tx");
+        session_complete_tx(&mut tx, &by_code.id, WorkerSessionState::Exited)
+            .await
+            .expect("complete terminal session (exit code)");
+        session_complete_tx(&mut tx, &by_signal.id, WorkerSessionState::Failed)
+            .await
+            .expect("complete terminal session (signal)");
+        tx.commit().await.expect("commit #1701 seed tx");
+        repo.terminal_set_exit(&by_code_terminal, Some(3), false)
+            .await
+            .expect("record exit code");
+        repo.terminal_set_exit(&by_signal_terminal, None, true)
+            .await
+            .expect("record signal kill");
+        age_terminal_past_grace(&repo, &by_code_terminal).await;
+        age_terminal_past_grace(&repo, &by_signal_terminal).await;
 
-    let orphans = repo
-        .terminals_orphaned(60)
-        .await
-        .expect("scan orphaned terminals");
-    assert!(
-        !orphans
-            .iter()
-            .any(|terminal| terminal.id == by_code_terminal || terminal.id == by_signal_terminal),
-        "an exited terminal-kind card terminal with a recorded exit is not an orphan, got: {orphans:?}"
-    );
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            !orphans
+                .iter()
+                .any(|terminal| terminal.id == by_code_terminal || terminal.id == by_signal_terminal),
+            "an exited terminal-kind card terminal with a recorded exit is not an orphan, got: {orphans:?}"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -325,25 +362,27 @@ async fn terminals_orphaned_reaps_exited_terminal_card_without_recorded_exit() {
     let repo = fresh_repo().await;
     let (runtime, terminal_id) = seed_terminal_runtime(&repo, "orphan-no-exit").await;
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin #1701 no-exit seed tx");
-    session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
-        .await
-        .expect("complete terminal session");
-    tx.commit().await.expect("commit #1701 no-exit seed tx");
-    age_terminal_past_grace(&repo, &terminal_id).await;
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .expect("begin #1701 no-exit seed tx");
+        session_complete_tx(&mut tx, &runtime.id, WorkerSessionState::Exited)
+            .await
+            .expect("complete terminal session");
+        tx.commit().await.expect("commit #1701 no-exit seed tx");
+        age_terminal_past_grace(&repo, &terminal_id).await;
 
-    let orphans = repo
-        .terminals_orphaned(60)
-        .await
-        .expect("scan orphaned terminals");
-    assert!(
-        orphans.iter().any(|terminal| terminal.id == terminal_id),
-        "terminal-kind card terminal without a recorded exit must stay orphaned, got: {orphans:?}"
-    );
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            orphans.iter().any(|terminal| terminal.id == terminal_id),
+            "terminal-kind card terminal without a recorded exit must stay orphaned, got: {orphans:?}"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -352,35 +391,37 @@ async fn terminals_orphaned_reaps_exited_non_terminal_card_with_recorded_exit() 
     let label = "orphan-codex-exit";
     let (card_id, terminal_id, initial_session) = seed_codex_terminal_card(&repo, label).await;
 
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin #1701 codex seed tx");
-    session_complete_tx(&mut tx, &initial_session, WorkerSessionState::Exited)
-        .await
-        .expect("complete initial codex session");
-    tx.commit().await.expect("commit #1701 codex seed tx");
-    repo.terminal_set_exit(&terminal_id, Some(0), false)
-        .await
-        .expect("record exit code");
-    age_terminal_past_grace(&repo, &terminal_id).await;
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .expect("begin #1701 codex seed tx");
+        session_complete_tx(&mut tx, &initial_session, WorkerSessionState::Exited)
+            .await
+            .expect("complete initial codex session");
+        tx.commit().await.expect("commit #1701 codex seed tx");
+        repo.terminal_set_exit(&terminal_id, Some(0), false)
+            .await
+            .expect("record exit code");
+        age_terminal_past_grace(&repo, &terminal_id).await;
 
-    let card_kind: String = sqlx::query_scalar("SELECT kind FROM cards WHERE id = ?1")
-        .bind(&card_id)
-        .fetch_one(repo.pool())
-        .await
-        .expect("read card kind");
-    assert_eq!(card_kind, "codex");
+        let card_kind: String = sqlx::query_scalar("SELECT kind FROM cards WHERE id = ?1")
+            .bind(&card_id)
+            .fetch_one(repo.pool())
+            .await
+            .expect("read card kind");
+        assert_eq!(card_kind, "codex");
 
-    let orphans = repo
-        .terminals_orphaned(60)
-        .await
-        .expect("scan orphaned terminals");
-    assert!(
-        orphans.iter().any(|terminal| terminal.id == terminal_id),
-        "a non-terminal-kind card terminal with a recorded exit must stay orphaned, got: {orphans:?}"
-    );
+        let orphans = repo
+            .terminals_orphaned(60)
+            .await
+            .expect("scan orphaned terminals");
+        assert!(
+            orphans.iter().any(|terminal| terminal.id == terminal_id),
+            "a non-terminal-kind card terminal with a recorded exit must stay orphaned, got: {orphans:?}"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -437,170 +478,193 @@ async fn runtime_get_projectable_for_cards_from_pool_picks_pointer_history_winne
 async fn worker_session_backed_reads_return_deferred_planner_placeholder() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-read-flip-placeholder-{}", new_id());
-    let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "placeholder",
-        "codex",
-        serde_json::json!({"schemaVersion":1}),
-    )
-    .await;
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &WorkerSessionInit {
-            id: placeholder_id.clone(),
-            card_id: card_id.clone(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 5_000,
-        },
-    )
-    .await
-    .expect("prepare deferred placeholder");
-    tx.commit().await.expect("commit placeholder tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin placeholder tx");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    "placeholder",
+                    "codex",
+                    serde_json::json!({"schemaVersion":1}),
+                )
+                .await;
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &WorkerSessionInit {
+                        id: placeholder_id.clone(),
+                        card_id: card_id.clone(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Starting,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: 5_000,
+                    },
+                )
+                .await
+                .expect("prepare deferred placeholder");
+                tx.commit().await.expect("commit placeholder tx");
 
-    let by_id = runtime_get_by_id_from_pool(repo.pool(), &placeholder_id)
+                let by_id = runtime_get_by_id_from_pool(repo.pool(), &placeholder_id)
+                    .await
+                    .expect("by-id read")
+                    .expect("placeholder by-id read");
+                assert_eq!(by_id.id, placeholder_id);
+
+                let active_for_card = runtime_get_active_for_card_from_pool(repo.pool(), &card_id)
+                    .await
+                    .expect("active-for-card read")
+                    .expect("placeholder active-for-card read");
+                assert_eq!(active_for_card.id, placeholder_id);
+
+                let active_for_kind = runtimes_active_for_kind_from_pool(
+                    repo.pool(),
+                    WorkerSessionKind::SharedPlanner,
+                )
+                .await
+                .expect("active-for-kind read");
+                assert_eq!(active_for_kind.len(), 1);
+                assert_eq!(active_for_kind[0].id, placeholder_id);
+
+                let mut tx = write_session.begin().await.expect("begin status tx");
+                let status = runtime_current_status_tx(&mut tx, &placeholder_id)
+                    .await
+                    .expect("placeholder status read");
+                tx.commit().await.expect("commit status tx");
+                assert_eq!(status, WorkerSessionState::Starting);
+            })
+        })
         .await
-        .expect("by-id read")
-        .expect("placeholder by-id read");
-    assert_eq!(by_id.id, placeholder_id);
-
-    let active_for_card = runtime_get_active_for_card_from_pool(repo.pool(), &card_id)
-        .await
-        .expect("active-for-card read")
-        .expect("placeholder active-for-card read");
-    assert_eq!(active_for_card.id, placeholder_id);
-
-    let active_for_kind =
-        runtimes_active_for_kind_from_pool(repo.pool(), WorkerSessionKind::SharedPlanner)
-            .await
-            .expect("active-for-kind read");
-    assert_eq!(active_for_kind.len(), 1);
-    assert_eq!(active_for_kind[0].id, placeholder_id);
-
-    let mut tx = repo.pool().begin().await.expect("begin status tx");
-    let status = runtime_current_status_tx(&mut tx, &placeholder_id)
-        .await
-        .expect("placeholder status read");
-    tx.commit().await.expect("commit status tx");
-    assert_eq!(status, WorkerSessionState::Starting);
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn deferred_planner_placeholder_rejects_non_null_session_id() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-placeholder-session-key-{}", new_id());
-    let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "placeholder-session-key",
-        "codex",
-        serde_json::json!({"schemaVersion":1}),
-    )
-    .await;
-    let mut init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 5_000);
-    init.session_id = Some("future-placeholder-session".to_string());
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.expect("begin placeholder tx");
+        let card_id = create_card_in_tx(
+            &repo,
+            &mut tx,
+            "placeholder-session-key",
+            "codex",
+            serde_json::json!({"schemaVersion":1}),
+        )
+        .await;
+        let mut init = deferred_projectable_placeholder_init(&card_id, &placeholder_id, 5_000);
+        init.session_id = Some("future-placeholder-session".to_string());
 
-    let err = session_prepare_deferred_planner_tx(&mut tx, &init)
-        .await
-        .expect_err("non-null session_id must be rejected");
-    tx.commit().await.expect("commit placeholder tx");
+        let err = session_prepare_deferred_planner_tx(&mut tx, &init)
+            .await
+            .expect_err("non-null session_id must be rejected");
+        tx.commit().await.expect("commit placeholder tx");
 
-    match err {
-        WorkerSessionProjectionRepoError::Message { message } => assert_eq!(
-            message,
-            "deferred planner session placeholders must not have a thread, terminal run, or session"
-        ),
-        other => panic!("unexpected error: {other:?}"),
-    }
+        match err {
+            WorkerSessionProjectionRepoError::Message { message } => assert_eq!(
+                message,
+                "deferred planner session placeholders must not have a thread, terminal run, or session"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
 async fn cohort_b_reads_exclude_deferred_planner_placeholder_by_null_keys() {
     let repo = fresh_repo().await;
     let placeholder_id = format!("rt-cohort-b-placeholder-{}", new_id());
-    let mut tx = repo.pool().begin().await.expect("begin placeholder tx");
-    let card_id = create_card_in_tx(
-        &repo,
-        &mut tx,
-        "cohort-b-placeholder",
-        "codex",
-        serde_json::json!({"schemaVersion":1}),
-    )
-    .await;
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &WorkerSessionInit {
-            id: placeholder_id.clone(),
-            card_id,
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: 5_000,
-        },
-    )
-    .await
-    .expect("prepare deferred placeholder");
-    tx.commit().await.expect("commit placeholder tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin placeholder tx");
+                let card_id = create_card_in_tx(
+                    &repo,
+                    &mut tx,
+                    "cohort-b-placeholder",
+                    "codex",
+                    serde_json::json!({"schemaVersion":1}),
+                )
+                .await;
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &WorkerSessionInit {
+                        id: placeholder_id.clone(),
+                        card_id,
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Starting,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: 5_000,
+                    },
+                )
+                .await
+                .expect("prepare deferred placeholder");
+                tx.commit().await.expect("commit placeholder tx");
 
-    let session_keys: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        r#"SELECT thread_id, agent_session_id, terminal_run_id
+                let session_keys: (Option<String>, Option<String>, Option<String>) =
+                    sqlx::query_as(
+                        r#"SELECT thread_id, agent_session_id, terminal_run_id
                FROM worker_sessions
                WHERE id = ?1"#,
-    )
-    .bind(&placeholder_id)
-    .fetch_one(repo.pool())
-    .await
-    .expect("placeholder worker session");
-    assert_eq!(session_keys, (None, None, None));
+                    )
+                    .bind(&placeholder_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .expect("placeholder worker session");
+                assert_eq!(session_keys, (None, None, None));
 
-    let by_thread = runtime_get_active_by_thread_from_pool(
-        repo.pool(),
-        AgentProvider::Codex,
-        "missing-placeholder-thread",
-    )
-    .await
-    .expect("by-thread read");
-    assert_eq!(by_thread, None);
+                let by_thread = runtime_get_active_by_thread_from_pool(
+                    repo.pool(),
+                    AgentProvider::Codex,
+                    "missing-placeholder-thread",
+                )
+                .await
+                .expect("by-thread read");
+                assert_eq!(by_thread, None);
 
-    let by_session = runtime_get_active_by_session_from_pool(
-        repo.pool(),
-        AgentProvider::Claude,
-        "missing-placeholder-session",
-    )
-    .await
-    .expect("by-session read");
-    assert_eq!(by_session, None);
+                let by_session = runtime_get_active_by_session_from_pool(
+                    repo.pool(),
+                    AgentProvider::Claude,
+                    "missing-placeholder-session",
+                )
+                .await
+                .expect("by-session read");
+                assert_eq!(by_session, None);
 
-    let attribution = runtime_active_shared_thread_attribution_from_pool(repo.pool())
+                let attribution = runtime_active_shared_thread_attribution_from_pool(repo.pool())
+                    .await
+                    .expect("attribution read");
+                assert_eq!(attribution, Vec::<(String, String)>::new());
+
+                let mut tx = write_session.begin().await.expect("begin terminal placeholder tx");
+                let by_terminal = session_projection_active_for_terminal_tx(
+                    &mut tx,
+                    "missing-placeholder-terminal",
+                )
+                .await
+                .expect("terminal read");
+                tx.commit().await.expect("commit terminal placeholder tx");
+                assert_eq!(by_terminal, None);
+            })
+        })
         .await
-        .expect("attribution read");
-    assert_eq!(attribution, Vec::<(String, String)>::new());
-
-    let mut tx = repo
-        .pool()
-        .begin()
-        .await
-        .expect("begin terminal placeholder tx");
-    let by_terminal =
-        session_projection_active_for_terminal_tx(&mut tx, "missing-placeholder-terminal")
-            .await
-            .expect("terminal read");
-    tx.commit().await.expect("commit terminal placeholder tx");
-    assert_eq!(by_terminal, None);
+        .expect("independent write operation")
 }

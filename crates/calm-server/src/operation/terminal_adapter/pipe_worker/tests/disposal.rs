@@ -147,13 +147,14 @@ async fn retiring_delete(scope: &str) {
     h.release().await;
     h.settled().await;
     // Fault fixture: refuse the Engine's finish so the retirement window stays open.
-    sqlx::query(
-        "CREATE TRIGGER hold_retirement BEFORE UPDATE OF secrets_json ON workspace_executions \
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER hold_retirement BEFORE UPDATE OF secrets_json ON workspace_executions \
          WHEN NEW.secrets_json IS NULL BEGIN SELECT RAISE(ABORT,'retirement held'); END",
-    )
-    .execute(h.db.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     h.complete().await;
     assert_eq!(h.status().await, crate::model::TaskStatus::Done);
     let record = pipe::record(CONFIG, &h.op().await).unwrap();
@@ -169,8 +170,9 @@ async fn retiring_delete(scope: &str) {
     })
     .await
     .unwrap();
-    sqlx::query("DROP TRIGGER hold_retirement")
-        .execute(h.db.pool())
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_retirement"))
         .await
         .unwrap();
     let row = h.execution_row().await;
@@ -271,22 +273,24 @@ async fn w_terminal_worker_never_admitted_stuck_delete() {
     for scope in ["cards", "tracks", "areas"] {
         let h = Harness::new("printf forbidden > ran").await;
         h.prepare().await;
-        sqlx::query(
-            "CREATE TRIGGER refuse_spawn_started BEFORE UPDATE OF phase ON operations \
+        (h.db.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER refuse_spawn_started BEFORE UPDATE OF phase ON operations \
             WHEN OLD.phase='tx_committed' AND NEW.phase='spawn_started' \
             BEGIN SELECT RAISE(ABORT,'pre-admission transition interrupted'); END",
-        )
-        .execute(h.db.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         h.runtime.drive().await.unwrap();
         assert!(matches!(h.op().await.phase, Phase::Stuck { .. }));
         let state = h.state().await;
         let scheduler = state.scheduler_for_test();
         scheduler.mark_context_sweep_boot_complete();
         scheduler.sweep_all().await;
-        sqlx::query("DROP TRIGGER refuse_spawn_started")
-            .execute(h.db.pool())
+        (h.db.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_spawn_started"))
             .await
             .unwrap();
         assert_eq!(h.status().await, crate::model::TaskStatus::Failed);
@@ -306,11 +310,11 @@ async fn w_terminal_worker_admitted_stuck_delete_refused() {
     let h = Harness::new("exit 0").await;
     h.park().await;
     // Fault fixture: a terminal op still owns an admitted, unsettled execution.
-    sqlx::query("UPDATE operations SET phase='stuck', phase_detail_json=json_object('reason','interrupted','since',1) WHERE id=?1")
-        .bind(&h.id).execute(h.db.pool()).await.unwrap();
-    sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1")
-        .bind(&h.task.id)
-        .execute(h.db.pool())
+    (h.db.db()).writer().execute(sqlx::query("UPDATE operations SET phase='stuck', phase_detail_json=json_object('reason','interrupted','since',1) WHERE id=?1")
+        .bind(&h.id)).await.unwrap();
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1").bind(&h.task.id))
         .await
         .unwrap();
     assert!(matches!(h.op().await.phase, Phase::Stuck { .. }));
@@ -318,14 +322,17 @@ async fn w_terminal_worker_admitted_stuck_delete_refused() {
         assert_eq!(h.delete(scope).await, StatusCode::CONFLICT);
     }
     // Restore the fixture so the real owner can release and settle the held execution.
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&h.task.id)
-        .execute(h.db.pool())
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&h.task.id))
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET phase='parked', phase_detail_json=NULL WHERE id=?1")
-        .bind(&h.id)
-        .execute(h.db.pool())
+    (h.db.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET phase='parked', phase_detail_json=NULL WHERE id=?1")
+                .bind(&h.id),
+        )
         .await
         .unwrap();
     h.release().await;

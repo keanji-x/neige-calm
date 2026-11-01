@@ -15,7 +15,7 @@ use super::session_mirror::{
 use super::session_row::{
     agent_provider_db_strings, agent_provider_to_db, is_non_codex_agent, runtime_message,
 };
-use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
+use super::{SqlxRepo, derive_session_identity};
 use crate::model::*;
 use crate::session_projection_repo::{
     AgentProvider, CardConversation, CardId as RuntimeCardId,
@@ -837,10 +837,18 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        session_set_status_for_card_tx(&mut tx, card_id, status).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    session_set_status_for_card_tx(&mut tx, card_id, status).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_complete_for_card(
@@ -848,10 +856,18 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_complete_for_terminal(
@@ -859,10 +875,18 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         terminal_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = begin_immediate_tx(&self.db).await?;
-        session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (self.db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await.map_err(crate::TruthError::from)?
     }
 
     async fn session_projection_recover_harnesses_on_boot(

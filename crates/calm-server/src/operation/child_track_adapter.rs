@@ -423,56 +423,72 @@ impl ProviderAdapter for ChildTrackAdapter {
             }
         }
         let db = ctx.operation_repo.sqlite_db();
-        let mut snapshot = crate::db::sqlite::begin_immediate_tx(&db).await?;
-        let mut frozen = FrozenParent::read(&mut snapshot, &payload.parent_track_id).await?;
-        snapshot.commit().await?;
-        if let Some(declared) = &payload.child_track {
-            crate::planner_model::child_selection::merge(
-                &mut frozen.selection,
-                &mut frozen.provider,
-                declared,
-            )?;
-            let context = self.selection_context.as_ref().ok_or_else(|| {
-                CalmError::Internal("child_track creation requires selection context".into())
-            })?;
-            context
-                .validate(
-                    &frozen.provider,
-                    &frozen.selection,
-                    declared,
-                    frozen.track.workspace.agent_cwd(),
-                )
-                .await?;
-        }
-        if frozen.track.workspace.kind == TrackWorkspaceKind::Attached {
-            let cwd = frozen.track.workspace.agent_cwd().to_owned();
-            let repository = frozen.track.workspace.path.clone();
-            let (head, repo_root) = tokio::task::spawn_blocking(move || -> Result<_> {
-                let head = workspace::base::resolve_head_base(std::path::Path::new(&cwd))?;
-                let repo_root = workspace_runtime::selection::git_repo_root_for_track_cwd(
-                    "(child)",
-                    &repository,
-                )?;
-                // Freeze the physical repository root, as the independent create entry does.
-                let repo_root = std::fs::canonicalize(&repo_root).map_err(|error| {
-                    CalmError::BadRequest(format!(
-                        "cannot resolve repository root {}: {error}",
-                        repo_root.display()
-                    ))
-                })?;
-                Ok((head, repo_root))
+        let write_db = (db).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut snapshot = write_session.begin().await?;
+                    let mut frozen =
+                        FrozenParent::read(&mut snapshot, &payload.parent_track_id).await?;
+                    snapshot.commit().await?;
+                    if let Some(declared) = &payload.child_track {
+                        crate::planner_model::child_selection::merge(
+                            &mut frozen.selection,
+                            &mut frozen.provider,
+                            declared,
+                        )?;
+                        let context = self.selection_context.as_ref().ok_or_else(|| {
+                            CalmError::Internal(
+                                "child_track creation requires selection context".into(),
+                            )
+                        })?;
+                        context
+                            .validate(
+                                &frozen.provider,
+                                &frozen.selection,
+                                declared,
+                                frozen.track.workspace.agent_cwd(),
+                            )
+                            .await?;
+                    }
+                    if frozen.track.workspace.kind == TrackWorkspaceKind::Attached {
+                        let cwd = frozen.track.workspace.agent_cwd().to_owned();
+                        let repository = frozen.track.workspace.path.clone();
+                        let (head, repo_root) =
+                            tokio::task::spawn_blocking(move || -> Result<_> {
+                                let head =
+                                    workspace::base::resolve_head_base(std::path::Path::new(&cwd))?;
+                                let repo_root =
+                                    workspace_runtime::selection::git_repo_root_for_track_cwd(
+                                        "(child)",
+                                        &repository,
+                                    )?;
+                                // Freeze the physical repository root, as the independent create entry does.
+                                let repo_root =
+                                    std::fs::canonicalize(&repo_root).map_err(|error| {
+                                        CalmError::BadRequest(format!(
+                                            "cannot resolve repository root {}: {error}",
+                                            repo_root.display()
+                                        ))
+                                    })?;
+                                Ok((head, repo_root))
+                            })
+                            .await
+                            .map_err(|e| CalmError::Internal(e.to_string()))??;
+                        frozen.head = Some(head);
+                        frozen.track.workspace.path =
+                            workspace::base::utf8_path(&repo_root, "child repository root")?
+                                .to_owned();
+                    }
+                    Ok(Some(Box::new(PreparedChild {
+                        adapter: self.clone(),
+                        input: input.clone(),
+                        frozen,
+                    })))
+                })
             })
-            .await
-            .map_err(|e| CalmError::Internal(e.to_string()))??;
-            frozen.head = Some(head);
-            frozen.track.workspace.path =
-                workspace::base::utf8_path(&repo_root, "child repository root")?.to_owned();
-        }
-        Ok(Some(Box::new(PreparedChild {
-            adapter: self.clone(),
-            input: input.clone(),
-            frozen,
-        })))
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn prepare_tx<'tx>(
@@ -639,49 +655,58 @@ mod tests {
         repo: &SqlxRepo,
         non_default_lifecycle_metadata: bool,
     ) -> String {
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let track = track_create_tx(
-            &mut tx,
-            NewTrack {
-                area_id: area.id,
-                title: "parent".into(),
-                sort: None,
-                cwd: test_parent_path().to_str().unwrap().into(),
-                template_id: Some("must-not-inherit".into()),
-                plugin_scope: Some("must-inherit-plugin".into()),
-                template_input: Some(json!({"must":"not-inherit"})),
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &TrackWorkspacePlan::AttachedFromCwd,
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        if non_default_lifecycle_metadata {
-            // Only this acceptance needs negative inheritance sentinels; other tests keep an open parent.
-            sqlx::query("UPDATE tracks SET pinned_at=102,closed_at=103 WHERE id=?1")
-                .bind(track.id.as_str())
-                .execute(&mut *tx)
-                .await
-                .unwrap();
-        }
-        tx.commit().await.unwrap();
-        provider_tests::ensure_planner_card(repo, track.id.as_str()).await;
-        track.id.to_string()
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let area = area_create_tx(
+                        &mut tx,
+                        calm_types::organization::LEGACY_OWNER_USER_ID,
+                        NewArea {
+                            name: "c".into(),
+                            color: "#000".into(),
+                            sort: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let track = track_create_tx(
+                        &mut tx,
+                        NewTrack {
+                            area_id: area.id,
+                            title: "parent".into(),
+                            sort: None,
+                            cwd: test_parent_path().to_str().unwrap().into(),
+                            template_id: Some("must-not-inherit".into()),
+                            plugin_scope: Some("must-inherit-plugin".into()),
+                            template_input: Some(json!({"must":"not-inherit"})),
+                            attach_folder: false,
+                            theme: RequestTheme::default_dark(),
+                        },
+                        None,
+                        &TrackWorkspacePlan::AttachedFromCwd,
+                        None,
+                        repo.track_area_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    if non_default_lifecycle_metadata {
+                        // Only this acceptance needs negative inheritance sentinels; other tests keep an open parent.
+                        sqlx::query("UPDATE tracks SET pinned_at=102,closed_at=103 WHERE id=?1")
+                            .bind(track.id.as_str())
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    }
+                    tx.commit().await.unwrap();
+                    provider_tests::ensure_planner_card(repo, track.id.as_str()).await;
+                    track.id.to_string()
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     pub(super) async fn seed_task(repo: &SqlxRepo, track_id: &str, stale: bool) -> Task {
@@ -723,20 +748,32 @@ mod tests {
             updated_at_ms: now,
             finished_at_ms: None,
         };
-        let mut tx = repo.pool().begin().await.unwrap();
-        crate::test_support::insert_task_tx(&mut tx, &task)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    crate::test_support::insert_task_tx(&mut tx, &task)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    if stale {
+                        (repo.db())
+                            .writer()
+                            .execute(
+                                sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
+                                    .bind(now)
+                                    .bind(&task.id),
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    task
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        if stale {
-            sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE id=?2")
-                .bind(now)
-                .bind(&task.id)
-                .execute(repo.pool())
-                .await
-                .unwrap();
-        }
-        task
+            .expect("independent write operation")
     }
 
     async fn project_pending_tasks(
@@ -770,57 +807,70 @@ mod tests {
                 .join("\n"),
         );
         report.blocks = Some(blocks);
-        let mut tx = repo.pool().begin().await.unwrap();
-        let updated = sqlx::query(
-            "UPDATE cards SET payload=?1,body_crdt=NULL WHERE track_id=?2 AND kind='track-report'",
-        )
-        .bind(serde_json::to_string(&report).unwrap())
-        .bind(track_id)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        if updated.rows_affected() == 0 {
-            card_create_with_id_tx(
-                &mut tx,
-                new_id(),
-                NewCard {
-                    title: None,
-                    track_id: track_id.to_owned().into(),
-                    kind: "track-report".into(),
-                    sort: Some(-1.0),
-                    payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
-                },
-                CardRole::ReportCard,
-                false,
-                repo.card_role_cache(),
-            )
-            .await
-            .unwrap();
-            sqlx::query(
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let updated = sqlx::query(
                 "UPDATE cards SET payload=?1,body_crdt=NULL WHERE track_id=?2 AND kind='track-report'",
             )
             .bind(serde_json::to_string(&report).unwrap())
             .bind(track_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .unwrap();
-        }
-        tasks_rebuild_tx(&mut tx, track_id).await.unwrap();
-        tx.commit().await.unwrap();
-        (0..count)
-            .map(|index| format!("{track_id}:{prefix}-{index}"))
-            .collect()
+            if updated.rows_affected() == 0 {
+                card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        title: None,
+                        track_id: track_id.to_owned().into(),
+                        kind: "track-report".into(),
+                        sort: Some(-1.0),
+                        payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+                    },
+                    CardRole::ReportCard,
+                    false,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                sqlx::query(
+                    "UPDATE cards SET payload=?1,body_crdt=NULL WHERE track_id=?2 AND kind='track-report'",
+                )
+                .bind(serde_json::to_string(&report).unwrap())
+                .bind(track_id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+            }
+            tasks_rebuild_tx(&mut tx, track_id).await.unwrap();
+            tx.commit().await.unwrap();
+            (0..count)
+                .map(|index| format!("{track_id}:{prefix}-{index}"))
+                .collect()
+
+    })).await.expect("independent write operation")
     }
 
     async fn claim_for_child(repo: &SqlxRepo, task_id: &str) {
-        let mut tx = repo.pool().begin().await.unwrap();
-        assert_eq!(
-            task_claim_pending_tx(&mut tx, task_id, now_ms(), &[], false)
-                .await
-                .unwrap(),
-            1
-        );
-        tx.commit().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    assert_eq!(
+                        task_claim_pending_tx(&mut tx, task_id, now_ms(), &[], false)
+                            .await
+                            .unwrap(),
+                        1
+                    );
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     pub(super) async fn create_child_from_task(
@@ -828,50 +878,61 @@ mod tests {
         parent_track_id: &str,
         task_id: &str,
     ) -> String {
-        let root_id = root_and_depth(&mut repo.pool().begin().await.unwrap(), parent_track_id)
-            .await
-            .unwrap()
-            .0;
-        let mut conn = repo.pool().acquire().await.unwrap();
-        let budget = track_tree_budget(&mut conn, &root_id).await.unwrap();
-        let inventory = track_tree_planner_inventory(&mut conn, &root_id)
-            .await
-            .unwrap();
-        let members = track_tree_member_count(&mut conn, &root_id).await.unwrap();
-        assert!(inventory < budget, "point one inventory must admit");
-        assert!(
-            can_add_tree_member(budget, members),
-            "point one member bound must admit"
-        );
-        drop(conn);
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let root_id =
+                        root_and_depth(&mut write_session.begin().await.unwrap(), parent_track_id)
+                            .await
+                            .unwrap()
+                            .0;
+                    let mut conn = repo.pool().acquire().await.unwrap();
+                    let budget = track_tree_budget(&mut conn, &root_id).await.unwrap();
+                    let inventory = track_tree_planner_inventory(&mut conn, &root_id)
+                        .await
+                        .unwrap();
+                    let members = track_tree_member_count(&mut conn, &root_id).await.unwrap();
+                    assert!(inventory < budget, "point one inventory must admit");
+                    assert!(
+                        can_add_tree_member(budget, members),
+                        "point one member bound must admit"
+                    );
+                    drop(conn);
 
-        let input = serde_json::to_value(ChildTrackOperationPayload {
-            task_id: task_id.into(),
-            parent_track_id: parent_track_id.into(),
-            goal: "child goal".into(),
-            acceptance: Some("done".into()),
-            context: json!({}),
-            cwd: None,
-            child_track: None,
-        })
-        .unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            test_workspace_root(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                    let input = serde_json::to_value(ChildTrackOperationPayload {
+                        task_id: task_id.into(),
+                        parent_track_id: parent_track_id.into(),
+                        goal: "child goal".into(),
+                        acceptance: Some("done".into()),
+                        context: json!({}),
+                        cwd: None,
+                        child_track: None,
+                    })
+                    .unwrap();
+                    let adapter = ChildTrackAdapter::new(
+                        std::sync::Arc::new(
+                            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                .unwrap(),
+                        ),
+                        repo.card_role_cache().clone(),
+                        repo.track_area_cache().clone(),
+                        test_workspace_root(),
+                        std::path::PathBuf::from("/unused-objective-checkouts"),
+                        workspace_runtime::sweep::TeardownTargets::default(),
+                    );
+                    let mut tx = write_session.begin().await.unwrap();
+                    let output = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    output.data["child_track_id"].as_str().unwrap().to_owned()
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        output.data["child_track_id"].as_str().unwrap().to_owned()
+            .expect("independent write operation")
     }
 
     pub(super) fn payload(task: &Task) -> ChildTrackOperationPayload {
@@ -894,119 +955,129 @@ mod tests {
         let workspace_root = tmp.path().join("workspaces");
         std::fs::create_dir_all(&workspace_root).unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let parent = track_create_tx(
-            &mut tx,
-            NewTrack {
-                area_id: area.id,
-                title: "parent".into(),
-                sort: None,
-                cwd: "/ignored-by-managed".into(),
-                template_id: None,
-                plugin_scope: None,
-                template_input: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Managed);
-        // The parent was minted through the DB writer directly, so materialize it here the way the route would.
-        workspace_runtime::selection::materialize_workspace(
-            &parent.workspace,
-            &workspace_root,
-            parent.id.as_str(),
-        )
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                                let mut tx = write_session.begin().await.unwrap();
+                                let area = area_create_tx(
+                                    &mut tx,
+                                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                                    NewArea {
+                                        name: "c".into(),
+                                        color: "#000".into(),
+                                        sort: None,
+                                    },
+                                )
+                                .await
+                                .unwrap();
+                                let parent = track_create_tx(
+                                    &mut tx,
+                                    NewTrack {
+                                        area_id: area.id,
+                                        title: "parent".into(),
+                                        sort: None,
+                                        cwd: "/ignored-by-managed".into(),
+                                        template_id: None,
+                                        plugin_scope: None,
+                                        template_input: None,
+                                        attach_folder: false,
+                                        theme: RequestTheme::default_dark(),
+                                    },
+                                    None,
+                                    &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+                                    None,
+                                    repo.track_area_cache(),
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Managed);
+                                // The parent was minted through the DB writer directly, so materialize it here the way the route would.
+                                workspace_runtime::selection::materialize_workspace(
+                                    &parent.workspace,
+                                    &workspace_root,
+                                    parent.id.as_str(),
+                                )
+                                .unwrap();
 
-        let task = seed_task(&repo, parent.id.as_str(), false).await;
-        let input = serde_json::to_value(payload(&task)).unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            workspace_root.clone(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
+                                let task = seed_task(&repo, parent.id.as_str(), false).await;
+                                let input = serde_json::to_value(payload(&task)).unwrap();
+                                let adapter = ChildTrackAdapter::new(
+                                    std::sync::Arc::new(
+                                        crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                            .unwrap(),
+                                    ),
+                                    repo.card_role_cache().clone(),
+                                    repo.track_area_cache().clone(),
+                                    workspace_root.clone(),
+                                    std::path::PathBuf::from("/unused-objective-checkouts"),
+                                    workspace_runtime::sweep::TeardownTargets::default(),
+                                );
+                                let mut tx = write_session.begin().await.unwrap();
+                                let output = adapter
+                                    .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                                    .await
+                                    .unwrap();
+                                tx.commit().await.unwrap();
+                                let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
 
-        let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
-            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
-        )
-        .bind(&child_id)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(kind, "managed");
-        assert_eq!(
-            path,
-            workspace::materialize::managed_workspace_path(
-                &workspace_root,
-                parent.area_id.as_str(),
-                &child_id,
-            )
-            .to_string_lossy(),
-            "the child's path must be derived from its OWN id"
-        );
-        assert_ne!(
-            path, parent.workspace.path,
-            "a child must never be handed its parent's directory (design D7)"
-        );
-        assert!(
-            frozen_at.is_some(),
-            "a child workspace is frozen at creation: the very next thing that \
+                                let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
+                        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
+                    )
+                    .bind(&child_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                                assert_eq!(kind, "managed");
+                                assert_eq!(
+                                    path,
+                                    workspace::materialize::managed_workspace_path(
+                                        &workspace_root,
+                                        parent.area_id.as_str(),
+                                        &child_id,
+                                    )
+                                    .to_string_lossy(),
+                                    "the child's path must be derived from its OWN id"
+                                );
+                                assert_ne!(
+                                    path, parent.workspace.path,
+                                    "a child must never be handed its parent's directory (design D7)"
+                                );
+                                assert!(
+                                    frozen_at.is_some(),
+                                    "a child workspace is frozen at creation: the very next thing that \
              happens to it is a harness bootstrap on this exact path"
-        );
-        assert!(
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&path)
-                .args(["rev-parse", "--verify", "HEAD"])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "the child's workspace has no init commit; its first codex worker \
+                                );
+                                assert!(
+                                    std::process::Command::new("git")
+                                        .arg("-C")
+                                        .arg(&path)
+                                        .args(["rev-parse", "--verify", "HEAD"])
+                                        .output()
+                                        .unwrap()
+                                        .status
+                                        .success(),
+                                    "the child's workspace has no init commit; its first codex worker \
              would die in `git worktree add`"
-        );
-        assert_eq!(
-            std::fs::read_to_string(
-                std::path::Path::new(&path)
-                    .join(".git")
-                    .join("neige-workspace")
-            )
-            .unwrap()
-            .trim(),
-            child_id,
-            "the ownership marker must name the child; under S2 it named the \
+                                );
+                                assert_eq!(
+                                    std::fs::read_to_string(
+                                        std::path::Path::new(&path)
+                                            .join(".git")
+                                            .join("neige-workspace")
+                                    )
+                                    .unwrap()
+                                    .trim(),
+                                    child_id,
+                                    "the ownership marker must name the child; under S2 it named the \
              parent, which is exactly what let two tracks claim one directory"
-        );
+                                );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// No two track rows share a MANAGED workspace path (table-wide; attached sharing is legal), and removing the
@@ -1018,114 +1089,124 @@ mod tests {
         let workspace_root = tmp.path().join("workspaces");
         std::fs::create_dir_all(&workspace_root).unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let parent = track_create_tx(
-            &mut tx,
-            NewTrack {
-                area_id: area.id,
-                title: "parent".into(),
-                sort: None,
-                cwd: "/ignored-by-managed".into(),
-                template_id: None,
-                plugin_scope: None,
-                template_input: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        workspace_runtime::selection::materialize_workspace(
-            &parent.workspace,
-            &workspace_root,
-            parent.id.as_str(),
-        )
-        .unwrap();
-        // A commit that must still be there afterwards, so "the parent repository survived" is a claim about its history.
-        std::fs::write(
-            std::path::Path::new(&parent.workspace.path).join("parent-work.txt"),
-            "parent work",
-        )
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                                let mut tx = write_session.begin().await.unwrap();
+                                let area = area_create_tx(
+                                    &mut tx,
+                                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                                    NewArea {
+                                        name: "c".into(),
+                                        color: "#000".into(),
+                                        sort: None,
+                                    },
+                                )
+                                .await
+                                .unwrap();
+                                let parent = track_create_tx(
+                                    &mut tx,
+                                    NewTrack {
+                                        area_id: area.id,
+                                        title: "parent".into(),
+                                        sort: None,
+                                        cwd: "/ignored-by-managed".into(),
+                                        template_id: None,
+                                        plugin_scope: None,
+                                        template_input: None,
+                                        attach_folder: false,
+                                        theme: RequestTheme::default_dark(),
+                                    },
+                                    None,
+                                    &TrackWorkspacePlan::ManagedUnder(workspace_root.clone()),
+                                    None,
+                                    repo.track_area_cache(),
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                workspace_runtime::selection::materialize_workspace(
+                                    &parent.workspace,
+                                    &workspace_root,
+                                    parent.id.as_str(),
+                                )
+                                .unwrap();
+                                // A commit that must still be there afterwards, so "the parent repository survived" is a claim about its history.
+                                std::fs::write(
+                                    std::path::Path::new(&parent.workspace.path).join("parent-work.txt"),
+                                    "parent work",
+                                )
+                                .unwrap();
 
-        let task = seed_task(&repo, parent.id.as_str(), false).await;
-        let input = serde_json::to_value(payload(&task)).unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            workspace_root.clone(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
-        let child_path: String =
-            sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
-                .bind(&child_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
+                                let task = seed_task(&repo, parent.id.as_str(), false).await;
+                                let input = serde_json::to_value(payload(&task)).unwrap();
+                                let adapter = ChildTrackAdapter::new(
+                                    std::sync::Arc::new(
+                                        crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                            .unwrap(),
+                                    ),
+                                    repo.card_role_cache().clone(),
+                                    repo.track_area_cache().clone(),
+                                    workspace_root.clone(),
+                                    std::path::PathBuf::from("/unused-objective-checkouts"),
+                                    workspace_runtime::sweep::TeardownTargets::default(),
+                                );
+                                let mut tx = write_session.begin().await.unwrap();
+                                let output = adapter
+                                    .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                                    .await
+                                    .unwrap();
+                                tx.commit().await.unwrap();
+                                let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
+                                let child_path: String =
+                                    sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
+                                        .bind(&child_id)
+                                        .fetch_one(repo.pool())
+                                        .await
+                                        .unwrap();
 
-        // Scoped to MANAGED paths: attached paths are shared today in production (several tracks open the same checkout).
-        let shared: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
+                                // Scoped to MANAGED paths: attached paths are shared today in production (several tracks open the same checkout).
+                                let shared: Vec<(String, i64)> = sqlx::query_as(
+                        "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
              GROUP BY workspace_path HAVING count(*) > 1",
-        )
-        .fetch_all(repo.pool())
-        .await
-        .unwrap();
-        assert!(
-            shared.is_empty(),
-            "two track rows share a MANAGED workspace path: {shared:?}"
-        );
+                    )
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap();
+                                assert!(
+                                    shared.is_empty(),
+                                    "two track rows share a MANAGED workspace path: {shared:?}"
+                                );
 
-        // What recycling will do to a deleted child.
-        std::fs::remove_dir_all(&child_path).unwrap();
-        assert!(
-            std::path::Path::new(&parent.workspace.path)
-                .join("parent-work.txt")
-                .exists(),
-            "recycling the child's workspace took the parent's work with it"
-        );
-        assert!(
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&parent.workspace.path)
-                .args(["rev-parse", "--verify", "HEAD"])
-                .output()
-                .unwrap()
-                .status
-                .success(),
-            "recycling the child's workspace destroyed the parent's repository"
-        );
+                                // What recycling will do to a deleted child.
+                                std::fs::remove_dir_all(&child_path).unwrap();
+                                assert!(
+                                    std::path::Path::new(&parent.workspace.path)
+                                        .join("parent-work.txt")
+                                        .exists(),
+                                    "recycling the child's workspace took the parent's work with it"
+                                );
+                                assert!(
+                                    std::process::Command::new("git")
+                                        .arg("-C")
+                                        .arg(&parent.workspace.path)
+                                        .args(["rev-parse", "--verify", "HEAD"])
+                                        .output()
+                                        .unwrap()
+                                        .status
+                                        .success(),
+                                    "recycling the child's workspace destroyed the parent's repository"
+                                );
 
-        // The scheduler bootstraps the child's planner harness from THIS field, never from the track row.
-        assert_eq!(output.data["cwd"], child_path);
-        assert_eq!(output.result["cwd"], child_path);
+                                // The scheduler bootstraps the child's planner harness from THIS field, never from the track row.
+                                assert_eq!(output.data["cwd"], child_path);
+                                assert_eq!(output.result["cwd"], child_path);
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// Recycling is by DIRECTORY, so an attached track parked under `<workspace-root>` would lose its workspace as collateral;
@@ -1188,97 +1269,107 @@ mod tests {
         let user_repo = tempfile::TempDir::new().unwrap();
         let user_path = user_repo.path().to_string_lossy().into_owned();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let area = area_create_tx(
-            &mut tx,
-            calm_types::organization::LEGACY_OWNER_USER_ID,
-            NewArea {
-                name: "c".into(),
-                color: "#000".into(),
-                sort: None,
-            },
-        )
-        .await
-        .unwrap();
-        let parent = track_create_tx(
-            &mut tx,
-            NewTrack {
-                area_id: area.id,
-                title: "parent".into(),
-                sort: None,
-                cwd: user_path.clone(),
-                template_id: None,
-                plugin_scope: None,
-                template_input: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            },
-            None,
-            &TrackWorkspacePlan::AttachedFromCwd,
-            None,
-            repo.track_area_cache(),
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Attached);
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                                let mut tx = write_session.begin().await.unwrap();
+                                let area = area_create_tx(
+                                    &mut tx,
+                                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                                    NewArea {
+                                        name: "c".into(),
+                                        color: "#000".into(),
+                                        sort: None,
+                                    },
+                                )
+                                .await
+                                .unwrap();
+                                let parent = track_create_tx(
+                                    &mut tx,
+                                    NewTrack {
+                                        area_id: area.id,
+                                        title: "parent".into(),
+                                        sort: None,
+                                        cwd: user_path.clone(),
+                                        template_id: None,
+                                        plugin_scope: None,
+                                        template_input: None,
+                                        attach_folder: false,
+                                        theme: RequestTheme::default_dark(),
+                                    },
+                                    None,
+                                    &TrackWorkspacePlan::AttachedFromCwd,
+                                    None,
+                                    repo.track_area_cache(),
+                                )
+                                .await
+                                .unwrap();
+                                tx.commit().await.unwrap();
+                                assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Attached);
 
-        let task = seed_task(&repo, parent.id.as_str(), false).await;
-        let input = serde_json::to_value(payload(&task)).unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            test_workspace_root(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
+                                let task = seed_task(&repo, parent.id.as_str(), false).await;
+                                let input = serde_json::to_value(payload(&task)).unwrap();
+                                let adapter = ChildTrackAdapter::new(
+                                    std::sync::Arc::new(
+                                        crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                            .unwrap(),
+                                    ),
+                                    repo.card_role_cache().clone(),
+                                    repo.track_area_cache().clone(),
+                                    test_workspace_root(),
+                                    std::path::PathBuf::from("/unused-objective-checkouts"),
+                                    workspace_runtime::sweep::TeardownTargets::default(),
+                                );
+                                let mut tx = write_session.begin().await.unwrap();
+                                let output = adapter
+                                    .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                                    .await
+                                    .unwrap();
+                                tx.commit().await.unwrap();
+                                let child_id = output.data["child_track_id"].as_str().unwrap().to_string();
 
-        let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
-            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
-        )
-        .bind(&child_id)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            (kind.as_str(), path.as_str()),
-            ("attached", user_path.as_str()),
-            "a sub-track of an attached track must see the parent's checkout"
-        );
-        assert!(frozen_at.is_some(), "child workspaces freeze at creation");
-        let child_worktree = workspace::worktree::track_worktree_path_for(
-            std::path::Path::new(&user_path),
-            &child_id,
-        );
-        assert_eq!(output.data["cwd"], child_worktree.to_str().unwrap());
-        assert_eq!(output.result["cwd"], child_worktree.to_str().unwrap());
+                                let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
+                        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM tracks WHERE id=?1",
+                    )
+                    .bind(&child_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                                assert_eq!(
+                                    (kind.as_str(), path.as_str()),
+                                    ("attached", user_path.as_str()),
+                                    "a sub-track of an attached track must see the parent's checkout"
+                                );
+                                assert!(frozen_at.is_some(), "child workspaces freeze at creation");
+                                let child_worktree = workspace::worktree::track_worktree_path_for(
+                                    std::path::Path::new(&user_path),
+                                    &child_id,
+                                );
+                                assert_eq!(output.data["cwd"], child_worktree.to_str().unwrap());
+                                assert_eq!(output.result["cwd"], child_worktree.to_str().unwrap());
 
-        // Attached means the server never creates, `git init`s, marks or writes anything here.
-        assert_eq!(
-            std::fs::read_dir(&user_path).unwrap().count(),
-            0,
-            "materialization wrote into a user-owned attached directory"
-        );
+                                // Attached means the server never creates, `git init`s, marks or writes anything here.
+                                assert_eq!(
+                                    std::fs::read_dir(&user_path).unwrap().count(),
+                                    0,
+                                    "materialization wrote into a user-owned attached directory"
+                                );
 
-        // The shared path is attached, so no MANAGED path is shared.
-        let shared_managed: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
+                                // The shared path is attached, so no MANAGED path is shared.
+                                let shared_managed: Vec<(String, i64)> = sqlx::query_as(
+                        "SELECT workspace_path, count(*) FROM tracks WHERE workspace_kind='managed' \
              GROUP BY workspace_path HAVING count(*) > 1",
-        )
-        .fetch_all(repo.pool())
-        .await
-        .unwrap();
-        assert!(shared_managed.is_empty(), "{shared_managed:?}");
+                    )
+                    .fetch_all(repo.pool())
+                    .await
+                    .unwrap();
+                                assert!(shared_managed.is_empty(), "{shared_managed:?}");
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// The crate-wide property gate independently scans every SQL string touching `parent_track_id`; there is intentionally no registry.
@@ -1312,13 +1403,12 @@ mod tests {
                 }),
             }]),
         };
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
              VALUES('current-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
         )
         .bind(&parent)
-        .bind(serde_json::to_string(&report).unwrap())
-        .execute(repo.pool())
+        .bind(serde_json::to_string(&report).unwrap()))
         .await
         .unwrap();
         let input = serde_json::to_value(payload(&task)).unwrap();
@@ -1332,120 +1422,124 @@ mod tests {
             std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            output.data["seed"],
-            format!(
-                "# Parent\nparent_track_id: {}\ntask key: child\nattempt_id: {}\n\n# Goal\nfrozen-goal\n\n# Acceptance\nfrozen-acceptance\n\n# Context\n```json\n{{\n  \"frozen\": \"context\"\n}}\n```\n\n# Task working directory\n/task-only-cwd",
-                parent, task.id
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let output = adapter
+                .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                output.data["seed"],
+                format!(
+                    "# Parent\nparent_track_id: {}\ntask key: child\nattempt_id: {}\n\n# Goal\nfrozen-goal\n\n# Acceptance\nfrozen-acceptance\n\n# Context\n```json\n{{\n  \"frozen\": \"context\"\n}}\n```\n\n# Task working directory\n/task-only-cwd",
+                    parent, task.id
+                )
+            );
+            let planner_card_id = output.data["planner_card_id"].as_str().unwrap();
+            let planner_payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+                .bind(planner_card_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+            let planner_payload: Value = serde_json::from_str(&planner_payload).unwrap();
+            assert!(
+                planner_payload.get("prompt").is_none(),
+                "canonical seed belongs only to its durable System wake"
+            );
+            let wake = output
+                .post_commit_events
+                .iter()
+                .find_map(|envelope| match &envelope.event {
+                    Event::TrackWakeRequested { source, text, .. } if source == "child-bootstrap" => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .expect("the frozen seed must have its durable bootstrap event");
+            assert_eq!(wake, output.data["seed"].as_str().unwrap());
+            let child_id = output.data["child_track_id"].as_str().unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, String>("SELECT title FROM tracks WHERE id=?1")
+                    .bind(child_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap(),
+                "child"
+            );
+            // Attached children own a worktree under the same repository.
+            let expected_child_workspace =
+                workspace::worktree::track_worktree_path_for(test_parent_path(), child_id)
+                    .to_string_lossy()
+                    .into_owned();
+            assert_eq!(output.data["cwd"], expected_child_workspace);
+            assert_eq!(
+                sqlx::query_scalar::<_, String>("SELECT workspace_kind FROM tracks WHERE id=?1")
+                    .bind(child_id)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap(),
+                "attached",
+                "inheriting the path must inherit the kind; a `managed` row on a \
+             user directory would arm S5 against it"
+            );
+            type InheritedChildFields = (
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+            );
+            let inherited: InheritedChildFields = sqlx::query_as(
+                "SELECT workspace_path,template_id,plugin_scope,template_input,purpose,closed_at,pinned_at \
+             FROM tracks WHERE id=?1",
             )
-        );
-        let planner_card_id = output.data["planner_card_id"].as_str().unwrap();
-        let planner_payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
-            .bind(planner_card_id)
+            .bind(child_id)
             .fetch_one(repo.pool())
             .await
             .unwrap();
-        let planner_payload: Value = serde_json::from_str(&planner_payload).unwrap();
-        assert!(
-            planner_payload.get("prompt").is_none(),
-            "canonical seed belongs only to its durable System wake"
-        );
-        let wake = output
-            .post_commit_events
-            .iter()
-            .find_map(|envelope| match &envelope.event {
-                Event::TrackWakeRequested { source, text, .. } if source == "child-bootstrap" => {
-                    Some(text)
-                }
-                _ => None,
-            })
-            .expect("the frozen seed must have its durable bootstrap event");
-        assert_eq!(wake, output.data["seed"].as_str().unwrap());
-        let child_id = output.data["child_track_id"].as_str().unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT title FROM tracks WHERE id=?1")
-                .bind(child_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap(),
-            "child"
-        );
-        // Attached children own a worktree under the same repository.
-        let expected_child_workspace =
-            workspace::worktree::track_worktree_path_for(test_parent_path(), child_id)
-                .to_string_lossy()
-                .into_owned();
-        assert_eq!(output.data["cwd"], expected_child_workspace);
-        assert_eq!(
-            sqlx::query_scalar::<_, String>("SELECT workspace_kind FROM tracks WHERE id=?1")
-                .bind(child_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap(),
-            "attached",
-            "inheriting the path must inherit the kind; a `managed` row on a \
-             user directory would arm S5 against it"
-        );
-        type InheritedChildFields = (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-        );
-        let inherited: InheritedChildFields = sqlx::query_as(
-            "SELECT workspace_path,template_id,plugin_scope,template_input,purpose,closed_at,pinned_at \
-             FROM tracks WHERE id=?1",
-        )
-        .bind(child_id)
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            inherited.0,
-            test_parent_path().to_str().unwrap(),
-            "workspace_path retains the source repository; agent_cwd uses the child worktree"
-        );
-        assert_eq!(inherited.1, None, "template_id must not inherit");
-        assert_eq!(
-            inherited.2.as_deref(),
-            Some("must-inherit-plugin"),
-            "plugin_scope must inherit so Only(X) does not widen to All"
-        );
-        assert_eq!(inherited.3, None, "template_input must not inherit");
-        assert_eq!(inherited.4, None, "purpose must not inherit");
-        assert_eq!(inherited.5, None, "closed_at must not inherit");
-        assert_eq!(inherited.6, None, "pinned_at must not inherit");
+            assert_eq!(
+                inherited.0,
+                test_parent_path().to_str().unwrap(),
+                "workspace_path retains the source repository; agent_cwd uses the child worktree"
+            );
+            assert_eq!(inherited.1, None, "template_id must not inherit");
+            assert_eq!(
+                inherited.2.as_deref(),
+                Some("must-inherit-plugin"),
+                "plugin_scope must inherit so Only(X) does not widen to All"
+            );
+            assert_eq!(inherited.3, None, "template_input must not inherit");
+            assert_eq!(inherited.4, None, "purpose must not inherit");
+            assert_eq!(inherited.5, None, "closed_at must not inherit");
+            assert_eq!(inherited.6, None, "pinned_at must not inherit");
 
-        // Child of Only(X) must not become All; pin the gate reading plugin_scope.
-        let _trusted = trust_inherited_plugin().await;
-        let repo = Arc::new(repo);
-        let (host, _tmp) = plugin_host_with_id(repo.clone(), "must-inherit-plugin").await;
-        host.spawn("must-inherit-plugin")
-            .await
-            .expect("spawn inherited plugin");
-        wait_for_running(&host, "must-inherit-plugin").await;
-        let ctx = app_context(repo, Some(host.clone()));
-        assert_eq!(
-            plugin_scope_for_track(&ctx, Some(child_id)).await,
-            TrackPluginScope::Only("must-inherit-plugin".into()),
-        );
-        host.stop("must-inherit-plugin")
-            .await
-            .expect("stop inherited plugin");
-        assert_eq!(
-            plugin_scope_for_track(&ctx, Some(child_id)).await,
-            TrackPluginScope::None,
-            "stopped owner must fail closed, not widen to All"
-        );
+            // Child of Only(X) must not become All; pin the gate reading plugin_scope.
+            let _trusted = trust_inherited_plugin().await;
+            let repo = Arc::new(repo);
+            let (host, _tmp) = plugin_host_with_id(repo.clone(), "must-inherit-plugin").await;
+            host.spawn("must-inherit-plugin")
+                .await
+                .expect("spawn inherited plugin");
+            wait_for_running(&host, "must-inherit-plugin").await;
+            let ctx = app_context(repo, Some(host.clone()));
+            assert_eq!(
+                plugin_scope_for_track(&ctx, Some(child_id)).await,
+                TrackPluginScope::Only("must-inherit-plugin".into()),
+            );
+            host.stop("must-inherit-plugin")
+                .await
+                .expect("stop inherited plugin");
+            assert_eq!(
+                plugin_scope_for_track(&ctx, Some(child_id)).await,
+                TrackPluginScope::None,
+                "stopped owner must fail closed, not widen to All"
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]
@@ -1453,171 +1547,209 @@ mod tests {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
         let mut direct_parent = root.clone();
-        for level in 1..=3 {
-            let task = seed_task(&repo, &direct_parent, false).await;
-            let input = serde_json::to_value(payload(&task)).unwrap();
-            let adapter = ChildTrackAdapter::new(
-                std::sync::Arc::new(
-                    crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-                ),
-                repo.card_role_cache().clone(),
-                repo.track_area_cache().clone(),
-                test_workspace_root(),
-                std::path::PathBuf::from("/unused-objective-checkouts"),
-                workspace_runtime::sweep::TeardownTargets::default(),
-            );
-            let mut tx = repo.pool().begin().await.unwrap();
-            let output = adapter
-                .prepare_tx(&mut tx, &input, &operation(input.clone()))
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            let child = output.data["child_track_id"].as_str().unwrap().to_string();
-            let stored_parent: String =
-                sqlx::query_scalar("SELECT parent_track_id FROM tracks WHERE id=?1")
-                    .bind(&child)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    for level in 1..=3 {
+                        let task = seed_task(&repo, &direct_parent, false).await;
+                        let input = serde_json::to_value(payload(&task)).unwrap();
+                        let adapter = ChildTrackAdapter::new(
+                            std::sync::Arc::new(
+                                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                    .unwrap(),
+                            ),
+                            repo.card_role_cache().clone(),
+                            repo.track_area_cache().clone(),
+                            test_workspace_root(),
+                            std::path::PathBuf::from("/unused-objective-checkouts"),
+                            workspace_runtime::sweep::TeardownTargets::default(),
+                        );
+                        let mut tx = write_session.begin().await.unwrap();
+                        let output = adapter
+                            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        let child = output.data["child_track_id"].as_str().unwrap().to_string();
+                        let stored_parent: String =
+                            sqlx::query_scalar("SELECT parent_track_id FROM tracks WHERE id=?1")
+                                .bind(&child)
+                                .fetch_one(repo.pool())
+                                .await
+                                .unwrap();
+                        assert_eq!(
+                            stored_parent, direct_parent,
+                            "level {level} must point to its direct parent"
+                        );
+                        direct_parent = child;
+                    }
+                    let cross_area_edges: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM tracks child JOIN tracks parent \
+             ON parent.id=child.parent_track_id WHERE child.area_id<>parent.area_id",
+                    )
                     .fetch_one(repo.pool())
                     .await
                     .unwrap();
-            assert_eq!(
-                stored_parent, direct_parent,
-                "level {level} must point to its direct parent"
-            );
-            direct_parent = child;
-        }
-        let cross_area_edges: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM tracks child JOIN tracks parent \
-             ON parent.id=child.parent_track_id WHERE child.area_id<>parent.area_id",
-        )
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(cross_area_edges, 0, "real adapter must inherit parent area");
-        let task = seed_task(&repo, &direct_parent, false).await;
-        let input = serde_json::to_value(payload(&task)).unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            test_workspace_root(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                    assert_eq!(cross_area_edges, 0, "real adapter must inherit parent area");
+                    let task = seed_task(&repo, &direct_parent, false).await;
+                    let input = serde_json::to_value(payload(&task)).unwrap();
+                    let adapter = ChildTrackAdapter::new(
+                        std::sync::Arc::new(
+                            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                .unwrap(),
+                        ),
+                        repo.card_role_cache().clone(),
+                        repo.track_area_cache().clone(),
+                        test_workspace_root(),
+                        std::path::PathBuf::from("/unused-objective-checkouts"),
+                        workspace_runtime::sweep::TeardownTargets::default(),
+                    );
+                    let mut tx = write_session.begin().await.unwrap();
+                    let error = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap_err();
+                    assert!(error.to_string().contains("sub-track-depth-exceeded"));
+                })
+            })
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("sub-track-depth-exceeded"));
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn acceptance_21c_real_adapter_never_writes_a_cross_area_edge() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
-        let second_area = {
-            let mut tx = repo.pool().begin().await.unwrap();
-            let area = area_create_tx(
-                &mut tx,
-                calm_types::organization::LEGACY_OWNER_USER_ID,
-                NewArea {
-                    name: "unrelated-area".into(),
-                    color: "#111".into(),
-                    sort: None,
-                },
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            area.id.to_string()
-        };
-        let task = seed_task(&repo, &parent, false).await;
-        let input = serde_json::to_value(payload(&task)).unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            test_workspace_root(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let second_area = {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let area = area_create_tx(
+                            &mut tx,
+                            calm_types::organization::LEGACY_OWNER_USER_ID,
+                            NewArea {
+                                name: "unrelated-area".into(),
+                                color: "#111".into(),
+                                sort: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        area.id.to_string()
+                    };
+                    let task = seed_task(&repo, &parent, false).await;
+                    let input = serde_json::to_value(payload(&task)).unwrap();
+                    let adapter = ChildTrackAdapter::new(
+                        std::sync::Arc::new(
+                            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                .unwrap(),
+                        ),
+                        repo.card_role_cache().clone(),
+                        repo.track_area_cache().clone(),
+                        test_workspace_root(),
+                        std::path::PathBuf::from("/unused-objective-checkouts"),
+                        workspace_runtime::sweep::TeardownTargets::default(),
+                    );
+                    let mut tx = write_session.begin().await.unwrap();
+                    adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
 
-        let cross_area_edges: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM tracks child JOIN tracks parent \
+                    let cross_area_edges: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM tracks child JOIN tracks parent \
              ON parent.id=child.parent_track_id WHERE child.area_id<>parent.area_id",
-        )
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(cross_area_edges, 0);
+                    )
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(cross_area_edges, 0);
 
-        // The unrelated area is independently deletable: the adapter did not route its child there.
-        let mut tx = repo.pool().begin().await.unwrap();
-        area_delete_tx(&mut tx, &second_area).await.unwrap();
-        tx.commit().await.unwrap();
+                    // The unrelated area is independently deletable: the adapter did not route its child there.
+                    let mut tx = write_session.begin().await.unwrap();
+                    area_delete_tx(&mut tx, &second_area).await.unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn acceptance_7_two_cycle_fails_fast_with_cycle_reason() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let a = seed_parent(&repo, false).await;
-        let b = {
-            let task = seed_task(&repo, &a, false).await;
-            let input = serde_json::to_value(payload(&task)).unwrap();
-            let adapter = ChildTrackAdapter::new(
-                std::sync::Arc::new(
-                    crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-                ),
-                repo.card_role_cache().clone(),
-                repo.track_area_cache().clone(),
-                test_workspace_root(),
-                std::path::PathBuf::from("/unused-objective-checkouts"),
-                workspace_runtime::sweep::TeardownTargets::default(),
-            );
-            let mut tx = repo.pool().begin().await.unwrap();
-            let output = adapter
-                .prepare_tx(&mut tx, &input, &operation(input.clone()))
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            output.data["child_track_id"].as_str().unwrap().to_string()
-        };
-        sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
-            .bind(&b)
-            .bind(&a)
-            .execute(repo.pool())
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let b = {
+                        let task = seed_task(&repo, &a, false).await;
+                        let input = serde_json::to_value(payload(&task)).unwrap();
+                        let adapter = ChildTrackAdapter::new(
+                            std::sync::Arc::new(
+                                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                    .unwrap(),
+                            ),
+                            repo.card_role_cache().clone(),
+                            repo.track_area_cache().clone(),
+                            test_workspace_root(),
+                            std::path::PathBuf::from("/unused-objective-checkouts"),
+                            workspace_runtime::sweep::TeardownTargets::default(),
+                        );
+                        let mut tx = write_session.begin().await.unwrap();
+                        let output = adapter
+                            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        output.data["child_track_id"].as_str().unwrap().to_string()
+                    };
+                    (repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                                .bind(&b)
+                                .bind(&a),
+                        )
+                        .await
+                        .unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let error = tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        root_and_depth(&mut tx, &a),
+                    )
+                    .await
+                    .expect("bounded ancestor query must return before 500ms")
+                    .unwrap_err();
+                    assert!(error.to_string().contains("sub-track-tree-cycle"));
+                })
+            })
             .await
-            .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            root_and_depth(&mut tx, &a),
-        )
-        .await
-        .expect("bounded ancestor query must return before 500ms")
-        .unwrap_err();
-        assert!(error.to_string().contains("sub-track-tree-cycle"));
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn acceptance_8_missing_parent_is_not_misreported_as_depth_exhaustion() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = root_and_depth(&mut tx, "missing").await.unwrap_err();
-        assert!(
-            matches!(&error, CalmError::NotFound(message) if message == "track missing"),
-            "missing parent must retain its diagnostic reason, got {error}"
-        );
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let error = root_and_depth(&mut tx, "missing").await.unwrap_err();
+            assert!(
+                matches!(&error, CalmError::NotFound(message) if message == "track missing"),
+                "missing parent must retain its diagnostic reason, got {error}"
+            );
+
+    })).await.expect("independent write operation")
     }
 
     /// At B=2, inventory is exactly 2 while member admission N=1 -> 2 is legal, so ONLY the inventory guard can refuse.
@@ -1638,9 +1770,9 @@ mod tests {
             std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
-        sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1")
-            .bind(&parent)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1").bind(&parent))
             .await
             .unwrap();
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
@@ -1648,48 +1780,60 @@ mod tests {
             .await
             .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("sub-track-tree-budget-exhausted"),
-            "{error}"
-        );
-        assert!(error.to_string().contains(&parent), "{error}");
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        assert_eq!(before, after, "a refused creation must write nothing");
-        tx.rollback().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let error = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("sub-track-tree-budget-exhausted"),
+                        "{error}"
+                    );
+                    assert!(error.to_string().contains(&parent), "{error}");
+                    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap();
+                    assert_eq!(before, after, "a refused creation must write nothing");
+                    tx.rollback().await.unwrap();
 
-        // The budget lives only on the ROOT.
-        sqlx::query("UPDATE tracks SET tree_task_budget=3 WHERE id=?1")
-            .bind(&parent)
-            .execute(repo.pool())
+                    // The budget lives only on the ROOT.
+                    (repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query("UPDATE tracks SET tree_task_budget=3 WHERE id=?1")
+                                .bind(&parent),
+                        )
+                        .await
+                        .unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let output = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    let child = output.data["child_track_id"].as_str().unwrap().to_string();
+                    let child_budget: Option<i64> =
+                        sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
+                            .bind(&child)
+                            .fetch_one(repo.pool())
+                            .await
+                            .unwrap();
+                    assert_eq!(
+                        child_budget, None,
+                        "the child must not carry a budget of its own"
+                    );
+                })
+            })
             .await
-            .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let output = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let child = output.data["child_track_id"].as_str().unwrap().to_string();
-        let child_budget: Option<i64> =
-            sqlx::query_scalar("SELECT tree_task_budget FROM tracks WHERE id=?1")
-                .bind(&child)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            child_budget, None,
-            "the child must not carry a budget of its own"
-        );
+            .expect("independent write operation")
     }
 
     /// After the first child's parent task finishes, inventory alone would allow another child; the member bound must still refuse a zero share.
@@ -1697,9 +1841,9 @@ mod tests {
     async fn acceptance_tree_budget_never_admits_a_zero_share_member() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
-        sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1")
-            .bind(&parent)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET tree_task_budget=2 WHERE id=?1").bind(&parent))
             .await
             .unwrap();
         let first = seed_task_with_key(&repo, &parent, "first-child", false).await;
@@ -1714,43 +1858,57 @@ mod tests {
             std::path::PathBuf::from("/unused-objective-checkouts"),
             workspace_runtime::sweep::TeardownTargets::default(),
         );
-        let mut tx = repo.pool().begin().await.unwrap();
-        adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        sqlx::query("UPDATE tasks SET status='done',finished_at_ms=1 WHERE id=?1")
-            .bind(&first.id)
-            .execute(repo.pool())
-            .await
-            .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    (repo.db())
+                        .writer()
+                        .execute(
+                            sqlx::query(
+                                "UPDATE tasks SET status='done',finished_at_ms=1 WHERE id=?1",
+                            )
+                            .bind(&first.id),
+                        )
+                        .await
+                        .unwrap();
 
-        let second = seed_task_with_key(&repo, &parent, "second-child", false).await;
-        let input = serde_json::to_value(payload(&second)).unwrap();
-        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-            .fetch_one(repo.pool())
+                    let second = seed_task_with_key(&repo, &parent, "second-child", false).await;
+                    let input = serde_json::to_value(payload(&second)).unwrap();
+                    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let error = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("sub-track-tree-budget-exhausted")
+                            && error.to_string().contains("2 member track(s)")
+                            && error.to_string().contains("zero schedulable share"),
+                        "{error}"
+                    );
+                    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+                        .fetch_one(&mut **tx)
+                        .await
+                        .unwrap();
+                    assert_eq!(before, after, "a shape-refused creation must write nothing");
+                    tx.rollback().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("sub-track-tree-budget-exhausted")
-                && error.to_string().contains("2 member track(s)")
-                && error.to_string().contains("zero schedulable share"),
-            "{error}"
-        );
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
-        assert_eq!(before, after, "a shape-refused creation must write nothing");
-        tx.rollback().await.unwrap();
+            .expect("independent write operation")
     }
 
     /// Without the post-create whole-tree reprojection these finish at 9/8 and 15/12 respectively.
@@ -1759,67 +1917,79 @@ mod tests {
         // B=8: N=3 shrinks the first child's share to 3, so the shared rebuild must cull one pending row before child 2 can consume its share.
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        track_update_tx(
-            &mut tx,
-            &root,
-            TrackPatch {
-                tree_task_budget: Some(Some(8)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let root_tasks = project_pending_tasks(&repo, &root, "root-eight", 3).await;
-        for task_id in &root_tasks[..2] {
-            claim_for_child(&repo, task_id).await;
-        }
-        let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
-        let first_child_tasks = project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
-        claim_for_child(&repo, &first_child_tasks[0]).await;
-        let second_child = create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
-        project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
-        let mut conn = repo.pool().acquire().await.unwrap();
-        let total_eight = track_tree_planner_inventory(&mut conn, &root)
-            .await
-            .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    track_update_tx(
+                        &mut tx,
+                        &root,
+                        TrackPatch {
+                            tree_task_budget: Some(Some(8)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let root_tasks = project_pending_tasks(&repo, &root, "root-eight", 3).await;
+                    for task_id in &root_tasks[..2] {
+                        claim_for_child(&repo, task_id).await;
+                    }
+                    let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
+                    let first_child_tasks =
+                        project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
+                    claim_for_child(&repo, &first_child_tasks[0]).await;
+                    let second_child =
+                        create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
+                    project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
+                    let mut conn = repo.pool().acquire().await.unwrap();
+                    let total_eight = track_tree_planner_inventory(&mut conn, &root)
+                        .await
+                        .unwrap();
 
-        // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
-        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let root = seed_parent(&repo, false).await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        track_update_tx(
-            &mut tx,
-            &root,
-            TrackPatch {
-                tree_task_budget: Some(Some(12)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let root_tasks = project_pending_tasks(&repo, &root, "root-twelve", 6).await;
-        for task_id in &root_tasks[..3] {
-            claim_for_child(&repo, task_id).await;
-        }
-        let mut children = Vec::new();
-        for task_id in &root_tasks[..3] {
-            children.push(create_child_from_task(&repo, &root, task_id).await);
-        }
-        for (index, child) in children.iter().enumerate() {
-            project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3).await;
-        }
-        let mut conn = repo.pool().acquire().await.unwrap();
-        let total_twelve = track_tree_planner_inventory(&mut conn, &root)
+                    // B=12: the final N=4 rebuild shrinks root from six live rows to share=3.
+                    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+                    let root = seed_parent(&repo, false).await;
+                    let mut tx = write_session.begin().await.unwrap();
+                    track_update_tx(
+                        &mut tx,
+                        &root,
+                        TrackPatch {
+                            tree_task_budget: Some(Some(12)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let root_tasks = project_pending_tasks(&repo, &root, "root-twelve", 6).await;
+                    for task_id in &root_tasks[..3] {
+                        claim_for_child(&repo, task_id).await;
+                    }
+                    let mut children = Vec::new();
+                    for task_id in &root_tasks[..3] {
+                        children.push(create_child_from_task(&repo, &root, task_id).await);
+                    }
+                    for (index, child) in children.iter().enumerate() {
+                        project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3)
+                            .await;
+                    }
+                    let mut conn = repo.pool().acquire().await.unwrap();
+                    let total_twelve = track_tree_planner_inventory(&mut conn, &root)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        (total_eight, total_twelve),
+                        (8, 12),
+                        "admitted B=8/B=12 growth must settle at, never above, each B"
+                    );
+                })
+            })
             .await
-            .unwrap();
-        assert_eq!(
-            (total_eight, total_twelve),
-            (8, 12),
-            "admitted B=8/B=12 growth must settle at, never above, each B"
-        );
+            .expect("independent write operation")
     }
 
     /// Inventory 5 < B=8 and N+1=2 <= B, but the new two-member share is 4 while all five root rows are already in-flight;
@@ -1828,70 +1998,74 @@ mod tests {
     async fn child_creation_409s_when_inflight_member_exceeds_its_new_share() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        track_update_tx(
-            &mut tx,
-            &root,
-            TrackPatch {
-                tree_task_budget: Some(Some(8)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let tasks = project_pending_tasks(&repo, &root, "root-overage", 5).await;
-        for task in &tasks {
-            claim_for_child(&repo, task).await;
-        }
-        let before: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
-             (SELECT count(*) FROM tasks), (SELECT count(*) FROM events)",
-        )
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        let input = serde_json::to_value(ChildTrackOperationPayload {
-            task_id: tasks[0].clone(),
-            parent_track_id: root.clone(),
-            goal: "must roll back".into(),
-            acceptance: Some("no child committed".into()),
-            context: json!({}),
-            cwd: None,
-            child_track: None,
-        })
-        .unwrap();
-        let adapter = ChildTrackAdapter::new(
-            std::sync::Arc::new(
-                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-            ),
-            repo.card_role_cache().clone(),
-            repo.track_area_cache().clone(),
-            test_workspace_root(),
-            std::path::PathBuf::from("/unused-objective-checkouts"),
-            workspace_runtime::sweep::TeardownTargets::default(),
-        );
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            track_update_tx(
+                &mut tx,
+                &root,
+                TrackPatch {
+                    tree_task_budget: Some(Some(8)),
+                    ..Default::default()
+                },
+            )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(&error, CalmError::Conflict(message) if message.contains("5 unfinished planner task(s)") && message.contains("new share of 4")),
-            "{error}"
-        );
-        tx.rollback().await.unwrap();
-        let after: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
+            .unwrap();
+            tx.commit().await.unwrap();
+            let tasks = project_pending_tasks(&repo, &root, "root-overage", 5).await;
+            for task in &tasks {
+                claim_for_child(&repo, task).await;
+            }
+            let before: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
              (SELECT count(*) FROM tasks), (SELECT count(*) FROM events)",
-        )
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-        assert_eq!(
-            after, before,
-            "the refused child operation must roll back every write"
-        );
+            )
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+            let input = serde_json::to_value(ChildTrackOperationPayload {
+                task_id: tasks[0].clone(),
+                parent_track_id: root.clone(),
+                goal: "must roll back".into(),
+                acceptance: Some("no child committed".into()),
+                context: json!({}),
+                cwd: None,
+                child_track: None,
+            })
+            .unwrap();
+            let adapter = ChildTrackAdapter::new(
+                std::sync::Arc::new(
+                    crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                ),
+                repo.card_role_cache().clone(),
+                repo.track_area_cache().clone(),
+                test_workspace_root(),
+                std::path::PathBuf::from("/unused-objective-checkouts"),
+                workspace_runtime::sweep::TeardownTargets::default(),
+            );
+            let mut tx = write_session.begin().await.unwrap();
+            let error = adapter
+                .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, CalmError::Conflict(message) if message.contains("5 unfinished planner task(s)") && message.contains("new share of 4")),
+                "{error}"
+            );
+            tx.rollback().await.unwrap();
+            let after: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
+             (SELECT count(*) FROM tasks), (SELECT count(*) FROM events)",
+            )
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+            assert_eq!(
+                after, before,
+                "the refused child operation must roll back every write"
+            );
+
+    })).await.expect("independent write operation")
     }
 
     /// The ordinary and whole-tree rebuild entrypoints must produce the same codes for the same report.
@@ -1899,50 +2073,59 @@ mod tests {
     async fn singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        track_update_tx(
-            &mut tx,
-            &root,
-            TrackPatch {
-                planner_task_ceiling: Some(Some(2)),
-                tree_task_budget: Some(Some(2)),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        project_pending_tasks(&repo, &root, "equal", 3).await;
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    track_update_tx(
+                        &mut tx,
+                        &root,
+                        TrackPatch {
+                            planner_task_ceiling: Some(Some(2)),
+                            tree_task_budget: Some(Some(2)),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    project_pending_tasks(&repo, &root, "equal", 3).await;
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let plain = tasks_rebuild_tx(&mut tx, &root).await.unwrap();
-        let tree = tasks_rebuild_tree_tx(&mut tx, &root).await.unwrap();
-        let tree = &tree
-            .iter()
-            .find(|(track, _)| track.id.as_str() == root)
-            .expect("singleton root projection")
-            .1;
-        let codes = |outcome: &crate::db::sqlite::TaskProjectionOutcome| {
-            outcome
-                .diagnostics
-                .iter()
-                .filter(|verdict| !verdict.schedulable)
-                .flat_map(|verdict| {
-                    verdict
-                        .diagnostics
+                    let mut tx = write_session.begin().await.unwrap();
+                    let plain = tasks_rebuild_tx(&mut tx, &root).await.unwrap();
+                    let tree = tasks_rebuild_tree_tx(&mut tx, &root).await.unwrap();
+                    let tree = &tree
                         .iter()
-                        .map(|diagnostic| diagnostic.code.clone())
+                        .find(|(track, _)| track.id.as_str() == root)
+                        .expect("singleton root projection")
+                        .1;
+                    let codes = |outcome: &crate::db::sqlite::TaskProjectionOutcome| {
+                        outcome
+                            .diagnostics
+                            .iter()
+                            .filter(|verdict| !verdict.schedulable)
+                            .flat_map(|verdict| {
+                                verdict
+                                    .diagnostics
+                                    .iter()
+                                    .map(|diagnostic| diagnostic.code.clone())
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let plain_codes = codes(&plain);
+                    let tree_codes = codes(tree);
+                    assert_eq!(plain_codes, tree_codes, "rebuild entrypoints drifted");
+                    assert_eq!(
+                        plain_codes,
+                        ["planner_task_ceiling", "tree_budget_exhausted"]
+                    );
+                    tx.rollback().await.unwrap();
                 })
-                .collect::<Vec<_>>()
-        };
-        let plain_codes = codes(&plain);
-        let tree_codes = codes(tree);
-        assert_eq!(plain_codes, tree_codes, "rebuild entrypoints drifted");
-        assert_eq!(
-            plain_codes,
-            ["planner_task_ceiling", "tree_budget_exhausted"]
-        );
-        tx.rollback().await.unwrap();
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
@@ -1965,18 +2148,27 @@ mod tests {
             .fetch_one(repo.pool())
             .await
             .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let error = adapter
+                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                        .await
+                        .unwrap_err();
+                    assert!(error.to_string().contains("context-stale"));
+                    drop(tx);
+                    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                    assert_eq!(before, after);
+                })
+            })
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("context-stale"));
-        drop(tx);
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-        assert_eq!(before, after);
+            .expect("independent write operation")
     }
 
     const INHERITED_PLUGIN_ID: &str = "must-inherit-plugin";

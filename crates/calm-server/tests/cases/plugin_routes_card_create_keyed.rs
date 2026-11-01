@@ -306,14 +306,17 @@ async fn a_legacy_committed_row_replays_its_card() {
         // An older server stopped after prepare and before settlement. Rewind
         // both lifecycle facts together, preserving the accepted request and
         // the card checkpoint byte for byte.
-        sqlx::query(
-            "UPDATE operations SET phase = 'tx_committed', completed_at_ms = NULL \
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET phase = 'tx_committed', completed_at_ms = NULL \
              WHERE idempotency_key = ?1",
-        )
-        .bind(key)
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
+                )
+                .bind(key),
+            )
+            .await
+            .unwrap();
         let legacy: (String, Option<i64>, String, String, String) = sqlx::query_as(
             "SELECT phase,completed_at_ms,payload_json,payload_hash,tx_output_json \
              FROM operations WHERE idempotency_key=?1",

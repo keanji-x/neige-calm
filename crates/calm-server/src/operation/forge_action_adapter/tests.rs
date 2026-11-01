@@ -206,17 +206,18 @@ async fn landed_probe_completion_tx_error_leaves_operation_parked() {
             )),
         },
     );
-    sqlx::query(
-        r#"CREATE TRIGGER fail_forge_success_update
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"CREATE TRIGGER fail_forge_success_update
                BEFORE UPDATE OF phase ON operations
                WHEN NEW.phase = 'succeeded'
                BEGIN
                  SELECT RAISE(ABORT, 'injected success tx failure');
                END"#,
-    )
-    .execute(fx.repo.pool())
-    .await
-    .expect("install trigger");
+        ))
+        .await
+        .expect("install trigger");
 
     let op_id = submit_forge(&fx, payload, "landed-probe-tx-error")
         .await

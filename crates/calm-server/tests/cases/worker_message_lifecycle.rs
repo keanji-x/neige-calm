@@ -46,19 +46,22 @@ pub(crate) fn dispatched_after_wait(attempt: &str, waited: &str) -> String {
 async fn unbound(h: &Harness, status: &str, spawn: &str) -> String {
     let key = new_id();
     let task = format!("{}:{key}", h.track);
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,declared_by,\
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,declared_by,\
          created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'codex','test','[]',?4,?5,'user',?6,?6)",
-    )
-    .bind(&task)
-    .bind(&h.track)
-    .bind(key)
-    .bind(status)
-    .bind(spawn)
-    .bind(now_ms())
-    .execute(h.sql.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&task)
+            .bind(&h.track)
+            .bind(key)
+            .bind(status)
+            .bind(spawn)
+            .bind(now_ms()),
+        )
+        .await
+        .unwrap();
     task
 }
 
@@ -162,19 +165,25 @@ async fn child_track_task_has_no_worker_in_this_track() {
     let h = Harness::start().await;
     let attempt = unbound(&h, "running", TASK_CHILD_TRACK_ROUTE).await;
     let child = new_id();
-    sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
         SELECT ?1,area_id,'child',1,1,1,id FROM tracks WHERE id=?2",
-    )
-    .bind(&child)
-    .bind(&h.track)
-    .execute(h.sql.pool())
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
-        .bind(&child)
-        .bind(&attempt)
-        .execute(h.sql.pool())
+            )
+            .bind(&child)
+            .bind(&h.track),
+        )
+        .await
+        .unwrap();
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                .bind(&child)
+                .bind(&attempt),
+        )
         .await
         .unwrap();
     let text = format!(

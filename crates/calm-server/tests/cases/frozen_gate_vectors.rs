@@ -211,10 +211,13 @@ async fn seed_card(
         .await
         .unwrap();
     let role_str = role.as_db_str();
-    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
-        .bind(role_str)
-        .bind(card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+                .bind(role_str)
+                .bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     cache.insert(card.id.clone(), role, track.clone());

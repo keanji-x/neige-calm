@@ -1834,25 +1834,33 @@ mod tests {
             .await
             .unwrap();
         let track = "track-projection".to_string();
-        sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")
-            .execute(repo.pool()).await.unwrap();
-        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,0,0,1,0)")
-            .bind(&track).execute(repo.pool()).await.unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        crate::db::sqlite::track_workspace::track_workspace_write_tx(
-            &mut tx,
-            &track,
-            &crate::model::TrackWorkspace {
-                kind: crate::model::TrackWorkspaceKind::Attached,
-                path: "/".into(),
-                frozen_at: Some(0),
-                worktree: None,
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        (repo, track)
+        (repo.db()).writer().execute(sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area-projection','c','#000',0,'user',0,0)")).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,planner_task_ceiling,require_task_gates) VALUES(?1,'area-projection','w',0,0,0,1,0)")
+            .bind(&track)).await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    crate::db::sqlite::track_workspace::track_workspace_write_tx(
+                        &mut tx,
+                        &track,
+                        &crate::model::TrackWorkspace {
+                            kind: crate::model::TrackWorkspaceKind::Attached,
+                            path: "/".into(),
+                            frozen_at: Some(0),
+                            worktree: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    (repo, track)
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     async fn insert_block_task(
@@ -1861,9 +1869,8 @@ mod tests {
         key: &str,
         status: &str,
     ) {
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_track_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
-            .bind(format!("{track}:{key}")).bind(track).bind(key).bind(format!("goal {key}")).bind(status)
-            .execute(repo.pool()).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_track_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
+            .bind(format!("{track}:{key}")).bind(track).bind(key).bind(format!("goal {key}")).bind(status)).await.unwrap();
     }
 
     #[tokio::test]
@@ -1874,40 +1881,48 @@ mod tests {
             {"track_id": track, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
             {"track_id": track, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
         ]);
-        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE track_id=?3 AND key='read-state'")
+        (repo.db()).writer().execute(sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE track_id=?3 AND key='read-state'")
             .bind(claim_context.to_string())
             .bind(json!({"passed":false,"failing_step":"test","log_path":"/private/gate.log","log_tail":"raw output","attempt":7}).to_string())
-            .bind(&track)
-            .execute(repo.pool())
+            .bind(&track))
             .await
             .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "read-state")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "read-state")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
 
-        let verdict = &verdicts[0];
-        assert!(!verdict.schedulable);
-        assert_eq!(
-            verdict.gate_result,
-            Some(json!({"passed": false, "failing_step": "test"}))
-        );
-        assert_eq!(verdict.worker_card_id.as_deref(), Some("worker-output"));
-        for code in ["reference_chain_too_large", "context_stale_reference"] {
-            let diagnostic = verdict
-                .diagnostics
-                .iter()
-                .find(|diagnostic| diagnostic.code == code)
-                .unwrap_or_else(|| panic!("missing {code}"));
-            assert_eq!(diagnostic.related_block_ids, ["b_feed"]);
-        }
+                    let verdict = &verdicts[0];
+                    assert!(!verdict.schedulable);
+                    assert_eq!(
+                        verdict.gate_result,
+                        Some(json!({"passed": false, "failing_step": "test"}))
+                    );
+                    assert_eq!(verdict.worker_card_id.as_deref(), Some("worker-output"));
+                    for code in ["reference_chain_too_large", "context_stale_reference"] {
+                        let diagnostic = verdict
+                            .diagnostics
+                            .iter()
+                            .find(|diagnostic| diagnostic.code == code)
+                            .unwrap_or_else(|| panic!("missing {code}"));
+                        assert_eq!(diagnostic.related_block_ids, ["b_feed"]);
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
@@ -1917,63 +1932,83 @@ mod tests {
         let claim_context = json!([
             {"track_id": track, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
         ]);
-        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='root-only'")
+        (repo.db()).writer().execute(sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='root-only'")
             .bind(claim_context.to_string())
-            .bind(&track)
-            .execute(repo.pool())
+            .bind(&track))
             .await
             .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "root-only")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "root-only")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
 
-        let verdict = &verdicts[0];
-        assert!(!verdict.schedulable);
-        for code in ["reference_chain_too_large", "context_stale_reference"] {
-            let diagnostic = verdict
-                .diagnostics
-                .iter()
-                .find(|diagnostic| diagnostic.code == code)
-                .unwrap_or_else(|| panic!("missing {code}"));
-            assert!(diagnostic.related_block_ids.is_empty());
-            assert!(diagnostic.related_track_id.is_none());
-        }
+                    let verdict = &verdicts[0];
+                    assert!(!verdict.schedulable);
+                    for code in ["reference_chain_too_large", "context_stale_reference"] {
+                        let diagnostic = verdict
+                            .diagnostics
+                            .iter()
+                            .find(|diagnostic| diagnostic.code == code)
+                            .unwrap_or_else(|| panic!("missing {code}"));
+                        assert!(diagnostic.related_block_ids.is_empty());
+                        assert!(diagnostic.related_track_id.is_none());
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn declare_and_wait_diagnostic_does_not_link_to_its_own_track() {
         let (repo, track) = setup().await;
-        sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
-            .bind(&track)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
+                    .bind(&track),
+            )
             .await
             .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "approval-needed")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
-        let diagnostic = verdicts[0]
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.code == "declare_and_wait")
-            .expect("declare-and-wait diagnostic");
-        assert!(diagnostic.related_track_id.is_none());
-        assert!(diagnostic.related_block_ids.is_empty());
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "approval-needed")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
+                    let diagnostic = verdicts[0]
+                        .diagnostics
+                        .iter()
+                        .find(|diagnostic| diagnostic.code == "declare_and_wait")
+                        .expect("declare-and-wait diagnostic");
+                    assert!(diagnostic.related_track_id.is_none());
+                    assert!(diagnostic.related_block_ids.is_empty());
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
@@ -1986,135 +2021,178 @@ mod tests {
             {"track_id": track, "block_id": "b_local", "rev": 2, "hash": "local", "is_root": false},
             {"track_id": other_track, "block_id": "b_remote", "rev": 3, "hash": "remote", "is_root": false}
         ]);
-        sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='cross-track'")
+        (repo.db()).writer().execute(sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE track_id=?2 AND key='cross-track'")
             .bind(claim_context.to_string())
-            .bind(&track)
-            .execute(repo.pool())
+            .bind(&track))
             .await
             .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "cross-track")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "cross-track")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
 
-        let stale = verdicts[0]
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "context_stale_reference")
-            .collect::<Vec<_>>();
-        assert_eq!(stale.len(), 2);
-        assert!(stale.iter().any(|diagnostic| {
-            diagnostic.related_track_id.is_none() && diagnostic.related_block_ids == ["b_local"]
-        }));
-        assert!(stale.iter().any(|diagnostic| {
-            diagnostic.related_track_id.as_deref() == Some(other_track.as_str())
-                && diagnostic.related_block_ids == ["b_remote"]
-        }));
+                    let stale = verdicts[0]
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.code == "context_stale_reference")
+                        .collect::<Vec<_>>();
+                    assert_eq!(stale.len(), 2);
+                    assert!(stale.iter().any(|diagnostic| {
+                        diagnostic.related_track_id.is_none()
+                            && diagnostic.related_block_ids == ["b_local"]
+                    }));
+                    assert!(stale.iter().any(|diagnostic| {
+                        diagnostic.related_track_id.as_deref() == Some(other_track.as_str())
+                            && diagnostic.related_block_ids == ["b_remote"]
+                    }));
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn terminal_stale_row_points_to_its_attempts_without_live_context_warning() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "terminal-stale", "failed").await;
-        sqlx::query(
-            "UPDATE tasks SET context_stale_at_ms=42,claim_context_json='[]' \
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE tasks SET context_stale_at_ms=42,claim_context_json='[]' \
              WHERE track_id=?1 AND key='terminal-stale'",
-        )
-        .bind(&track)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(&track),
+            )
+            .await
+            .unwrap();
 
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "terminal-stale")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "terminal-stale")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
 
-        let codes = verdicts[0]
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect::<Vec<_>>();
-        assert!(codes.contains(&"task_key_completed"));
-        assert!(!codes.contains(&"context_stale_reference"));
-        assert!(verdicts[0].diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "task_key_completed"
-                && diagnostic.action.as_deref() == Some("inspect_task_attempts")
-        }));
+                    let codes = verdicts[0]
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.code.as_str())
+                        .collect::<Vec<_>>();
+                    assert!(codes.contains(&"task_key_completed"));
+                    assert!(!codes.contains(&"context_stale_reference"));
+                    assert!(verdicts[0].diagnostics.iter().any(|diagnostic| {
+                        diagnostic.code == "task_key_completed"
+                            && diagnostic.action.as_deref() == Some("inspect_task_attempts")
+                    }));
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn zero_ceiling_diagnostic_has_no_false_block_jump_target() {
         let (repo, track) = setup().await;
-        sqlx::query("UPDATE tracks SET planner_task_ceiling=0 WHERE id=?1")
-            .bind(&track)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET planner_task_ceiling=0 WHERE id=?1").bind(&track),
+            )
             .await
             .unwrap();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut tx,
-            &track,
-            &[declaration(0, "capacity-zero")],
-            &[vec![]],
-            true,
-        )
-        .await
-        .unwrap();
-        let ceiling = verdicts[0]
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.code == "planner_task_ceiling")
-            .expect("ceiling diagnostic");
-        assert!(ceiling.related_block_ids.is_empty());
-        assert_eq!(ceiling.related_track_id.as_deref(), Some(track.as_str()));
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let verdicts = evaluate_schedulability(
+                        &mut tx,
+                        &track,
+                        &[declaration(0, "capacity-zero")],
+                        &[vec![]],
+                        true,
+                    )
+                    .await
+                    .unwrap();
+                    let ceiling = verdicts[0]
+                        .diagnostics
+                        .iter()
+                        .find(|diagnostic| diagnostic.code == "planner_task_ceiling")
+                        .expect("ceiling diagnostic");
+                    assert!(ceiling.related_block_ids.is_empty());
+                    assert_eq!(ceiling.related_track_id.as_deref(), Some(track.as_str()));
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn acceptance_1_spawn_only_projection_change_updates_row_and_changed_keys() {
         let (repo, track) = setup().await;
         let mut declaration = declaration(0, "route");
-        let mut tx = repo.pool().begin().await.unwrap();
-        let first = project_tasks_tx(&mut tx, &track, &[declaration.clone()], &[vec![]])
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let first =
+                        project_tasks_tx(&mut tx, &track, &[declaration.clone()], &[vec![]])
+                            .await
+                            .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(first.changed_keys, ["route"]);
+                    declaration.spawn = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE.into();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(second.changed_keys, ["route"]);
+                    let spawn: String = sqlx::query_scalar(
+                        "SELECT spawn FROM tasks WHERE track_id=?1 AND key='route'",
+                    )
+                    .bind(&track)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(spawn, calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE);
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(first.changed_keys, ["route"]);
-        declaration.spawn = calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE.into();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let second = project_tasks_tx(&mut tx, &track, &[declaration], &[vec![]])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(second.changed_keys, ["route"]);
-        let spawn: String =
-            sqlx::query_scalar("SELECT spawn FROM tasks WHERE track_id=?1 AND key='route'")
-                .bind(&track)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(spawn, calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE);
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "child-link", "running").await;
-        sqlx::query("UPDATE tasks SET spawn='sub-track',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
-            .bind(&track).execute(repo.pool()).await.unwrap();
+        (repo.db()).writer().execute(sqlx::query("UPDATE tasks SET spawn='sub-track',child_track_id='gone-child' WHERE track_id=?1 AND key='child-link'")
+            .bind(&track)).await.unwrap();
         let mut conn = repo.pool().acquire().await.unwrap();
         let verdicts = evaluate_schedulability(
             &mut conn,
@@ -2136,31 +2214,35 @@ mod tests {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "k1", "dispatched").await;
         let declarations = vec![declaration(0, "k2"), declaration(1, "k1")];
-        let mut tx = repo.pool().begin().await.unwrap();
-        let outcome = project_tasks_tx(&mut tx, &track, &declarations, &[vec![], vec![]])
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let mut conn = repo.pool().acquire().await.unwrap();
-        let diagnostics =
-            evaluate_schedulability(&mut conn, &track, &declarations, &[vec![], vec![]], true)
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let outcome = project_tasks_tx(&mut tx, &track, &declarations, &[vec![], vec![]])
                 .await
                 .unwrap();
-        assert!(!outcome.diagnostics[0].schedulable);
-        assert!(
-            outcome.diagnostics[0]
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("ceiling"))
-        );
-        assert!(outcome.diagnostics[1].schedulable);
-        assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND status IN ('pending','dispatched','running','verifying')")
-            .bind(&track).fetch_one(repo.pool()).await.unwrap();
-        assert_eq!(
-            count, 1,
-            "invariant 7b: no pending row may exceed occupied capacity"
-        );
+            tx.commit().await.unwrap();
+            let mut conn = repo.pool().acquire().await.unwrap();
+            let diagnostics =
+                evaluate_schedulability(&mut conn, &track, &declarations, &[vec![], vec![]], true)
+                    .await
+                    .unwrap();
+            assert!(!outcome.diagnostics[0].schedulable);
+            assert!(
+                outcome.diagnostics[0]
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("ceiling"))
+            );
+            assert!(outcome.diagnostics[1].schedulable);
+            assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE track_id=?1 AND status IN ('pending','dispatched','running','verifying')")
+                .bind(&track).fetch_one(repo.pool()).await.unwrap();
+            assert_eq!(
+                count, 1,
+                "invariant 7b: no pending row may exceed occupied capacity"
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]
@@ -2169,64 +2251,81 @@ mod tests {
         insert_block_task(&repo, &track, "k1", "pending").await;
         let declarations = vec![declaration(0, "k1"), declaration(1, "k2")];
         let local = vec![vec![Diagnostic::new("payload", "broken")], vec![]];
-        for _ in 0..2 {
-            let mut tx = repo.pool().begin().await.unwrap();
-            let outcome = project_tasks_tx(&mut tx, &track, &declarations, &local)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            assert!(!outcome.diagnostics[0].schedulable);
-            assert!(outcome.diagnostics[1].schedulable);
-            let keys: Vec<(String,)> =
-                sqlx::query_as("SELECT key FROM tasks WHERE track_id=?1 ORDER BY key")
-                    .bind(&track)
-                    .fetch_all(repo.pool())
-                    .await
-                    .unwrap();
-            assert_eq!(keys, vec![("k2".into(),)]);
-        }
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    for _ in 0..2 {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let outcome = project_tasks_tx(&mut tx, &track, &declarations, &local)
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        assert!(!outcome.diagnostics[0].schedulable);
+                        assert!(outcome.diagnostics[1].schedulable);
+                        let keys: Vec<(String,)> =
+                            sqlx::query_as("SELECT key FROM tasks WHERE track_id=?1 ORDER BY key")
+                                .bind(&track)
+                                .fetch_all(repo.pool())
+                                .await
+                                .unwrap();
+                        assert_eq!(keys, vec![("k2".into(),)]);
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn rolled_back_material_verdict_leaves_no_row_change_or_event() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "rollback", "running").await;
-        let mut tx = repo.pool().begin().await.unwrap();
-        let events = mark_context_material_tx(
-            &mut tx,
-            &format!("{track}:rollback"),
-            &track,
-            Vec::new(),
-            "rollback proof",
-        )
-        .await
-        .unwrap();
-        assert_eq!(events.len(), 1, "the transaction produced one kernel event");
-        tx.rollback().await.unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let events = mark_context_material_tx(
+                        &mut tx,
+                        &format!("{track}:rollback"),
+                        &track,
+                        Vec::new(),
+                        "rollback proof",
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(events.len(), 1, "the transaction produced one kernel event");
+                    tx.rollback().await.unwrap();
 
-        let stale: Option<i64> =
-            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
-                .bind(format!("{track}:rollback"))
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        let persisted_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-            .fetch_one(repo.pool())
+                    let stale: Option<i64> =
+                        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+                            .bind(format!("{track}:rollback"))
+                            .fetch_one(repo.pool())
+                            .await
+                            .unwrap();
+                    let persisted_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                    assert_eq!(stale, None);
+                    assert_eq!(persisted_events, 0);
+                })
+            })
             .await
-            .unwrap();
-        assert_eq!(stale, None);
-        assert_eq!(persisted_events, 0);
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn duplicate_live_declarations_never_stamp_run_state() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "contested", "running").await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET worker_card_id='card-contested' WHERE track_id=?1 AND key='contested'",
         )
-        .bind(&track)
-        .execute(repo.pool())
+        .bind(&track))
         .await
         .unwrap();
 
@@ -2272,11 +2371,10 @@ mod tests {
     async fn tombstoned_declaration_never_stamps_run_state() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "redeclared", "running").await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET worker_card_id='card-redeclared' WHERE track_id=?1 AND key='redeclared'",
         )
-        .bind(&track)
-        .execute(repo.pool())
+        .bind(&track))
         .await
         .unwrap();
 
@@ -2313,7 +2411,7 @@ mod tests {
     async fn deleted_declaration_run_state_survives_on_the_synthetic_verdict() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "deleted-block", "running").await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET worker_card_id='card-deleted',status_detail='running: step 2',\
              child_track_id='child-of-deleted',context_closure_truncated=1,\
              claim_context_json=?2 WHERE track_id=?1 AND key='deleted-block'",
@@ -2323,8 +2421,7 @@ mod tests {
             json!([{"track_id": &track, "block_id": "b_dead", "rev": 1, "hash": "h", "is_root": true},
                    {"track_id": &track, "block_id": "b_ref", "rev": 1, "hash": "h", "is_root": false}])
             .to_string(),
-        )
-        .execute(repo.pool())
+        ))
         .await
         .unwrap();
 
@@ -2366,11 +2463,10 @@ mod tests {
     async fn tombstone_only_document_still_never_stamps_run_state() {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "only-tombstone", "running").await;
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET worker_card_id='card-only-tombstone' WHERE track_id=?1 AND key='only-tombstone'",
         )
-        .bind(&track)
-        .execute(repo.pool())
+        .bind(&track))
         .await
         .unwrap();
 
@@ -2444,12 +2540,22 @@ mod tests {
     ) -> TaskProjectionOutcome {
         let (declarations, block_local_diags) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
-        let mut tx = repo.pool().begin().await.unwrap();
-        let outcome = project_tasks_tx(&mut tx, track, &declarations, &block_local_diags)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let outcome =
+                        project_tasks_tx(&mut tx, track, &declarations, &block_local_diags)
+                            .await
+                            .unwrap();
+                    tx.commit().await.unwrap();
+                    outcome
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        outcome
+            .expect("independent write operation")
     }
 
     /// #1933: while a reader is pending, its `head` and `base` follow its block, as `access` does.
@@ -2505,49 +2611,56 @@ mod tests {
     async fn child_track_continue_declaration_requires_owned_open_returned_child() {
         for condition in ["returned", "active", "foreign", "closed", "failed"] {
             let (repo, track) = setup().await;
-            sqlx::query(
+            (repo.db()).writer().execute(sqlx::query(
                 "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,parent_track_id) \
                 VALUES('continued-child','area-projection','child',1,0,0,?1)",
             )
-            .bind(&track)
-            .execute(repo.pool())
+            .bind(&track))
             .await
             .unwrap();
             insert_block_task(&repo, &track, "prior", "failed").await;
-            sqlx::query(
-                "UPDATE tasks SET spawn='sub-track',child_track_id='continued-child',\
+            (repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    "UPDATE tasks SET spawn='sub-track',child_track_id='continued-child',\
                 status_detail='child-track-handed-back' WHERE key='prior'",
-            )
-            .execute(repo.pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
             match condition {
                 "active" => {
-                    sqlx::query("UPDATE tasks SET status='running' WHERE key='prior'")
-                        .execute(repo.pool())
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query(
+                            "UPDATE tasks SET status='running' WHERE key='prior'",
+                        ))
                         .await
                         .unwrap();
                 }
                 "foreign" => {
-                    sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('foreign-parent',\
-                        'area-projection','other parent',2,0,0)")
-                        .execute(repo.pool()).await.unwrap();
-                    sqlx::query(
+                    (repo.db()).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('foreign-parent',\
+                        'area-projection','other parent',2,0,0)")).await.unwrap();
+                    (repo.db()).writer().execute(sqlx::query(
                         "UPDATE tracks SET parent_track_id='foreign-parent' WHERE id='continued-child'",
-                    )
-                    .execute(repo.pool())
+                    ))
                     .await
                     .unwrap();
                 }
                 "closed" => {
-                    sqlx::query("UPDATE tracks SET closed_at=1 WHERE id='continued-child'")
-                        .execute(repo.pool())
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query(
+                            "UPDATE tracks SET closed_at=1 WHERE id='continued-child'",
+                        ))
                         .await
                         .unwrap();
                 }
                 "failed" => {
-                    sqlx::query("UPDATE tasks SET status_detail='other' WHERE key='prior'")
-                        .execute(repo.pool())
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query(
+                            "UPDATE tasks SET status_detail='other' WHERE key='prior'",
+                        ))
                         .await
                         .unwrap();
                 }
@@ -2608,24 +2721,36 @@ mod tests {
         project_blocks(&repo, &track, &[block("first")]).await;
         project_blocks(&repo, &track, &[block("claimed")]).await;
         let id = format!("{track}:child");
-        let mut tx = repo.pool().begin().await.unwrap();
-        assert_eq!(
-            crate::db::sqlite::task_claim_pending_tx(&mut tx, &id, 1, &[], false)
-                .await
-                .unwrap(),
-            1
-        );
-        tx.commit().await.unwrap();
-        project_blocks(&repo, &track, &[block("later")]).await;
-        let task = crate::db::sqlite::task_get_tx(&mut repo.pool().begin().await.unwrap(), &id)
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    assert_eq!(
+                        crate::db::sqlite::task_claim_pending_tx(&mut tx, &id, 1, &[], false)
+                            .await
+                            .unwrap(),
+                        1
+                    );
+                    tx.commit().await.unwrap();
+                    project_blocks(&repo, &track, &[block("later")]).await;
+                    let task =
+                        crate::db::sqlite::task_get_tx(&mut write_session.begin().await.unwrap(), &id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(
+                            task.child_track_json.as_deref().unwrap()
+                        )
+                        .unwrap(),
+                        json!({"model":"claimed", "reasoning_effort":"high"})
+                    );
+                })
+            })
             .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(task.child_track_json.as_deref().unwrap())
-                .unwrap(),
-            json!({"model":"claimed", "reasoning_effort":"high"})
-        );
+            .expect("independent write operation")
     }
 
     /// #2599: while a task is pending, its `result_contract` follows its block, as `start` does,
@@ -2642,32 +2767,41 @@ mod tests {
             }
             task_block(0, payload)
         };
-        for contract in [Some("review-v1"), None, Some("review-v1")] {
-            let outcome = project_blocks(&repo, &track, &[block(contract)]).await;
-            assert_eq!(outcome.changed_keys, ["review"], "{contract:?}");
-            let row: (String, Option<String>) = sqlx::query_as(
-                "SELECT status, result_contract FROM tasks WHERE track_id = ?1 AND key = 'review'",
-            )
-            .bind(&track)
-            .fetch_one(repo.pool())
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                            for contract in [Some("review-v1"), None, Some("review-v1")] {
+                                let outcome = project_blocks(&repo, &track, &[block(contract)]).await;
+                                assert_eq!(outcome.changed_keys, ["review"], "{contract:?}");
+                                let row: (String, Option<String>) = sqlx::query_as(
+                        "SELECT status, result_contract FROM tasks WHERE track_id = ?1 AND key = 'review'",
+                    )
+                    .bind(&track)
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                                assert_eq!(row, ("pending".into(), contract.map(str::to_string)));
+                                let task = crate::db::sqlite::task_get_tx(
+                                    &mut write_session.begin().await.unwrap(),
+                                    &format!("{track}:review"),
+                                )
+                                .await
+                                .unwrap()
+                                .expect("task row");
+                                assert_eq!(task.result_contract.as_deref(), contract);
+                                let again = project_blocks(&repo, &track, &[block(contract)]).await;
+                                assert!(
+                                    again.changed_keys.is_empty(),
+                                    "{contract:?}: {:?}",
+                                    again.changed_keys
+                                );
+                            }
+                })
+            })
             .await
-            .unwrap();
-            assert_eq!(row, ("pending".into(), contract.map(str::to_string)));
-            let task = crate::db::sqlite::task_get_tx(
-                &mut repo.pool().begin().await.unwrap(),
-                &format!("{track}:review"),
-            )
-            .await
-            .unwrap()
-            .expect("task row");
-            assert_eq!(task.result_contract.as_deref(), contract);
-            let again = project_blocks(&repo, &track, &[block(contract)]).await;
-            assert!(
-                again.changed_keys.is_empty(),
-                "{contract:?}: {:?}",
-                again.changed_keys
-            );
-        }
+            .expect("independent write operation")
     }
 
     /// Negative half of a pair: asserts the *value* (zero events in both orders),
@@ -2740,17 +2874,19 @@ mod tests {
         let (repo, track) = setup().await;
         insert_block_task(&repo, &track, "contended", "running").await;
         // The row was established by a declaration that carried *both* edges.
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE track_id=?1 AND key='contended'",
         )
-        .bind(&track)
-        .execute(repo.pool())
+        .bind(&track))
         .await
         .unwrap();
         // The release edge only exists under this policy.
-        sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
-            .bind(&track)
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET automation_policy='declare-and-wait' WHERE id=?1")
+                    .bind(&track),
+            )
             .await
             .unwrap();
         let outcome = project_blocks(&repo, &track, &blocks).await;

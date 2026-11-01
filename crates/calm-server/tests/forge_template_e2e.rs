@@ -53,9 +53,9 @@ use calm_server::state::{DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    session_bind_attribution_tx, session_mark_track_root_tx, session_mcp_token_set_tx,
-    session_projection_active_for_card_tx, session_start_runtime_tx,
+    SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_mark_track_root_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
+    session_start_runtime_tx,
 };
 use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
@@ -1504,72 +1504,87 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     };
     let planner_token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(planner_token.as_str());
-    let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    card_mcp_token_set_tx(&mut tx, planner_card.id.as_str(), &hash)
-        .await
-        .unwrap();
-    session_mcp_token_set_tx(&mut tx, PLANNER_SESSION_ID, &hash)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let started = if delivery {
-        Some(
-            support::done_delivery::start(
-                &sqlx_repo,
-                &review_ctx,
-                &review_registry,
-                planner,
-                "implement",
-            )
-            .await,
-        )
-    } else {
-        None
-    };
-    let caller = match &started {
-        Some(worker) => Caller {
-            card_id: worker.card.clone(),
-            raw_token: worker.token.clone(),
-            thread_id: worker.thread.clone(),
-            track_id: track.id.to_string(),
-            lease_id: worker.lease.clone(),
-            lease_abs: worker.cwd.clone(),
-        },
-        None => {
-            create_worker_caller(&sqlx_repo, &card_role_cache, track.id.clone(), &track_cwd).await
-        }
-    };
-    configure_repo_identity(&caller.lease_abs);
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                card_mcp_token_set_tx(&mut tx, planner_card.id.as_str(), &hash)
+                    .await
+                    .unwrap();
+                session_mcp_token_set_tx(&mut tx, PLANNER_SESSION_ID, &hash)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let started = if delivery {
+                    Some(
+                        support::done_delivery::start(
+                            &sqlx_repo,
+                            &review_ctx,
+                            &review_registry,
+                            planner,
+                            "implement",
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+                let caller = match &started {
+                    Some(worker) => Caller {
+                        card_id: worker.card.clone(),
+                        raw_token: worker.token.clone(),
+                        thread_id: worker.thread.clone(),
+                        track_id: track.id.to_string(),
+                        lease_id: worker.lease.clone(),
+                        lease_abs: worker.cwd.clone(),
+                    },
+                    None => {
+                        create_worker_caller(
+                            &sqlx_repo,
+                            &card_role_cache,
+                            track.id.clone(),
+                            &track_cwd,
+                        )
+                        .await
+                    }
+                };
+                configure_repo_identity(&caller.lease_abs);
 
-    Fixture {
-        _execution: execution,
-        _server: server,
-        plugin_host,
-        repo: sqlx_repo,
-        events,
-        write,
-        card_role_cache,
-        track_area_cache,
-        review_ctx,
-        review_registry,
-        socket_path,
-        raw_token: caller.raw_token,
-        thread_id: caller.thread_id,
-        track_id: caller.track_id,
-        area_id: area.id.to_string(),
-        planner_card_id: planner_card.id.to_string(),
-        worker_card_id: caller.card_id,
-        lease_id: caller.lease_id,
-        lease_abs: caller.lease_abs,
-        track_cwd,
-        origin_repo,
-        _runtime: runtime,
-        _delivery_wiring: wiring,
-        delivery: started,
-        planner_token: planner_token.into_inner(),
-        _socket_tmp: socket_tmp,
-        _tmp: tmp,
-    }
+                Fixture {
+                    _execution: execution,
+                    _server: server,
+                    plugin_host,
+                    repo: sqlx_repo,
+                    events,
+                    write,
+                    card_role_cache,
+                    track_area_cache,
+                    review_ctx,
+                    review_registry,
+                    socket_path,
+                    raw_token: caller.raw_token,
+                    thread_id: caller.thread_id,
+                    track_id: caller.track_id,
+                    area_id: area.id.to_string(),
+                    planner_card_id: planner_card.id.to_string(),
+                    worker_card_id: caller.card_id,
+                    lease_id: caller.lease_id,
+                    lease_abs: caller.lease_abs,
+                    track_cwd,
+                    origin_repo,
+                    _runtime: runtime,
+                    _delivery_wiring: wiring,
+                    delivery: started,
+                    planner_token: planner_token.into_inner(),
+                    _socket_tmp: socket_tmp,
+                    _tmp: tmp,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn create_worker_caller(
@@ -1583,89 +1598,110 @@ async fn create_worker_caller(
     let lease_abs = workspace::worktree::track_worktree_path_for(track_cwd, track_id.as_str());
     let lease_path = lease_abs.display().to_string();
 
-    let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &runtime_id,
-        None,
-        track_id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true,
-        card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint codex card");
-    let raw_token = match mcp_token {
-        Some(token) => token,
-        None => {
-            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin card tx");
+                let (_card, _term, mcp_token) = card_with_codex_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &runtime_id,
+                    None,
+                    track_id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true,
+                    card_role_cache,
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
                 .await
-                .expect("mint card MCP token");
-            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
-                .await
-                .expect("mint session MCP token");
-            token.into_inner()
-        }
-    };
-    let lease_id = insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), &lease_path).await;
-    tx.commit().await.expect("commit card tx");
+                .expect("mint codex card");
+                let raw_token = match mcp_token {
+                    Some(token) => token,
+                    None => {
+                        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+                        let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+                        card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                            .await
+                            .expect("mint card MCP token");
+                        session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+                            .await
+                            .expect("mint session MCP token");
+                        token.into_inner()
+                    }
+                };
+                let lease_id =
+                    insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), &lease_path).await;
+                tx.commit().await.expect("commit card tx");
 
-    let thread_id = format!("thread-{card_id}");
-    seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
+                let thread_id = format!("thread-{card_id}");
+                seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
-    Caller {
-        card_id,
-        raw_token,
-        thread_id,
-        track_id: track_id.to_string(),
-        lease_id,
-        lease_abs,
-    }
+                Caller {
+                    card_id,
+                    raw_token,
+                    thread_id,
+                    track_id: track_id.to_string(),
+                    lease_id,
+                    lease_abs,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_planner_runtime(sqlx_repo: &SqlxRepo, track_id: &TrackId, planner_card_id: &CardId) {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some("planner-thread".into());
-    let mut tx = sqlx_repo.pool().begin().await.expect("begin planner tx");
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: PLANNER_SESSION_ID.to_string(),
-            card_id: planner_card_id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("planner-thread".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).expect("snapshot json")),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .expect("start planner runtime");
-    session_mark_track_root_tx(
-        &mut tx,
-        track_id,
-        &WorkerSessionId::from(PLANNER_SESSION_ID),
-    )
-    .await
-    .expect("mark planner root session");
-    tx.commit().await.expect("commit planner tx");
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin planner tx");
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: PLANNER_SESSION_ID.to_string(),
+                        card_id: planner_card_id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some("planner-thread".into()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(
+                            serde_json::to_value(&snapshot).expect("snapshot json"),
+                        ),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("start planner runtime");
+                session_mark_track_root_tx(
+                    &mut tx,
+                    track_id,
+                    &WorkerSessionId::from(PLANNER_SESSION_ID),
+                )
+                .await
+                .expect("mark planner root session");
+                tx.commit().await.expect("commit planner tx");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn track_router_for_fixture(fx: &Fixture) -> axum::Router {
@@ -1814,52 +1850,60 @@ async fn insert_workspace_lease(
 }
 
 async fn seed_runtime_thread(repo: &SqlxRepo, card_id: &str, thread_id: &str) -> String {
-    let mut tx = begin_immediate_tx(repo.db())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let runtime_id = if let Some(runtime) =
+                    session_projection_active_for_card_tx(&mut tx, card_id)
+                        .await
+                        .expect("active runtime lookup")
+                {
+                    let runtime_id = runtime.id.clone();
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime_id,
+                        ThreadAttribution {
+                            worker_session_id: runtime_id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .expect("bind thread attribution");
+                    runtime_id
+                } else {
+                    let runtime = session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.to_string(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.to_string()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .expect("start runtime");
+                    runtime.id
+                };
+                tx.commit().await.expect("commit runtime tx");
+                runtime_id
+            })
+        })
         .await
-        .expect("begin runtime tx");
-    let runtime_id = if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, card_id)
-        .await
-        .expect("active runtime lookup")
-    {
-        let runtime_id = runtime.id.clone();
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime_id,
-            ThreadAttribution {
-                worker_session_id: runtime_id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .expect("bind thread attribution");
-        runtime_id
-    } else {
-        let runtime = session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.to_string(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.to_string()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .expect("start runtime");
-        runtime.id
-    };
-    tx.commit().await.expect("commit runtime tx");
-    runtime_id
+        .expect("independent write operation")
 }
 
 async fn wait_for_running(host: &Arc<PluginHost>) {
@@ -2399,52 +2443,63 @@ async fn settle_parked_execution_without_result(fx: &Fixture, op_id: &str) {
     .await
     .expect("release acknowledgement precedes the crash seam");
     // Freeze the old observer just as losing its kernel/claim would. Boot steals this lease.
-    sqlx::query(
+    (fx.repo.db()).writer().execute(sqlx::query(
         "UPDATE operations SET lease_owner=?2,lease_until_ms=?3 WHERE id=?1 AND phase='parked'",
     )
     .bind(op_id)
     .bind(new_id())
-    .bind(now_ms() + 60_000)
-    .execute(fx.repo.pool())
+    .bind(now_ms() + 60_000))
     .await
     .unwrap();
     let id = forge_execution_id(&fx.repo, op_id).await;
     let engine = fx._execution.lifecycle.engine().unwrap();
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    let ticket = engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    // Stop/drain is asynchronous; the Engine's per-call quiesce deadline can
-    // expire before settlement under load. Keep waiting for that same execution.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match engine.wait_settled(&id).await {
-                Err(workspace_runtime::execution::DriveError::Timeout) => continue,
-                result => break result.unwrap(),
-            }
-        }
-    })
-    .await
-    .expect("the stopped execution settles before recovery");
-    let path = operation_result_path(&fx.repo, op_id).await;
-    for suffix in ["", ".code", ".stdout"] {
-        let _ = std::fs::remove_file(path_with_suffix(&path, suffix));
-    }
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ticket = engine.request(&mut tx, &id, Desired::Stop).await.unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                // Stop/drain is asynchronous; the Engine's per-call quiesce deadline can
+                // expire before settlement under load. Keep waiting for that same execution.
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    loop {
+                        match engine.wait_settled(&id).await {
+                            Err(workspace_runtime::execution::DriveError::Timeout) => continue,
+                            result => break result.unwrap(),
+                        }
+                    }
+                })
+                .await
+                .expect("the stopped execution settles before recovery");
+                let path = operation_result_path(&fx.repo, op_id).await;
+                for suffix in ["", ".code", ".stdout"] {
+                    let _ = std::fs::remove_file(path_with_suffix(&path, suffix));
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn mark_workspace_lease_stale_for_boot(repo: &SqlxRepo, lease_id: &str) {
-    sqlx::query(
-        r#"UPDATE workspace_leases
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE workspace_leases
            SET boot_id = 'stale-boot-for-forge-e2e',
                updated_at_ms = ?1
            WHERE lease_id = ?2
              AND state = 'held'"#,
-    )
-    .bind(now_ms())
-    .bind(lease_id)
-    .execute(repo.pool())
-    .await
-    .expect("mark workspace lease stale");
+            )
+            .bind(now_ms())
+            .bind(lease_id),
+        )
+        .await
+        .expect("mark workspace lease stale");
 }
 
 async fn workspace_lease_state(repo: &SqlxRepo, lease_id: &str) -> String {

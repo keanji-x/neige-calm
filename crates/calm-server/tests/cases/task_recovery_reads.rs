@@ -271,62 +271,66 @@ async fn task_recovery_history_survives_a_deleted_frozen_reference() {
 async fn task_recovery_plan_inventory_pages_all_current_allocations() {
     let boot = boot().await;
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        for index in 0..130 {
+            let key = format!("k{index:03}");
+            sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms,finished_at_ms) VALUES(?1,?2,?3,'terminal','true','{}','done',1,1,1)")
+                .bind(format!("{}:{key}", boot.track_id)).bind(boot.track_id.as_str()).bind(key).execute(&mut **tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let list = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))
+            .await
+            .unwrap();
+        let keys: Vec<_> = list["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|task| task["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(keys.len(), 130);
+        assert_eq!(keys.first(), Some(&"k000"));
+        assert_eq!(keys.last(), Some(&"k129"));
+        let selected = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            call_tool(
+                &boot,
+                "neige_task_ls",
+                planner_identity(&boot),
+                json!({"detail":"summary","key":"k129"}),
+            ),
+        )
         .await
+        .expect("direct lookup must terminate")
         .unwrap();
-    for index in 0..130 {
-        let key = format!("k{index:03}");
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms,finished_at_ms) VALUES(?1,?2,?3,'terminal','true','{}','done',1,1,1)")
-            .bind(format!("{}:{key}", boot.track_id)).bind(boot.track_id.as_str()).bind(key).execute(&mut **tx).await.unwrap();
-    }
-    tx.commit().await.unwrap();
-    let list = call_tool(&boot, "neige_task_ls", planner_identity(&boot), json!({}))
+        assert_eq!(selected["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["tasks"][0]["key"], "k129");
+        let missing = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            call_tool(
+                &boot,
+                "neige_task_ls",
+                planner_identity(&boot),
+                json!({"detail":"summary","key":"unknown"}),
+            ),
+        )
         .await
-        .unwrap();
-    let keys: Vec<_> = list["tasks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|task| task["key"].as_str().unwrap())
-        .collect();
-    assert_eq!(keys.len(), 130);
-    assert_eq!(keys.first(), Some(&"k000"));
-    assert_eq!(keys.last(), Some(&"k129"));
-    let selected = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        call_tool(
-            &boot,
-            "neige_task_ls",
-            planner_identity(&boot),
-            json!({"detail":"summary","key":"k129"}),
-        ),
-    )
-    .await
-    .expect("direct lookup must terminate")
-    .unwrap();
-    assert_eq!(selected["tasks"].as_array().unwrap().len(), 1);
-    assert_eq!(selected["tasks"][0]["key"], "k129");
-    let missing = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        call_tool(
-            &boot,
-            "neige_task_ls",
-            planner_identity(&boot),
-            json!({"detail":"summary","key":"unknown"}),
-        ),
-    )
-    .await
-    .expect("missing lookup must terminate")
-    .unwrap_err();
-    assert!(missing.message.contains("current execution unavailable"));
+        .expect("missing lookup must terminate")
+        .unwrap_err();
+        assert!(missing.message.contains("current execution unavailable"));
 
-    assert_eq!(
-        keys.iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        130
-    );
+        assert_eq!(
+            keys.iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            130
+        );
+
+    })).await.expect("independent write operation")
 }
 
 /// #1830 S2 D5: a codex task waiting for another one in the track's checkout reads `trackBusy`,
@@ -339,9 +343,12 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     declare(&boot, ordinary_codex_declaration("b")).await;
     declare(&boot, declaration("c", &[])).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='a'")
-        .bind(boot.track_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running' WHERE track_id=?1 AND key='a'")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
@@ -393,10 +400,13 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     declare(&boot, declaration("b", &[])).await;
     let b = current(&boot, "b").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
-        .bind(boot.worker_card_id.as_str())
-        .bind(&b.id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE id=?2")
+                .bind(boot.worker_card_id.as_str())
+                .bind(&b.id),
+        )
         .await
         .unwrap();
     let track = boot.track_id.as_str().to_string();
@@ -501,10 +511,13 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
     let pool = boot.repo.sqlite_db().unwrap();
     let track = boot.track_id.as_str().to_string();
     let card = boot.worker_card_id.as_str().to_string();
-    sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE track_id=?2 AND key='b'")
-        .bind(&card)
-        .bind(&track)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id=?1 WHERE track_id=?2 AND key='b'")
+                .bind(&card)
+                .bind(&track),
+        )
         .await
         .unwrap();
     let base_sha = "89abcdef0123456789abcdef0123456789abcdef";

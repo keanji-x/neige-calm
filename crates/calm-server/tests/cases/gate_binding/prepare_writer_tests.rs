@@ -3,8 +3,6 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
-    use calm_server::db::sqlite::begin_immediate_tx;
-
     let fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let (_, task, lease, _) = settled_gated_task(&fx, "writer-barrier", gated("true")).await;
@@ -34,8 +32,11 @@ async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
     // Match the existing timeout regression's stat-cache invalidation, without altering content.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     std::fs::write(&worker_txt, content).unwrap();
-    sqlx::query("CREATE TABLE unrelated_writer_probe (value INTEGER NOT NULL)")
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TABLE unrelated_writer_probe (value INTEGER NOT NULL)",
+        ))
         .await
         .unwrap();
 
@@ -49,47 +50,57 @@ async fn gate_prepare_allows_unrelated_writer_before_git_filter_release() {
     .expect("real scheduler sampling reached the Git filter barrier");
 
     let pool = fx.db();
-    let mut writer = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool).await?;
-        sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")
-            .execute(&mut **tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, calm_server::error::CalmError>(())
-    });
-    // The explicit release barrier is the ordering oracle. This bound is below SAMPLE_TIMEOUT;
-    // otherwise the old writer-held sampling could pass after the filter was killed on timeout.
-    let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
-    let filter_still_running = !live_processes_naming(&hook.display().to_string()).is_empty();
-    assert!(!release.exists());
-    // Always release before reporting the assertion so a red run drains its real subprocesses.
-    std::fs::write(&release, "release").unwrap();
-    tokio::time::timeout(Duration::from_secs(30), drive)
-        .await
-        .expect("gate driver completed after releasing the filter")
-        .unwrap();
-    if committed_before_release.is_err() {
-        tokio::time::timeout(Duration::from_secs(10), writer)
+
+    {
+
+        let mut writer = tokio::spawn(async move {
+            let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await?;
+            sqlx::query("INSERT INTO unrelated_writer_probe(value) VALUES (1)")
+                .execute(&mut **tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, calm_server::error::CalmError>(())
+
+        })).await.expect("independent write operation")
+});
+        // The explicit release barrier is the ordering oracle. This bound is below SAMPLE_TIMEOUT;
+        // otherwise the old writer-held sampling could pass after the filter was killed on timeout.
+        let committed_before_release = tokio::time::timeout(Duration::from_secs(1), &mut writer).await;
+        let filter_still_running = !live_processes_naming(&hook.display().to_string()).is_empty();
+        assert!(!release.exists());
+        // Always release before reporting the assertion so a red run drains its real subprocesses.
+        std::fs::write(&release, "release").unwrap();
+        tokio::time::timeout(Duration::from_secs(30), drive)
             .await
-            .expect("writer completed after releasing the filter")
-            .unwrap()
+            .expect("gate driver completed after releasing the filter")
             .unwrap();
-    }
-    git(&lease.path, &["config", "--unset", "filter.barrier.clean"]);
-    let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
-    assert!(
-        matches!(committed_before_release, Ok(Ok(Ok(())))),
-        "unrelated writer must commit while the Git filter is still blocked: {committed_before_release:?}",
-    );
-    assert!(
-        filter_still_running,
-        "writer completion must precede the sampling timeout"
-    );
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM unrelated_writer_probe")
-        .fetch_one(&fx.pool())
-        .await
-        .unwrap();
-    assert_eq!(rows, 1);
+        if committed_before_release.is_err() {
+            tokio::time::timeout(Duration::from_secs(10), writer)
+                .await
+                .expect("writer completed after releasing the filter")
+                .unwrap()
+                .unwrap();
+        }
+        git(&lease.path, &["config", "--unset", "filter.barrier.clean"]);
+        let _ = std::fs::remove_file(lease.path.join(".gitattributes"));
+        assert!(
+            matches!(committed_before_release, Ok(Ok(Ok(())))),
+            "unrelated writer must commit while the Git filter is still blocked: {committed_before_release:?}",
+        );
+        assert!(
+            filter_still_running,
+            "writer completion must precede the sampling timeout"
+        );
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM unrelated_writer_probe")
+            .fetch_one(&fx.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+
+
+}
 }
 
 struct FilterBarrier {
@@ -193,27 +204,38 @@ async fn gate_prepare_discards_sample_for_changed_provenance_and_workspace() {
                 // Unlike immutable candidate rows, the lease tuple permits this CHECK-valid
                 // metadata change. The old sample's provenance_holds=true was computed against
                 // the original canonical path and must not authorize this different expectation.
-                sqlx::query("UPDATE workspace_leases SET canonical_path = ?1 WHERE lease_id = ?2")
-                    .bind(barrier._directory.path().to_str().unwrap())
-                    .bind(&lease.lease_id)
-                    .execute(&fx.pool())
+                (fx.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE workspace_leases SET canonical_path = ?1 WHERE lease_id = ?2",
+                        )
+                        .bind(barrier._directory.path().to_str().unwrap())
+                        .bind(&lease.lease_id),
+                    )
                     .await
                     .unwrap();
             }
             "workspace" => {
                 std::os::unix::fs::symlink(&lease.path, &alternate_cwd).unwrap();
-                sqlx::query("UPDATE workspace_leases SET path = ?1 WHERE lease_id = ?2")
-                    .bind(alternate_cwd.to_str().unwrap())
-                    .bind(&lease.lease_id)
-                    .execute(&fx.pool())
+                (fx.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE workspace_leases SET path = ?1 WHERE lease_id = ?2")
+                            .bind(alternate_cwd.to_str().unwrap())
+                            .bind(&lease.lease_id),
+                    )
                     .await
                     .unwrap();
             }
             "gate" => {
-                sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
-                    .bind(gated("false")["gate"].to_string())
-                    .bind(&task.id)
-                    .execute(&fx.pool())
+                (fx.db())
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
+                            .bind(gated("false")["gate"].to_string())
+                            .bind(&task.id),
+                    )
                     .await
                     .unwrap();
             }
@@ -282,10 +304,13 @@ async fn gate_prepare_discards_obsolete_sampling_error_before_repreparing() {
     let barrier = FilterBarrier::install(&lease.path, true).await;
     let drive = spawn_drive(fx.scheduler(), task.clone());
     barrier.wait_entered().await;
-    sqlx::query("UPDATE workspace_leases SET canonical_path = ?1 WHERE lease_id = ?2")
-        .bind(barrier._directory.path().to_str().unwrap())
-        .bind(&lease.lease_id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE workspace_leases SET canonical_path = ?1 WHERE lease_id = ?2")
+                .bind(barrier._directory.path().to_str().unwrap())
+                .bind(&lease.lease_id),
+        )
         .await
         .unwrap();
     tokio::time::timeout(WAIT, drive)
@@ -329,8 +354,8 @@ async fn gate_prepare_cannot_commit_under_replaced_claim_and_wait_recovers_after
     let drive = spawn_drive(fx.scheduler(), task.clone());
     barrier.wait_entered().await;
     let op = gate_op(&fx, &task.id).await.unwrap();
-    sqlx::query("UPDATE operations SET lease_owner = 'replacement-claim', lease_until_ms = ?1 WHERE id = ?2")
-        .bind(now_ms() + 60_000).bind(&op.id).execute(&fx.pool()).await.unwrap();
+    (fx.db()).writer().execute(sqlx::query("UPDATE operations SET lease_owner = 'replacement-claim', lease_until_ms = ?1 WHERE id = ?2")
+        .bind(now_ms() + 60_000).bind(&op.id)).await.unwrap();
     barrier.release();
     // The runtime owns this same mutex during drive(), so acquiring it waits until the old
     // sampling/commit attempt has returned. The replacement claim prevents the wait loop reclaim.
@@ -345,10 +370,13 @@ async fn gate_prepare_cannot_commit_under_replaced_claim_and_wait_recovers_after
     assert!(gate_result_events(&fx, &task.id).await.is_empty());
     // No sixty-second sleep: the same production wait() continues driving and reclaims the
     // expired Pending operation. It must finish rather than turn a lost claim into Stuck.
-    sqlx::query("UPDATE operations SET lease_until_ms = ?1 WHERE id = ?2")
-        .bind(now_ms() - 1)
-        .bind(&op.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_until_ms = ?1 WHERE id = ?2")
+                .bind(now_ms() - 1)
+                .bind(&op.id),
+        )
         .await
         .unwrap();
     drop(guard);

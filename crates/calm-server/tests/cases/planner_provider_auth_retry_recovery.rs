@@ -105,15 +105,18 @@ async fn owner_auth_retry_reports_unresumable_carrier_and_preserves_every_durabl
 async fn assert_planner_recovery_ineligible(provider: &str) {
     let boot = boot_fake_running().await;
     let (card, runtime, _, _) = failed_conversation(&boot).await;
-    sqlx::query("UPDATE worker_sessions SET provider=?,contract=? WHERE id=?")
-        .bind(provider)
-        .bind(if provider == "terminal" {
-            "executor"
-        } else {
-            "planner"
-        })
-        .bind(&runtime)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET provider=?,contract=? WHERE id=?")
+                .bind(provider)
+                .bind(if provider == "terminal" {
+                    "executor"
+                } else {
+                    "planner"
+                })
+                .bind(&runtime),
+        )
         .await
         .unwrap();
     let before = runtime_by_id_tx_snapshot(&boot.repo, &runtime)

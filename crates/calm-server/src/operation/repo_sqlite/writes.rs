@@ -4,8 +4,7 @@ use sqlx::{QueryBuilder, Sqlite};
 
 use super::{SqlxOperationRepo, operation_from_row, optional_json_text};
 use crate::{
-    db::sqlite::begin_immediate_tx,
-    error::{CalmError, Result},
+    db::sqlite::error::{CalmError, Result},
     model::now_ms,
     operation::{
         AppServerInteractKind, Operation, OperationId, ParkedCompletion, ParkedOutcome, Phase,
@@ -121,21 +120,31 @@ pub(in crate::operation) async fn record_spawn_artifacts(
     op: &Operation,
     artifacts: &SpawnArtifacts,
 ) -> Result<()> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    require_live_claim_tx(&mut tx, op).await?;
-    if !matches!(op.phase, Phase::SpawnStarted) {
-        return Err(CalmError::Conflict(
-            "spawn artifacts require spawn_started".into(),
-        ));
-    }
-    sqlx::query("UPDATE operations SET spawn_artifacts_json=?1, updated_at_ms=?2 WHERE id=?3")
-        .bind(serde_json::to_string(artifacts)?)
-        .bind(now_ms())
-        .bind(&op.id)
-        .execute(&mut **tx)
-        .await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                require_live_claim_tx(&mut tx, op).await?;
+                if !matches!(op.phase, Phase::SpawnStarted) {
+                    return Err(CalmError::Conflict(
+                        "spawn artifacts require spawn_started".into(),
+                    ));
+                }
+                sqlx::query(
+                    "UPDATE operations SET spawn_artifacts_json=?1, updated_at_ms=?2 WHERE id=?3",
+                )
+                .bind(serde_json::to_string(artifacts)?)
+                .bind(now_ms())
+                .bind(&op.id)
+                .execute(&mut **tx)
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 pub(in crate::operation) async fn set_parked(
@@ -144,29 +153,33 @@ pub(in crate::operation) async fn set_parked(
     deadline_ms: TimestampMs,
     owner_key: Option<&'static str>,
 ) -> Result<Option<Operation>> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    if !matches!(op.phase, Phase::SpawnStarted) || !has_live_claim_tx(&mut tx, op).await? {
-        return Ok(None);
-    }
-    let now = now_ms();
-    let result = sqlx::query(
-        "UPDATE operations SET phase='parked', phase_detail_json=NULL, parked_at_ms=?1, \
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await?;
+        if !matches!(op.phase, Phase::SpawnStarted) || !has_live_claim_tx(&mut tx, op).await? {
+            return Ok(None);
+        }
+        let now = now_ms();
+        let result = sqlx::query(
+            "UPDATE operations SET phase='parked', phase_detail_json=NULL, parked_at_ms=?1, \
          parked_deadline_ms=?2, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=?1 \
          WHERE id=?3 AND (spawn_artifacts_json IS NOT NULL OR (?4 IS NOT NULL AND json_type(tx_output_json, ?4) IS NOT NULL))",
-    )
-    .bind(now)
-    .bind(deadline_ms)
-    .bind(&op.id)
-    .bind(owner_key.map(|key| format!("$.data.{key}")))
-    .execute(&mut **tx)
-    .await?;
-    if result.rows_affected() == 0 {
-        return Ok(None);
-    }
-    tx.commit().await?;
-    SqlxOperationRepo::new(pool.clone())
-        .find_by_id(&op.id)
-        .await
+        )
+        .bind(now)
+        .bind(deadline_ms)
+        .bind(&op.id)
+        .bind(owner_key.map(|key| format!("$.data.{key}")))
+        .execute(&mut **tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        tx.commit().await?;
+        SqlxOperationRepo::new(pool.clone())
+            .find_by_id(&op.id)
+            .await
+
+    })).await.map_err(calm_truth::TruthError::from)?
 }
 
 pub(crate) async fn checkpoint_app_server_interact_tx(

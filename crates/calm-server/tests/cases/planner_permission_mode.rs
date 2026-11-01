@@ -54,12 +54,11 @@ async fn reported_mode(boot: &Boot) -> Value {
 }
 
 async fn store_raw(boot: &Boot, value: &str) {
-    sqlx::query(
+    (boot.repo.db()).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.permission_mode', json(?1)) WHERE id = ?2",
     )
     .bind(value)
-    .bind(boot.planner_card.id.as_str())
-    .execute(boot.repo.pool())
+    .bind(boot.planner_card.id.as_str()))
     .await
     .expect("store a raw permission mode");
 }
@@ -273,9 +272,9 @@ async fn a_card_that_is_not_a_planner_is_refused() {
         "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'gpt') WHERE id = ?1",
     ] {
         let boot = boot_with(idle_snapshot(vec![])).await;
-        sqlx::query(retarget)
-            .bind(boot.planner_card.id.as_str())
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query(retarget).bind(boot.planner_card.id.as_str()))
             .await
             .expect("retarget the card");
         let (status, body) = put_mode(&boot, "user", json!({"permission_mode": "ask"})).await;

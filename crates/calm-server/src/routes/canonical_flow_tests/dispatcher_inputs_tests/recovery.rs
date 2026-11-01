@@ -9,47 +9,58 @@ async fn original(
     flow: &Flow,
     id: &InputSubmissionId,
 ) -> (StoredSubmissionIdentity, StoredSubmissionPlan) {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let identity = conversation::submission_identity_tx(&mut tx, id)
+                    .await
+                    .unwrap();
+                let plan = conversation::submission_plan_tx(&mut tx, id).await.unwrap();
+                tx.rollback().await.unwrap();
+                (identity, plan)
+            })
+        })
         .await
-        .unwrap();
-    let identity = conversation::submission_identity_tx(&mut tx, id)
-        .await
-        .unwrap();
-    let plan = conversation::submission_plan_tx(&mut tx, id).await.unwrap();
-    tx.rollback().await.unwrap();
-    (identity, plan)
+        .expect("independent write operation")
 }
 
 async fn legacy_task_report(flow: &Flow, reason: &str) -> i64 {
     use crate::event::{Event, EventScope};
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        let event = Event::TaskFailed {
+            notification: calm_types::event::PlannerNotification::Notify,
+            idempotency_key: "legacy-recovery-task".into(),
+            reason: reason.into(),
+            details: None,
+            agent_message: None,
+        };
+        let id = crate::db::sqlite::append_decision_event_in_tx(
+            &mut tx,
+            &crate::ids::ActorId::KernelDispatcher,
+            &EventScope::Track {
+                track: flow.track.clone().into(),
+                area: flow.area.clone().into(),
+            },
+            None,
+            &event,
+        )
         .await
         .unwrap();
-    let event = Event::TaskFailed {
-        notification: calm_types::event::PlannerNotification::Notify,
-        idempotency_key: "legacy-recovery-task".into(),
-        reason: reason.into(),
-        details: None,
-        agent_message: None,
-    };
-    let id = crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::KernelDispatcher,
-        &EventScope::Track {
-            track: flow.track.clone().into(),
-            area: flow.area.clone().into(),
-        },
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
-    // Historical row fixture; production acceptance sees only the original old wire.
-    sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') WHERE id=?1")
-            .bind(id).execute(&mut **tx).await.unwrap();
-    tx.commit().await.unwrap();
-    flow.state.dispatcher.reconcile_tick_for_test().await;
-    id
+        // Historical row fixture; production acceptance sees only the original old wire.
+        sqlx::query("UPDATE events SET event_version=30,payload=json_remove(payload,'$.notification') WHERE id=?1")
+                .bind(id).execute(&mut **tx).await.unwrap();
+        tx.commit().await.unwrap();
+        flow.state.dispatcher.reconcile_tick_for_test().await;
+        id
+
+    })).await.expect("independent write operation")
 }
 
 enum ColdInput {
@@ -75,10 +86,9 @@ async fn cold_system_claim(case: ColdInput) {
         .await;
     // Only reject a new crossing marker. The actual producer and scheduler must
     // accept and claim the System input; the fixture never writes lifecycle state.
-    sqlx::query(&format!("CREATE TRIGGER hold_system_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (flow.fixture.repo.db()).writer().execute(sqlx::query(&format!("CREATE TRIGGER hold_system_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN NEW.id='{}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>1
-        BEGIN SELECT RAISE(ABORT,'hold original System crossing marker'); END", flow.worker))
-        .execute(flow.fixture.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'hold original System crossing marker'); END", flow.worker))).await.unwrap();
     let event_id = if matches!(case, ColdInput::LegacyTask | ColdInput::ChangedLegacyTask) {
         legacy_task_report(&flow, SYSTEM_BODY).await
     } else {
@@ -127,8 +137,8 @@ async fn cold_system_claim(case: ColdInput) {
         // A real persisted event keeps its ID and type but no longer has its
         // accepted original content. This is a source-integrity negative, not
         // a replacement observation or a manually advanced worker state.
-        sqlx::query("UPDATE events SET payload=json_set(payload,'$.body_after','changed original event after acceptance') WHERE id=?1")
-            .bind(event_id).execute(flow.fixture.repo.pool()).await.unwrap();
+        (flow.fixture.repo.db()).writer().execute(sqlx::query("UPDATE events SET payload=json_set(payload,'$.body_after','changed original event after acceptance') WHERE id=?1")
+            .bind(event_id)).await.unwrap();
     }
     let Flow {
         trace,
@@ -203,8 +213,9 @@ async fn cold_system_claim(case: ColdInput) {
         _client: client,
         peer,
     };
-    sqlx::query("DROP TRIGGER hold_system_marker")
-        .execute(flow.fixture.repo.pool())
+    (flow.fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_system_marker"))
         .await
         .unwrap();
     // The original production reconcile reads current stored rows and re-admits

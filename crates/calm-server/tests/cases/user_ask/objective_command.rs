@@ -433,9 +433,8 @@ async fn objective_command_atomic_finalize_and_recovery() {
     let w = world("true", |a| a).await;
     approve(&w).await;
     let db = w.boot.repo.sqlite_db().unwrap();
-    sqlx::query("CREATE TRIGGER reject_command BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
-         BEGIN SELECT RAISE(ABORT,'crash before result commit'); END")
-        .execute(db.writer_pool()).await.unwrap();
+    (db).writer().execute(sqlx::query("CREATE TRIGGER reject_command BEFORE INSERT ON objective_events WHEN NEW.kind='check_finished' \
+         BEGIN SELECT RAISE(ABORT,'crash before result commit'); END")).await.unwrap();
     evaluate(&w, &w.revision).await.unwrap();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -461,13 +460,15 @@ async fn objective_command_atomic_finalize_and_recovery() {
             .await
             .unwrap();
     assert_eq!(status, "dispatched");
-    sqlx::query("DROP TRIGGER reject_command")
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER reject_command"))
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=? AND phase='parked'")
-        .bind(KIND)
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=? AND phase='parked'")
+                .bind(KIND),
+        )
         .await
         .unwrap();
     ready(&w).await;
@@ -509,9 +510,8 @@ async fn objective_command_prepare_restart_is_idempotent() {
     let _ = request.await;
     resume.notify_one();
     let db = w.boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=?")
-        .bind(KIND)
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE kind=?").bind(KIND))
         .await
         .unwrap();
     let plan = w.runtime.recover_on_boot().await.unwrap();
@@ -545,10 +545,12 @@ async fn objective_command_release_rechecks_intent_hash() {
             command: "false".into(),
         });
     o.approval.as_mut().unwrap().standard_hash = objective::standard::standard_hash(&o.definition);
-    sqlx::query("UPDATE objective_states SET state_json=? WHERE track_id=?")
-        .bind(serde_json::to_string(&stale).unwrap())
-        .bind(w.boot.track_id.as_str())
-        .execute(db.writer_pool())
+    (db).writer()
+        .execute(
+            sqlx::query("UPDATE objective_states SET state_json=? WHERE track_id=?")
+                .bind(serde_json::to_string(&stale).unwrap())
+                .bind(w.boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     resume.notify_one();
@@ -584,8 +586,7 @@ fn objective_command_boot_cleans_settled_orphan_checkout() {
             .repo
             .sqlite_db()
             .unwrap()
-            .writer_pool()
-            .acquire()
+            .hold_writer_for_test()
             .await
             .unwrap();
         (w, writer)
@@ -620,8 +621,8 @@ fn objective_command_boot_cleans_settled_orphan_checkout() {
         // Shutdown may cancel cleanup before unlink; normalize that old checkout
         // only after its tasks are gone, then inject the crash's durable orphan.
         workspace::worktree::remove_worktree(&w.repo, &path).unwrap();
-        sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.checkout_removed') WHERE kind=?")
-            .bind(KIND).execute(db.writer_pool()).await.unwrap();
+        (db).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.checkout_removed') WHERE kind=?")
+            .bind(KIND)).await.unwrap();
         workspace::worktree::detached_worktree(&w.repo, &path, &w.revision).unwrap();
         assert!(path.exists());
         project(&w).await; // Fresh operation runtime and projector reconcile startup.

@@ -332,7 +332,7 @@ pub async fn card_body_crdt_get_tx(
 mod tests {
     use super::*;
     use crate::db::RepoSyncDomainRaw;
-    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::db::sqlite::SqlxRepo;
 
     async fn track(repo: &SqlxRepo) -> Track {
         let area = repo
@@ -379,83 +379,109 @@ mod tests {
     async fn track_report_create_refuses_non_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let mut arbitrary_report = new_card(track.id.as_str(), "track-report");
-        arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
-        let error = card_create_with_id_tx(
-            &mut tx,
-            "bad_report".into(),
-            arbitrary_report,
-            CardRole::ReportCard,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "bad request: track-report cards must be created with the canonical initial payload; \
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let mut arbitrary_report = new_card(track.id.as_str(), "track-report");
+            arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
+            let error = card_create_with_id_tx(
+                &mut tx,
+                "bad_report".into(),
+                arbitrary_report,
+                CardRole::ReportCard,
+                false,
+                repo.card_role_cache(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "bad request: track-report cards must be created with the canonical initial payload; \
              use the report persist boundary to add content"
-        );
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]
     async fn track_report_create_accepts_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let canonical_report = new_card(track.id.as_str(), "track-report");
-        let accepted = card_create_with_id_tx(
-            &mut tx,
-            "canonical_report".into(),
-            canonical_report.clone(),
-            CardRole::ReportCard,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(accepted.payload, canonical_report.payload);
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let canonical_report = new_card(track.id.as_str(), "track-report");
+                    let accepted = card_create_with_id_tx(
+                        &mut tx,
+                        "canonical_report".into(),
+                        canonical_report.clone(),
+                        CardRole::ReportCard,
+                        false,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(accepted.payload, canonical_report.payload);
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn track_report_create_accepts_canonical_payload_with_null_blocks() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let mut canonical_report = new_card(track.id.as_str(), "track-report");
-        canonical_report.payload["blocks"] = serde_json::Value::Null;
-        card_create_with_id_tx(
-            &mut tx,
-            "canonical_report_with_null_blocks".into(),
-            canonical_report,
-            CardRole::ReportCard,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let mut canonical_report = new_card(track.id.as_str(), "track-report");
+                    canonical_report.payload["blocks"] = serde_json::Value::Null;
+                    card_create_with_id_tx(
+                        &mut tx,
+                        "canonical_report_with_null_blocks".into(),
+                        canonical_report,
+                        CardRole::ReportCard,
+                        false,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     #[tokio::test]
     async fn track_report_create_refuses_non_reportcard_role() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let track = track(&repo).await;
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let error = card_create_with_id_tx(
-            &mut tx,
-            "bad_role".into(),
-            new_card(track.id.as_str(), "track-report"),
-            CardRole::Worker,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "bad request: track-report cards must be kernel-minted with the reportcard role"
-        );
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let error = card_create_with_id_tx(
+                &mut tx,
+                "bad_role".into(),
+                new_card(track.id.as_str(), "track-report"),
+                CardRole::Worker,
+                false,
+                repo.card_role_cache(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "bad request: track-report cards must be kernel-minted with the reportcard role"
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]
@@ -510,30 +536,43 @@ mod tests {
             .card_create(new_card(track.id.as_str(), "track-report"))
             .await
             .unwrap();
-        let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-        let non_report =
-            card_update_with_crdt_tx(&mut tx, worker.id.as_str(), CardPatch::default(), vec![1])
-                .await
-                .unwrap_err();
-        assert_eq!(
-            non_report.to_string(),
-            "bad request: card_update_with_crdt_tx is restricted to track-report cards"
-        );
-        let kind_change = card_update_with_crdt_tx(
-            &mut tx,
-            report.id.as_str(),
-            CardPatch {
-                kind: Some("worker".into()),
-                ..CardPatch::default()
-            },
-            vec![1],
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            kind_change.to_string(),
-            "bad request: card_update_with_crdt_tx cannot change card kind"
-        );
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let non_report = card_update_with_crdt_tx(
+                        &mut tx,
+                        worker.id.as_str(),
+                        CardPatch::default(),
+                        vec![1],
+                    )
+                    .await
+                    .unwrap_err();
+                    assert_eq!(
+                        non_report.to_string(),
+                        "bad request: card_update_with_crdt_tx is restricted to track-report cards"
+                    );
+                    let kind_change = card_update_with_crdt_tx(
+                        &mut tx,
+                        report.id.as_str(),
+                        CardPatch {
+                            kind: Some("worker".into()),
+                            ..CardPatch::default()
+                        },
+                        vec![1],
+                    )
+                    .await
+                    .unwrap_err();
+                    assert_eq!(
+                        kind_change.to_string(),
+                        "bad request: card_update_with_crdt_tx cannot change card kind"
+                    );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 

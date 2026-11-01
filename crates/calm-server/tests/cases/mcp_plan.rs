@@ -131,9 +131,12 @@ async fn boot() -> Boot {
         "planner-session",
     )
     .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
-        .bind(track.id.as_str())
-        .execute(sqlx_repo.pool())
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
+                .bind(track.id.as_str()),
+        )
         .await
         .expect("mark planner session as track root");
     seed_runtime_session(
@@ -195,27 +198,36 @@ async fn boot() -> Boot {
 }
 
 async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session_id.to_string(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session_id.to_string(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn call_tool(
@@ -260,8 +272,9 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 /// Direct SQL escape hatch for states the tool surface cannot produce.
 async fn exec_sql(boot: &Boot, sql: &str) {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query(sql)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query(sql))
         .await
         .expect("exec sql");
 }
@@ -673,9 +686,12 @@ async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advan
         planner_identity(&boot),
         json!({"key": "race", "message": "too late"}),
         move || async move {
-            sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
-                .bind(task_id_for_hook)
-                .execute(pool.writer_pool())
+            (pool)
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
+                        .bind(task_id_for_hook),
+                )
                 .await
                 .expect("advance task after cancel pre-read");
         },
@@ -820,9 +836,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
 /// (#1893 §3.2). The entry is a failed task, the one state that used to carry `recovery`.
 #[tokio::test]
 async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
-    use calm_server::db::sqlite::{
-        TaskReporter, begin_immediate_tx, task_claim_pending_tx, task_fail_from_worker_tx,
-    };
+    use calm_server::db::sqlite::{TaskReporter, task_claim_pending_tx, task_fail_from_worker_tx};
     let boot = boot().await;
     write_task_block(&boot, json!({"key": "a", "kind": "codex", "goal": "g"})).await;
     let task = boot
@@ -832,63 +846,72 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
         .unwrap()
         .expect("task a projected");
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = begin_immediate_tx(&pool).await.unwrap();
-    assert_eq!(
-        task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        task_fail_from_worker_tx(
-            &mut tx,
-            &task.id,
-            boot.track_id.as_str(),
-            TaskReporter::Kernel,
-            "worker exited",
-            11
-        )
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    task_claim_pending_tx(&mut tx, &task.id, 10, &[], false)
+                        .await
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    task_fail_from_worker_tx(
+                        &mut tx,
+                        &task.id,
+                        boot.track_id.as_str(),
+                        TaskReporter::Kernel,
+                        "worker exited",
+                        11
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                tx.commit().await.unwrap();
+                let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
+                    .await
+                    .expect("list ok");
+                let entry = &out["tasks"][0];
+                assert_eq!(entry["status"], "failed", "{out}");
+                let fields: std::collections::BTreeSet<&str> = entry
+                    .as_object()
+                    .expect("one entry")
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(
+                    fields,
+                    std::collections::BTreeSet::from([
+                        "access",
+                        "attempt_id",
+                        "blocking_reason",
+                        "candidate",
+                        "created_at",
+                        "depends_on",
+                        "finished_at",
+                        "gate",
+                        "gate_result",
+                        "generation",
+                        "goal",
+                        "key",
+                        "kind",
+                        "priority",
+                        "result_contract",
+                        "start",
+                        "status",
+                        "status_detail",
+                        "worker_card_id",
+                    ]),
+                    "{out}"
+                );
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    let out = call_tool(&boot, TOOL_TASK_LS, planner_identity(&boot), json!({}))
-        .await
-        .expect("list ok");
-    let entry = &out["tasks"][0];
-    assert_eq!(entry["status"], "failed", "{out}");
-    let fields: std::collections::BTreeSet<&str> = entry
-        .as_object()
-        .expect("one entry")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        fields,
-        std::collections::BTreeSet::from([
-            "access",
-            "attempt_id",
-            "blocking_reason",
-            "candidate",
-            "created_at",
-            "depends_on",
-            "finished_at",
-            "gate",
-            "gate_result",
-            "generation",
-            "goal",
-            "key",
-            "kind",
-            "priority",
-            "result_contract",
-            "start",
-            "status",
-            "status_detail",
-            "worker_card_id",
-        ]),
-        "{out}"
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]

@@ -43,10 +43,15 @@ pub(super) async fn held(key: &str, cmd: &str, timeout: i64) -> Verify {
     repo.claim_drive_batch(1).await.unwrap();
     let mut output = TxOutput::new("task", Some(task_id.clone()), json!({}));
     output.data = json!({"task_id":task_id,"track_id":boot.track_id,"area_id":boot.area_id,"key":key,"attempt":1,"cwd":dir.path(),"gate":gate});
-    sqlx::query("UPDATE operations SET phase='spawn_started',tx_output_json=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(&id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase='spawn_started',tx_output_json=?1 WHERE id=?2",
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(&id),
+        )
         .await
         .unwrap();
     let op = repo.get_operation(&id).await.unwrap().unwrap();
@@ -125,9 +130,12 @@ pub(super) async fn boot_recover(ctx: &SpawnCtx, adapter: &TaskVerifyAdapter, id
         .await
         .unwrap();
     // Use the production runtime reconciliation and original claimed row for actual completion.
-    sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-        .bind(id)
-        .execute(ctx.operation_repo.sqlite_db().writer_pool())
+    (ctx.operation_repo.sqlite_db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+                .bind(id),
+        )
         .await
         .unwrap();
     let runtime = OperationRuntime::new_unchecked(
@@ -185,15 +193,18 @@ async fn c2b_boot_released_retries_only_close_then_reattaches() {
     observer.abort();
     let _ = observer.await;
     let authorized_at = now_ms() - 1750;
-    sqlx::query(
-        "UPDATE operations SET tx_output_json=json_set(tx_output_json, \
+    (v.ctx.operation_repo.sqlite_db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET tx_output_json=json_set(tx_output_json, \
          '$.data.gate_execution.release.Released.authorized_at_ms',?1) WHERE id=?2",
-    )
-    .bind(authorized_at)
-    .bind(&v.op.id)
-    .execute(v.ctx.operation_repo.sqlite_db().writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(authorized_at)
+            .bind(&v.op.id),
+        )
+        .await
+        .unwrap();
     let started = std::time::Instant::now();
     boot_recover(&v.ctx, &v.adapter, &v.op.id).await;
     let op = wait_op(&v.ctx, &v.op.id, |o| o.phase.tag() == PhaseTag::Succeeded).await;
@@ -247,9 +258,12 @@ pub(super) async fn recovered_status(past_deadline: bool) {
         .unwrap();
     std::fs::write(v.dir.path().join(format!("{task_id}-g1.exit")), "0\n").unwrap();
     if past_deadline {
-        sqlx::query("UPDATE operations SET parked_deadline_ms=1 WHERE id=?1")
-            .bind(&v.op.id)
-            .execute(v.ctx.operation_repo.sqlite_db().writer_pool())
+        (v.ctx.operation_repo.sqlite_db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET parked_deadline_ms=1 WHERE id=?1")
+                    .bind(&v.op.id),
+            )
             .await
             .unwrap();
     }
@@ -332,10 +346,15 @@ pub(super) async fn prior_execution_must_settle() {
         .await
         .unwrap();
     v.ctx.operation_repo.claim_drive_batch(1).await.unwrap();
-    sqlx::query("UPDATE operations SET phase='spawn_started',tx_output_json=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(&next)
-        .execute(v.ctx.operation_repo.sqlite_db().writer_pool())
+    (v.ctx.operation_repo.sqlite_db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase='spawn_started',tx_output_json=?1 WHERE id=?2",
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(&next),
+        )
         .await
         .unwrap();
     let op = v
@@ -367,9 +386,12 @@ pub(super) async fn prior_execution_must_settle() {
     boot_recover(&v.ctx, &v.adapter, &v.op.id).await;
     wait_op(&v.ctx, &v.op.id, |o| o.phase.tag() == PhaseTag::Succeeded).await;
     // The prior execution is now settled; the same production spawn path can admit attempt 2.
-    sqlx::query("UPDATE tasks SET status='verifying',gate_attempt=2 WHERE id=?1")
-        .bind(&task_id)
-        .execute(v.ctx.operation_repo.sqlite_db().writer_pool())
+    (v.ctx.operation_repo.sqlite_db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='verifying',gate_attempt=2 WHERE id=?1")
+                .bind(&task_id),
+        )
         .await
         .unwrap();
     let SpawnOutcome::Parked {
@@ -405,31 +427,38 @@ pub(super) async fn predeadline_without_verdict() {
     park(&v).await;
     drop(v.observer);
     let pool = v.ctx.operation_repo.sqlite_db();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let engine = v.ctx.execution.engine().unwrap();
+                let ticket = engine
+                    .request(&mut tx, &id(&v.op), Desired::Stop)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                engine.drive(ticket.committed());
+                tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&id(&v.op)))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let runtime = OperationRuntime::new_unchecked(
+                    v.ctx.operation_repo.clone(),
+                    vec![Arc::new(v.adapter.clone())],
+                    v.ctx.events.clone(),
+                    v.ctx.completion.clone(),
+                    v.ctx.clone(),
+                );
+                runtime.sweep_parked().await.unwrap();
+                runtime.sweep_parked().await.unwrap();
+                let op = wait_op(&v.ctx, &v.op.id, |o| o.phase.tag() == PhaseTag::Succeeded).await;
+                assert!(v.deadline > now_ms());
+                assert_eq!(op.tx_output.unwrap().result["status_detail"], "gate-infra");
+                assert!(!v.dir.path().join("ran").exists());
+            })
+        })
         .await
-        .unwrap();
-    let engine = v.ctx.execution.engine().unwrap();
-    let ticket = engine
-        .request(&mut tx, &id(&v.op), Desired::Stop)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    engine.drive(ticket.committed());
-    tokio::time::timeout(Duration::from_secs(10), engine.wait_settled(&id(&v.op)))
-        .await
-        .unwrap()
-        .unwrap();
-    let runtime = OperationRuntime::new_unchecked(
-        v.ctx.operation_repo.clone(),
-        vec![Arc::new(v.adapter.clone())],
-        v.ctx.events.clone(),
-        v.ctx.completion.clone(),
-        v.ctx.clone(),
-    );
-    runtime.sweep_parked().await.unwrap();
-    runtime.sweep_parked().await.unwrap();
-    let op = wait_op(&v.ctx, &v.op.id, |o| o.phase.tag() == PhaseTag::Succeeded).await;
-    assert!(v.deadline > now_ms());
-    assert_eq!(op.tx_output.unwrap().result["status_detail"], "gate-infra");
-    assert!(!v.dir.path().join("ran").exists());
+        .expect("independent write operation")
 }

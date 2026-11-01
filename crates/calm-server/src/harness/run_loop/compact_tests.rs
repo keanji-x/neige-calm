@@ -769,21 +769,28 @@ async fn carrier_quiescence_historical_entries_skip_held_resources() {
     let _park = inner.parked.park().unwrap();
     let _track =
         crate::per_card_lock::lock_key(&inner.track_delete_locks, inner.track_id.as_str()).await;
-    let _tx = crate::db::sqlite::begin_immediate_tx(fx.repo.db())
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let _tx = write_session.begin().await.unwrap();
+                let (compact, tick) = tokio::join!(
+                    tokio::time::timeout(
+                        Duration::from_millis(200),
+                        compact_command::handle_compact(inner, compact_command::Source::Historical)
+                    ),
+                    tokio::time::timeout(
+                        Duration::from_millis(200),
+                        issuance::maybe_issue_turn(inner)
+                    ),
+                );
+                assert!(
+                    matches!(compact, Ok(Err(_))) && matches!(tick, Ok(Ok(()))),
+                    "parked historical compact and tick must skip Track/SQL: {compact:?}, {tick:?}"
+                );
+            })
+        })
         .await
-        .unwrap();
-    let (compact, tick) = tokio::join!(
-        tokio::time::timeout(
-            Duration::from_millis(200),
-            compact_command::handle_compact(inner, compact_command::Source::Historical)
-        ),
-        tokio::time::timeout(
-            Duration::from_millis(200),
-            issuance::maybe_issue_turn(inner)
-        ),
-    );
-    assert!(
-        matches!(compact, Ok(Err(_))) && matches!(tick, Ok(Ok(()))),
-        "parked historical compact and tick must skip Track/SQL: {compact:?}, {tick:?}"
-    );
+        .expect("independent write operation")
 }

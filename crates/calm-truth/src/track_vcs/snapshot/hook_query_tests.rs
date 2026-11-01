@@ -109,17 +109,24 @@ async fn transcript_hook_selector_caps_mixed_kinds_after_exact_scope_filtering()
     let rows = hook_rows_for_card(fx.repo.pool(), &fx.track.id, &fx.card.id)
         .await
         .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fx.repo.db())
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let ids = hook_ids_for_card(&mut **tx, &fx.track.id, &fx.card.id)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                assert_eq!(ids, expected);
+                assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), expected);
+                assert_eq!(rows.len(), cap);
+                let events = hook_events_from_rows(rows).await.unwrap();
+                assert!(events.iter().any(|event| event.kind == "codex.hook"));
+                assert!(events.iter().any(|event| event.kind == "claude.hook"));
+            })
+        })
         .await
-        .unwrap();
-    let ids = hook_ids_for_card(&mut **tx, &fx.track.id, &fx.card.id)
-        .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    assert_eq!(ids, expected);
-    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), expected);
-    assert_eq!(rows.len(), cap);
-    let events = hook_events_from_rows(rows).await.unwrap();
-    assert!(events.iter().any(|event| event.kind == "codex.hook"));
-    assert!(events.iter().any(|event| event.kind == "claude.hook"));
+        .expect("independent write operation")
 }

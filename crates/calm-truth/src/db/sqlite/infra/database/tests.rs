@@ -43,7 +43,7 @@ async fn concurrent_and_cancelled_close_wait_for_the_real_memory_anchor_ack() {
     drop(commit);
     let db = SqliteDb::new(
         roles.read_pool().clone(),
-        roles.writer_pool().clone(),
+        roles.writer().pool.clone(),
         Some(anchor),
     );
     let clone = db.clone();

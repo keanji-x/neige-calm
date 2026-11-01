@@ -27,42 +27,51 @@ pub(super) async fn setup() -> (Boot, Value) {
 }
 pub(super) async fn setup_on(boot: Boot) -> (Boot, Value) {
     let db = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&db)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::track_capabilities::stamp_tx(
-        &mut tx,
-        &boot.track_id,
-        &[calm_types::track_capability::TrackCapability::Objectives],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let report = boot
-        .repo
-        .card_create(NewCard {
-            track_id: boot.track_id.clone(),
-            title: None,
-            kind: "track-report".into(),
-            sort: None,
-            payload: serde_json::to_value(calm_server::track_report::TrackReportPayload::initial())
-                .unwrap(),
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::track_capabilities::stamp_tx(
+                    &mut tx,
+                    &boot.track_id,
+                    &[calm_types::track_capability::TrackCapability::Objectives],
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let report = boot
+                    .repo
+                    .card_create(NewCard {
+                        track_id: boot.track_id.clone(),
+                        title: None,
+                        kind: "track-report".into(),
+                        sort: None,
+                        payload: serde_json::to_value(
+                            calm_server::track_report::TrackReportPayload::initial(),
+                        )
+                        .unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                boot.repo
+                    .seed_card_role_cache(&boot.card_role_cache)
+                    .await
+                    .unwrap();
+                crate::support::report_writes::announce_report(
+                    boot.repo.as_ref(),
+                    &boot.events,
+                    &boot.ctx.write,
+                    report,
+                )
+                .await;
+                let block = define(&boot, None, definition()).await;
+                (boot, block)
+            })
         })
         .await
-        .unwrap();
-    boot.repo
-        .seed_card_role_cache(&boot.card_role_cache)
-        .await
-        .unwrap();
-    crate::support::report_writes::announce_report(
-        boot.repo.as_ref(),
-        &boot.events,
-        &boot.ctx.write,
-        report,
-    )
-    .await;
-    let block = define(&boot, None, definition()).await;
-    (boot, block)
+        .expect("independent write operation")
 }
 async fn approved(boot: &Boot) -> bool {
     objective_host::load_state(&boot.repo.sqlite_db().unwrap(), &boot.track_id)
@@ -282,14 +291,14 @@ async fn objective_approval_answer_transaction_rolls_back_with_event_write() {
     let (boot, _) = setup().await;
     let id = request(&boot).await["ask_id"].as_i64().unwrap();
     let db = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "CREATE TRIGGER reject_objective_answer BEFORE INSERT ON events \
+    (db).writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER reject_objective_answer BEFORE INSERT ON events \
          WHEN NEW.kind='ask.answered' \
          BEGIN SELECT RAISE(ABORT,'answer failure'); END",
-    )
-    .execute(db.read_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert_eq!(
         answer(&boot, id, json!([{"option":0}])).await.0,
         StatusCode::INTERNAL_SERVER_ERROR
@@ -302,8 +311,8 @@ async fn objective_approval_answer_transaction_rolls_back_with_event_write() {
             .await
             .unwrap();
     assert_eq!(n, 0);
-    sqlx::query("DROP TRIGGER reject_objective_answer")
-        .execute(db.read_pool())
+    (db).writer()
+        .execute(sqlx::query("DROP TRIGGER reject_objective_answer"))
         .await
         .unwrap();
     assert_eq!(

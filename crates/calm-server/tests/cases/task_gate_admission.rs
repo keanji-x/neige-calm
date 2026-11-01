@@ -103,9 +103,12 @@ async fn gate_admission_withdrawn_untouched_and_runtime_waiting_blocks_are_not_r
     let mut waiter = task("waiter");
     waiter["depends_on"] = json!(["first"]);
     upsert(&boot, None, waiter).await;
-    sqlx::query("UPDATE tracks SET planner_task_ceiling=2 WHERE id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET planner_task_ceiling=2 WHERE id=?1")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     upsert(&boot, None, task("over-ceiling")).await;
@@ -199,11 +202,14 @@ async fn gate_admission_edits_to_started_or_finished_tasks_are_not_refused() {
     for status in ["dispatched", "running", "verifying", "done", "failed"] {
         let key = format!("started-{status}");
         let (id, _) = upsert(&boot, None, task(&key)).await;
-        sqlx::query("UPDATE tasks SET status=?1 WHERE track_id=?2 AND key=?3")
-            .bind(status)
-            .bind(boot.track_id.as_str())
-            .bind(&key)
-            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+        (boot.repo.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status=?1 WHERE track_id=?2 AND key=?3")
+                    .bind(status)
+                    .bind(boot.track_id.as_str())
+                    .bind(&key),
+            )
             .await
             .unwrap();
 

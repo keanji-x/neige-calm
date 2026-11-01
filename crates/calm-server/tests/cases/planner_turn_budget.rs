@@ -336,20 +336,22 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
         ("worker", ""),
     ] {
         let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
-        sqlx::query("UPDATE cards SET role = ?1, payload = ?2 WHERE id = ?3")
+        (boot.repo.db()).writer().execute(sqlx::query("UPDATE cards SET role = ?1, payload = ?2 WHERE id = ?3")
             .bind(role)
             .bind(
                 json!({"schemaVersion":1,"harness_profile":marker,"planner_provider":"codex","assistant_provider":"codex"})
                     .to_string(),
             )
-            .bind(boot.planner_card.id.as_str())
-            .execute(boot.repo.pool())
+            .bind(boot.planner_card.id.as_str()))
             .await
             .unwrap();
         if role == "assistant" {
-            sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
-                .bind(&boot.worker_session_id)
-                .execute(boot.repo.pool())
+            (boot.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
+                        .bind(&boot.worker_session_id),
+                )
                 .await
                 .unwrap();
         }

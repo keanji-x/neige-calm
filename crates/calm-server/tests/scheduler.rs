@@ -195,9 +195,12 @@ async fn boot_at_workspace(cwd: &str) -> Boot {
         "planner-session",
     )
     .await;
-    sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
-        .bind(track.id.as_str())
-        .execute(sqlx_repo.pool())
+    (sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET root_session_id = 'planner-session' WHERE id = ?1")
+                .bind(track.id.as_str()),
+        )
         .await
         .expect("mark planner session as track root");
     seed_runtime_session(
@@ -494,7 +497,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
 
 async fn seed_task(boot: &Boot, task: Task) {
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         r#"INSERT INTO tasks
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
             depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
@@ -528,8 +531,7 @@ async fn seed_task(boot: &Boot, task: Task) {
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
     .bind(task.access.as_str())
-    .bind(task.child_track_json)
-    .execute(pool.writer_pool())
+    .bind(task.child_track_json))
     .await
     .expect("seed task row");
 }
@@ -553,14 +555,13 @@ async fn seed_projected_task_for(
             .expect("check report fixture");
     if report_exists == 0 {
         let report_id = new_id();
-        sqlx::query(
+        (pool).writer().execute(sqlx::query(
             "INSERT INTO cards(id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
              VALUES(?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
         )
         .bind(&report_id)
         .bind(track_id)
-        .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
-        .execute(pool.writer_pool())
+        .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap()))
         .await
         .expect("seed report fixture");
         let report = boot.repo.card_get(&report_id).await.unwrap().unwrap();
@@ -626,29 +627,32 @@ async fn seed_projected_task_for(
     )
     .await
     .expect("seed task through production projection");
-    sqlx::query(
-        "UPDATE tasks SET status=?1,status_detail=?2,worker_card_id=?3,gate_result_json=?4,\
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tasks SET status=?1,status_detail=?2,worker_card_id=?3,gate_result_json=?4,\
          gate_attempt=?5,gate_pid=?6,gate_pid_starttime=?7,gate_pid_boot_id=?8,\
          running_deadline_ms=?9,context_stale_at_ms=?10,created_at_ms=?11,updated_at_ms=?12,\
          finished_at_ms=?13 WHERE id=?14",
-    )
-    .bind(task.status)
-    .bind(task.status_detail)
-    .bind(task.worker_card_id)
-    .bind(task.gate_result_json)
-    .bind(task.gate_attempt)
-    .bind(task.gate_pid)
-    .bind(task.gate_pid_starttime)
-    .bind(task.gate_pid_boot_id)
-    .bind(task.running_deadline_ms)
-    .bind(task.context_stale_at_ms)
-    .bind(task.created_at_ms)
-    .bind(task.updated_at_ms)
-    .bind(task.finished_at_ms)
-    .bind(task.id)
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .expect("restore projected task runtime state");
+            )
+            .bind(task.status)
+            .bind(task.status_detail)
+            .bind(task.worker_card_id)
+            .bind(task.gate_result_json)
+            .bind(task.gate_attempt)
+            .bind(task.gate_pid)
+            .bind(task.gate_pid_starttime)
+            .bind(task.gate_pid_boot_id)
+            .bind(task.running_deadline_ms)
+            .bind(task.context_stale_at_ms)
+            .bind(task.created_at_ms)
+            .bind(task.updated_at_ms)
+            .bind(task.finished_at_ms)
+            .bind(task.id),
+        )
+        .await
+        .expect("restore projected task runtime state");
 }
 
 async fn set_closed(boot: &Boot, closed: bool) {
@@ -674,10 +678,13 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
 
 async fn mark_context_stale(boot: &Boot, task_id: &str) {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query("UPDATE tasks SET context_stale_at_ms = ?1 WHERE id = ?2")
-        .bind(now_ms())
-        .bind(task_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET context_stale_at_ms = ?1 WHERE id = ?2")
+                .bind(now_ms())
+                .bind(task_id),
+        )
         .await
         .expect("mark task context stale");
 }
@@ -741,38 +748,44 @@ async fn seed_held_workspace_lease(
         .expect("create lease dir");
     let path = lease_dir.path();
     let now = now_ms();
-    sqlx::query(
-        r#"INSERT INTO workspace_leases (
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
                boot_id, created_at_ms, updated_at_ms
            )
            VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)"#,
-    )
-    .bind(&lease_id)
-    .bind(card_id)
-    .bind(boot.track_id.as_str())
-    .bind(path.display().to_string())
-    .bind(now + 60_000)
-    .bind(now)
-    .execute(pool.writer_pool())
-    .await
-    .expect("insert held workspace lease");
+            )
+            .bind(&lease_id)
+            .bind(card_id)
+            .bind(boot.track_id.as_str())
+            .bind(path.display().to_string())
+            .bind(now + 60_000)
+            .bind(now),
+        )
+        .await
+        .expect("insert held workspace lease");
     (lease_id, lease_dir)
 }
 
 async fn seed_active_codex_turn(boot: &Boot, runtime_id: &str, thread_id: &str, turn_id: &str) {
-    sqlx::query(
-        "UPDATE worker_sessions \
+    (boot.repo.sqlite_db().expect("sqlite pool"))
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions \
          SET thread_id = ?1, active_turn_id = ?2, updated_at_ms = ?3 \
          WHERE id = ?4",
-    )
-    .bind(thread_id)
-    .bind(turn_id)
-    .bind(now_ms())
-    .bind(runtime_id)
-    .execute(boot.repo.sqlite_db().expect("sqlite pool").writer_pool())
-    .await
-    .expect("seed active codex turn");
+            )
+            .bind(thread_id)
+            .bind(turn_id)
+            .bind(now_ms())
+            .bind(runtime_id),
+        )
+        .await
+        .expect("seed active codex turn");
     boot.shared_codex_appserver
         .set_active_turn_for_test(thread_id, turn_id);
 }
@@ -827,10 +840,13 @@ async fn call_tool(
 /// and therefore NOT the ownership proof; tests exercising unstamped-row reports also seed [`seed_worker_op_target`].
 async fn bind_worker_card_payload(boot: &Boot, task_id: &str) {
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-        .bind(json!({ "idempotency_key": task_id }).to_string())
-        .bind(boot.worker_card_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind(json!({ "idempotency_key": task_id }).to_string())
+                .bind(boot.worker_card_id.as_str()),
+        )
         .await
         .expect("bind worker card payload");
 }
@@ -873,17 +889,20 @@ async fn seed_worker_op_target_with_payload(
         .await
         .expect("seed worker op row");
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    sqlx::query(
-        "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET target_type = 'card', target_id = ?1, target_json = ?2 \
          WHERE kind = ?3 AND idempotency_key = ?4",
-    )
-    .bind(card_id)
-    .bind(json!({ "type": "card", "id": card_id }).to_string())
-    .bind(kind)
-    .bind(task_id)
-    .execute(pool.writer_pool())
-    .await
-    .expect("stamp op target card");
+            )
+            .bind(card_id)
+            .bind(json!({ "type": "card", "id": card_id }).to_string())
+            .bind(kind)
+            .bind(task_id),
+        )
+        .await
+        .expect("stamp op target card");
 }
 
 fn worker_identity(boot: &Boot) -> ToolCallIdentity {
@@ -1064,15 +1083,18 @@ impl ProviderAdapter for CardSpawnAdapter {
 
 /// Released-result replay with a stub bootstrap; real activation uses u11_canonical flows.
 async fn historical_child_result(boot: &Boot, task: &str) {
-    sqlx::query(
-        "UPDATE operations SET tx_output_json=json_remove(tx_output_json,
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET tx_output_json=json_remove(tx_output_json,
         '$.result.canonical_worker','$.data.canonical_worker')
         WHERE kind='child-track' AND idempotency_key=?1",
-    )
-    .bind(task)
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(task),
+        )
+        .await
+        .unwrap();
 }
 
 struct BootstrapAdapter {
@@ -2451,11 +2473,10 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE tasks SET claim_context_json='[]',decl_ready=1,decl_released_by_user=0,context_verify_failures=0 WHERE id=?1",
     )
-    .bind(&task_id)
-    .execute(pool.writer_pool())
+    .bind(&task_id))
     .await
     .unwrap();
 
@@ -2784,63 +2805,67 @@ async fn every_registered_task_adapter_refuses_material_context() {
         "every production adapter must be classified as task-bound or explicitly non-task-bound"
     );
     let pool = boot.repo.sqlite_db().unwrap();
-    for (adapter, op) in cases {
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        for (adapter, op) in cases {
+            let mut tx = write_session.begin()
+                .await
+                .unwrap();
+            let before: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
+                    (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
+            )
+            .fetch_one(&mut **tx)
             .await
             .unwrap();
-        let before: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
+            let error = adapter
+                .prepare_tx(&mut tx, &op.payload, &op)
+                .await
+                .expect_err(adapter.kind());
+            assert!(
+                matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("context-stale")),
+                "{} did not fail closed: {error}",
+                adapter.kind()
+            );
+            let after: (i64, i64, i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
                     (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .unwrap();
-        let error = adapter
-            .prepare_tx(&mut tx, &op.payload, &op)
+            )
+            .fetch_one(&mut **tx)
             .await
-            .expect_err(adapter.kind());
-        assert!(
-            matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("context-stale")),
-            "{} did not fail closed: {error}",
-            adapter.kind()
-        );
-        let after: (i64, i64, i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM cards), \
-                    (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
+            .unwrap();
+            assert_eq!(
+                before,
+                after,
+                "{} wrote before its stale fence",
+                adapter.kind()
+            );
+            tx.rollback().await.unwrap();
+        }
+
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        let missing = calm_server::operation::refuse_if_context_stale(
+            &mut tx,
+            Some("missing-task-bound-operation"),
         )
-        .fetch_one(&mut **tx)
         .await
-        .unwrap();
-        assert_eq!(
-            before,
-            after,
-            "{} wrote before its stale fence",
-            adapter.kind()
+        .expect_err("a task binding whose row vanished must fail closed");
+        assert!(
+            matches!(missing, calm_server::error::CalmError::Conflict(ref message) if message.contains("does not exist"))
         );
         tx.rollback().await.unwrap();
-    }
 
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    let missing = calm_server::operation::refuse_if_context_stale(
-        &mut tx,
-        Some("missing-task-bound-operation"),
-    )
-    .await
-    .expect_err("a task binding whose row vanished must fail closed");
-    assert!(
-        matches!(missing, calm_server::error::CalmError::Conflict(ref message) if message.contains("does not exist"))
-    );
-    tx.rollback().await.unwrap();
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        calm_server::operation::refuse_if_context_stale(&mut tx, None)
+            .await
+            .expect("an operation without a task binding is outside the task-context fence");
+        tx.rollback().await.unwrap();
 
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    calm_server::operation::refuse_if_context_stale(&mut tx, None)
-        .await
-        .expect("an operation without a task binding is outside the task-context fence");
-    tx.rollback().await.unwrap();
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2927,46 +2952,58 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
         .await
         .unwrap()
         .unwrap();
-    let mut prepare_tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    let output = adapter
-        .prepare_tx(&mut prepare_tx, &payload, &pending_op)
-        .await
-        .unwrap();
-    prepare_tx.commit().await.unwrap();
-    sqlx::query(
-        "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut prepare_tx = write_session.begin().await.unwrap();
+                let output = adapter
+                    .prepare_tx(&mut prepare_tx, &payload, &pending_op)
+                    .await
+                    .unwrap();
+                prepare_tx.commit().await.unwrap();
+                (pool)
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
          target_json = ?2 WHERE id = ?3",
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string())
-    .bind(&op_id)
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
-    mark_context_stale(&boot, &task_id).await;
+                        )
+                        .bind(serde_json::to_string(&output).unwrap())
+                        .bind(
+                            json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string(),
+                        )
+                        .bind(&op_id),
+                    )
+                    .await
+                    .unwrap();
+                mark_context_stale(&boot, &task_id).await;
 
-    let plan = runtime.recover_on_boot().await.unwrap();
-    runtime.apply_recovery(plan).await.unwrap();
-    assert_eq!(
-        spawned.load(Ordering::SeqCst),
-        1,
-        "already-started terminal work resumes without re-entering prepare_tx"
-    );
-    let op = runtime
-        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+                let plan = runtime.recover_on_boot().await.unwrap();
+                runtime.apply_recovery(plan).await.unwrap();
+                assert_eq!(
+                    spawned.load(Ordering::SeqCst),
+                    1,
+                    "already-started terminal work resumes without re-entering prepare_tx"
+                );
+                let op = runtime
+                    .find_by_kind_and_idempotency("terminal-worker", &task_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+                assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
+
+                scheduler.sweep_all().await;
+                assert_eq!(
+                    task_row(&boot, "stale-started").await.status,
+                    TaskStatus::Running
+                );
+            })
+        })
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
-    assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
-
-    scheduler.sweep_all().await;
-    assert_eq!(
-        task_row(&boot, "stale-started").await.status,
-        TaskStatus::Running
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -2978,9 +3015,12 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     let mut missing = plan_task(&boot.track_id, "boot-missing-op", TaskKind::Terminal, &[]);
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
-    sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
     let spawned = Arc::new(AtomicUsize::new(0));
@@ -3003,8 +3043,11 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     );
     let scheduler = dispatcher.scheduler();
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("ALTER TABLE task_ref_index RENAME TO task_ref_index_boot_failure")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE task_ref_index RENAME TO task_ref_index_boot_failure",
+        ))
         .await
         .unwrap();
     assert!(
@@ -3022,8 +3065,11 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     assert_eq!(spawned.load(Ordering::SeqCst), 0);
     assert_eq!(operation_count(&boot, "terminal-worker").await, 0);
 
-    sqlx::query("ALTER TABLE task_ref_index_boot_failure RENAME TO task_ref_index")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "ALTER TABLE task_ref_index_boot_failure RENAME TO task_ref_index",
+        ))
         .await
         .unwrap();
     dispatcher.reconcile_tick_for_test().await;
@@ -3137,12 +3183,14 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
     // Revise the still-pending row mid-window (pending rows are
     // mutable; post-claim they are frozen).
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    let revised =
-        sqlx::query("UPDATE tasks SET goal = 'echo new' WHERE id = ?1 AND status = 'pending'")
-            .bind(&task_id)
-            .execute(pool.writer_pool())
-            .await
-            .expect("revise pending row");
+    let revised = (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET goal = 'echo new' WHERE id = ?1 AND status = 'pending'")
+                .bind(&task_id),
+        )
+        .await
+        .expect("revise pending row");
     assert_eq!(
         revised.rows_affected(),
         1,
@@ -3195,17 +3243,20 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     .project()
     .unwrap()
     .1;
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
-    )
-    .bind(format!("report-{key}"))
-    .bind(boot.track_id.as_str())
-    .bind(serde_json::to_string(&report).unwrap())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(format!("report-{key}"))
+            .bind(boot.track_id.as_str())
+            .bind(serde_json::to_string(&report).unwrap()),
+        )
+        .await
+        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3285,17 +3336,20 @@ async fn claim_missing_task_root_fails_closed_without_dispatch() {
 }
 
 async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
-    sqlx::query(
-        "INSERT INTO cards \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
-    )
-    .bind(id)
-    .bind(boot.track_id.as_str())
-    .bind(payload.to_string())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(id)
+            .bind(boot.track_id.as_str())
+            .bind(payload.to_string()),
+        )
+        .await
+        .unwrap();
 }
 
 /// Agent-write fixtures need the creation event; raw malformed-payload fixtures do not.
@@ -3415,8 +3469,9 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
     ));
 
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("DELETE FROM cards WHERE id = 'empty-report'")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DELETE FROM cards WHERE id = 'empty-report'"))
         .await
         .unwrap();
     insert_report_payload(
@@ -3440,13 +3495,14 @@ async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
         .await
         .expect("an unrelated malformed block must not poison the target");
     assert_eq!(closure.refs[0].block_id, "b_target");
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[1].rev', 'bad') \
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload = json_set(payload, '$.blocks[1].rev', 'bad') \
          WHERE id = 'mixed-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert!(matches!(
         monitor
             .resolve_task_closure(boot.track_id.as_str(), "target")
@@ -3492,16 +3548,19 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
                 payload: json!({"markdown": "child original"}),
             }]),
         };
-        sqlx::query(
-            "INSERT INTO cards \
+        (boot.repo.sqlite_db().unwrap())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO cards \
              (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
              VALUES ('fence-child-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
-        )
-        .bind(child.id.as_str())
-        .bind(serde_json::to_string(&child_report).unwrap())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-        .await
-        .unwrap();
+                )
+                .bind(child.id.as_str())
+                .bind(serde_json::to_string(&child_report).unwrap()),
+            )
+            .await
+            .unwrap();
     }
     let root_report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
@@ -3562,12 +3621,11 @@ async fn assert_claim_fence_race_lost(cross_track: bool) {
     } else {
         ("$.blocks[0].payload.spawn", "sub-track")
     };
-    sqlx::query(&format!(
+    (pool).writer().execute(sqlx::query(&format!(
         "UPDATE cards SET payload = json_set(payload, '$.docRev', json_extract(payload, '$.docRev') + 1, '{block_path}', ?2) WHERE id = ?1"
     ))
     .bind(card_id)
-    .bind(replacement)
-    .execute(pool.writer_pool())
+    .bind(replacement))
     .await
     .unwrap();
     resume.notify_one();
@@ -3671,172 +3729,183 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             _ => unreachable!(),
         };
         let pool = boot.repo.sqlite_db().unwrap();
-        if case == "invalid-root-ref" {
-            // Both agent and user block writers reject malformed refs at schema validation,
-            // so model an older/corrupt stored report and run the production rebuild projection.
-            let malformed = TrackReportPayload {
-                schema_version: TrackReportPayload::SCHEMA_VERSION,
-                doc_rev: 2,
-                summary: String::new(),
-                body: String::new(),
-                blocks: Some(vec![ReportBlock {
-                    id: root_id.into(),
-                    kind: "task".into(),
-                    rev: 2,
-                    payload: broken[0].2.clone(),
-                }]),
-            };
-            let mut tx = pool.writer_pool().begin().await.unwrap();
-            sqlx::query(
-                "UPDATE cards SET payload = ?1, body_crdt = NULL \
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    if case == "invalid-root-ref" {
+                        // Both agent and user block writers reject malformed refs at schema validation,
+                        // so model an older/corrupt stored report and run the production rebuild projection.
+                        let malformed = TrackReportPayload {
+                            schema_version: TrackReportPayload::SCHEMA_VERSION,
+                            doc_rev: 2,
+                            summary: String::new(),
+                            body: String::new(),
+                            blocks: Some(vec![ReportBlock {
+                                id: root_id.into(),
+                                kind: "task".into(),
+                                rev: 2,
+                                payload: broken[0].2.clone(),
+                            }]),
+                        };
+                        let mut tx = write_session.begin().await.unwrap();
+                        sqlx::query(
+                            "UPDATE cards SET payload = ?1, body_crdt = NULL \
                  WHERE track_id = ?2 AND kind = 'track-report'",
-            )
-            .bind(serde_json::to_string(&malformed).unwrap())
-            .bind(boot.track_id.as_str())
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-            tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-        } else {
-            use axum::extract::{FromRef, State};
-            use calm_server::actor::Actor;
-            use calm_server::auth::Principal;
-            use calm_server::extract::{JsonBody, Path};
-            use calm_server::routes::track_report_blocks::{
-                CreateReportBlockBody, DeleteReportBlockBody, UpdateReportBlockBody, create_block,
-                delete_block, update_block,
-            };
-            use calm_server::state::RouteState;
+                        )
+                        .bind(serde_json::to_string(&malformed).unwrap())
+                        .bind(boot.track_id.as_str())
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                        tasks_rebuild_tx(&mut tx, boot.track_id.as_str())
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                    } else {
+                        use axum::extract::{FromRef, State};
+                        use calm_server::actor::Actor;
+                        use calm_server::auth::Principal;
+                        use calm_server::extract::{JsonBody, Path};
+                        use calm_server::routes::track_report_blocks::{
+                            CreateReportBlockBody, DeleteReportBlockBody, UpdateReportBlockBody,
+                            create_block, delete_block, update_block,
+                        };
+                        use calm_server::state::RouteState;
 
-            // These edits deliberately invalidate the root. Use the human REST channel:
-            // agent writes refuse ready declarations with diagnostics such as duplicate_key.
-            let state = app_state_for_context_events(&boot);
-            let state = RouteState::from_ref(&state);
-            let principal = Principal {
-                user_id: LEGACY_OWNER_USER_ID.into(),
-                display_name: "owner".into(),
-                role: "owner".into(),
-                session_id: "test".into(),
-            };
-            let (_, report, _) =
-                resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
+                        // These edits deliberately invalidate the root. Use the human REST channel:
+                        // agent writes refuse ready declarations with diagnostics such as duplicate_key.
+                        let state = app_state_for_context_events(&boot);
+                        let state = RouteState::from_ref(&state);
+                        let principal = Principal {
+                            user_id: LEGACY_OWNER_USER_ID.into(),
+                            display_name: "owner".into(),
+                            role: "owner".into(),
+                            session_id: "test".into(),
+                        };
+                        let (_, report, _) =
+                            resolve_report_for_track(boot.repo.as_ref(), boot.track_id.as_str())
+                                .await
+                                .unwrap();
+                        let stored: TrackReportPayload =
+                            serde_json::from_value(report.payload).unwrap();
+                        let root = stored
+                            .blocks
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .find(|block| block.kind == "task")
+                            .unwrap();
+                        let path = Path((boot.track_id.to_string(), root.id.clone()));
+                        match case {
+                            "duplicate" => {
+                                let mut duplicate = valid_root.clone();
+                                duplicate["declared_by"] = json!("user");
+                                create_block(
+                                    State(state),
+                                    principal,
+                                    Actor("user".into()),
+                                    Path(boot.track_id.to_string()),
+                                    JsonBody(CreateReportBlockBody {
+                                        kind: "task".into(),
+                                        markdown: None,
+                                        payload: Some(duplicate),
+                                        if_doc_rev: stored.doc_rev,
+                                        position: None,
+                                    }),
+                                )
+                                .await
+                                .expect("user creates duplicate root");
+                            }
+                            "tombstoned" => {
+                                let mut tombstone = broken[0].2.clone();
+                                tombstone["tombstoned_by"] = json!("user");
+                                update_block(
+                                    State(state),
+                                    principal,
+                                    Actor("user".into()),
+                                    path,
+                                    JsonBody(UpdateReportBlockBody {
+                                        kind: "task".into(),
+                                        markdown: None,
+                                        payload: Some(tombstone),
+                                        if_block_rev: root.rev,
+                                    }),
+                                )
+                                .await
+                                .expect("user tombstones root");
+                            }
+                            "absent" => {
+                                // The first user delete makes a tombstone; delete that too so this
+                                // remains the absent-root case rather than a second tombstone case.
+                                let tombstone = delete_block(
+                                    State(state.clone()),
+                                    principal.clone(),
+                                    Actor("user".into()),
+                                    Path((boot.track_id.to_string(), root.id.clone())),
+                                    JsonBody(DeleteReportBlockBody {
+                                        if_block_rev: root.rev,
+                                    }),
+                                )
+                                .await
+                                .expect("user tombstones root before deletion")
+                                .0;
+                                delete_block(
+                                    State(state),
+                                    principal,
+                                    Actor("user".into()),
+                                    path,
+                                    JsonBody(DeleteReportBlockBody {
+                                        if_block_rev: tombstone.rev.unwrap(),
+                                    }),
+                                )
+                                .await
+                                .expect("user deletes root tombstone");
+                                let monitor = TaskContextMonitor::new(
+                                    boot.repo.clone(),
+                                    boot.events.clone(),
+                                    boot.write.clone(),
+                                );
+                                assert_eq!(
+                                    monitor
+                                        .resolve_task_closure(boot.track_id.as_str(), &key)
+                                        .await,
+                                    Err(ResolveError::RootAbsent),
+                                );
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    scheduler.schedule_track(boot.track_id.clone()).await;
+                    assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
+                    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+                    let indexed: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM task_ref_index WHERE task_id = ?1",
+                    )
+                    .bind(&task_id)
+                    .fetch_one(pool.read_pool())
                     .await
                     .unwrap();
-            let stored: TrackReportPayload = serde_json::from_value(report.payload).unwrap();
-            let root = stored
-                .blocks
-                .as_ref()
-                .unwrap()
-                .iter()
-                .find(|block| block.kind == "task")
-                .unwrap();
-            let path = Path((boot.track_id.to_string(), root.id.clone()));
-            match case {
-                "duplicate" => {
-                    let mut duplicate = valid_root.clone();
-                    duplicate["declared_by"] = json!("user");
-                    create_block(
-                        State(state),
-                        principal,
-                        Actor("user".into()),
-                        Path(boot.track_id.to_string()),
-                        JsonBody(CreateReportBlockBody {
-                            kind: "task".into(),
-                            markdown: None,
-                            payload: Some(duplicate),
-                            if_doc_rev: stored.doc_rev,
-                            position: None,
-                        }),
-                    )
-                    .await
-                    .expect("user creates duplicate root");
-                }
-                "tombstoned" => {
-                    let mut tombstone = broken[0].2.clone();
-                    tombstone["tombstoned_by"] = json!("user");
-                    update_block(
-                        State(state),
-                        principal,
-                        Actor("user".into()),
-                        path,
-                        JsonBody(UpdateReportBlockBody {
-                            kind: "task".into(),
-                            markdown: None,
-                            payload: Some(tombstone),
-                            if_block_rev: root.rev,
-                        }),
-                    )
-                    .await
-                    .expect("user tombstones root");
-                }
-                "absent" => {
-                    // The first user delete makes a tombstone; delete that too so this
-                    // remains the absent-root case rather than a second tombstone case.
-                    let tombstone = delete_block(
-                        State(state.clone()),
-                        principal.clone(),
-                        Actor("user".into()),
-                        Path((boot.track_id.to_string(), root.id.clone())),
-                        JsonBody(DeleteReportBlockBody {
-                            if_block_rev: root.rev,
-                        }),
-                    )
-                    .await
-                    .expect("user tombstones root before deletion")
-                    .0;
-                    delete_block(
-                        State(state),
-                        principal,
-                        Actor("user".into()),
-                        path,
-                        JsonBody(DeleteReportBlockBody {
-                            if_block_rev: tombstone.rev.unwrap(),
-                        }),
-                    )
-                    .await
-                    .expect("user deletes root tombstone");
-                    let monitor = TaskContextMonitor::new(
-                        boot.repo.clone(),
-                        boot.events.clone(),
-                        boot.write.clone(),
+                    assert_eq!(indexed, 0, "case {case}");
+                    let stale: Option<Option<i64>> =
+                        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+                            .bind(&task_id)
+                            .fetch_optional(pool.read_pool())
+                            .await
+                            .unwrap();
+                    assert!(
+                        stale.is_none_or(|value| value.is_none()),
+                        "case {case}: context_stale_at_ms must remain NULL when the row survives"
                     );
-                    assert_eq!(
-                        monitor
-                            .resolve_task_closure(boot.track_id.as_str(), &key)
-                            .await,
-                        Err(ResolveError::RootAbsent),
+                    assert!(
+                        boot.repo.task_get(&task_id).await.unwrap().is_none(),
+                        "case {case}: production projection must guard-delete the pending row"
                     );
-                }
-                _ => unreachable!(),
-            }
-        }
-        scheduler.schedule_track(boot.track_id.clone()).await;
-        assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
-        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
-        let indexed: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
-                .bind(&task_id)
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap();
-        assert_eq!(indexed, 0, "case {case}");
-        let stale: Option<Option<i64>> =
-            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
-                .bind(&task_id)
-                .fetch_optional(pool.read_pool())
-                .await
-                .unwrap();
-        assert!(
-            stale.is_none_or(|value| value.is_none()),
-            "case {case}: context_stale_at_ms must remain NULL when the row survives"
-        );
-        assert!(
-            boot.repo.task_get(&task_id).await.unwrap().is_none(),
-            "case {case}: production projection must guard-delete the pending row"
-        );
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -4026,21 +4095,20 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         "the depth-two claim failure must be visible in the production health snapshot"
     );
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
-        .bind(&healthy_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE id=?1").bind(&healthy_id))
         .await
         .unwrap();
     let restored = json!({
         "id": "b_dead", "kind": "prose", "rev": 2,
         "payload": {"markdown": "restored"}
     });
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1,'$.blocks',json_insert(json_extract(payload,'$.blocks'),'$[#]',json(?1))) WHERE track_id=?2 AND kind='track-report'",
     )
     .bind(restored.to_string())
-    .bind(boot.track_id.as_str())
-    .execute(pool.writer_pool())
+    .bind(boot.track_id.as_str()))
     .await
     .unwrap();
     TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
@@ -4117,23 +4185,23 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     );
     let monitor =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.priority', 9) \
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.priority', 9) \
          WHERE id = 'hash-shapes-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
         .unwrap();
     assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[1].payload.markdown', 'changed') \
          WHERE id = 'hash-shapes-report'",
-    )
-    .execute(pool.writer_pool())
+    ))
     .await
     .unwrap();
     monitor
@@ -4207,16 +4275,19 @@ async fn seed_frozen_context_fixture_of(
         }]),
     };
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES ('context-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
-    )
-    .bind(boot.track_id.as_str())
-    .bind(serde_json::to_string(&report).unwrap())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(boot.track_id.as_str())
+            .bind(serde_json::to_string(&report).unwrap()),
+        )
+        .await
+        .unwrap();
     let task = fixture.row(boot, key);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
@@ -4281,9 +4352,9 @@ async fn seed_production_report_context_fixture(
     let task = plan_task(&boot.track_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    sqlx::query("UPDATE tasks SET decl_ready=1 WHERE id=?1")
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET decl_ready=1 WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
     let (_runtime, scheduler) = build_scheduler(
@@ -4408,50 +4479,57 @@ async fn seed_fresh_context_copies(
             (task_id, key)
         })
         .collect();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    let mut tasks = QueryBuilder::<Sqlite>::new(
-        "INSERT INTO tasks \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut tasks = QueryBuilder::<Sqlite>::new(
+                    "INSERT INTO tasks \
          (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
           declared_by,claim_context_json,context_closure_truncated,\
           decl_ready,decl_released_by_user,context_verify_failures,spawn,\
           created_at_ms,updated_at_ms) ",
-    );
-    tasks.push_values(&rows, |mut row, (task_id, key)| {
-        row.push_bind(task_id)
-            .push_bind(boot.track_id.as_str())
-            .push_bind(key)
-            .push("'terminal'")
-            .push("'true'")
-            .push("'null'")
-            .push("'[]'")
-            .push("0")
-            .push("'dispatched'")
-            .push("'planner'")
-            .push_bind(&frozen)
-            .push("0")
-            .push("0")
-            .push("0")
-            .push("0")
-            .push("'in-wave'")
-            .push("1")
-            .push("1");
-    });
-    tasks.build().execute(&mut **tx).await.unwrap();
+                );
+                tasks.push_values(&rows, |mut row, (task_id, key)| {
+                    row.push_bind(task_id)
+                        .push_bind(boot.track_id.as_str())
+                        .push_bind(key)
+                        .push("'terminal'")
+                        .push("'true'")
+                        .push("'null'")
+                        .push("'[]'")
+                        .push("0")
+                        .push("'dispatched'")
+                        .push("'planner'")
+                        .push_bind(&frozen)
+                        .push("0")
+                        .push("0")
+                        .push("0")
+                        .push("0")
+                        .push("'in-wave'")
+                        .push("1")
+                        .push("1");
+                });
+                tasks.build().execute(&mut **tx).await.unwrap();
 
-    if index_destination {
-        let mut index = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) ",
-        );
-        index.push_values(&rows, |mut row, (task_id, _)| {
-            row.push_bind(task_id)
-                .push_bind(refs[0].track_id.as_str())
-                .push_bind(&refs[0].block_id);
-        });
-        index.build().execute(&mut **tx).await.unwrap();
-    }
-    tx.commit().await.unwrap();
+                if index_destination {
+                    let mut index = QueryBuilder::<Sqlite>::new(
+                        "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) ",
+                    );
+                    index.push_values(&rows, |mut row, (task_id, _)| {
+                        row.push_bind(task_id)
+                            .push_bind(refs[0].track_id.as_str())
+                            .push_bind(&refs[0].block_id);
+                    });
+                    index.build().execute(&mut **tx).await.unwrap();
+                }
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_stale_context_copies(
@@ -4513,42 +4591,49 @@ async fn seed_stale_context_copies(
         clone_track_ids.push(track.id);
     }
     let mut ids = Vec::with_capacity(count);
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    for (index, clone_track_id) in clone_track_ids.iter().enumerate() {
-        let task_id = format!("{key_prefix}-{index:04}");
-        sqlx::query(
-            "INSERT INTO tasks \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                for (index, clone_track_id) in clone_track_ids.iter().enumerate() {
+                    let task_id = format!("{key_prefix}-{index:04}");
+                    sqlx::query(
+                        "INSERT INTO tasks \
              (id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,\
               declared_by,claim_context_json,context_stale_at_ms,context_closure_truncated,\
               decl_ready,decl_released_by_user,context_verify_failures,spawn,\
               created_at_ms,updated_at_ms) \
              VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
                      'planner',?4,1,0,0,0,0,'in-wave',1,1)",
-        )
-        .bind(&task_id)
-        .bind(clone_track_id.as_str())
-        .bind(&source_key)
-        .bind(&frozen)
-        .execute(&mut **tx)
+                    )
+                    .bind(&task_id)
+                    .bind(clone_track_id.as_str())
+                    .bind(&source_key)
+                    .bind(&frozen)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                    if index_destination {
+                        sqlx::query(
+                    "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) VALUES (?1,?2,?3)",
+                )
+                .bind(&task_id)
+                .bind(source_refs[0].track_id.as_str())
+                .bind(&source_refs[0].block_id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                    }
+                    ids.push(task_id);
+                }
+                tx.commit().await.unwrap();
+                ids
+            })
+        })
         .await
-        .unwrap();
-        if index_destination {
-            sqlx::query(
-                "INSERT INTO task_ref_index(task_id,dst_track_id,block_id) VALUES (?1,?2,?3)",
-            )
-            .bind(&task_id)
-            .bind(source_refs[0].track_id.as_str())
-            .bind(&source_refs[0].block_id)
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        }
-        ids.push(task_id);
-    }
-    tx.commit().await.unwrap();
-    ids
+        .expect("independent write operation")
 }
 
 async fn materialize_then_restore_root_bytes(
@@ -4557,13 +4642,14 @@ async fn materialize_then_restore_root_bytes(
     task_id: &str,
 ) {
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','temporary') \
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','temporary') \
          WHERE id='context-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -4578,11 +4664,10 @@ async fn materialize_then_restore_root_bytes(
         stale.is_some(),
         "fixture must commit material before revert"
     );
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.command','original contract') \
          WHERE id='context-report'",
-    )
-    .execute(pool.writer_pool())
+    ))
     .await
     .unwrap();
 }
@@ -4691,12 +4776,14 @@ async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
             .is_some(),
         "the first over-budget event pass must fail closed"
     );
-    sqlx::query("DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE key LIKE 'fresh-budget-%')")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query("DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE key LIKE 'fresh-budget-%')"))
         .await
         .unwrap();
-    sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'",
+        ))
         .await
         .unwrap();
     monitor
@@ -4764,8 +4851,11 @@ async fn sweep_budget_material_verdict_recovers_and_metrics_stay_split() {
             .is_some(),
         "the first over-budget sweep must fail closed"
     );
-    sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'",
+        ))
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -4957,9 +5047,9 @@ async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored
         "the end-to-end fixture must carry the real material event"
     );
 
-    sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1")
-        .bind(&task_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
     persist_context_report_body(&boot, original_body).await;
@@ -5369,10 +5459,13 @@ async fn assert_excluded_root_field_vetoes_restore(
             .unwrap();
     let mut prepared = current;
     prepare(&mut prepared);
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&prepared).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&prepared).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
 
@@ -5394,10 +5487,13 @@ async fn assert_excluded_root_field_vetoes_restore(
     withdraw(&mut restored);
     let restored_root_payload = restored.blocks.as_ref().unwrap()[1].payload.clone();
     restored.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&restored).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
     if align_frozen_root {
@@ -5428,10 +5524,13 @@ async fn assert_excluded_root_field_vetoes_restore(
             .find(|reference| reference.is_root)
             .unwrap()
             .hash = hash;
-        sqlx::query("UPDATE tasks SET claim_context_json=?1,decl_ready=0 WHERE id=?2")
-            .bind(serde_json::to_string(&frozen).unwrap())
-            .bind(&task_id)
-            .execute(pool.writer_pool())
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET claim_context_json=?1,decl_ready=0 WHERE id=?2")
+                    .bind(serde_json::to_string(&frozen).unwrap())
+                    .bind(&task_id),
+            )
             .await
             .unwrap();
     }
@@ -5492,9 +5591,9 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     let (monitor, task_id, original_body) =
         seed_production_report_context_fixture(&boot, key).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET decl_released_by_user=1 WHERE id=?1")
-        .bind(&task_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET decl_released_by_user=1 WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
     let (_, report_card, mut report) =
@@ -5502,10 +5601,13 @@ async fn released_by_user_withdrawal_vetoes_restore() {
             .await
             .unwrap();
     report.blocks.as_mut().unwrap()[1].payload["released_by_user"] = json!(true);
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&report).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
     persist_context_report_body(
@@ -5525,10 +5627,13 @@ async fn released_by_user_withdrawal_vetoes_restore() {
     restored.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced original\n\n");
     restored.blocks.as_mut().unwrap()[1].payload["released_by_user"] = json!(false);
     restored.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&restored).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&restored).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
     monitor
@@ -5571,9 +5676,11 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
             .await
             .unwrap();
     assert!(stale.is_some());
-    sqlx::query("UPDATE tasks SET context_verify_failures=2 WHERE id=?1")
-        .bind(&task_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET context_verify_failures=2 WHERE id=?1").bind(&task_id),
+        )
         .await
         .unwrap();
 
@@ -5624,22 +5731,24 @@ async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_mater
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "reverted").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.docRev', 4, \
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload = json_set(payload, '$.docRev', 4, \
          '$.blocks[0].rev', 4, '$.blocks[0].payload.command', 'temporary edit') \
          WHERE id = 'context-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.docRev', 5, \
+        ))
+        .await
+        .unwrap();
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload = json_set(payload, '$.docRev', 5, \
          '$.blocks[0].rev', 5, '$.blocks[0].payload.command', 'original contract') \
          WHERE id = 'context-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 
     monitor
         .detect_track_edit(boot.track_id.as_str())
@@ -5666,11 +5775,10 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
             .fetch_one(pool.read_pool())
             .await
             .unwrap();
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'replacement') WHERE id = ?1",
     )
-    .bind(card_id)
-    .execute(pool.writer_pool())
+    .bind(card_id))
     .await
     .unwrap();
 
@@ -5696,9 +5804,12 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
-        .bind(format!("{}:truncated-still-matches", boot.track_id))
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
+                .bind(format!("{}:truncated-still-matches", boot.track_id)),
+        )
         .await
         .unwrap();
 
@@ -5736,12 +5847,13 @@ async fn malformed_stored_report_is_deterministic_and_marks_material_immediately
     let monitor = seed_frozen_context_fixture(&boot, "retryable-verify").await;
     let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:retryable-verify", boot.track_id);
-    sqlx::query(
-        "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+    (pool)
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
+        ))
+        .await
+        .unwrap();
     monitor.sweep().await.unwrap();
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
@@ -5761,8 +5873,9 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:storage-retry", boot.track_id);
 
-    sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable"))
         .await
         .unwrap();
     for expected in [(1, None), (2, None)] {
@@ -5787,8 +5900,9 @@ async fn storage_unavailable_during_system_area_lookup_is_retryable() {
     assert_eq!(row.0, 0, "material winner clears the retry streak");
     assert!(row.1.is_some(), "third consecutive failure is material");
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
-    sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas"))
         .await
         .unwrap();
 }
@@ -5799,13 +5913,15 @@ async fn successful_context_verification_resets_retry_streak() {
     let monitor = seed_frozen_context_fixture(&boot, "storage-reset").await;
     let pool = boot.repo.sqlite_db().unwrap();
     let task_id = format!("{}:storage-reset", boot.track_id);
-    sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("ALTER TABLE areas RENAME TO areas_unavailable"))
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
-    sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("ALTER TABLE areas_unavailable RENAME TO areas"))
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -5849,17 +5965,20 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
         }]),
     };
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES (?1,?2,'track-report',-1,?3,'reportcard',0,1,1)",
-    )
-    .bind(format!("deleted-report-{key}"))
-    .bind(referenced.id.as_str())
-    .bind(serde_json::to_string(&child_report).unwrap())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(format!("deleted-report-{key}"))
+            .bind(referenced.id.as_str())
+            .bind(serde_json::to_string(&child_report).unwrap()),
+        )
+        .await
+        .unwrap();
     let root_report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
@@ -5911,9 +6030,9 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_track_id
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
     ));
-    sqlx::query("DELETE FROM tracks WHERE id = ?1")
-        .bind(referenced.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DELETE FROM tracks WHERE id = ?1").bind(referenced.id.as_str()))
         .await
         .unwrap();
     let state = app_state_for_context_events(&boot);
@@ -5973,12 +6092,11 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'new incarnation') \
          WHERE track_id = ?1 AND kind = 'track-report'",
     )
-    .bind(boot.track_id.as_str())
-    .execute(pool.writer_pool())
+    .bind(boot.track_id.as_str()))
     .await
     .unwrap();
     monitor
@@ -5993,14 +6111,17 @@ async fn referenced_block_deletion_is_material_even_without_changed_ids() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "deleted-ref").await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks', json('[]')) \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_set(payload, '$.blocks', json('[]')) \
          WHERE track_id = ?1 AND kind = 'track-report'",
-    )
-    .bind(boot.track_id.as_str())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(boot.track_id.as_str()),
+        )
+        .await
+        .unwrap();
     monitor
         .detect_track_edit(boot.track_id.as_str())
         .await
@@ -6037,10 +6158,13 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
         .as_mut()
         .unwrap()
         .retain(|block| block.id != child_id);
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&deleted).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&deleted).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
     monitor
@@ -6052,10 +6176,13 @@ async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns
         vec![("material".into(), "referenced_block_absent".into())]
     );
 
-    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
-        .bind(serde_json::to_string(&original_report).unwrap())
-        .bind(report_card.id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+                .bind(serde_json::to_string(&original_report).unwrap())
+                .bind(report_card.id.as_str()),
+        )
         .await
         .unwrap();
     monitor
@@ -6179,9 +6306,9 @@ async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
     );
 
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?1").bind(&task_id))
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -6212,16 +6339,19 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
             })
         })
         .collect();
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES ('closure-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
-    )
-    .bind(boot.track_id.as_str())
-    .bind(json!({"docRev": 1, "blocks": blocks}).to_string())
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(boot.track_id.as_str())
+            .bind(json!({"docRev": 1, "blocks": blocks}).to_string()),
+        )
+        .await
+        .unwrap();
     let monitor =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     let closure = monitor
@@ -6258,29 +6388,31 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
         })
         .await
         .unwrap();
-    sqlx::query(
-        "INSERT INTO cards \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO cards \
          (id,track_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES ('foreign-report',?1,'track-report',-1,?2,'reportcard',0,1,1)",
-    )
-    .bind(foreign_track.id.as_str())
-    .bind(
-        json!({"docRev": 1, "blocks": [{
-            "id":"b_f000","kind":"prose","rev":1,"payload":{"markdown":"foreign"}
-        }]})
-        .to_string(),
-    )
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
-    sqlx::query(
+            )
+            .bind(foreign_track.id.as_str())
+            .bind(
+                json!({"docRev": 1, "blocks": [{
+                    "id":"b_f000","kind":"prose","rev":1,"payload":{"markdown":"foreign"}
+                }]})
+                .to_string(),
+            ),
+        )
+        .await
+        .unwrap();
+    (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = ?1 WHERE id = 'closure-report'",
     )
     .bind(json!({"docRev": 2, "blocks": [{
         "id":"b_0000","kind":"prose","rev":1,
         "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_track.id)}
-    }]}).to_string())
-    .execute(pool.writer_pool())
+    }]}).to_string()))
     .await
     .unwrap();
     let error = monitor
@@ -6324,9 +6456,12 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         seed_task(&boot, reader.row(&boot, &key)).await;
     }
     report.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
-        .bind(serde_json::to_string(&report).unwrap())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
+                .bind(serde_json::to_string(&report).unwrap()),
+        )
         .await
         .unwrap();
     let (_runtime, scheduler) = build_scheduler(&boot, vec![reader.adapter(&boot)]);
@@ -6359,9 +6494,12 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         payload: reader.declaration("sweep-cap", "true"),
     });
     report.doc_rev += 1;
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
-        .bind(serde_json::to_string(&report).unwrap())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
+                .bind(serde_json::to_string(&report).unwrap()),
+        )
         .await
         .unwrap();
     let cap_task = reader.row(&boot, "sweep-cap");
@@ -6371,10 +6509,13 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     let one: Value = serde_json::from_str::<Vec<Value>>(&frozen_json).unwrap()[0].clone();
     let oversized = vec![one; calm_server::task_context::MAX_SWEEP_NODES + 1];
     // No production claim can emit a closure beyond MAX_REF_NODES, so the over-limit state must be injected after a real claim.
-    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
-        .bind(serde_json::to_string(&oversized).unwrap())
-        .bind(cap_id)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+                .bind(serde_json::to_string(&oversized).unwrap())
+                .bind(cap_id),
+        )
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
@@ -6977,13 +7118,17 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     )
     .await;
     let pool = boot.repo.sqlite_db().expect("sqlite pool");
-    let revised =
-        sqlx::query("UPDATE tasks SET depends_on_json = ?1 WHERE id = ?2 AND status = 'pending'")
+    let revised = (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE tasks SET depends_on_json = ?1 WHERE id = ?2 AND status = 'pending'",
+            )
             .bind(json!(["prereq"]).to_string())
-            .bind(&task_id)
-            .execute(pool.writer_pool())
-            .await
-            .expect("revise pending row deps");
+            .bind(&task_id),
+        )
+        .await
+        .expect("revise pending row deps");
     assert_eq!(revised.rows_affected(), 1, "dep added while parked");
 
     drop(permit);
@@ -7685,11 +7830,14 @@ async fn seed_child_parent(
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,closed_at=?2 WHERE id=?3")
-        .bind(boot.track_id.as_str())
-        .bind(closed.then(now_ms))
-        .bind(child.id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1,closed_at=?2 WHERE id=?3")
+                .bind(boot.track_id.as_str())
+                .bind(closed.then(now_ms))
+                .bind(child.id.as_str()),
+        )
         .await
         .unwrap();
     let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
@@ -7698,10 +7846,13 @@ async fn seed_child_parent(
     task.gate_json = gate_json;
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
-        .bind(child.id.as_str())
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                .bind(child.id.as_str())
+                .bind(&task_id),
+        )
         .await
         .unwrap();
     boot.repo
@@ -7719,12 +7870,12 @@ async fn seed_child_parent(
 }
 
 async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskStatus) {
-    sqlx::query(
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,?3,'codex','child work','{}',?4,'spec','in-wave',?5,?5)",
     )
     .bind(format!("{child_id}:{key}")).bind(child_id).bind(key).bind(status)
-    .bind(now_ms()).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
+    .bind(now_ms())).await.unwrap();
 }
 
 #[tokio::test]
@@ -7756,76 +7907,93 @@ async fn acceptance_12_sub_track_running_stamp_has_no_worker_or_deadline() {
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    sqlx::query("UPDATE tasks SET child_track_id='child-stamp' WHERE id=?1")
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET child_track_id='child-stamp' WHERE id=?1").bind(&task_id),
+        )
         .await
         .unwrap();
     let pool = boot.repo.sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::task_mark_sub_track_running_tx(&mut tx, &task_id, now_ms())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-    assert_eq!(row.status, TaskStatus::Running);
-    assert_eq!(row.worker_card_id, None);
-    assert_eq!(row.running_deadline_ms, None);
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                calm_server::db::sqlite::task_mark_sub_track_running_tx(
+                    &mut tx,
+                    &task_id,
+                    now_ms(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+                assert_eq!(row.status, TaskStatus::Running);
+                assert_eq!(row.worker_card_id, None);
+                assert_eq!(row.running_deadline_ms, None);
 
-    for (key, status, spawn, child_track_id, guard) in [
-        (
-            "stamp-failed",
-            TaskStatus::Failed,
-            "sub-track",
-            Some("child-failed"),
-            "status='dispatched'",
-        ),
-        (
-            "stamp-in-track",
-            TaskStatus::Dispatched,
-            "in-wave",
-            Some("child-in-track"),
-            "spawn='sub-track'",
-        ),
-        (
-            "stamp-no-child",
-            TaskStatus::Dispatched,
-            "sub-track",
-            None,
-            "child_track_id IS NOT NULL",
-        ),
-    ] {
-        let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
-        task.status = status;
-        task.spawn = spawn.into();
-        let id = task.id.clone();
-        seed_task(&boot, task).await;
-        if let Some(child_track_id) = child_track_id {
-            sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
-                .bind(child_track_id)
-                .bind(&id)
-                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-                .await
-                .unwrap();
-        }
-        let pool = boot.repo.sqlite_db().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-            .await
-            .unwrap();
-        let changed =
-            calm_server::db::sqlite::task_mark_sub_track_running_tx(&mut tx, &id, now_ms())
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(changed, 0, "guard {guard} must reject the stamp");
-        assert_eq!(
-            boot.repo.task_get(&id).await.unwrap().unwrap().status,
-            status,
-            "guard {guard} must preserve the existing status"
-        );
-    }
+                for (key, status, spawn, child_track_id, guard) in [
+                    (
+                        "stamp-failed",
+                        TaskStatus::Failed,
+                        "sub-track",
+                        Some("child-failed"),
+                        "status='dispatched'",
+                    ),
+                    (
+                        "stamp-in-track",
+                        TaskStatus::Dispatched,
+                        "in-wave",
+                        Some("child-in-track"),
+                        "spawn='sub-track'",
+                    ),
+                    (
+                        "stamp-no-child",
+                        TaskStatus::Dispatched,
+                        "sub-track",
+                        None,
+                        "child_track_id IS NOT NULL",
+                    ),
+                ] {
+                    let mut task = plan_task(&boot.track_id, key, TaskKind::Codex, &[]);
+                    task.status = status;
+                    task.spawn = spawn.into();
+                    let id = task.id.clone();
+                    seed_task(&boot, task).await;
+                    if let Some(child_track_id) = child_track_id {
+                        (boot.repo.sqlite_db().unwrap())
+                            .writer()
+                            .execute(
+                                sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                                    .bind(child_track_id)
+                                    .bind(&id),
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    let pool = boot.repo.sqlite_db().unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let changed = calm_server::db::sqlite::task_mark_sub_track_running_tx(
+                        &mut tx,
+                        &id,
+                        now_ms(),
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(changed, 0, "guard {guard} must reject the stamp");
+                    assert_eq!(
+                        boot.repo.task_get(&id).await.unwrap().unwrap().status,
+                        status,
+                        "guard {guard} must preserve the existing status"
+                    );
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -7871,10 +8039,13 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     )
     .await;
     seed_child_task(&boot, &child, "gate-still-running", TaskStatus::Verifying).await;
-    sqlx::query("UPDATE tasks SET gate_json=?1 WHERE track_id=?2")
-        .bind(&gate_without_cwd)
-        .bind(&child)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET gate_json=?1 WHERE track_id=?2")
+                .bind(&gate_without_cwd)
+                .bind(&child),
+        )
         .await
         .unwrap();
     scheduler
@@ -7885,9 +8056,9 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
     assert_eq!(blocked.status, TaskStatus::Running);
     assert_eq!(blocked.gate_attempt, 0, "parent gate must not start early");
     assert_eq!(operation_count(&boot, "task-verify").await, 0);
-    sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1")
-        .bind(&child)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE track_id=?1").bind(&child))
         .await
         .unwrap();
     scheduler
@@ -7926,9 +8097,9 @@ async fn acceptance_14_deleted_child_fails_its_parent() {
     let boot = boot().await;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
     let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
-    sqlx::query("DELETE FROM tracks WHERE id=?1")
-        .bind(&child)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DELETE FROM tracks WHERE id=?1").bind(&child))
         .await
         .unwrap();
     scheduler
@@ -8005,39 +8176,47 @@ async fn acceptance_18_success_flip_rechecks_closed_after_its_snapshot() {
         let boot = boot().await;
         let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
         let pool = boot.repo.sqlite_db().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let observed: bool =
+                        sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+                            .bind(&child)
+                            .fetch_one(&mut **tx)
+                            .await
+                            .unwrap();
+                    assert!(observed, "fixture must first observe the close");
+                    if mutation == "delete" {
+                        sqlx::query("DELETE FROM tracks WHERE id=?1")
+                            .bind(&child)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    } else {
+                        sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
+                            .bind(&child)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    }
+                    let changed = calm_server::scheduler::guarded_child_success_flip_for_test(
+                        &mut tx, &task_id, &child,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(changed, 0, "{mutation} must lose the guarded flip");
+                    assert_eq!(
+                        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                        TaskStatus::Running
+                    );
+                })
+            })
             .await
-            .unwrap();
-        let observed: bool =
-            sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
-                .bind(&child)
-                .fetch_one(&mut **tx)
-                .await
-                .unwrap();
-        assert!(observed, "fixture must first observe the close");
-        if mutation == "delete" {
-            sqlx::query("DELETE FROM tracks WHERE id=?1")
-                .bind(&child)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-        } else {
-            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
-                .bind(&child)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-        }
-        let changed =
-            calm_server::scheduler::guarded_child_success_flip_for_test(&mut tx, &task_id, &child)
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(changed, 0, "{mutation} must lose the guarded flip");
-        assert_eq!(
-            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-            TaskStatus::Running
-        );
+            .expect("independent write operation")
     }
 }
 
@@ -8069,43 +8248,50 @@ async fn acceptance_18_incomplete_flip_rechecks_closed_after_its_snapshot() {
         let (task_id, child) = seed_child_parent(&boot, mutation, true, None).await;
         seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
         let pool = boot.repo.sqlite_db().unwrap();
-        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let observed: bool =
+                        sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
+                            .bind(&child)
+                            .fetch_one(&mut **tx)
+                            .await
+                            .unwrap();
+                    assert!(observed, "fixture must first observe the close");
+                    if mutation == "delete" {
+                        sqlx::query("DELETE FROM tracks WHERE id=?1")
+                            .bind(&child)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    } else {
+                        sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
+                            .bind(&child)
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                    }
+                    let changed = calm_server::scheduler::guarded_child_incomplete_flip_for_test(
+                        &mut tx,
+                        &task_id,
+                        boot.track_id.as_str(),
+                        &child,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(changed, 0, "{mutation} must lose the incomplete flip");
+                    assert_eq!(
+                        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                        TaskStatus::Running
+                    );
+                })
+            })
             .await
-            .unwrap();
-        let observed: bool =
-            sqlx::query_scalar("SELECT closed_at IS NOT NULL FROM tracks WHERE id=?1")
-                .bind(&child)
-                .fetch_one(&mut **tx)
-                .await
-                .unwrap();
-        assert!(observed, "fixture must first observe the close");
-        if mutation == "delete" {
-            sqlx::query("DELETE FROM tracks WHERE id=?1")
-                .bind(&child)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-        } else {
-            sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?1")
-                .bind(&child)
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-        }
-        let changed = calm_server::scheduler::guarded_child_incomplete_flip_for_test(
-            &mut tx,
-            &task_id,
-            boot.track_id.as_str(),
-            &child,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(changed, 0, "{mutation} must lose the incomplete flip");
-        assert_eq!(
-            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-            TaskStatus::Running
-        );
+            .expect("independent write operation")
     }
 }
 
@@ -8114,59 +8300,69 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     let boot = boot().await;
     let (task_id, child) = seed_child_parent(&boot, "deleted", false, None).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query("DELETE FROM tracks WHERE id=?1")
-        .bind(&child)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DELETE FROM tracks WHERE id=?1").bind(&child))
         .await
         .unwrap();
 
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    let observed: Option<String> = sqlx::query_scalar("SELECT id FROM tracks WHERE id=?1")
-        .bind(&child)
-        .fetch_optional(&mut **tx)
-        .await
-        .unwrap();
-    assert_eq!(observed, None, "fixture must first observe the deletion");
-    // Only the domain ID is restored to make the stale-deletion counterexample.
-    // Its complete workspace decision and resource binding still use the production writer.
-    let workspace =
-        calm_server::db::sqlite::track_workspace_read_tx(&mut tx, boot.track_id.as_str())
-            .await
-            .unwrap();
-    sqlx::query(
-        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let observed: Option<String> =
+                    sqlx::query_scalar("SELECT id FROM tracks WHERE id=?1")
+                        .bind(&child)
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .unwrap();
+                assert_eq!(observed, None, "fixture must first observe the deletion");
+                // Only the domain ID is restored to make the stale-deletion counterexample.
+                // Its complete workspace decision and resource binding still use the production writer.
+                let workspace = calm_server::db::sqlite::track_workspace_read_tx(
+                    &mut tx,
+                    boot.track_id.as_str(),
+                )
+                .await
+                .unwrap();
+                sqlx::query(
+                    "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
          SELECT ?1,area_id,'replacement child',sort+0.25,?2,?2 FROM tracks WHERE id=?3",
-    )
-    .bind(&child)
-    .bind(now_ms())
-    .bind(boot.track_id.as_str())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child, &workspace)
-        .await
-        .unwrap();
+                )
+                .bind(&child)
+                .bind(now_ms())
+                .bind(boot.track_id.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child, &workspace)
+                    .await
+                    .unwrap();
 
-    let changed = calm_server::scheduler::guarded_child_deleted_flip_for_test(
-        &mut tx,
-        &task_id,
-        boot.track_id.as_str(),
-        &child,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        changed, 0,
-        "a deleted snapshot must lose after the child returns"
-    );
-    assert_eq!(
-        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-        TaskStatus::Running,
-        "a stale deleted snapshot must not close the parent"
-    );
+                let changed = calm_server::scheduler::guarded_child_deleted_flip_for_test(
+                    &mut tx,
+                    &task_id,
+                    boot.track_id.as_str(),
+                    &child,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    changed, 0,
+                    "a deleted snapshot must lose after the child returns"
+                );
+                assert_eq!(
+                    boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                    TaskStatus::Running,
+                    "a stale deleted snapshot must not close the parent"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// A child workspace freezes at creation; a refused re-point preserves the resource binding
@@ -8236,63 +8432,78 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .display()
         .to_string();
     proposed.worktree = None;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    let error = calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child_id, &proposed)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            calm_truth::error::TruthError::Core(calm_types::error::CoreError::Conflict(_))
-        ),
-        "{error}"
-    );
-    tx.rollback().await.unwrap();
-    assert_eq!(
-        boot.repo
-            .track_get(&child_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .workspace,
-        before_track.workspace
-    );
-    assert_eq!(
-        binding(pool.read_pool().clone(), child_id.clone()).await,
-        before_binding
-    );
-    let after_output: String =
-        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
-            .fetch_one(pool.read_pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        after_output, before_output,
-        "rejected re-point must preserve historical bytes"
-    );
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let error = calm_server::db::sqlite::track_workspace_write_tx(
+                    &mut tx, &child_id, &proposed,
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        calm_truth::error::TruthError::Core(
+                            calm_types::error::CoreError::Conflict(_)
+                        )
+                    ),
+                    "{error}"
+                );
+                tx.rollback().await.unwrap();
+                assert_eq!(
+                    boot.repo
+                        .track_get(&child_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .workspace,
+                    before_track.workspace
+                );
+                assert_eq!(
+                    binding(pool.read_pool().clone(), child_id.clone()).await,
+                    before_binding
+                );
+                let after_output: String = sqlx::query_scalar(
+                    "SELECT tx_output_json FROM operations WHERE kind='child-track'",
+                )
+                .fetch_one(pool.read_pool())
+                .await
+                .unwrap();
+                assert_eq!(
+                    after_output, before_output,
+                    "rejected re-point must preserve historical bytes"
+                );
 
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&task_id)
-        .execute(pool.writer_pool())
+                (pool)
+                    .writer()
+                    .execute(
+                        sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
+                            .bind(&task_id),
+                    )
+                    .await
+                    .unwrap();
+                scheduler.sweep_all().await;
+                let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+                assert_eq!(
+                    row.status,
+                    TaskStatus::Running,
+                    "re-driving the frozen child must reuse its bootstrap: {:?}",
+                    row.status_detail
+                );
+                assert_eq!(operation_count(&boot, "child-track").await, 1);
+                assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
+                assert_eq!(minted.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    binding(pool.read_pool().clone(), child_id).await,
+                    before_binding
+                );
+            })
+        })
         .await
-        .unwrap();
-    scheduler.sweep_all().await;
-    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-    assert_eq!(
-        row.status,
-        TaskStatus::Running,
-        "re-driving the frozen child must reuse its bootstrap: {:?}",
-        row.status_detail
-    );
-    assert_eq!(operation_count(&boot, "child-track").await, 1);
-    assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
-    assert_eq!(minted.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        binding(pool.read_pool().clone(), child_id).await,
-        before_binding
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -8389,9 +8600,9 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     assert_eq!(minted.load(Ordering::SeqCst), 1);
 
     // Crash point 2: bootstrap committed and running was stamped, but the caller did not observe completion.
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
     scheduler.sweep_all().await;
@@ -8592,9 +8803,11 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                 boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
                 TaskStatus::Dispatched
             );
-            sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-                .bind(&task_id)
-                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+            (boot.repo.sqlite_db().unwrap())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id),
+                )
                 .await
                 .unwrap();
             let (detail, last_error) = if phase == "stuck" {
@@ -8605,24 +8818,29 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                     Some("injected"),
                 )
             };
-            sqlx::query(
-                "UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 \
+            (boot.repo.sqlite_db().unwrap())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 \
                  WHERE kind='child-track' AND idempotency_key=?4",
-            )
-            .bind(phase)
-            .bind(detail)
-            .bind(last_error)
-            .bind(&task_id)
-            .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-            .await
-            .unwrap();
+                    )
+                    .bind(phase)
+                    .bind(detail)
+                    .bind(last_error)
+                    .bind(&task_id),
+                )
+                .await
+                .unwrap();
         } else {
             scheduler.schedule_track(boot.track_id.clone()).await;
             historical_child_result(&boot, &task_id).await;
             scheduler.sweep_all().await;
-            sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-                .bind(&task_id)
-                .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+            (boot.repo.sqlite_db().unwrap())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id),
+                )
                 .await
                 .unwrap();
             let (detail, last_error) = if phase == "stuck" {
@@ -8633,9 +8851,8 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                     Some("injected"),
                 )
             };
-            sqlx::query("UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE kind='planner-harness-start'")
-                .bind(phase).bind(detail).bind(last_error)
-                .execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
+            (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query("UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE kind='planner-harness-start'")
+                .bind(phase).bind(detail).bind(last_error)).await.unwrap();
         }
         scheduler.sweep_all().await;
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
@@ -8720,18 +8937,21 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     );
     // Simulate a post-claim report whose mutable declaration now says in-track.
     // Recovery never reads it; only the frozen tasks row is authoritative.
-    sqlx::query("UPDATE cards SET payload=?1 WHERE track_id=?2 AND kind='track-report'")
-        .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
-        .bind(boot.track_id.as_str())
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET payload=?1 WHERE track_id=?2 AND kind='track-report'")
+                .bind(serde_json::to_string(&TrackReportPayload::initial()).unwrap())
+                .bind(boot.track_id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE track_id=?2 AND kind='track-report'")
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE track_id=?2 AND kind='track-report'")
         .bind(json!([{"id":"b_route","kind":"task","rev":2,"payload":{"key":"frozen-route","kind":"codex","goal":"changed","ready":true,"declared_by":"spec","spawn":"in-wave"}}]).to_string())
-        .bind(boot.track_id.as_str()).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+        .bind(boot.track_id.as_str())).await.unwrap();
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
     scheduler.sweep_all().await;
@@ -8802,13 +9022,14 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     tokio::time::timeout(Duration::from_secs(5), claimed.notified())
         .await
         .expect("production claim must reach the post-claim hook");
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.docRev',2, \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE cards SET payload=json_set(payload,'$.docRev',2, \
          '$.blocks[0].rev',2,'$.blocks[0].payload.spawn','in-wave') WHERE id='live-route-report'",
-    )
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     resume.notify_one();
     scheduled.await.unwrap();
     assert_eq!(operation_count(&boot, "child-track").await, 1);
@@ -8843,9 +9064,12 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         async move { scheduler.schedule_track(track).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    sqlx::query("UPDATE tasks SET spawn='sub-track' WHERE id=?1 AND status='pending'")
-        .bind(&task_id)
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET spawn='sub-track' WHERE id=?1 AND status='pending'")
+                .bind(&task_id),
+        )
         .await
         .unwrap();
     drop(permit);
@@ -8995,8 +9219,8 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET phase='failed',last_error='sub-track-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
-        .bind(op_id).execute(boot.repo.sqlite_db().unwrap().writer_pool()).await.unwrap();
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query("UPDATE operations SET phase='failed',last_error='sub-track-depth-exceeded',phase_detail_json='{}' WHERE id=?1")
+        .bind(op_id)).await.unwrap();
     let child_adapter = Arc::new(ChildTrackAdapter::new(
         std::sync::Arc::new(
             calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),

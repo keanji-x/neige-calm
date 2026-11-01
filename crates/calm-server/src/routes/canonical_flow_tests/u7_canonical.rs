@@ -115,37 +115,46 @@ async fn u7_canonical_named_sources_commit_original_human_acceptance() {
                 assert_eq!(facts, (None, None, None, "never".into()));
             }
 
-            let mut tx = fixture.repo.pool().begin().await.unwrap();
-            let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
-                &mut tx,
-                area["id"].as_str().unwrap(),
-                &key,
-            )
-            .await
-            .unwrap();
-            assert!(
-                receipt.is_some(),
-                "atomic original receipt for {provider} {field}"
-            );
-            tx.rollback().await.unwrap();
-            if field == "fork_report_from" {
-                assert!(
-                    http(
-                        &app,
-                        &cookie,
-                        "DELETE",
-                        &format!("/api/tracks/{}", source["id"].as_str().unwrap()),
-                        Value::Null
-                    )
-                    .await
-                    .0
-                    .is_success()
-                );
-            }
-            assert_eq!(
-                post(&app, &cookie, "/api/tracks", &key, body).await["id"],
-                created["id"]
-            );
+            let write_db = (fixture.repo.db()).clone();
+            write_db
+                .writer()
+                .with_writer(|write_session| {
+                    Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let receipt = crate::db::sqlite::conversation::human_track_creation_get_tx(
+                            &mut tx,
+                            area["id"].as_str().unwrap(),
+                            &key,
+                        )
+                        .await
+                        .unwrap();
+                        assert!(
+                            receipt.is_some(),
+                            "atomic original receipt for {provider} {field}"
+                        );
+                        tx.rollback().await.unwrap();
+                        if field == "fork_report_from" {
+                            assert!(
+                                http(
+                                    &app,
+                                    &cookie,
+                                    "DELETE",
+                                    &format!("/api/tracks/{}", source["id"].as_str().unwrap()),
+                                    Value::Null
+                                )
+                                .await
+                                .0
+                                .is_success()
+                            );
+                        }
+                        assert_eq!(
+                            post(&app, &cookie, "/api/tracks", &key, body).await["id"],
+                            created["id"]
+                        );
+                    })
+                })
+                .await
+                .expect("independent write operation")
         }
         assert!(!state.shared_codex_appserver.is_running());
         fixture.shutdown_process(&state).await;
@@ -335,48 +344,51 @@ async fn u7_canonical_fork_source_deletion_and_access_revocation_races_rollback(
                 result = &mut creating => panic!("allocation must await authoritative admission: {result}"),
                 _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("missing allocation rendezvous"),
             }
-            if revoke {
-                sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-                    .bind(area["id"].as_str().unwrap())
-                    .execute(fixture.repo.pool())
+            let write_db = (fixture.repo.db()).clone();
+            write_db.writer().with_writer(|write_session| Box::pin(async move {
+                if revoke {
+                    (fixture.repo.db()).writer().execute(sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+                        .bind(area["id"].as_str().unwrap()))
+                        .await
+                        .unwrap();
+                } else {
+                    // The create holds the target Area fence, so simulate the already-admitted
+                    // source deletion in its storage owner, rather than deadlock its HTTP fence.
+                    let mut tx = write_session.begin()
+                        .await
+                        .unwrap();
+                    crate::db::sqlite::track_delete_tx(
+                        &mut tx,
+                        source["id"].as_str().unwrap(),
+                        state.write().area_cache(),
+                    )
                     .await
                     .unwrap();
-            } else {
-                // The create holds the target Area fence, so simulate the already-admitted
-                // source deletion in its storage owner, rather than deadlock its HTTP fence.
-                let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-                    .await
-                    .unwrap();
-                crate::db::sqlite::track_delete_tx(
-                    &mut tx,
-                    source["id"].as_str().unwrap(),
-                    state.write().area_cache(),
+                    tx.commit().await.unwrap();
+                }
+                pause.release.notify_one();
+                assert_eq!(
+                    creating.await,
+                    if revoke {
+                        StatusCode::FORBIDDEN
+                    } else {
+                        StatusCode::BAD_REQUEST
+                    }
+                );
+                let accepted: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM conversation_human_track_creations WHERE area_id=?1 AND idempotency_key='racing'",
                 )
+                .bind(area["id"].as_str().unwrap())
+                .fetch_one(fixture.repo.pool())
                 .await
                 .unwrap();
-                tx.commit().await.unwrap();
-            }
-            pause.release.notify_one();
-            assert_eq!(
-                creating.await,
-                if revoke {
-                    StatusCode::FORBIDDEN
-                } else {
-                    StatusCode::BAD_REQUEST
-                }
-            );
-            let accepted: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM conversation_human_track_creations WHERE area_id=?1 AND idempotency_key='racing'",
-            )
-            .bind(area["id"].as_str().unwrap())
-            .fetch_one(fixture.repo.pool())
-            .await
-            .unwrap();
-            assert_eq!(accepted, 0);
-            let bindings: i64 = sqlx::query_scalar("SELECT count(*) FROM track_create_idempotency WHERE area_id=?1 AND idempotency_key='racing'")
-                .bind(area["id"].as_str().unwrap()).fetch_one(fixture.repo.pool()).await.unwrap();
-            assert_eq!(bindings, 0);
-            fixture.shutdown_process(&state).await;
+                assert_eq!(accepted, 0);
+                let bindings: i64 = sqlx::query_scalar("SELECT count(*) FROM track_create_idempotency WHERE area_id=?1 AND idempotency_key='racing'")
+                    .bind(area["id"].as_str().unwrap()).fetch_one(fixture.repo.pool()).await.unwrap();
+                assert_eq!(bindings, 0);
+                fixture.shutdown_process(&state).await;
+
+    })).await.expect("independent write operation")
         }
     }
 }
@@ -392,12 +404,21 @@ async fn stored_plan(
         .as_ref()
         .unwrap()
         .submission_ids[0];
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let plan = crate::db::sqlite::conversation::submission_plan_tx(&mut tx, id)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                plan
+            })
+        })
         .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    plan
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -436,10 +457,9 @@ async fn u7_canonical_frozen_context_binds_first_plan_once_across_cold_restart()
     let (client, mut peer) = connect(&state.shared_codex_appserver).await;
     super::u7_nondelivery::release_twice(&fixture, &app, &cookie, &track, &body, Some(&mut peer))
         .await;
-    sqlx::query(&format!("CREATE TRIGGER hold_u7_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fixture.repo.db()).writer().execute(sqlx::query(&format!("CREATE TRIGGER hold_u7_marker BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN NEW.id='{worker}' AND json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts')>json_array_length(OLD.handle_state_json,'$.canonical_inputs.attempts')
-        BEGIN SELECT RAISE(ABORT,'hold U7 first crossing'); END"))
-        .execute(fixture.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'hold U7 first crossing'); END"))).await.unwrap();
     post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let claimed = super::source_readmission_tests::wait_for_claim_after_attempts(
         &fixture, &track, &mut peer, 2,
@@ -491,8 +511,9 @@ async fn u7_canonical_frozen_context_binds_first_plan_once_across_cold_restart()
         stored_plan(&fixture, &fixture.carrier(&track).await.2).await,
         original
     );
-    sqlx::query("DROP TRIGGER hold_u7_marker")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hold_u7_marker"))
         .await
         .unwrap();
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
@@ -679,13 +700,14 @@ async fn u7_canonical_receipt_failure_rolls_back_all_named_allocations() {
         let mut body = json!({"area_id":area["id"],"planner_provider":provider,"title":"",
             "first_message":FIRST_BODY,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
         let source = post(&app, &cookie, "/api/tracks", "source", body.clone()).await;
-        sqlx::query(
-            "CREATE TRIGGER fail_u7_receipt BEFORE INSERT ON conversation_human_track_creations
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "CREATE TRIGGER fail_u7_receipt BEFORE INSERT ON conversation_human_track_creations
             BEGIN SELECT RAISE(ABORT,'fixture refuses U7 receipt'); END",
-        )
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         let before = allocation_counts(&fixture).await;
         for (field, value, input) in [
             ("template_id", json!("small-change"), None),

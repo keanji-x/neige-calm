@@ -14,15 +14,18 @@ async fn w_terminal_worker_sweep_ignores_pipe_shape() {
     // A stale terminal must not grant authority over the Pipe task, even if it records exit 0.
     let mut output = TxOutput::new("card", Some(card_id.to_string()), json!({"id":card_id}));
     output.data = json!({"terminal_worker_pipe":{"log_path":"/not-a-terminal"}});
-    sqlx::query(
-        "UPDATE operations SET tx_output_json=?1,phase='succeeded',completed_at_ms=1 \
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET tx_output_json=?1,phase='succeeded',completed_at_ms=1 \
          WHERE kind='terminal-worker' AND idempotency_key=?2",
-    )
-    .bind(serde_json::to_string(&output).unwrap())
-    .bind(&task_id)
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(&task_id),
+        )
+        .await
+        .unwrap();
     boot.repo
         .terminal_set_exit_with_output(&terminal_id, Some(0), false, "stale", false)
         .await

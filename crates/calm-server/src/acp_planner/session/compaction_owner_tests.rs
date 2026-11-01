@@ -7,25 +7,39 @@ use calm_truth::db::sqlite::provider_execution as claims;
 async fn admitted(session: &AcpPlannerSession, purpose: Purpose) -> claims::Claim {
     let params = &session.shared.params;
     let pool = params.repo.sqlite_db().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await.unwrap();
-    let claims::Cas::Applied(claim) = claims::admit(
-        &mut tx,
-        &params.worker_session_id,
-        crate::model::new_id(),
-        purpose,
-        claims::InitialRelease::Held,
-    )
-    .await
-    .unwrap() else {
-        panic!("admission");
-    };
-    tx.commit().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET mcp_token_hash='current-token' WHERE id=?")
-        .bind(&params.worker_session_id)
-        .execute(pool.writer_pool())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let claims::Cas::Applied(claim) = claims::admit(
+                    &mut tx,
+                    &params.worker_session_id,
+                    crate::model::new_id(),
+                    purpose,
+                    claims::InitialRelease::Held,
+                )
+                .await
+                .unwrap() else {
+                    panic!("admission");
+                };
+                tx.commit().await.unwrap();
+                (pool)
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE worker_sessions SET mcp_token_hash='current-token' WHERE id=?",
+                        )
+                        .bind(&params.worker_session_id),
+                    )
+                    .await
+                    .unwrap();
+                claim
+            })
+        })
         .await
-        .unwrap();
-    claim
+        .expect("independent write operation")
 }
 
 async fn token(session: &AcpPlannerSession) -> Option<String> {
@@ -59,25 +73,29 @@ async fn receipt_free(known: Option<KnownEnd>) {
         unreachable!()
     };
     // A colliding receipt must be untouched: purpose, not receipt absence, selects maintenance.
-    sqlx::query(concat!(
-        "INSERT INTO acp_submissions(",
-        "worker_session_id,client_id,turn_id,thread_id,native_session_id,",
-        "input_json,state,created_at_ms) ",
-        "VALUES (?,'collision',?,?,'native','{}','sending',0)",
-    ))
-    .bind(&session.shared.params.worker_session_id)
-    .bind(turn_id)
-    .bind(&thread)
-    .execute(repo.pool())
-    .await
-    .unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER no_input_recovery BEFORE UPDATE ON acp_submissions ",
-        "BEGIN SELECT RAISE(FAIL, 'maintenance touched input'); END",
-    ))
-    .execute(repo.pool())
-    .await
-    .unwrap();
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "INSERT INTO acp_submissions(",
+                "worker_session_id,client_id,turn_id,thread_id,native_session_id,",
+                "input_json,state,created_at_ms) ",
+                "VALUES (?,'collision',?,?,'native','{}','sending',0)",
+            ))
+            .bind(&session.shared.params.worker_session_id)
+            .bind(turn_id)
+            .bind(&thread),
+        )
+        .await
+        .unwrap();
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER no_input_recovery BEFORE UPDATE ON acp_submissions ",
+            "BEGIN SELECT RAISE(FAIL, 'maintenance touched input'); END",
+        )))
+        .await
+        .unwrap();
     let owner = super::super::execution::Owner::default();
     owner.bind(repo.clone());
     owner

@@ -261,9 +261,14 @@ mod tests {
             show(&op).await.is_err(),
             "a pending receipt needs the payload"
         );
-        sqlx::query("UPDATE operations SET phase = 'failed', last_error = 'boom' WHERE id = ?1")
-            .bind(&op.id)
-            .execute(repo.sqlite_db().writer_pool())
+        (repo.sqlite_db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET phase = 'failed', last_error = 'boom' WHERE id = ?1",
+                )
+                .bind(&op.id),
+            )
             .await
             .unwrap();
         let failed = repo.get_operation(&op.id).await.unwrap().unwrap();

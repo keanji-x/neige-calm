@@ -174,20 +174,24 @@ impl Fixture {
         intent.metadata.program.program = "/bin/sh".into();
         intent.metadata.program.args = vec!["-c".into(), "printf ready; exec sleep 120".into()];
         let id = intent.metadata.id.clone();
-        let mut tx = sqlite::begin_immediate_tx(self.repo.db()).await.unwrap();
-        let ticket = self.engine.admit(&mut tx, intent).await.unwrap();
-        tx.commit().await.unwrap();
-        if live {
-            self.engine.drive(ticket.committed());
-            wait(|| async {
-                matches!(
-                    self.engine.output(&id, None).await,
-                    Ok(ExecutionReply::Observation { state: ExecutionState::Spawned, ref output, .. }) if output == b"ready"
-                )
-            })
-            .await;
-        }
-        id
+        let write_db = (self.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            let ticket = self.engine.admit(&mut tx, intent).await.unwrap();
+            tx.commit().await.unwrap();
+            if live {
+                self.engine.drive(ticket.committed());
+                wait(|| async {
+                    matches!(
+                        self.engine.output(&id, None).await,
+                        Ok(ExecutionReply::Observation { state: ExecutionState::Spawned, ref output, .. }) if output == b"ready"
+                    )
+                })
+                .await;
+            }
+            id
+
+    })).await.expect("independent write operation")
     }
     async fn request(
         &self,
@@ -251,15 +255,24 @@ impl Fixture {
         assert_eq!(self.desired(id).await, "retire");
     }
     async fn stop(&self, id: &ExecutionId) {
-        let mut tx = sqlite::begin_immediate_tx(self.repo.db()).await.unwrap();
-        let ticket = self
-            .engine
-            .request(&mut tx, id, Desired::Retire)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let ticket = self
+                        .engine
+                        .request(&mut tx, id, Desired::Retire)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    self.engine.drive(ticket.committed());
+                    self.retired(id).await;
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        self.engine.drive(ticket.committed());
-        self.retired(id).await;
+            .expect("independent write operation")
     }
 }
 impl Drop for Fixture {
@@ -323,33 +336,42 @@ async fn unsettled_executions_scopes() {
         .unwrap()
         .is_empty()
     );
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _ticket = f
-        .engine
-        .request(&mut tx, &id, Desired::Retire)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let _ticket = f
+                    .engine
+                    .request(&mut tx, &id, Desired::Retire)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    sql::unsettled_executions(
+                        &mut f.repo.pool().acquire().await.unwrap(),
+                        Scope::Alias(&sql::terminal_alias(&terminal.id))
+                    )
+                    .await
+                    .unwrap(),
+                    vec![id.clone()],
+                    "Retire desire alone does not release occupancy"
+                );
+                f.stop(&id).await;
+                assert!(
+                    sql::unsettled_executions(
+                        &mut f.repo.pool().acquire().await.unwrap(),
+                        Scope::Track(&f.track)
+                    )
+                    .await
+                    .unwrap()
+                    .is_empty()
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        sql::unsettled_executions(
-            &mut f.repo.pool().acquire().await.unwrap(),
-            Scope::Alias(&sql::terminal_alias(&terminal.id))
-        )
-        .await
-        .unwrap(),
-        vec![id.clone()],
-        "Retire desire alone does not release occupancy"
-    );
-    f.stop(&id).await;
-    assert!(
-        sql::unsettled_executions(
-            &mut f.repo.pool().acquire().await.unwrap(),
-            Scope::Track(&f.track)
-        )
-        .await
-        .unwrap()
-        .is_empty()
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -357,16 +379,25 @@ async fn terminal_delete_tx_returns_retire_and_rolls_back() {
     let f = Fixture::new().await;
     let (_, terminal) = f.terminal().await;
     let id = f.admit(&terminal, true).await;
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let deleted = sqlite::terminal_delete_tx(&mut tx, &terminal.id)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let deleted = sqlite::terminal_delete_tx(&mut tx, &terminal.id)
+                    .await
+                    .unwrap();
+                assert_eq!(deleted.retire, Some(id.clone()));
+                tx.rollback().await.unwrap();
+                assert_eq!(f.desired(&id).await, "run");
+                assert!(f.repo.terminal_get(&terminal.id).await.unwrap().is_some());
+                assert!(f.engine.output(&id, None).await.is_ok());
+                f.stop(&id).await;
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(deleted.retire, Some(id.clone()));
-    tx.rollback().await.unwrap();
-    assert_eq!(f.desired(&id).await, "run");
-    assert!(f.repo.terminal_get(&terminal.id).await.unwrap().is_some());
-    assert!(f.engine.output(&id, None).await.is_ok());
-    f.stop(&id).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -405,41 +436,50 @@ async fn track_delete_preflight_refused_keeps_typed_running() {
     let (_, terminal) = f.terminal().await;
     let id = f.admit(&terminal, true).await;
     // A descendant is rejected before the Legacy stop point.
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let child = sqlite::track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: f.area.clone().into(),
-            title: "child".into(),
-            cwd: f.root.display().to_string(),
-            sort: None,
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        &calm_server::track_area_cache::TrackAreaCache::new(),
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id = ? WHERE id = ?")
-        .bind(&f.track)
-        .bind(child.id.as_str())
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let child = sqlite::track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: f.area.clone().into(),
+                        title: "child".into(),
+                        cwd: f.root.display().to_string(),
+                        sort: None,
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    &calm_server::track_area_cache::TrackAreaCache::new(),
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE tracks SET parent_track_id = ? WHERE id = ?")
+                    .bind(&f.track)
+                    .bind(child.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let (status, _) = f
+                    .request("DELETE", &format!("/api/tracks/{}", f.track), None)
+                    .await;
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert_eq!(f.desired(&id).await, "run");
+                assert!(f.engine.output(&id, None).await.is_ok());
+                f.stop(&id).await;
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let (status, _) = f
-        .request("DELETE", &format!("/api/tracks/{}", f.track), None)
-        .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(f.desired(&id).await, "run");
-    assert!(f.engine.output(&id, None).await.is_ok());
-    f.stop(&id).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -471,23 +511,32 @@ async fn repoint_rejects_unsettled_typed_without_stop() {
     let mut intent = exec::test_support::intent(f.root.clone());
     intent.metadata.track = exec::TrackId(f.track.clone());
     let id = intent.metadata.id.clone();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-    tx.commit().await.unwrap();
-    let target = f._temp.path().join("attached");
-    std::fs::create_dir(&target).unwrap();
-    git(&target, &["init", "-q"]);
-    let (status, body) = f
-        .request(
-            "PATCH",
-            &format!("/api/tracks/{}", f.track),
-            Some(json!({"workspace": {"kind": "attached", "path": target, "attach_folder": true}})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body.contains("unsettled"), "{body}");
-    assert_eq!(f.desired(&id).await, "run");
-    f.stop(&id).await;
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                        tx.commit().await.unwrap();
+                        let target = f._temp.path().join("attached");
+                        std::fs::create_dir(&target).unwrap();
+                        git(&target, &["init", "-q"]);
+                        let (status, body) = f
+                .request(
+                    "PATCH",
+                    &format!("/api/tracks/{}", f.track),
+                    Some(json!({"workspace": {"kind": "attached", "path": target, "attach_folder": true}})),
+                )
+                .await;
+                        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+                        assert!(body.contains("unsettled"), "{body}");
+                        assert_eq!(f.desired(&id).await, "run");
+                        f.stop(&id).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -534,50 +583,61 @@ async fn worker(
         WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
     };
     let (card, terminal) = f.terminal().await;
-    sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?")
-        .bind(card.id.as_str())
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?").bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     let id = f.admit(&terminal, true).await;
     let session = new_id();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlite::session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: session.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::Terminal,
-            agent_provider: None,
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(terminal.id.clone()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms() - 180_000,
-        },
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
-        .bind(now_ms())
-        .bind(&f.track)
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlite::session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: session.clone(),
+                        card_id: card.id.to_string(),
+                        kind: WorkerSessionKind::Terminal,
+                        agent_provider: None,
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(terminal.id.clone()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms() - 180_000,
+                    },
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
+                    .bind(now_ms())
+                    .bind(&f.track)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                (
+                    id,
+                    calm_server::terminal_sweeper::SettledWorkerSession {
+                        id: session,
+                        provider: "terminal".into(),
+                        card_id: card.id.to_string(),
+                        terminal_id: terminal.id,
+                        thread_id: None,
+                    },
+                )
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    (
-        id,
-        calm_server::terminal_sweeper::SettledWorkerSession {
-            id: session,
-            provider: "terminal".into(),
-            card_id: card.id.to_string(),
-            terminal_id: terminal.id,
-            thread_id: None,
-        },
-    )
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -620,9 +680,11 @@ async fn settled_worker_reopen_during_claim_does_not_stop() {
         &f.state,
         &session,
         || async {
-            sqlx::query("UPDATE tracks SET closed_at = NULL WHERE id = ?")
-                .bind(&f.track)
-                .execute(f.repo.db().writer_pool())
+            (f.repo.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tracks SET closed_at = NULL WHERE id = ?").bind(&f.track),
+                )
                 .await
                 .unwrap();
         },
@@ -674,44 +736,53 @@ async fn worktree_clean_skips_until_settled() {
     let mut intent = exec::test_support::intent(f.root.clone());
     intent.metadata.track = exec::TrackId(f.track.clone());
     let id = intent.metadata.id.clone();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-    let mut workspace = sqlite::track_workspace_read_tx(&mut tx, &f.track)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                let mut workspace = sqlite::track_workspace_read_tx(&mut tx, &f.track)
+                    .await
+                    .unwrap();
+                workspace.kind = calm_types::model::TrackWorkspaceKind::Attached;
+                workspace.worktree = Some(worktree.to_str().unwrap().to_owned());
+                sqlite::track_workspace_write_tx(&mut tx, &f.track, &workspace)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
+                    .bind(now_ms())
+                    .bind(&f.track)
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+                        f.repo.db(),
+                        &f.state.operation_runtime
+                    )
+                    .await
+                    .unwrap(),
+                    0
+                );
+                assert!(worktree.join("target/build").is_file());
+                f.stop(&id).await;
+                assert_eq!(
+                    calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
+                        f.repo.db(),
+                        &f.state.operation_runtime
+                    )
+                    .await
+                    .unwrap(),
+                    1
+                );
+                assert!(!worktree.join("target").exists());
+            })
+        })
         .await
-        .unwrap();
-    workspace.kind = calm_types::model::TrackWorkspaceKind::Attached;
-    workspace.worktree = Some(worktree.to_str().unwrap().to_owned());
-    sqlite::track_workspace_write_tx(&mut tx, &f.track, &workspace)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
-        .bind(now_ms())
-        .bind(&f.track)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-            f.repo.db(),
-            &f.state.operation_runtime
-        )
-        .await
-        .unwrap(),
-        0
-    );
-    assert!(worktree.join("target/build").is_file());
-    f.stop(&id).await;
-    assert_eq!(
-        calm_server::test_seams::clean_idle_closed_track_worktrees_for_test(
-            f.repo.db(),
-            &f.state.operation_runtime
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    assert!(!worktree.join("target").exists());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -748,10 +819,13 @@ async fn orphan_sweep_quiesces_typed_then_retires() {
     let f = Fixture::new().await;
     let (_, terminal) = f.terminal().await;
     let id = f.admit(&terminal, true).await;
-    sqlx::query("UPDATE terminals SET created_at = ? WHERE id = ?")
-        .bind(now_ms() - 180_000)
-        .bind(&terminal.id)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE terminals SET created_at = ? WHERE id = ?")
+                .bind(now_ms() - 180_000)
+                .bind(&terminal.id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&f.state)

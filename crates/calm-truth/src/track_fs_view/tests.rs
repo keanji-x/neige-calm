@@ -890,171 +890,180 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "w".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        "card-big".into(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "worker".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
-    let card_id = card.id.to_string();
-    let session_id = "rt-card-big";
-    session_insert_tx(
-        &mut tx,
-        WorkerSession {
-            id: WorkerSessionId::from(session_id),
-            track_id: track.id.clone(),
-            provider: WorkerProviderKind::Codex,
-            mode: SessionMode::Resumable,
-            contract: WorkerContract::Executor,
-            parent_session_id: None,
-            requester_session_id: None,
-            state: WorkerSessionState::Running,
-            mcp_token_hash: None,
-            thread_id: Some("thread-card-big".into()),
-            agent_session_id: Some("agent-card-big".into()),
-            active_turn_id: None,
-            terminal_run_id: None,
-            card_id: Some(calm_types::ids::CardId(card_id.clone())),
-            handle_state_json: None,
-            liveness: LivenessTag::Alive,
-            liveness_probed_at_ms: None,
-            exit_code: None,
-            exit_interpretation: None,
-            spawn_op_id: None,
-            last_activity_ms: None,
-            last_thread_status: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            completed_at_ms: None,
-        },
-    )
-    .await
-    .unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "c".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "w".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    "card-big".into(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "worker".into(),
+                        sort: None,
+                        payload: serde_json::json!({}),
+                    },
+                    CardRole::Worker,
+                    true,
+                    repo.card_role_cache(),
+                )
+                .await
+                .unwrap();
+                let card_id = card.id.to_string();
+                let session_id = "rt-card-big";
+                session_insert_tx(
+                    &mut tx,
+                    WorkerSession {
+                        id: WorkerSessionId::from(session_id),
+                        track_id: track.id.clone(),
+                        provider: WorkerProviderKind::Codex,
+                        mode: SessionMode::Resumable,
+                        contract: WorkerContract::Executor,
+                        parent_session_id: None,
+                        requester_session_id: None,
+                        state: WorkerSessionState::Running,
+                        mcp_token_hash: None,
+                        thread_id: Some("thread-card-big".into()),
+                        agent_session_id: Some("agent-card-big".into()),
+                        active_turn_id: None,
+                        terminal_run_id: None,
+                        card_id: Some(calm_types::ids::CardId(card_id.clone())),
+                        handle_state_json: None,
+                        liveness: LivenessTag::Alive,
+                        liveness_probed_at_ms: None,
+                        exit_code: None,
+                        exit_interpretation: None,
+                        spawn_op_id: None,
+                        last_activity_ms: None,
+                        last_thread_status: None,
+                        created_at_ms: 1,
+                        updated_at_ms: 1,
+                        completed_at_ms: None,
+                    },
+                )
+                .await
+                .unwrap();
 
-    let first = WorkerFlowItem::UserMessage {
-        env: flow_env(0, 1),
-        content: vec![MessageBlock::Text {
-            text: FIRST_USER.into(),
-        }],
-    };
-    worker_flow_item_insert_tx(
-        &mut tx,
-        Some(&card_id),
-        Some(session_id),
-        Some(track.id.as_str()),
-        Some(session_id),
-        "user_message",
-        &serde_json::to_string(&first).unwrap(),
-        1,
-    )
-    .await
-    .unwrap();
+                let first = WorkerFlowItem::UserMessage {
+                    env: flow_env(0, 1),
+                    content: vec![MessageBlock::Text {
+                        text: FIRST_USER.into(),
+                    }],
+                };
+                worker_flow_item_insert_tx(
+                    &mut tx,
+                    Some(&card_id),
+                    Some(session_id),
+                    Some(track.id.as_str()),
+                    Some(session_id),
+                    "user_message",
+                    &serde_json::to_string(&first).unwrap(),
+                    1,
+                )
+                .await
+                .unwrap();
 
-    for n in 0..598u64 {
-        let item = WorkerFlowItem::CommandExecution {
-            env: flow_env(n + 1, 1),
-            call_id: None,
-            command: format!("echo {n}"),
-            cwd: None,
-            parsed_actions: vec![],
-            aggregated_output: None,
-            exit_code: Some(0),
-            duration_ms: None,
-            status: calm_types::worker_flow::ExecStatus::Completed,
-            source: calm_types::worker_flow::ExecSource::Agent,
-        };
-        worker_flow_item_insert_tx(
-            &mut tx,
-            Some(&card_id),
-            Some(session_id),
-            Some(track.id.as_str()),
-            Some(session_id),
-            "command_execution",
-            &serde_json::to_string(&item).unwrap(),
-            (2 + n) as i64,
-        )
+                for n in 0..598u64 {
+                    let item = WorkerFlowItem::CommandExecution {
+                        env: flow_env(n + 1, 1),
+                        call_id: None,
+                        command: format!("echo {n}"),
+                        cwd: None,
+                        parsed_actions: vec![],
+                        aggregated_output: None,
+                        exit_code: Some(0),
+                        duration_ms: None,
+                        status: calm_types::worker_flow::ExecStatus::Completed,
+                        source: calm_types::worker_flow::ExecSource::Agent,
+                    };
+                    worker_flow_item_insert_tx(
+                        &mut tx,
+                        Some(&card_id),
+                        Some(session_id),
+                        Some(track.id.as_str()),
+                        Some(session_id),
+                        "command_execution",
+                        &serde_json::to_string(&item).unwrap(),
+                        (2 + n) as i64,
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                let final_item = WorkerFlowItem::AgentMessage {
+                    env: flow_env(599, 1),
+                    text: FINAL_ANSWER.into(),
+                    is_final: true,
+                    phase: None,
+                };
+                worker_flow_item_insert_tx(
+                    &mut tx,
+                    Some(&card_id),
+                    Some(session_id),
+                    Some(track.id.as_str()),
+                    Some(session_id),
+                    "assistant_message",
+                    &serde_json::to_string(&final_item).unwrap(),
+                    600,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+
+                let rows = worker_flow_rows_all(&repo, &card_id).await.unwrap();
+                assert_eq!(rows.len(), 600, "all 600 rows must be paged in");
+                let items: Vec<WorkerFlowItem> = rows
+                    .iter()
+                    .map(|row| deserialize_flow_row(&row.kind, &row.payload))
+                    .collect();
+                let md = worker_flow_markdown(&card.id, &items);
+
+                assert!(
+                    md.contains(FIRST_USER),
+                    "first user message must be rendered"
+                );
+                assert!(
+                    md.contains(FINAL_ANSWER),
+                    "final answer (tail past row 500) must NOT be dropped"
+                );
+            })
+        })
         .await
-        .unwrap();
-    }
-
-    let final_item = WorkerFlowItem::AgentMessage {
-        env: flow_env(599, 1),
-        text: FINAL_ANSWER.into(),
-        is_final: true,
-        phase: None,
-    };
-    worker_flow_item_insert_tx(
-        &mut tx,
-        Some(&card_id),
-        Some(session_id),
-        Some(track.id.as_str()),
-        Some(session_id),
-        "assistant_message",
-        &serde_json::to_string(&final_item).unwrap(),
-        600,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-
-    let rows = worker_flow_rows_all(&repo, &card_id).await.unwrap();
-    assert_eq!(rows.len(), 600, "all 600 rows must be paged in");
-    let items: Vec<WorkerFlowItem> = rows
-        .iter()
-        .map(|row| deserialize_flow_row(&row.kind, &row.payload))
-        .collect();
-    let md = worker_flow_markdown(&card.id, &items);
-
-    assert!(
-        md.contains(FIRST_USER),
-        "first user message must be rendered"
-    );
-    assert!(
-        md.contains(FINAL_ANSWER),
-        "final answer (tail past row 500) must NOT be dropped"
-    );
+        .expect("independent write operation")
 }
 
 #[test]

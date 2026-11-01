@@ -59,79 +59,83 @@ async fn boot() -> Boot {
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    let worker_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        },
-        CardRole::Worker,
-        true,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let planner_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+            },
+            CardRole::Planner,
+            false,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        let worker_card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id,
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1}),
+            },
+            CardRole::Worker,
+            true,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-    let state = AppState::from_parts(
-        repo.clone(),
-        EventBus::new(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
+        let state = AppState::from_parts(
             repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-items-rest"),
-            Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache),
-        Some(track_area_cache),
-    );
-    let app = routes::router()
-        .layer(axum::middleware::from_fn(
-            calm_server::actor::actor_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
-                username: None,
-                password: None,
-                dev_autologin: true,
-                display_name: "Owner".into(),
-            }),
-            calm_server::auth::require_session,
-        ))
-        .with_state(state);
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-items-rest"),
+                Vec::new(),
+                EventBus::new(),
+                calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            Some(role_cache),
+            Some(track_area_cache),
+        );
+        let app = routes::router()
+            .layer(axum::middleware::from_fn(
+                calm_server::actor::actor_middleware,
+            ))
+            .layer(axum::middleware::from_fn_with_state(
+                calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                    username: None,
+                    password: None,
+                    dev_autologin: true,
+                    display_name: "Owner".into(),
+                }),
+                calm_server::auth::require_session,
+            ))
+            .with_state(state);
 
-    Boot {
-        app,
-        repo,
-        planner_card,
-        worker_card,
-    }
+        Boot {
+            app,
+            repo,
+            planner_card,
+            worker_card,
+        }
+
+    })).await.expect("independent write operation")
 }
 
 async fn get(app: axum::Router, uri: String) -> (StatusCode, Value) {
@@ -287,9 +291,12 @@ async fn transcript_route_returns_strict_structured_input_segments() {
         .await
         .unwrap();
 
-    let error = sqlx::query("UPDATE harness_items SET input_segments = '{}' WHERE id = ?1")
-        .bind(row_id)
-        .execute(boot.repo.pool())
+    let error = (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE harness_items SET input_segments = '{}' WHERE id = ?1")
+                .bind(row_id),
+        )
         .await
         .expect_err("the migration must reject a non-array segment envelope");
     assert!(
@@ -316,15 +323,18 @@ async fn transcript_route_returns_strict_structured_input_segments() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].input_segments, Some(segments));
 
-    sqlx::query(
-        r#"UPDATE harness_items
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE harness_items
            SET input_segments = '[{"presentation":"future_value","text":"x"}]'
            WHERE id = ?1"#,
-    )
-    .bind(rows[0].id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(rows[0].id),
+        )
+        .await
+        .unwrap();
     let error = boot
         .repo
         .harness_item_list_by_card(boot.planner_card.id.as_str(), 0, 100, false)

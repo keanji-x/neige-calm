@@ -57,11 +57,10 @@ use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 use calm_truth::db::sqlite::{
-    RunningLivenessFacts, SuccessReportFlip, TaskReporter, begin_immediate_tx,
-    status_detail_with_reason, task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx,
-    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_running_liveness_tx, task_stamp_missing_running_liveness_tx, tasks_by_track_tx,
-    track_find_tx,
+    RunningLivenessFacts, SuccessReportFlip, TaskReporter, status_detail_with_reason,
+    task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
+    task_mark_sub_track_running_tx, task_report_success_from_worker_tx, task_running_liveness_tx,
+    task_stamp_missing_running_liveness_tx, tasks_by_track_tx, track_find_tx,
 };
 
 /// Default reconcile-tick period (liveness backstop).
@@ -1353,10 +1352,18 @@ impl Scheduler {
             .repo
             .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let mut tx = begin_immediate_tx(&pool).await?;
-        task_mark_sub_track_running_tx(&mut tx, task_id, now_ms()).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    task_mark_sub_track_running_tx(&mut tx, task_id, now_ms()).await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     async fn fail_child_track_task(
@@ -1508,22 +1515,26 @@ impl Scheduler {
             .repo
             .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let mut tx = begin_immediate_tx(&pool).await?;
-        let rows = mark_acknowledged_running_tx(
-            &mut tx,
-            task_id,
-            worker_card_id,
-            self.worker_liveness.cap_ms(),
-        )
-        .await?;
-        tx.commit().await?;
-        if rows == 0 {
-            tracing::debug!(
-                task_id = %task_id,
-                "scheduler: running stamp no-op (fast worker report already advanced the row)"
-            );
-        }
-        Ok(())
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await?;
+            let rows = mark_acknowledged_running_tx(
+                &mut tx,
+                task_id,
+                worker_card_id,
+                self.worker_liveness.cap_ms(),
+            )
+            .await?;
+            tx.commit().await?;
+            if rows == 0 {
+                tracing::debug!(
+                    task_id = %task_id,
+                    "scheduler: running stamp no-op (fast worker report already advanced the row)"
+                );
+            }
+            Ok(())
+
+    })).await.map_err(calm_truth::TruthError::from)?
     }
 
     /// Spawn failure/stuck: guarded `dispatched/running → failed('spawn-failed: <reason>')` plus
@@ -1713,13 +1724,21 @@ impl Scheduler {
             .repo
             .sqlite_db()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        let mut tx = begin_immediate_tx(&pool).await?;
-        let now = now_ms();
-        let deadline = now.saturating_add(self.worker_liveness.cap_ms());
-        task_stamp_missing_running_liveness_tx(&mut tx, task_id, now, deadline).await?;
-        let facts = task_running_liveness_tx(&mut tx, task_id, worker_card_id).await?;
-        tx.commit().await?;
-        Ok(facts)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await?;
+                    let now = now_ms();
+                    let deadline = now.saturating_add(self.worker_liveness.cap_ms());
+                    task_stamp_missing_running_liveness_tx(&mut tx, task_id, now, deadline).await?;
+                    let facts = task_running_liveness_tx(&mut tx, task_id, worker_card_id).await?;
+                    tx.commit().await?;
+                    Ok(facts)
+                })
+            })
+            .await.map_err(calm_truth::TruthError::from)?
     }
 
     pub(crate) fn bind_child_dispatcher(&self, dispatcher: Weak<crate::dispatcher::Dispatcher>) {
@@ -1968,36 +1987,40 @@ impl Scheduler {
             track_id: track.id.clone(),
             area_id: track.area_id.clone(),
         };
-        let mut tx = begin_immediate_tx(&pool).await?;
-        // P9 / P9b / P10: the verdict with its target (frozen, or derived from the rows).
-        let verdict = crate::operation::task_verify_adapter::target::reconcile_result_tx(
-            &mut tx, task, attempt, log_path, outcome,
-        )
-        .await?;
-        let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
-        if envelopes.is_empty() && op_terminal_failed && verdict.verdict.attempt >= 1 {
-            // Pre-bump failure arm: a `prepare_tx` error BEFORE the bump terminal-fails op `#gN`
-            // while the row stays `verifying@N-1`, and the eq-attempt guard would miss forever.
-            // Flip at the pre-bump attempt; a row that DID reach attempt N makes this guard miss.
-            envelopes = crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
-                &mut tx,
-                &rctx,
-                &verdict,
-                verdict.verdict.attempt - 1,
+        let write_db = (pool).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await?;
+            // P9 / P9b / P10: the verdict with its target (frozen, or derived from the rows).
+            let verdict = crate::operation::task_verify_adapter::target::reconcile_result_tx(
+                &mut tx, task, attempt, log_path, outcome,
             )
             .await?;
-        }
-        if envelopes.is_empty() {
-            // Guard miss: the live observer's tx (or a superseding
-            // attempt) already moved the row. Nothing was written.
-            tx.rollback().await?;
-            return Ok(());
-        }
-        tx.commit().await?;
-        for envelope in envelopes {
-            self.events.emit_envelope(envelope);
-        }
-        Ok(())
+            let mut envelopes = apply_gate_result_in_tx(&mut tx, &rctx, &verdict).await?;
+            if envelopes.is_empty() && op_terminal_failed && verdict.verdict.attempt >= 1 {
+                // Pre-bump failure arm: a `prepare_tx` error BEFORE the bump terminal-fails op `#gN`
+                // while the row stays `verifying@N-1`, and the eq-attempt guard would miss forever.
+                // Flip at the pre-bump attempt; a row that DID reach attempt N makes this guard miss.
+                envelopes = crate::operation::task_verify_adapter::apply_gate_result_with_guard_in_tx(
+                    &mut tx,
+                    &rctx,
+                    &verdict,
+                    verdict.verdict.attempt - 1,
+                )
+                .await?;
+            }
+            if envelopes.is_empty() {
+                // Guard miss: the live observer's tx (or a superseding
+                // attempt) already moved the row. Nothing was written.
+                tx.rollback().await?;
+                return Ok(());
+            }
+            tx.commit().await?;
+            for envelope in envelopes {
+                self.events.emit_envelope(envelope);
+            }
+            Ok(())
+
+    })).await.map_err(calm_truth::TruthError::from)?
     }
 }
 

@@ -150,20 +150,29 @@ async fn wait_stopped(h: &Harness) {
 }
 async fn complete(h: &Harness) {
     let op = h.repo.get_operation(&h.op.id).await.unwrap().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
+    let write_db = (h.db.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
+                    .await
+                    .unwrap();
+                retire(CONFIG, &mut tx, &op).await.unwrap();
+                sqlx::query(
+                    "UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1",
+                )
+                .bind(&op.id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                h.ctx.execution.drive([h.metadata.id.clone()]);
+            })
+        })
         .await
-        .unwrap();
-    crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &op)
-        .await
-        .unwrap();
-    retire(CONFIG, &mut tx, &op).await.unwrap();
-    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1")
-        .bind(&op.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    h.ctx.execution.drive([h.metadata.id.clone()]);
+        .expect("independent write operation")
 }
 async fn delete_and_finish(h: &Harness, state: AppState) -> StatusCode {
     let deletion = delete(state, card(h));
@@ -193,18 +202,21 @@ async fn w_owned_delete_card_stops_and_settles_without_terminal_row() {
 
 async fn task(h: &Harness, id: &str, stamped: bool, gated: bool) {
     let card_row = h.db.card_get(card(h)).await.unwrap().unwrap();
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
+    (h.db.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
          gate_json,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,?1,'terminal','owned','{}','running',?3,?4,1,1)",
-    )
-    .bind(id)
-    .bind(card_row.track_id.as_str())
-    .bind(stamped.then(|| card(h)))
-    .bind(gated.then_some(r#"{"steps":[{"name":"check","command":"true"}]}"#))
-    .execute(h.db.pool())
-    .await
-    .unwrap();
+            )
+            .bind(id)
+            .bind(card_row.track_id.as_str())
+            .bind(stamped.then(|| card(h)))
+            .bind(gated.then_some(r#"{"steps":[{"name":"check","command":"true"}]}"#)),
+        )
+        .await
+        .unwrap();
     if !stamped {
         let proof = h
             .repo
@@ -219,10 +231,13 @@ async fn task(h: &Harness, id: &str, stamped: bool, gated: bool) {
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE operations SET target_type='card',target_id=?2 WHERE id=?1")
-            .bind(&proof)
-            .bind(card(h))
-            .execute(h.db.pool())
+        (h.db.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET target_type='card',target_id=?2 WHERE id=?1")
+                    .bind(&proof)
+                    .bind(card(h)),
+            )
             .await
             .unwrap();
     }

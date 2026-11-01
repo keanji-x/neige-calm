@@ -173,11 +173,9 @@ async fn the_backfill_stamps_never_on_exactly_the_cards_from_shape_binds_as_a_pl
         .run(&pool)
         .await
         .expect("apply the migrations before the backfill");
-    sqlx::raw_sql(
+    { let query = sqlx::raw_sql(
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at) VALUES ('a', 'a', '#000', 0, 1, 1);",
-    )
-    .execute(&pool)
-    .await
+    ); sqlx::Executor::execute(&pool, query).await }
     .expect("seed area");
     // One track per card: a track holds at most one Planner.
     for (sort, (id, kind, role, payload)) in ROWS.iter().enumerate() {
@@ -241,9 +239,7 @@ async fn the_backfill_stamps_never_on_exactly_the_cards_from_shape_binds_as_a_pl
         .iter()
         .find(|migration| migration.version == BACKFILL)
         .expect("the backfill is embedded");
-    sqlx::raw_sql(&backfill.sql)
-        .execute(&pool)
-        .await
+    { let query = sqlx::raw_sql(&backfill.sql); sqlx::Executor::execute(&pool, query).await }
         .expect("rerun the backfill");
     assert_eq!(payloads(&pool).await, after);
 }

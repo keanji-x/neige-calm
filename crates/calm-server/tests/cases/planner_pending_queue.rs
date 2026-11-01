@@ -178,50 +178,54 @@ async fn a_card_with_no_runtime_reports_an_empty_pending_page() {
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let card = card_create_with_id_tx(
+            &mut tx,
+            new_id(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+            },
+            CardRole::Planner,
+            false,
+            &role_cache,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
 
-    let state = AppState::from_parts(
-        repo.clone(),
-        EventBus::new(),
-        Arc::new(DaemonClient::new_stub()),
-        Arc::new(PluginHost::new_full(
-            Arc::new(PluginRegistry::empty()),
+        let state = AppState::from_parts(
             repo.clone(),
-            PathBuf::new(),
-            std::env::temp_dir().join("calm-plugins-data-dormant-queue"),
-            Vec::new(),
             EventBus::new(),
-            calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        )),
-        Arc::new(CodexClient::new_stub()),
-        Some(role_cache.clone()),
-        Some(track_area_cache),
-    );
-    let app = crate::support::authenticated_router::application(state).await;
+            Arc::new(DaemonClient::new_stub()),
+            Arc::new(PluginHost::new_full(
+                Arc::new(PluginRegistry::empty()),
+                repo.clone(),
+                PathBuf::new(),
+                std::env::temp_dir().join("calm-plugins-data-dormant-queue"),
+                Vec::new(),
+                EventBus::new(),
+                calm_server::state::WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+            )),
+            Arc::new(CodexClient::new_stub()),
+            Some(role_cache.clone()),
+            Some(track_area_cache),
+        );
+        let app = crate::support::authenticated_router::application(state).await;
 
-    let (status, run) = get(app, format!("/api/cards/{}/planner/run", card.id.as_str())).await;
-    assert_eq!(status, StatusCode::OK, "body={run}");
-    assert_eq!(run["worker_session_id"], Value::Null);
-    assert_eq!(run["phase"], Value::Null);
-    assert_eq!(run["pending"], json!([]));
-    assert_eq!(run["pending_overflow"], json!(0));
+        let (status, run) = get(app, format!("/api/cards/{}/planner/run", card.id.as_str())).await;
+        assert_eq!(status, StatusCode::OK, "body={run}");
+        assert_eq!(run["worker_session_id"], Value::Null);
+        assert_eq!(run["phase"], Value::Null);
+        assert_eq!(run["pending"], json!([]));
+        assert_eq!(run["pending_overflow"], json!(0));
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -427,8 +431,9 @@ async fn a_truncation_whose_announcement_fails_is_not_persisted() {
         "the untruncated queue is still on disk, so the next boot can try again"
     );
 
-    sqlx::query("ALTER TABLE events_hidden RENAME TO events")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("ALTER TABLE events_hidden RENAME TO events"))
         .await
         .expect("restore the events table");
     boot.harness

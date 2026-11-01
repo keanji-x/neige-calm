@@ -209,17 +209,20 @@ async fn boot_recovery_past_deadline_ignores_abandoned_parked_lease() {
         .insert_parked("park-default", dead_artifacts(), now_ms() - 1)
         .await;
     let future_lease = now_ms() + 3_600_000;
-    sqlx::query(
-        r#"UPDATE operations
+    (boot.route_repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                r#"UPDATE operations
            SET lease_owner = 'abandoned-enforcer',
                lease_until_ms = ?1
            WHERE id = ?2"#,
-    )
-    .bind(future_lease)
-    .bind(&op.id)
-    .execute(boot.route_repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(future_lease)
+            .bind(&op.id),
+        )
+        .await
+        .unwrap();
 
     assert!(
         boot.operation_repo
@@ -482,18 +485,21 @@ impl TestBoot {
         let op = claimed.pop().unwrap();
         assert!(op.lease_owner.is_some());
         let output = TxOutput::new("unknown", None, json!({ "prepared": true }));
-        sqlx::query(
-            r#"UPDATE operations
+        (self.route_repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE operations
                SET phase = 'spawn_started',
                    tx_output_json = ?1,
                    target_json = '{"type":"unknown","id":null}'
                WHERE id = ?2"#,
-        )
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind(&op_id)
-        .execute(self.route_repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(serde_json::to_string(&output).unwrap())
+                .bind(&op_id),
+            )
+            .await
+            .unwrap();
         let op = self
             .operation_repo
             .get_operation(&op_id)

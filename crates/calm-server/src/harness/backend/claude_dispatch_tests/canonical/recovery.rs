@@ -12,15 +12,16 @@ async fn canonical_claude_recovery_lost_report_and_failed_fact_commit_stay_held(
         if cancelled {
             fx.session.hold_dispatch_result_for_test(pause.clone());
         } else {
-            sqlx::query(
-                "CREATE TRIGGER fail_fact BEFORE UPDATE OF handle_state_json ON worker_sessions
+            (fx.owner.repo.db())
+                .writer()
+                .execute(sqlx::query(
+                    "CREATE TRIGGER fail_fact BEFORE UPDATE OF handle_state_json ON worker_sessions
                 WHEN json_extract(NEW.handle_state_json,
                     '$.canonical_inputs.attempts[0].delivery.kind')='unknown'
                 BEGIN SELECT RAISE(ABORT,'fact failed'); END",
-            )
-            .execute(fx.owner.repo.pool())
-            .await
-            .unwrap();
+                ))
+                .await
+                .unwrap();
         }
         let dispatch = tokio::spawn({
             let fx = fx.clone();
@@ -158,8 +159,9 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
         fx.session.shutdown().await.is_err(),
         "outcome write failure must retain its claim"
     );
-    sqlx::query("DROP TRIGGER fail_outcome")
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_outcome"))
         .await
         .unwrap();
     let (thread, turn) = target.scope.thread_and_turn();
@@ -340,14 +342,23 @@ async fn canonical_claude_recovery_cancel_before_first_write_survives_database_r
     .await;
     session.shutdown().await.unwrap();
     assert!(replay.is_err());
-    let mut tx = begin_immediate_tx(reopened.db()).await.unwrap();
-    let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (reopened.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                    .await
+                    .unwrap();
+                assert_eq!(carrier.checkpoint(), &before);
+                tx.commit().await.unwrap();
+                assert_eq!(spawns(), original_spawns);
+                assert!(!fx.dir.path().join("stdin").exists());
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(carrier.checkpoint(), &before);
-    tx.commit().await.unwrap();
-    assert_eq!(spawns(), original_spawns);
-    assert!(!fx.dir.path().join("stdin").exists());
+        .expect("independent write operation")
 }
 
 pub(super) async fn reopen_session(

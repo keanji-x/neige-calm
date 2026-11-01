@@ -323,8 +323,9 @@ async fn restoration_shutdown_error_recovery_retains_owner_until_delete_fault_cl
             "rollback retains each durable source"
         );
     }
-    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
-        .execute(boot.repo.db().writer_pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_projection_cleanup"))
         .await
         .unwrap();
     edit_delete_after_recovery(&boot, a, b).await;
@@ -333,8 +334,9 @@ async fn restoration_shutdown_error_recovery_retains_owner_until_delete_fault_cl
 #[tokio::test]
 async fn restoration_shutdown_error_recovery_settles_without_manual_checkpoint() {
     let (boot, a, b) = restored_pair(true).await;
-    sqlx::query("DROP TRIGGER refuse_projection_cleanup")
-        .execute(boot.repo.db().writer_pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_projection_cleanup"))
         .await
         .unwrap();
     edit_delete_after_recovery(&boot, a, b).await;

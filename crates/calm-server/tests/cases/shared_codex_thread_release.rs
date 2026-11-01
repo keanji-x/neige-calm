@@ -128,57 +128,66 @@ async fn the_sweep_releases_only_threads_whose_session_positively_ended() {
         .await
         .unwrap();
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_complete_for_card_tx(&mut tx, &ended, WorkerSessionState::Exited)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_complete_for_card_tx(&mut tx, &ended, WorkerSessionState::Exited)
+                    .await
+                    .unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &carried_old,
+                    running_init(&carried, "thread-carried"),
+                )
+                .await
+                .unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &superseded_old,
+                    running_init(&superseded, "thread-successor"),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                repo.session_projection_set_status_for_card(&idle, WorkerSessionState::Idle)
+                    .await
+                    .unwrap();
+                let kept = [
+                    ("thread-running", &running),
+                    ("thread-idle", &idle),
+                    ("thread-carried", &carried),
+                    ("thread-superseded", &superseded),
+                    (minted.as_str(), &unowned),
+                ];
+                for (thread_id, card_id) in kept.iter().chain([&("thread-ended", &ended)]) {
+                    assert_eq!(
+                        daemon.cached_card_for_thread(thread_id).as_ref(),
+                        Some(*card_id),
+                        "premise: {thread_id} is cached"
+                    );
+                }
+
+                let state = state_with(repo.clone(), daemon.clone());
+                calm_server::terminal_sweeper::sweep(&state).await.unwrap();
+
+                assert_eq!(unsubscribed_on_wire(&root), vec!["thread-ended"]);
+                assert_eq!(daemon.cached_card_for_thread("thread-ended"), None);
+                for (thread_id, card_id) in kept {
+                    assert_eq!(
+                        daemon.cached_card_for_thread(thread_id).as_ref(),
+                        Some(card_id),
+                        "{thread_id} must stay attributed and subscribed"
+                    );
+                }
+
+                // Released once: the next tick has nothing left to release.
+                calm_server::terminal_sweeper::sweep(&state).await.unwrap();
+                assert_eq!(unsubscribed_on_wire(&root), vec!["thread-ended"]);
+            })
+        })
         .await
-        .unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &carried_old,
-        running_init(&carried, "thread-carried"),
-    )
-    .await
-    .unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &superseded_old,
-        running_init(&superseded, "thread-successor"),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    repo.session_projection_set_status_for_card(&idle, WorkerSessionState::Idle)
-        .await
-        .unwrap();
-    let kept = [
-        ("thread-running", &running),
-        ("thread-idle", &idle),
-        ("thread-carried", &carried),
-        ("thread-superseded", &superseded),
-        (minted.as_str(), &unowned),
-    ];
-    for (thread_id, card_id) in kept.iter().chain([&("thread-ended", &ended)]) {
-        assert_eq!(
-            daemon.cached_card_for_thread(thread_id).as_ref(),
-            Some(*card_id),
-            "premise: {thread_id} is cached"
-        );
-    }
-
-    let state = state_with(repo.clone(), daemon.clone());
-    calm_server::terminal_sweeper::sweep(&state).await.unwrap();
-
-    assert_eq!(unsubscribed_on_wire(&root), vec!["thread-ended"]);
-    assert_eq!(daemon.cached_card_for_thread("thread-ended"), None);
-    for (thread_id, card_id) in kept {
-        assert_eq!(
-            daemon.cached_card_for_thread(thread_id).as_ref(),
-            Some(card_id),
-            "{thread_id} must stay attributed and subscribed"
-        );
-    }
-
-    // Released once: the next tick has nothing left to release.
-    calm_server::terminal_sweeper::sweep(&state).await.unwrap();
-    assert_eq!(unsubscribed_on_wire(&root), vec!["thread-ended"]);
+        .expect("independent write operation")
 }

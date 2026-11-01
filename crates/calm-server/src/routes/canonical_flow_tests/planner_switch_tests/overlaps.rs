@@ -214,106 +214,126 @@ async fn planner_switch_event_after_capture_refused() {
 async fn planner_switch_ask_after_capture_refused() {
     let p = Pair::new().await;
     let (pause, switching) = captured(&p).await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+    let write_db = (p.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (scope, event) = crate::ask::ask_requested_tx(
+                    &mut tx,
+                    &p.cards[0].clone().into(),
+                    vec![crate::event::AskQuestion {
+                        detail: None,
+                        title: "Overlapping ask".into(),
+                        options: vec!["Yes".into()],
+                    }],
+                )
+                .await
+                .unwrap();
+                let id = crate::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
+                    &scope,
+                    None,
+                    &event,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                refused_after(&p, pause, switching, "planner_open_ask").await;
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE id=?1")
+                    .bind(id)
+                    .fetch_one(p.fixture.repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(count, 1);
+                p.close().await;
+            })
+        })
         .await
-        .unwrap();
-    let (scope, event) = crate::ask::ask_requested_tx(
-        &mut tx,
-        &p.cards[0].clone().into(),
-        vec![crate::event::AskQuestion {
-            detail: None,
-            title: "Overlapping ask".into(),
-            options: vec!["Yes".into()],
-        }],
-    )
-    .await
-    .unwrap();
-    let id = crate::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &crate::ids::ActorId::AiPlannerSession(p.workers[0].clone().into()),
-        &scope,
-        None,
-        &event,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    refused_after(&p, pause, switching, "planner_open_ask").await;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE id=?1")
-        .bind(id)
-        .fetch_one(p.fixture.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
-    p.close().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn planner_switch_old_credential_mcp_request_refused() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut p = Pair::new().await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(p.fixture.repo.db())
+    let write_db = (p.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        let token = crate::mcp_server::wiring::mint_and_persist_card_token(
+                            &mut tx,
+                            &p.cards[0],
+                            &p.workers[0],
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
+                        let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+                "params":{"protocolVersion":"2024-11-05","_meta":{"dev.neige/auth":{"token":token}}}});
+                        let mut connection =
+                            BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
+                        connection
+                            .get_mut()
+                            .write_all(format!("{initialize}\n").as_bytes())
+                            .await
+                            .unwrap();
+                        let mut line = String::new();
+                        tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        let admitted: Value = serde_json::from_str(&line).unwrap();
+                        assert!(admitted.get("result").is_some(), "{admitted}");
+                        p.switch().await.unwrap();
+                        // A fresh connection exercises the actual product handshake with the old credential.
+                        let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
+                        let mut connection =
+                            BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
+                        connection
+                            .get_mut()
+                            .write_all(format!("{initialize}\n").as_bytes())
+                            .await
+                            .unwrap();
+                        line.clear();
+                        tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        let denied: Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(
+                            denied["error"]["code"],
+                            crate::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
+                        );
+                        // Retirement also rejects the handshake, so pin revocation itself: a
+                        // superseded-state check must not hide retained credentials in either store.
+                        let hash: Option<String> =
+                            sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+                                .bind(&p.workers[0])
+                                .fetch_one(p.fixture.repo.pool())
+                                .await
+                                .unwrap();
+                        assert!(
+                            hash.is_none(),
+                            "old Planner credential mirror must be revoked"
+                        );
+                        let tokens: i64 =
+                            sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens WHERE card_id=?1")
+                                .bind(&p.cards[0])
+                                .fetch_one(p.fixture.repo.pool())
+                                .await
+                                .unwrap();
+                        assert_eq!(tokens, 0, "old Planner card credential must be revoked");
+                        p.close().await;
+            })
+        })
         .await
-        .unwrap();
-    let token =
-        crate::mcp_server::wiring::mint_and_persist_card_token(&mut tx, &p.cards[0], &p.workers[0])
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
-    let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize",
-        "params":{"protocolVersion":"2024-11-05","_meta":{"dev.neige/auth":{"token":token}}}});
-    let mut connection = BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
-    connection
-        .get_mut()
-        .write_all(format!("{initialize}\n").as_bytes())
-        .await
-        .unwrap();
-    let mut line = String::new();
-    tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
-        .await
-        .unwrap()
-        .unwrap();
-    let admitted: Value = serde_json::from_str(&line).unwrap();
-    assert!(admitted.get("result").is_some(), "{admitted}");
-    p.switch().await.unwrap();
-    // A fresh connection exercises the actual product handshake with the old credential.
-    let socket = &p.state.mcp_server.as_ref().unwrap().shim_config.socket_path;
-    let mut connection = BufReader::new(tokio::net::UnixStream::connect(socket).await.unwrap());
-    connection
-        .get_mut()
-        .write_all(format!("{initialize}\n").as_bytes())
-        .await
-        .unwrap();
-    line.clear();
-    tokio::time::timeout(Duration::from_secs(5), connection.read_line(&mut line))
-        .await
-        .unwrap()
-        .unwrap();
-    let denied: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(
-        denied["error"]["code"],
-        crate::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE
-    );
-    // Retirement also rejects the handshake, so pin revocation itself: a
-    // superseded-state check must not hide retained credentials in either store.
-    let hash: Option<String> =
-        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
-            .bind(&p.workers[0])
-            .fetch_one(p.fixture.repo.pool())
-            .await
-            .unwrap();
-    assert!(
-        hash.is_none(),
-        "old Planner credential mirror must be revoked"
-    );
-    let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM card_mcp_tokens WHERE card_id=?1")
-        .bind(&p.cards[0])
-        .fetch_one(p.fixture.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(tokens, 0, "old Planner card credential must be revoked");
-    p.close().await;
+        .expect("independent write operation")
 }
 
 /// Product behavior is to refuse cutover while an admitted MCP mutation is in flight.

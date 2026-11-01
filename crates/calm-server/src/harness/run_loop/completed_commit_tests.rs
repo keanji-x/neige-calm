@@ -76,94 +76,98 @@ impl Fixture {
         let roles = CardRoleCache::new();
         let areas = TrackAreaCache::new();
         areas.insert(track.id.clone(), area.id);
-        let mut tx = crate::db::sqlite::begin_immediate_tx(repo.db())
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin()
+                .await
+                .unwrap();
+            let card = card_create_with_id_tx(
+                &mut tx,
+                new_id(),
+                NewCard {
+                    track_id: track.id.clone(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: match role {
+                        CardRole::Assistant => json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                        CardRole::Worker => json!({"harness_profile":"plain_chat"}),
+                        _ => json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
+                    },
+                },
+                role,
+                false,
+                &roles,
+            )
             .await
             .unwrap();
-        let card = card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: match role {
-                    CardRole::Assistant => json!({"harness_profile":"assistant","assistant_provider":"codex"}),
-                    CardRole::Worker => json!({"harness_profile":"plain_chat"}),
-                    _ => json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
+            let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+            snapshot.phase = HarnessPhaseTag::Idle;
+            snapshot.last_thread_id = Some("thread-commit-wake".into());
+            session_start_runtime_tx(
+                &mut tx,
+                WorkerSessionInit {
+                    id: worker_session_id.clone(),
+                    card_id: card.id.to_string(),
+                    kind: match role {
+                        CardRole::Assistant => WorkerSessionKind::ManagedAssistant,
+                        CardRole::Worker => WorkerSessionKind::CodexCard,
+                        _ => WorkerSessionKind::SharedPlanner,
+                    },
+                    agent_provider: Some(AgentProvider::Codex),
+                    status: WorkerSessionState::Idle,
+                    terminal_run_id: None,
+                    thread_id: snapshot.last_thread_id.clone(),
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                    spawn_op_id: None,
+                    now_ms: now_ms(),
                 },
-            },
-            role,
-            false,
-            &roles,
-        )
-        .await
-        .unwrap();
-        let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-        snapshot.phase = HarnessPhaseTag::Idle;
-        snapshot.last_thread_id = Some("thread-commit-wake".into());
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: worker_session_id.clone(),
-                card_id: card.id.to_string(),
-                kind: match role {
-                    CardRole::Assistant => WorkerSessionKind::ManagedAssistant,
-                    CardRole::Worker => WorkerSessionKind::CodexCard,
-                    _ => WorkerSessionKind::SharedPlanner,
-                },
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Idle,
-                terminal_run_id: None,
-                thread_id: snapshot.last_thread_id.clone(),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-        let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
-            PlannerHarnessParams {
-                track_delete_locks: Default::default(),
-                backend: crate::harness::backend::PlannerBackend::codex(
-                    daemon.clone(),
-                    card.id.as_ref(),
-                    track.id.as_ref(),
-                    worker_session_id.as_ref(),
-                )
-                .unwrap(),
-                worker_session_id,
-                track_id: track.id,
-                card_id: card.id,
-                thread_id: snapshot.last_thread_id.clone(),
-                repo: repo.clone(),
-                events: EventBus::new(),
-                card_role_cache: roles,
-                track_area_cache: areas,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+            let (harness, ingress) = PlannerHarness::run_unstarted_for_test(
+                PlannerHarnessParams {
+                    track_delete_locks: Default::default(),
+                    backend: crate::harness::backend::PlannerBackend::codex(
+                        daemon.clone(),
+                        card.id.as_ref(),
+                        track.id.as_ref(),
+                        worker_session_id.as_ref(),
+                    )
+                    .unwrap(),
+                    worker_session_id,
+                    track_id: track.id,
+                    card_id: card.id,
+                    thread_id: snapshot.last_thread_id.clone(),
+                    repo: repo.clone(),
+                    events: EventBus::new(),
+                    card_role_cache: roles,
+                    track_area_cache: areas,
 
-                registry: crate::harness::HarnessRegistry::new(),
-                config: HarnessConfig {
-                    debounce_min_idle: Duration::ZERO,
-                    debounce_max_wait: Duration::ZERO,
-                    ..HarnessConfig::default()
+                    registry: crate::harness::HarnessRegistry::new(),
+                    config: HarnessConfig {
+                        debounce_min_idle: Duration::ZERO,
+                        debounce_max_wait: Duration::ZERO,
+                        ..HarnessConfig::default()
+                    },
+                    snapshot: (snapshot)
+                        .try_into()
+                        .expect("historical fixture snapshot contract"),
                 },
-                snapshot: (snapshot)
-                    .try_into()
-                    .expect("historical fixture snapshot contract"),
-            },
-            8,
-        );
-        Self {
-            repo,
-            harness,
-            daemon,
-            _ingress: ingress,
-        }
+                8,
+            );
+            Self {
+                repo,
+                harness,
+                daemon,
+                _ingress: ingress,
+            }
+
+    })).await.expect("independent write operation")
     }
 
     async fn close(&self) {
@@ -197,21 +201,35 @@ impl Fixture {
     pub(super) async fn event_entry(&self, event: &Event) -> (i64, QueueEntry) {
         let inner = &self.harness.inner;
         let scope = harness_event_scope(inner, event.kind_tag());
-        let mut tx = self.repo.db().writer_pool().begin().await.unwrap();
-        let id =
-            append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher, &scope, None, event)
-                .await
-                .unwrap();
-        tx.commit().await.unwrap();
-        let observation = crate::dispatcher::resolve_harness_observation(
-            self.repo.as_ref(),
-            &inner.track_id,
-            event,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        (id, QueueEntry::system(observation, Some(id)).unwrap())
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let id = append_decision_event_in_tx(
+                        &mut tx,
+                        &ActorId::KernelDispatcher,
+                        &scope,
+                        None,
+                        event,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let observation = crate::dispatcher::resolve_harness_observation(
+                        self.repo.as_ref(),
+                        &inner.track_id,
+                        event,
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                    (id, QueueEntry::system(observation, Some(id)).unwrap())
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     pub(super) async fn enqueue(&self, entries: Vec<QueueEntry>) {
@@ -435,8 +453,7 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
     fx.enqueue(vec![commit]).await;
     let before = fx.harness.snapshot().await.unwrap();
     let debounce = *fx.harness.inner.debounce.lock().await;
-    sqlx::query("CREATE TRIGGER refuse_consumption BEFORE UPDATE OF handle_state_json ON worker_sessions BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END")
-        .execute(fx.repo.pool()).await.unwrap();
+    (fx.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_consumption BEFORE UPDATE OF handle_state_json ON worker_sessions BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END")).await.unwrap();
     let error = maybe_issue_turn(&fx.harness.inner).await.unwrap_err();
     assert!(
         error.to_string().contains("injected snapshot failure"),
@@ -458,8 +475,9 @@ async fn completed_commit_consumption_restores_queue_and_debounce_on_persist_fai
     assert_eq!(after_debounce.first_pending_at, debounce.first_pending_at);
     assert_eq!(after_debounce.last_pending_at, debounce.last_pending_at);
     assert_eq!(after_debounce.hard_fire, debounce.hard_fire);
-    sqlx::query("DROP TRIGGER refuse_consumption")
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_consumption"))
         .await
         .unwrap();
     fx.issue().await;

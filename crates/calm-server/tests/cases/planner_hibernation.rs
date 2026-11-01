@@ -153,10 +153,13 @@ async fn planner_hibernat_closed_idle_session_sleeps_and_send_wakes_same_thread(
     let boot = boot_fake_running().await;
     let (card, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -242,25 +245,27 @@ async fn planner_hibernat_open_tracks_inflight_tasks_running_turns_and_queue_sta
         .await
         .unwrap();
     assert!(boot.state.harness.get(&runtime).is_some(), "open track");
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     for status in ["dispatched", "running", "verifying"] {
         let task = new_id();
-        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
+        (boot.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
             VALUES(?,?,?,'codex','work','{}',?,?,?)")
-            .bind(&task).bind(&boot.track_id).bind(&task).bind(status).bind(now_ms()).bind(now_ms())
-            .execute(boot.repo.pool()).await.unwrap();
+            .bind(&task).bind(&boot.track_id).bind(&task).bind(status).bind(now_ms()).bind(now_ms())).await.unwrap();
         calm_server::terminal_sweeper::sweep(&boot.state)
             .await
             .unwrap();
         assert!(boot.state.harness.get(&runtime).is_some(), "task {status}");
-        sqlx::query("UPDATE tasks SET status='done' WHERE id=?")
-            .bind(&task)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE tasks SET status='done' WHERE id=?").bind(&task))
             .await
             .unwrap();
     }
@@ -347,10 +352,13 @@ async fn planner_hibernat_cold_daemon_does_not_reload_closed_idle_planner() {
         Some(idle_snapshot_value(&thread)),
     )
     .await;
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     // The boot path rebuilds attribution from the retained rows, unlike replacement.
@@ -378,10 +386,13 @@ async fn planner_hibernat_reopen_resumes_same_carrier() {
     let boot = boot_fake_running().await;
     let (card, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -432,10 +443,13 @@ async fn planner_hibernat_reopen_resumes_same_carrier() {
 async fn dispatch_wake(settlement: bool) {
     let boot = boot_fake_running().await;
     let (card, runtime, _) = loaded_planner(&boot).await;
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -514,20 +528,23 @@ async fn planner_hibernat_task_settlement_restores_same_conversation() {
 async fn planner_hibernat_failed_snapshot_write_keeps_live_owner_retryable() {
     let boot = boot_fake_running().await;
     let (_, runtime, handle) = loaded_planner(&boot).await;
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER hibernation_write_failure BEFORE UPDATE OF handle_state_json ON worker_sessions \
-        BEGIN SELECT RAISE(ABORT,'snapshot unavailable'); END")
-        .execute(boot.repo.pool()).await.unwrap();
+    (boot.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hibernation_write_failure BEFORE UPDATE OF handle_state_json ON worker_sessions \
+        BEGIN SELECT RAISE(ABORT,'snapshot unavailable'); END")).await.unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
         .await
         .unwrap();
-    sqlx::query("DROP TRIGGER hibernation_write_failure")
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER hibernation_write_failure"))
         .await
         .unwrap();
     assert!(boot.state.harness.get(&runtime).is_some());
@@ -569,10 +586,13 @@ async fn planner_hibernat_send_resubscribes_thread_kept_loaded_by_another_client
     }
     let (card, runtime, handle) = loaded_planner(&boot).await;
     let thread = handle.thread_id_for_test().await.unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)
@@ -636,10 +656,13 @@ async fn planner_hibernat_late_boot_recovery_cannot_reinstall_after_sleep() {
     tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
-        .bind(now_ms())
-        .bind(&boot.track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET closed_at=? WHERE id=?")
+                .bind(now_ms())
+                .bind(&boot.track_id),
+        )
         .await
         .unwrap();
     calm_server::terminal_sweeper::sweep(&boot.state)

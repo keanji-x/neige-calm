@@ -48,62 +48,72 @@ async fn claim_drive_batch_vs_parked_completion_no_deadlock() {
     // Task A — BEGIN IMMEDIATE (writer slot), non-operations write, then the parked-completion UPDATE on `operations`.
     let pool_a = sqlx_repo.db().clone();
     let parked_id = parked.id.clone();
-    let a = tokio::spawn(async move {
-        let mut tx = begin_immediate_tx(&pool_a).await?;
-        sqlx::query("INSERT INTO deadlock_repro_scratch (v) VALUES ('completion')")
-            .execute(&mut **tx)
-            .await
-            .map_err(CalmError::from)?;
-        a_holding_tx.send(()).unwrap();
-        go_a_rx.await.unwrap();
-        let completion = complete_parked_tx(
-            &mut tx,
-            &parked_id,
-            &ParkedOutcome::Succeeded {
-                result: json!({ "merged": true }),
-            },
-        )
-        .await?;
-        tx.commit().await.map_err(CalmError::from)?;
-        Ok::<ParkedCompletion, CalmError>(completion)
-    });
 
-    // Only dispatch the claim once A holds the writer slot.
-    a_holding_rx.await.unwrap();
+    {
 
-    let repo_b = repo.clone();
-    let (b_calling_tx, b_calling_rx) = oneshot::channel::<()>();
-    let b = tokio::spawn(async move {
-        b_calling_tx.send(()).unwrap();
-        repo_b.claim_drive_batch(16).await
-    });
-    b_calling_rx.await.unwrap();
-    // B is now parked at BEGIN IMMEDIATE holding nothing.
-    sleep(PARK_GRACE).await;
-    go_a_tx.send(()).unwrap();
+                let a = tokio::spawn(async move {
+                    let write_db = (pool_a).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await?;
+                    sqlx::query("INSERT INTO deadlock_repro_scratch (v) VALUES ('completion')")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(CalmError::from)?;
+                    a_holding_tx.send(()).unwrap();
+                    go_a_rx.await.unwrap();
+                    let completion = complete_parked_tx(
+                        &mut tx,
+                        &parked_id,
+                        &ParkedOutcome::Succeeded {
+                            result: json!({ "merged": true }),
+                        },
+                    )
+                    .await?;
+                    tx.commit().await.map_err(CalmError::from)?;
+                    Ok::<ParkedCompletion, CalmError>(completion)
 
-    let a_out = timeout(STALL_BOUND, a)
-        .await
-        .expect("completion side must not stall")
-        .unwrap();
-    let b_out = timeout(STALL_BOUND, b)
-        .await
-        .expect("claim side must not stall")
-        .unwrap();
+        })).await.expect("independent write operation")
+});
 
-    let completion = a_out.expect(
-        "parked completion must succeed: the IMMEDIATE claim tx parks at \
+                // Only dispatch the claim once A holds the writer slot.
+                a_holding_rx.await.unwrap();
+
+                let repo_b = repo.clone();
+                let (b_calling_tx, b_calling_rx) = oneshot::channel::<()>();
+                let b = tokio::spawn(async move {
+                    b_calling_tx.send(()).unwrap();
+                    repo_b.claim_drive_batch(16).await
+                });
+                b_calling_rx.await.unwrap();
+                // B is now parked at BEGIN IMMEDIATE holding nothing.
+                sleep(PARK_GRACE).await;
+                go_a_tx.send(()).unwrap();
+
+                let a_out = timeout(STALL_BOUND, a)
+                    .await
+                    .expect("completion side must not stall")
+                    .unwrap();
+                let b_out = timeout(STALL_BOUND, b)
+                    .await
+                    .expect("claim side must not stall")
+                    .unwrap();
+
+                let completion = a_out.expect(
+                    "parked completion must succeed: the IMMEDIATE claim tx parks at \
          BEGIN holding no locks, so no cycle exists (#930)",
-    );
-    assert!(
-        matches!(completion, ParkedCompletion::Completed(_)),
-        "parked op must complete exactly once: {completion:?}"
-    );
-    let claimed =
-        b_out.expect("claim_drive_batch must succeed after the completion tx commits (#930)");
-    // The claim tx could only BEGIN once A's tx concluded, so it sees exactly the pending op.
-    assert_eq!(claimed.len(), 1, "claimed: {claimed:?}");
-    assert_eq!(claimed[0].id, claimable_id);
-    let resolved = repo.get_operation(&parked.id).await.unwrap().unwrap();
-    assert_eq!(resolved.phase, Phase::Succeeded);
+                );
+                assert!(
+                    matches!(completion, ParkedCompletion::Completed(_)),
+                    "parked op must complete exactly once: {completion:?}"
+                );
+                let claimed = b_out.expect(
+                    "claim_drive_batch must succeed after the completion tx commits (#930)",
+                );
+                // The claim tx could only BEGIN once A's tx concluded, so it sees exactly the pending op.
+                assert_eq!(claimed.len(), 1, "claimed: {claimed:?}");
+                assert_eq!(claimed[0].id, claimable_id);
+                let resolved = repo.get_operation(&parked.id).await.unwrap().unwrap();
+                assert_eq!(resolved.phase, Phase::Succeeded);
+
+}
 }

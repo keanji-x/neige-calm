@@ -1,5 +1,5 @@
 //! Immutable host credential scopes. Validation and additions commit atomically.
-use super::{SqliteDb, begin_immediate_tx};
+use super::SqliteDb;
 
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
 pub struct BackendIdentity {
@@ -37,58 +37,62 @@ pub async fn reconcile(
     configured: &[BackendIdentity],
     legacy_home: &[u8],
 ) -> Result<(), RegistryError> {
-    let mut tx = begin_immediate_tx(db).await?;
-    let stored = sqlx::query_as::<_, BackendIdentity>("SELECT * FROM agent_backend_registry")
-        .fetch_all(&mut **tx)
-        .await?;
-    for old in &stored {
-        let Some(new) = configured
-            .iter()
-            .find(|new| new.provider == old.provider && new.backend_id == old.backend_id)
-        else {
-            return Err(RegistryError::Removed(
-                old.provider.clone(),
-                old.backend_id.clone(),
-            ));
-        };
-        if old != new {
-            return Err(RegistryError::Changed(
-                old.provider.clone(),
-                old.backend_id.clone(),
-            ));
+    let write_db = (db).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await?;
+        let stored = sqlx::query_as::<_, BackendIdentity>("SELECT * FROM agent_backend_registry")
+            .fetch_all(&mut **tx)
+            .await?;
+        for old in &stored {
+            let Some(new) = configured
+                .iter()
+                .find(|new| new.provider == old.provider && new.backend_id == old.backend_id)
+            else {
+                return Err(RegistryError::Removed(
+                    old.provider.clone(),
+                    old.backend_id.clone(),
+                ));
+            };
+            if old != new {
+                return Err(RegistryError::Changed(
+                    old.provider.clone(),
+                    old.backend_id.clone(),
+                ));
+            }
         }
-    }
-    if !stored
-        .iter()
-        .any(|old| old.provider == "codex" && old.backend_id == "default")
-        && !configured.iter().any(|new| {
-            new.provider == "codex"
-                && new.backend_id == "default"
-                && new.canonical_home == legacy_home
-        })
-    {
-        return Err(RegistryError::LegacyDefault);
-    }
-    for new in configured {
-        if stored
+        if !stored
             .iter()
-            .any(|old| old.provider == new.provider && old.backend_id == new.backend_id)
+            .any(|old| old.provider == "codex" && old.backend_id == "default")
+            && !configured.iter().any(|new| {
+                new.provider == "codex"
+                    && new.backend_id == "default"
+                    && new.canonical_home == legacy_home
+            })
         {
-            continue;
+            return Err(RegistryError::LegacyDefault);
         }
-        if stored.iter().chain(configured.iter()).any(|other| {
-            (other.provider != new.provider || other.backend_id != new.backend_id)
-                && other.canonical_home == new.canonical_home
-        }) {
-            return Err(RegistryError::Reused);
+        for new in configured {
+            if stored
+                .iter()
+                .any(|old| old.provider == new.provider && old.backend_id == new.backend_id)
+            {
+                continue;
+            }
+            if stored.iter().chain(configured.iter()).any(|other| {
+                (other.provider != new.provider || other.backend_id != new.backend_id)
+                    && other.canonical_home == new.canonical_home
+            }) {
+                return Err(RegistryError::Reused);
+            }
+            sqlx::query("INSERT INTO agent_backend_registry (provider, backend_id, protocol, configured_home, canonical_home) VALUES (?, ?, ?, ?, ?)")
+                .bind(&new.provider).bind(&new.backend_id).bind(&new.protocol)
+                .bind(&new.configured_home).bind(&new.canonical_home)
+                .execute(&mut **tx).await?;
+            sqlx::query("INSERT OR IGNORE INTO codex_backend_daemons (backend_id, state, updated_at, paths_are_legacy_display) VALUES (?, 'idle', 0, ?)")
+                .bind(&new.backend_id).bind(false).execute(&mut **tx).await?;
         }
-        sqlx::query("INSERT INTO agent_backend_registry (provider, backend_id, protocol, configured_home, canonical_home) VALUES (?, ?, ?, ?, ?)")
-            .bind(&new.provider).bind(&new.backend_id).bind(&new.protocol)
-            .bind(&new.configured_home).bind(&new.canonical_home)
-            .execute(&mut **tx).await?;
-        sqlx::query("INSERT OR IGNORE INTO codex_backend_daemons (backend_id, state, updated_at, paths_are_legacy_display) VALUES (?, 'idle', 0, ?)")
-            .bind(&new.backend_id).bind(false).execute(&mut **tx).await?;
-    }
-    tx.commit().await?;
-    Ok(())
+        tx.commit().await?;
+        Ok(())
+
+    })).await.map_err(crate::TruthError::from)?
 }

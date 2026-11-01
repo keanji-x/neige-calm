@@ -79,9 +79,9 @@ pub(super) async fn cleanup_operation(
         }
     }
     remove(frozen).await?;
-    sqlx::query("UPDATE operations SET \
+    (db).writer().execute(sqlx::query("UPDATE operations SET \
          tx_output_json=json_set(tx_output_json,'$.data.checkout_removed',json('true'),'$.data.capture_removed',json('true')) WHERE id=? AND \
          kind=? AND phase IN ('succeeded','failed')")
-        .bind(id).bind(KIND).execute(db.writer_pool()).await?;
+        .bind(id).bind(KIND)).await?;
     Ok(())
 }

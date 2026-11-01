@@ -76,8 +76,6 @@ use sqlx::{Sqlite, Transaction};
 #[cfg(test)]
 use tokio::sync::Mutex;
 
-#[cfg(test)]
-use crate::db::sqlite::begin_immediate_tx;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, EventBus};
 use crate::model::{new_id, now_ms};
@@ -1057,11 +1055,15 @@ pub trait OperationRepo: Send + Sync {
     /// Called under drive after a Busy waker releases track; a later phase owns its lease.
     async fn release_pending_for_retry(&self, id: &str) -> Result<()> {
         let db = self.sqlite_db();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&db).await?;
-        sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
-            .bind(id).execute(&mut **tx).await?;
-        tx.commit().await?;
-        Ok(())
+        let write_db = (db).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await?;
+            sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
+                .bind(id).execute(&mut **tx).await?;
+            tx.commit().await?;
+            Ok(())
+
+    })).await.map_err(calm_truth::TruthError::from)?
     }
 
     /// The same drive phase/lease predicate restricted to one existing operation.
@@ -1100,21 +1102,24 @@ pub trait OperationRepo: Send + Sync {
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
         let pool = self.sqlite_db();
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let result = (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
                WHERE id = ?4
                  AND phase = 'parked'
                  AND (lease_owner IS NULL OR lease_until_ms < ?3)"#,
-        )
-        .bind(&lease_owner)
-        .bind(lease_until)
-        .bind(now)
-        .bind(op_id)
-        .execute(pool.writer_pool())
-        .await?;
+                )
+                .bind(&lease_owner)
+                .bind(lease_until)
+                .bind(now)
+                .bind(op_id),
+            )
+            .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
@@ -1126,20 +1131,23 @@ pub trait OperationRepo: Send + Sync {
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
         let pool = self.sqlite_db();
-        let result = sqlx::query(
-            r#"UPDATE operations
+        let result = (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
                    updated_at_ms = ?3
                WHERE id = ?4
                  AND phase = 'parked'"#,
-        )
-        .bind(&lease_owner)
-        .bind(lease_until)
-        .bind(now)
-        .bind(op_id)
-        .execute(pool.writer_pool())
-        .await?;
+                )
+                .bind(&lease_owner)
+                .bind(lease_until)
+                .bind(now)
+                .bind(op_id),
+            )
+            .await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
@@ -1148,18 +1156,21 @@ pub trait OperationRepo: Send + Sync {
 
     async fn clear_parked_lease_for_boot(&self, op_id: &str) -> Result<()> {
         let pool = self.sqlite_db();
-        sqlx::query(
-            r#"UPDATE operations
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"UPDATE operations
                SET lease_owner = NULL,
                    lease_until_ms = NULL,
                    updated_at_ms = ?1
                WHERE id = ?2
                  AND phase = 'parked'"#,
-        )
-        .bind(now_ms())
-        .bind(op_id)
-        .execute(pool.writer_pool())
-        .await?;
+                )
+                .bind(now_ms())
+                .bind(op_id),
+            )
+            .await?;
         Ok(())
     }
 

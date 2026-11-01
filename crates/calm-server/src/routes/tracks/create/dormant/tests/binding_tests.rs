@@ -65,7 +65,7 @@ async fn canonical_ack_prevents_another_binding_update_or_replace_over_its_key()
     let fx = Fixture::new().await;
     let key = "protected-key";
     let accepted = fx.accept(key, FIRST).await.unwrap().ack;
-    sqlx::query(
+    (fx.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO track_create_idempotency \
          (area_id,idempotency_key,track_id,planner_card_id,report_card_id,created_at_ms, \
           request_fingerprint_version,create_request_sha256,first_message_sha256) \
@@ -74,18 +74,20 @@ async fn canonical_ack_prevents_another_binding_update_or_replace_over_its_key()
          FROM track_create_idempotency WHERE area_id=?1 AND idempotency_key=?2",
     )
     .bind(&fx.area)
-    .bind(key)
-    .execute(fx.repo.pool())
+    .bind(key))
     .await
     .unwrap();
-    let changed = sqlx::query(
-        "UPDATE OR REPLACE track_create_idempotency SET idempotency_key=?2 \
+    let changed = (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE OR REPLACE track_create_idempotency SET idempotency_key=?2 \
          WHERE area_id=?1 AND idempotency_key='unreferenced-key'",
-    )
-    .bind(&fx.area)
-    .bind(key)
-    .execute(fx.repo.pool())
-    .await;
+            )
+            .bind(&fx.area)
+            .bind(key),
+        )
+        .await;
     assert!(
         changed.is_err(),
         "an unrelated binding replaced the original ACK binding"
@@ -114,19 +116,22 @@ async fn historical_noncanonical_fingerprints_do_not_become_human_receipts() {
         let create_sha =
             create_request_digest(&CreateRequestShape::from_request(&fx.request(FIRST)).unwrap())
                 .unwrap();
-        sqlx::query(
-            "INSERT INTO track_create_idempotency \
+        (fx.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO track_create_idempotency \
              (area_id,idempotency_key,track_id,planner_card_id,report_card_id,created_at_ms, \
               request_fingerprint_version,create_request_sha256,first_message_sha256) \
              VALUES(?1,?2,'historic-track','historic-planner','historic-report',0,?3,?4,NULL)",
-        )
-        .bind(&fx.area)
-        .bind(key)
-        .bind(version)
-        .bind((version == 2).then_some(create_sha))
-        .execute(fx.repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(&fx.area)
+                .bind(key)
+                .bind(version)
+                .bind((version == 2).then_some(create_sha)),
+            )
+            .await
+            .unwrap();
         assert!(matches!(
             fx.accept(key, FIRST).await,
             Err(CalmError::IdempotencyKeyReused(_))

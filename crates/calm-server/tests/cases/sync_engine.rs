@@ -790,11 +790,10 @@ async fn replay_treats_unstamped_row_as_version_one() {
     let (repo, concrete, _bus) = boot().await;
 
     // Insert a row that does not bind `event_version`, relying on the column default.
-    sqlx::query(
+    (concrete.db()).writer().execute(sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation)
            VALUES ('area.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}', 'user', 0, NULL)"##,
-    )
-    .execute(concrete.pool())
+    ))
     .await
     .unwrap();
 
@@ -814,22 +813,20 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     let (repo, concrete, _bus) = boot().await;
 
     // Only the pre-scope columns are bound: `scope_kind` backfills from its default, the ancestor cols stay NULL.
-    sqlx::query(
+    (concrete.db()).writer().execute(sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version)
            VALUES ('area.updated', '{"id":"c","name":"n","color":"#000","sort":0,"created_at":0,"updated_at":0}',
                    '"user"', 0, NULL, 1)"##,
-    )
-    .execute(concrete.pool())
+    ))
     .await
     .unwrap();
 
-    sqlx::query(
+    (concrete.db()).writer().execute(sqlx::query(
         r##"INSERT INTO events (kind, payload, actor, at, correlation, event_version,
                                  scope_kind, scope_area, scope_track, scope_card)
            VALUES ('area.updated', '{"id":"c2","name":"n2","color":"#000","sort":0,"created_at":0,"updated_at":0}',
                    '"user"', 0, NULL, 1, 'area', 'c2', NULL, NULL)"##,
-    )
-    .execute(concrete.pool())
+    ))
     .await
     .unwrap();
 

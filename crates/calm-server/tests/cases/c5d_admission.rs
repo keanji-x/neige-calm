@@ -114,94 +114,103 @@ async fn fixture(
             .to_owned(),
     );
     let pool = stack.repo().sqlite_db().unwrap();
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    calm_truth::db::sqlite::track_workspace_write_tx(&mut tx, &track, &workspace)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    calm_server::test_seams::ensure_track_worktree_for_test(&pool, &track)
-        .await
-        .unwrap();
-    if !entry.canonical() {
-        let (status, body) = stack
-            .send("POST", &format!("/api/cards/{card}/planner/restart"), None)
-            .await;
-        assert!(
-            status.is_success(),
-            "restart after fixture location setup: {body}"
-        );
-    }
-    // Clean cases start from a cleanable idle carrier. First-commit deletion
-    // also exercises dormant activation with no previous Engine history.
-    if prime {
-        let (status, body) = stack
-            .post_input(&card, "establish native conversation")
-            .await;
-        assert!(status.is_success(), "{body}");
-        stack.wait_outcomes(&card, 1).await;
-        wait_phase(&stack, &card, "turn_completed").await;
-        if matches!(entry, Entry::Retry) {
-            let frame = stack.runtime(&card).await.handle_state_json.unwrap();
-            assert_eq!(
-                frame["canonical_inputs"]["attempts"][0]["delivery"]["kind"],
-                "unknown"
-            );
-        }
-    }
-    if matches!(entry, Entry::Resume) {
-        let pool = stack.repo().sqlite_db().unwrap();
-        sqlx::query(concat!(
-            "CREATE TRIGGER c5d_fail_marker BEFORE UPDATE OF handle_state_json ON worker_sessions ",
-            "WHEN NEW.handle_state_json LIKE '%crossing_unknown%' ",
-            "BEGIN SELECT RAISE(ABORT,'marker failed'); END"
-        ))
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
-        let (status, body) = stack.post_input(&card, "resume frozen claim").await;
-        assert!(status.is_success(), "{body}");
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if stack
-                    .runtime(&card)
-                    .await
-                    .handle_state_json
-                    .as_ref()
-                    .is_some_and(|f| f["canonical_inputs"]["active"].is_object())
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                        let mut tx = write_session.begin().await.unwrap();
+                        calm_truth::db::sqlite::track_workspace_write_tx(&mut tx, &track, &workspace)
+                            .await
+                            .unwrap();
+                        tx.commit().await.unwrap();
+                        calm_server::test_seams::ensure_track_worktree_for_test(&pool, &track)
+                            .await
+                            .unwrap();
+                        if !entry.canonical() {
+                            let (status, body) = stack
+                                .send("POST", &format!("/api/cards/{card}/planner/restart"), None)
+                                .await;
+                            assert!(
+                                status.is_success(),
+                                "restart after fixture location setup: {body}"
+                            );
+                        }
+                        // Clean cases start from a cleanable idle carrier. First-commit deletion
+                        // also exercises dormant activation with no previous Engine history.
+                        if prime {
+                            let (status, body) = stack
+                                .post_input(&card, "establish native conversation")
+                                .await;
+                            assert!(status.is_success(), "{body}");
+                            stack.wait_outcomes(&card, 1).await;
+                            wait_phase(&stack, &card, "turn_completed").await;
+                            if matches!(entry, Entry::Retry) {
+                                let frame = stack.runtime(&card).await.handle_state_json.unwrap();
+                                assert_eq!(
+                                    frame["canonical_inputs"]["attempts"][0]["delivery"]["kind"],
+                                    "unknown"
+                                );
+                            }
+                        }
+                        if matches!(entry, Entry::Resume) {
+                            let pool = stack.repo().sqlite_db().unwrap();
+                            (pool).writer().execute(sqlx::query(concat!(
+                    "CREATE TRIGGER c5d_fail_marker BEFORE UPDATE OF handle_state_json ON worker_sessions ",
+                    "WHEN NEW.handle_state_json LIKE '%crossing_unknown%' ",
+                    "BEGIN SELECT RAISE(ABORT,'marker failed'); END"
+                )))
+                .await
+                .unwrap();
+                            let (status, body) = stack.post_input(&card, "resume frozen claim").await;
+                            assert!(status.is_success(), "{body}");
+                            tokio::time::timeout(Duration::from_secs(20), async {
+                                loop {
+                                    if stack
+                                        .runtime(&card)
+                                        .await
+                                        .handle_state_json
+                                        .as_ref()
+                                        .is_some_and(|f| f["canonical_inputs"]["active"].is_object())
+                                    {
+                                        break;
+                                    }
+                                    tokio::task::yield_now().await;
+                                }
+                            })
+                            .await
+                            .unwrap();
+                            // A recovered unattempted frame can have an idle session projection.
+                            // Keep the Planner proxy so PR1 exercises the actual admission fence.
+                            (pool)
+                                .writer()
+                                .execute(
+                                    sqlx::query("UPDATE worker_sessions SET state='idle' WHERE id=?")
+                                        .bind(stack.runtime(&card).await.id),
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        let frame = stack.runtime(&card).await.handle_state_json.unwrap();
+                        assert_eq!(
+                            frame.get("canonical_inputs").is_some(),
+                            entry.canonical(),
+                            "creation storage mode"
+                        );
+                        let track_row = stack.repo().track_get(&track).await.unwrap().unwrap();
+                        assert_eq!(
+                            track_row.workspace.isolation(),
+                            calm_types::model::WorkspaceIsolation::Worktree
+                        );
+                        let cwd = std::path::PathBuf::from(track_row.workspace.agent_cwd());
+                        std::fs::write(checkout.join(".git/info/exclude"), "target/\n").unwrap();
+                        std::fs::create_dir_all(cwd.join("target")).unwrap();
+                        std::fs::write(cwd.join("target/ignored"), "build output").unwrap();
+                        (root, stack, track, card, cwd)
+            })
         })
         .await
-        .unwrap();
-        // A recovered unattempted frame can have an idle session projection.
-        // Keep the Planner proxy so PR1 exercises the actual admission fence.
-        sqlx::query("UPDATE worker_sessions SET state='idle' WHERE id=?")
-            .bind(stack.runtime(&card).await.id)
-            .execute(pool.writer_pool())
-            .await
-            .unwrap();
-    }
-    let frame = stack.runtime(&card).await.handle_state_json.unwrap();
-    assert_eq!(
-        frame.get("canonical_inputs").is_some(),
-        entry.canonical(),
-        "creation storage mode"
-    );
-    let track_row = stack.repo().track_get(&track).await.unwrap().unwrap();
-    assert_eq!(
-        track_row.workspace.isolation(),
-        calm_types::model::WorkspaceIsolation::Worktree
-    );
-    let cwd = std::path::PathBuf::from(track_row.workspace.agent_cwd());
-    std::fs::write(checkout.join(".git/info/exclude"), "target/\n").unwrap();
-    std::fs::create_dir_all(cwd.join("target")).unwrap();
-    std::fs::write(cwd.join("target/ignored"), "build output").unwrap();
-    (root, stack, track, card, cwd)
+        .expect("independent write operation")
 }
 
 async fn wait_phase(stack: &Stack, card: &str, phase: &str) {
@@ -330,9 +339,9 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
         }
     });
     held.entered().await;
-    sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?")
-        .bind(&track)
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=123 WHERE id=?").bind(&track))
         .await
         .unwrap();
     let clean_ready = (!delete).then(|| Pause::arm("c5d-clean-before-track", &track));
@@ -355,8 +364,9 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
         pause.entered().await;
     }
     if matches!(entry, Entry::Resume) {
-        sqlx::query("DROP TRIGGER c5d_fail_marker")
-            .execute(pool.writer_pool())
+        (pool)
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER c5d_fail_marker"))
             .await
             .unwrap();
     }

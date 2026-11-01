@@ -11,14 +11,15 @@ async fn acp_settlement_receipt_write_failure_cannot_publish_success() {
     assert_eq!(status, StatusCode::OK, "{body}");
     wait_file(&root, "before-settlement").await;
     let pool = stack.repo().sqlite_db().unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions ",
-        "WHEN NEW.state='completed' BEGIN ",
-        "SELECT RAISE(ABORT,'fixture receipt write failure'); END"
-    ))
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+    (pool)
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions ",
+            "WHEN NEW.state='completed' BEGIN ",
+            "SELECT RAISE(ABORT,'fixture receipt write failure'); END"
+        )))
+        .await
+        .unwrap();
     std::fs::write(root.path().join("release-settlement"), "").unwrap();
     let outcome = stack.wait_outcomes(&card, 1).await;
     assert_eq!(
@@ -37,8 +38,9 @@ async fn acp_settlement_receipt_write_failure_cannot_publish_success() {
             .await
             .unwrap()
     );
-    sqlx::query("DROP TRIGGER refuse_acp_settlement")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_acp_settlement"))
         .await
         .unwrap();
     stack.shutdown().await;
@@ -85,138 +87,151 @@ async fn contention(exhaust: bool) {
         .await
         .unwrap();
     assert_eq!(mode, "wal");
-    let lock = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    pause.release.notify_one();
-    // A retry signal proves real settlement exhausted write admission. Within this
-    // shared handle it waits on the writer pool; keep ownership until that signal.
-    let first = tokio::time::timeout(Duration::from_secs(50), notes.recv())
-        .await
-        .unwrap();
-    assert!(stack.outcomes(&card).await.is_empty());
-    assert_eq!(requests(&root, "session/prompt").len(), 1);
-    if exhaust && first == Some("retry") {
-        loop {
-            let note = tokio::time::timeout(Duration::from_secs(50), notes.recv())
-                .await
-                .unwrap();
-            if note == Some("failed") {
-                break;
-            }
-            assert_eq!(note, Some("retry"));
-        }
-        assert!(stack.outcomes(&card).await.is_empty());
-        assert_eq!(requests(&root, "session/prompt").len(), 1);
-    }
-    lock.rollback().await.unwrap();
-    assert_eq!(first, Some("retry"));
-    let outcome = stack.wait_outcomes(&card, 1).await;
-    assert_eq!(outcome.len(), 1);
-    if exhaust {
-        assert_eq!(outcome[0]["status"], "failed");
-        assert!(
-            outcome[0]["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("unknown")
-        );
-        assert!(
-            calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)
-                .await
-                .unwrap()
-        );
-        stack.wait_phase(&runtime.id, "turn_completed").await;
-        let (status, body) = stack.post_input(&card, "must remain fenced").await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let handle = stack.harness(&runtime.id);
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while handle.refused_issuances_for_test() == 0 {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let lock = write_session.begin().await.unwrap();
+                pause.release.notify_one();
+                // A retry signal proves real settlement exhausted write admission. Within this
+                // shared handle it waits on the writer pool; keep ownership until that signal.
+                let first = tokio::time::timeout(Duration::from_secs(50), notes.recv())
+                    .await
+                    .unwrap();
+                assert!(stack.outcomes(&card).await.is_empty());
+                assert_eq!(requests(&root, "session/prompt").len(), 1);
+                if exhaust && first == Some("retry") {
+                    loop {
+                        let note = tokio::time::timeout(Duration::from_secs(50), notes.recv())
+                            .await
+                            .unwrap();
+                        if note == Some("failed") {
+                            break;
+                        }
+                        assert_eq!(note, Some("retry"));
+                    }
+                    assert!(stack.outcomes(&card).await.is_empty());
+                    assert_eq!(requests(&root, "session/prompt").len(), 1);
+                }
+                lock.rollback().await.unwrap();
+                assert_eq!(first, Some("retry"));
+                let outcome = stack.wait_outcomes(&card, 1).await;
+                assert_eq!(outcome.len(), 1);
+                if exhaust {
+                    assert_eq!(outcome[0]["status"], "failed");
+                    assert!(
+                        outcome[0]["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains("unknown")
+                    );
+                    assert!(
+                        calm_server::db::sqlite::acp_submission_unresolved(
+                            pool.read_pool(),
+                            &runtime.id
+                        )
+                        .await
+                        .unwrap()
+                    );
+                    stack.wait_phase(&runtime.id, "turn_completed").await;
+                    let (status, body) = stack.post_input(&card, "must remain fenced").await;
+                    assert_eq!(status, StatusCode::OK, "{body}");
+                    let handle = stack.harness(&runtime.id);
+                    tokio::time::timeout(Duration::from_secs(20), async {
+                        while handle.refused_issuances_for_test() == 0 {
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
+                    })
+                    .await
+                    .expect("next issuance observes the durable fence");
+                    assert!(
+                        handle.issuance_block().await.is_some_and(
+                            |reason| reason.contains("Previous ACP outcome is unknown")
+                        )
+                    );
+                    assert_eq!(requests(&root, "session/prompt").len(), 1);
+                } else {
+                    assert_eq!(outcome[0]["status"], "completed");
+                    // The adapter records the outcome before the harness consumes its final items.
+                    stack.wait_phase(&runtime.id, "turn_completed").await;
+                    let (state, json): (String, String) = sqlx::query_as(
+                        "SELECT state,outcome_json FROM acp_submissions WHERE worker_session_id=?1",
+                    )
+                    .bind(&runtime.id)
+                    .fetch_one(pool.read_pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(state, "completed");
+                    let mut durable: Value = serde_json::from_str(&json).unwrap();
+                    let items = durable.as_object_mut().unwrap().remove("items").unwrap();
+                    assert_eq!(durable, outcome[0]);
+                    let completed: Vec<Value> = items
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|item| item["method"] == "item/completed")
+                        .map(|item| item["params"].clone())
+                        .collect();
+                    // The harness also persists its authoritative user-input projection, which
+                    // is not a provider final item and does not belong to the receipt's item list.
+                    let published: Vec<_> = claude_planner_session_fixture::card_rows(
+                        stack.repo(),
+                        &card,
+                        "item/completed",
+                    )
+                    .await
+                    .into_iter()
+                    .filter(|frame| frame["_projection"] != true)
+                    .collect();
+                    let prompts = requests(&root, "session/prompt");
+                    let prompt = prompts[0]["params"]["prompt"]
+                        .as_array()
+                        .unwrap()
+                        .last()
+                        .unwrap()["text"]
+                        .as_str()
+                        .unwrap();
+                    let expected = format!("reply: {prompt}");
+                    assert!(
+                        completed
+                            .iter()
+                            .any(|frame| frame["item"]["text"] == expected),
+                        "the original native reply is retained: {completed:?}"
+                    );
+                    assert_eq!(
+                        completed, published,
+                        "the original final items are durable and published once"
+                    );
+                    assert_eq!(requests(&root, "session/prompt").len(), 1);
+                    assert_eq!(
+                        turn(&stack, &card, "next accepted", 2).await["status"],
+                        "completed"
+                    );
+                    assert_eq!(requests(&root, "session/prompt").len(), 2);
+                }
+                stack.shutdown().await;
+                if exhaust {
+                    let stack = boot(&root).await;
+                    let state: String = sqlx::query_scalar(
+                        "SELECT state FROM acp_submissions WHERE worker_session_id=?1",
+                    )
+                    .bind(&runtime.id)
+                    .fetch_one(pool.read_pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        state, "unknown",
+                        "restart retires the unresolved receipt without replay"
+                    );
+                    assert_eq!(stack.outcomes(&card).await.len(), 1);
+                    assert_eq!(requests(&root, "session/prompt").len(), 1);
+                    stack.shutdown().await;
+                }
+            })
         })
         .await
-        .expect("next issuance observes the durable fence");
-        assert!(
-            handle
-                .issuance_block()
-                .await
-                .is_some_and(|reason| reason.contains("Previous ACP outcome is unknown"))
-        );
-        assert_eq!(requests(&root, "session/prompt").len(), 1);
-    } else {
-        assert_eq!(outcome[0]["status"], "completed");
-        // The adapter records the outcome before the harness consumes its final items.
-        stack.wait_phase(&runtime.id, "turn_completed").await;
-        let (state, json): (String, String) = sqlx::query_as(
-            "SELECT state,outcome_json FROM acp_submissions WHERE worker_session_id=?1",
-        )
-        .bind(&runtime.id)
-        .fetch_one(pool.read_pool())
-        .await
-        .unwrap();
-        assert_eq!(state, "completed");
-        let mut durable: Value = serde_json::from_str(&json).unwrap();
-        let items = durable.as_object_mut().unwrap().remove("items").unwrap();
-        assert_eq!(durable, outcome[0]);
-        let completed: Vec<Value> = items
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|item| item["method"] == "item/completed")
-            .map(|item| item["params"].clone())
-            .collect();
-        // The harness also persists its authoritative user-input projection, which
-        // is not a provider final item and does not belong to the receipt's item list.
-        let published: Vec<_> =
-            claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed")
-                .await
-                .into_iter()
-                .filter(|frame| frame["_projection"] != true)
-                .collect();
-        let prompts = requests(&root, "session/prompt");
-        let prompt = prompts[0]["params"]["prompt"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["text"]
-            .as_str()
-            .unwrap();
-        let expected = format!("reply: {prompt}");
-        assert!(
-            completed
-                .iter()
-                .any(|frame| frame["item"]["text"] == expected),
-            "the original native reply is retained: {completed:?}"
-        );
-        assert_eq!(
-            completed, published,
-            "the original final items are durable and published once"
-        );
-        assert_eq!(requests(&root, "session/prompt").len(), 1);
-        assert_eq!(
-            turn(&stack, &card, "next accepted", 2).await["status"],
-            "completed"
-        );
-        assert_eq!(requests(&root, "session/prompt").len(), 2);
-    }
-    stack.shutdown().await;
-    if exhaust {
-        let stack = boot(&root).await;
-        let state: String =
-            sqlx::query_scalar("SELECT state FROM acp_submissions WHERE worker_session_id=?1")
-                .bind(&runtime.id)
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            state, "unknown",
-            "restart retires the unresolved receipt without replay"
-        );
-        assert_eq!(stack.outcomes(&card).await.len(), 1);
-        assert_eq!(requests(&root, "session/prompt").len(), 1);
-        stack.shutdown().await;
-    }
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

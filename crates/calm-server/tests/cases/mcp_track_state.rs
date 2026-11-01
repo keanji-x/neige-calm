@@ -271,18 +271,21 @@ async fn planner_diagnostics_regression_track_status_returns_session_provider() 
 }
 
 async fn insert_task(boot: &Boot, id: &str, key: &str, status: &str, worker: Option<&str>) {
-    sqlx::query(concat!(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
-        "created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex','goal','{}',?4,?5,1,1)"
-    ))
-    .bind(id)
-    .bind(boot.track_id.as_str())
-    .bind(key)
-    .bind(status)
-    .bind(worker)
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
-    .await
-    .expect("insert task");
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(
+            sqlx::query(concat!(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
+                "created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex','goal','{}',?4,?5,1,1)"
+            ))
+            .bind(id)
+            .bind(boot.track_id.as_str())
+            .bind(key)
+            .bind(status)
+            .bind(worker),
+        )
+        .await
+        .expect("insert task");
 }
 
 #[path = "mcp_track_state_access.rs"]
@@ -315,22 +318,27 @@ async fn track_state_names_the_caller_and_lists_only_current_task_executions() {
     let worker = boot.worker_card_id.as_str();
     // `fix-login` failed once and was recovered: generation 2 supersedes generation 1.
     insert_task(&boot, "fix-login-1", "fix-login", "failed", Some(worker)).await;
-    sqlx::query("UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-1'")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tasks SET access = 'read_only' WHERE id = 'fix-login-1'",
+        ))
         .await
         .unwrap();
-    sqlx::query(concat!(
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query(concat!(
         "INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,",
         "created_at_ms) VALUES('fix-login-2',?1,'fix-login',2,?2,2)"
     ))
     .bind(boot.track_id.as_str())
-    .bind(serde_json::to_string(&recovery_origin(&boot, "fix-login-1")).unwrap())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    .bind(serde_json::to_string(&recovery_origin(&boot, "fix-login-1")).unwrap()))
     .await
     .expect("allocate recovery execution");
     insert_task(&boot, "fix-login-2", "fix-login", "running", Some(worker)).await;
-    sqlx::query("UPDATE tasks SET start = 'upstream' WHERE id = 'fix-login-2'")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE tasks SET start = 'upstream' WHERE id = 'fix-login-2'",
+        ))
         .await
         .unwrap();
     insert_task(&boot, "docs-1", "docs", "pending", None).await;
@@ -671,12 +679,11 @@ async fn task_verdict_refuses_an_attempt_outside_the_callers_track() {
         })
         .await
         .unwrap();
-    sqlx::query(concat!(
+    (boot.repo.sqlite_db().unwrap()).writer().execute(sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,",
         "created_at_ms,updated_at_ms) VALUES('foreign-1',?1,'foreign','codex','goal','{}','done',1,1)"
     ))
-    .bind(other_track.id.as_str())
-    .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    .bind(other_track.id.as_str()))
     .await
     .expect("insert foreign task");
     let mut rx = boot.ctx.events.subscribe();

@@ -326,10 +326,13 @@ async fn client_at_cursor_too_old_gets_snapshot_required() {
     let seeded = seed_three(&repo, &bus, ["c-1", "c-2", "c-3"]).await;
 
     // Simulate retention pruning by removing the earliest event(s).
-    sqlx::query("DELETE FROM events WHERE id IN (?1, ?2)")
-        .bind(seeded[0].0)
-        .bind(seeded[1].0)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM events WHERE id IN (?1, ?2)")
+                .bind(seeded[0].0)
+                .bind(seeded[1].0),
+        )
         .await
         .unwrap();
 

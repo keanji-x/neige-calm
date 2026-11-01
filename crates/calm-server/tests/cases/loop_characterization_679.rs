@@ -95,135 +95,145 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id.clone());
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let planner_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
-        },
-        CardRole::Planner,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    let worker_card = card_create_with_id_tx(
-        &mut tx,
-        new_id(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        },
-        CardRole::Worker,
-        false,
-        &role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let planner_card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1, "planner_provider": "codex"}),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                let worker_card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1}),
+                    },
+                    CardRole::Worker,
+                    false,
+                    &role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    // `harness_runtime_id_for_planner_card` requires an active SharedPlanner runtime whose
-    // handle_state is a harness snapshot.
-    let thread_id = format!("thread-{tag}");
-    let worker_session_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(thread_id.clone());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker_session_id.clone(),
-            card_id: planner_card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+                // `harness_runtime_id_for_planner_card` requires an active SharedPlanner runtime whose
+                // handle_state is a harness snapshot.
+                let thread_id = format!("thread-{tag}");
+                let worker_session_id = new_id();
+                let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+                snapshot.phase = HarnessPhaseTag::Idle;
+                snapshot.last_thread_id = Some(thread_id.clone());
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: planner_card.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Idle,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.clone()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let events = EventBus::new();
-    let repo_dyn: Arc<dyn Repo> = repo.clone();
-    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
-    let registry = HarnessRegistry::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
-    // Unstarted: no debounce / turn issuance racing the assertions.
-    let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
-        PlannerHarnessParams {
-            track_delete_locks: Default::default(),
-            backend: calm_server::harness::backend::PlannerBackend::codex(
-                daemon.clone(),
-                planner_card.id.as_ref(),
-                track.id.as_ref(),
-                worker_session_id.as_ref(),
-            )
-            .unwrap(),
-            worker_session_id: worker_session_id.clone(),
-            track_id: track.id.clone(),
-            card_id: planner_card.id.clone(),
-            thread_id: Some(thread_id),
-            repo: repo_dyn.clone(),
-            events: events.clone(),
-            card_role_cache: CardRoleCache::new(),
-            track_area_cache: TrackAreaCache::new(),
+                let events = EventBus::new();
+                let repo_dyn: Arc<dyn Repo> = repo.clone();
+                let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+                let registry = HarnessRegistry::new();
+                let daemon =
+                    SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
+                // Unstarted: no debounce / turn issuance racing the assertions.
+                let (harness, obs_rx) = PlannerHarness::run_unstarted_for_test(
+                    PlannerHarnessParams {
+                        track_delete_locks: Default::default(),
+                        backend: calm_server::harness::backend::PlannerBackend::codex(
+                            daemon.clone(),
+                            planner_card.id.as_ref(),
+                            track.id.as_ref(),
+                            worker_session_id.as_ref(),
+                        )
+                        .unwrap(),
+                        worker_session_id: worker_session_id.clone(),
+                        track_id: track.id.clone(),
+                        card_id: planner_card.id.clone(),
+                        thread_id: Some(thread_id),
+                        repo: repo_dyn.clone(),
+                        events: events.clone(),
+                        card_role_cache: CardRoleCache::new(),
+                        track_area_cache: TrackAreaCache::new(),
 
-            registry: calm_server::harness::HarnessRegistry::new(),
-            config: HarnessConfig::default(),
-            snapshot: (snapshot)
-                .try_into()
-                .expect("historical fixture snapshot contract"),
-        },
-        8,
-    );
-    registry.insert(worker_session_id, harness.clone());
-    let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
-        repo_dyn,
-        events.clone(),
-        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-        Arc::new(CodexClient::new_stub()),
-        Arc::new(DaemonClient {
-            data_dir: std::env::temp_dir().join(format!("neige-loop-pin-{tag}")),
-            proc_supervisor_sock: None,
-        }),
-        TerminalRendererRegistry::new_with_repo(route_repo),
-        None,
-        registry,
-        daemon,
-        // Attached fixtures: materialization on lease is a no-op.
-        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
-        4,
-    );
+                        registry: calm_server::harness::HarnessRegistry::new(),
+                        config: HarnessConfig::default(),
+                        snapshot: (snapshot)
+                            .try_into()
+                            .expect("historical fixture snapshot contract"),
+                    },
+                    8,
+                );
+                registry.insert(worker_session_id, harness.clone());
+                let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness(
+                    repo_dyn,
+                    events.clone(),
+                    WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                    Arc::new(CodexClient::new_stub()),
+                    Arc::new(DaemonClient {
+                        data_dir: std::env::temp_dir().join(format!("neige-loop-pin-{tag}")),
+                        proc_supervisor_sock: None,
+                    }),
+                    TerminalRendererRegistry::new_with_repo(route_repo),
+                    None,
+                    registry,
+                    daemon,
+                    // Attached fixtures: materialization on lease is a no-op.
+                    std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+                    4,
+                );
 
-    LoopFixture {
-        repo,
-        events,
-        role_cache,
-        track_area_cache,
-        track_id: track.id,
-        area_id: area.id,
-        planner_card,
-        worker_card,
-        harness,
-        obs_rx,
-        dispatcher,
-    }
+                LoopFixture {
+                    repo,
+                    events,
+                    role_cache,
+                    track_area_cache,
+                    track_id: track.id,
+                    area_id: area.id,
+                    planner_card,
+                    worker_card,
+                    harness,
+                    obs_rx,
+                    dispatcher,
+                }
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 impl LoopFixture {

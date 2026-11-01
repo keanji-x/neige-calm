@@ -87,7 +87,7 @@ async fn cancelled_queued_writer_does_not_block_its_successor() {
 async fn autocommit_execute_and_returning_share_writer_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     // Occupy capacity without an SQLite transaction: any readiness would prove a bypass.
-    let held = repo.db().writer_pool().acquire().await.unwrap();
+    let held = repo.db().writer().pool.acquire().await.unwrap();
     // Leave exactly one established reader idle. A bypass consumes it on first poll,
     // even when statement execution has not yet returned from the SQLite worker.
     let readers = repo.db().read_pool();
@@ -146,7 +146,7 @@ async fn memory_roles_share_namespace_and_clones_keep_anchor_alive() {
         assert!(repo.has_memory_cache_anchor());
         let db = repo.db().clone();
         assert_eq!(db.read_pool().options().get_max_connections(), 10);
-        assert_eq!(db.writer_pool().options().get_max_connections(), 1);
+        assert_eq!(db.writer().pool.options().get_max_connections(), 1);
         drop(repo);
         let mut tx = begin_immediate_tx(&db).await.unwrap();
         sqlx::query("INSERT INTO settings(key,value,updated_at) VALUES('shared','yes',0)")
@@ -161,7 +161,7 @@ async fn memory_roles_share_namespace_and_clones_keep_anchor_alive() {
         assert_eq!(value, "yes");
         db.close().await;
         assert!(db.read_pool().is_closed());
-        assert!(db.writer_pool().is_closed());
+        assert!(db.writer().pool.is_closed());
         assert!(!db.has_memory_cache_anchor());
     }
 }
@@ -197,7 +197,7 @@ async fn close_waits_for_both_roles_and_closes_every_clone() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let db = repo.db().clone();
     let reader = db.read_pool().acquire().await.unwrap();
-    let writer = db.writer_pool().acquire().await.unwrap();
+    let writer = db.writer().pool.acquire().await.unwrap();
     let closing = db.close();
     tokio::pin!(closing);
     pending(closing.as_mut()).await;
@@ -206,7 +206,7 @@ async fn close_waits_for_both_roles_and_closes_every_clone() {
     drop(writer);
     timeout(LIMIT, closing).await.unwrap();
     assert!(repo.db().read_pool().is_closed());
-    assert!(repo.db().writer_pool().is_closed());
+    assert!(repo.db().writer().pool.is_closed());
     assert!(!repo.has_memory_cache_anchor());
 }
 

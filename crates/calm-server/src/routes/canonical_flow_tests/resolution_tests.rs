@@ -269,51 +269,58 @@ async fn canonical_keep_without_turn_requires_exact_settled_activity_for_next_in
         .await;
     // The committed receipt survives an unavailable publisher and a real wake
     // refusal on the Failed carrier; neither is part of the immutable answer.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let removed = state.harness.remove(&worker);
+                if let Some(handle) = &removed {
+                    handle.pause_issuance_for_dev();
+                }
+                let pause = crate::test_seams::PausePoint::default();
+                crate::test_seams::install_pause_for_test(
+                    "canonical-human-wake-finished",
+                    &card,
+                    pause.clone(),
+                );
+                assert_eq!(
+                    response(&app, &cookie, &uri, "keep", args.clone()).await,
+                    (StatusCode::OK, kept.clone())
+                );
+                tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+                    .await
+                    .expect("post-commit wake refusal finishes");
+                pause.release.notify_one();
+                let reopened = SqlxRepo::open(&fixture.url).await.unwrap();
+                let raw: String =
+                    sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
+                        .bind(&worker)
+                        .fetch_one(reopened.pool())
+                        .await
+                        .unwrap();
+                let restored: CanonicalHarnessSnapshot = serde_json::from_str(&raw).unwrap();
+                let calm_types::conversation::HumanInputResolutionDecision::Keep { result, .. } =
+                    &restored.canonical_inputs.receipts[0].decision
+                else {
+                    panic!("Keep must store a Keep receipt")
+                };
+                assert_eq!(serde_json::to_value(result).unwrap(), kept);
+                post(&app, &cookie, "/api/auth/logout", "logout", json!({})).await;
+                assert_eq!(
+                    response(&app, &cookie, &uri, "keep", args).await.0,
+                    StatusCode::UNAUTHORIZED
+                );
+                fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &worker)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let removed = state.harness.remove(&worker);
-    if let Some(handle) = &removed {
-        handle.pause_issuance_for_dev();
-    }
-    let pause = crate::test_seams::PausePoint::default();
-    crate::test_seams::install_pause_for_test(
-        "canonical-human-wake-finished",
-        &card,
-        pause.clone(),
-    );
-    assert_eq!(
-        response(&app, &cookie, &uri, "keep", args.clone()).await,
-        (StatusCode::OK, kept.clone())
-    );
-    tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
-        .await
-        .expect("post-commit wake refusal finishes");
-    pause.release.notify_one();
-    let reopened = SqlxRepo::open(&fixture.url).await.unwrap();
-    let raw: String =
-        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id=?1")
-            .bind(&worker)
-            .fetch_one(reopened.pool())
-            .await
-            .unwrap();
-    let restored: CanonicalHarnessSnapshot = serde_json::from_str(&raw).unwrap();
-    let calm_types::conversation::HumanInputResolutionDecision::Keep { result, .. } =
-        &restored.canonical_inputs.receipts[0].decision
-    else {
-        panic!("Keep must store a Keep receipt")
-    };
-    assert_eq!(serde_json::to_value(result).unwrap(), kept);
-    post(&app, &cookie, "/api/auth/logout", "logout", json!({})).await;
-    assert_eq!(
-        response(&app, &cookie, &uri, "keep", args).await.0,
-        StatusCode::UNAUTHORIZED
-    );
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -421,10 +428,13 @@ async fn canonical_keep_access_revoked_before_committed_replay_and_fresh_key() {
         .sessions
         .get(token)
         .expect("password session remains live");
-    let revoked = sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
-        .bind(area["id"].as_str().unwrap())
-        .bind(&session.identity.user_id)
-        .execute(fixture.repo.pool())
+    let revoked = (fixture.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id=?2")
+                .bind(area["id"].as_str().unwrap())
+                .bind(&session.identity.user_id),
+        )
         .await
         .unwrap();
     assert_eq!(revoked.rows_affected(), 1);

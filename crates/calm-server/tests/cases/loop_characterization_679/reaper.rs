@@ -239,137 +239,147 @@ async fn dead_worker_never_reporting_reaper_converges() {
 
     let session_id = WorkerSessionId::from(new_id());
     let session_now = now_ms();
-    let mut tx = pool.writer_pool().begin().await.unwrap();
-    session_insert_tx(
-        &mut tx,
-        WorkerSession {
-            id: session_id.clone(),
-            track_id: track.id.clone(),
-            provider: WorkerProviderKind::Terminal,
-            mode: SessionMode::Ephemeral,
-            contract: WorkerContract::Executor,
-            parent_session_id: None,
-            requester_session_id: None,
-            state: WorkerSessionState::Running,
-            mcp_token_hash: None,
-            thread_id: None,
-            agent_session_id: None,
-            active_turn_id: None,
-            terminal_run_id: None,
-            card_id: Some(worker_card.id.clone()),
-            handle_state_json: None,
-            liveness: LivenessTag::Unknown,
-            liveness_probed_at_ms: None,
-            exit_code: None,
-            exit_interpretation: None,
-            spawn_op_id: Some(op_id),
-            last_activity_ms: None,
-            last_thread_status: None,
-            created_at_ms: session_now,
-            updated_at_ms: session_now,
-            completed_at_ms: None,
-        },
-    )
-    .await
-    .unwrap();
-    sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
-        .bind(session_id.as_str())
-        .bind(worker_card.id.as_str())
-        .execute(&mut *tx)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_insert_tx(
+                    &mut tx,
+                    WorkerSession {
+                        id: session_id.clone(),
+                        track_id: track.id.clone(),
+                        provider: WorkerProviderKind::Terminal,
+                        mode: SessionMode::Ephemeral,
+                        contract: WorkerContract::Executor,
+                        parent_session_id: None,
+                        requester_session_id: None,
+                        state: WorkerSessionState::Running,
+                        mcp_token_hash: None,
+                        thread_id: None,
+                        agent_session_id: None,
+                        active_turn_id: None,
+                        terminal_run_id: None,
+                        card_id: Some(worker_card.id.clone()),
+                        handle_state_json: None,
+                        liveness: LivenessTag::Unknown,
+                        liveness_probed_at_ms: None,
+                        exit_code: None,
+                        exit_interpretation: None,
+                        spawn_op_id: Some(op_id),
+                        last_activity_ms: None,
+                        last_thread_status: None,
+                        created_at_ms: session_now,
+                        updated_at_ms: session_now,
+                        completed_at_ms: None,
+                    },
+                )
+                .await
+                .unwrap();
+                sqlx::query("UPDATE cards SET session_id = ?1 WHERE id = ?2")
+                    .bind(session_id.as_str())
+                    .bind(worker_card.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+
+                let fake = Arc::new(FakeProvider::new().with_probe_script([Liveness::Exited {
+                    evidence: ExitEvidence {
+                        exit_code: Some(-1),
+                        signal_killed: false,
+                        observed_at_ms: now_ms(),
+                        source: ExitSource::Probe,
+                    },
+                }]));
+                let registry = WorkerProviderRegistry::from_entries([(
+                    WorkerProviderKind::Terminal,
+                    fake as Arc<dyn WorkerProvider>,
+                )]);
+                let reaper = Reaper::new(
+                    repo.clone(),
+                    registry,
+                    events.clone(),
+                    WriteContext::new(role_cache.clone(), track_area_cache.clone()),
+                );
+                reaper_on_boot();
+                reaper.sweep_all().await;
+
+                // Exactly one kernel task.failed.
+                let rows = repo.events_since(baseline_id, i64::MAX).await.unwrap();
+                let mut failed_events = Vec::new();
+                for (id, _version, scope, event) in rows {
+                    if scope.track_id() != Some(&track.id) {
+                        continue;
+                    }
+                    match event {
+                        Event::TaskFailed {
+                            ref idempotency_key,
+                            ..
+                        } if idempotency_key == &task_id => {
+                            let actor_text: String =
+                                sqlx::query_scalar("SELECT actor FROM events WHERE id = ?1")
+                                    .bind(id)
+                                    .fetch_one(pool.read_pool())
+                                    .await
+                                    .unwrap();
+                            let actor: ActorId = serde_json::from_str(&actor_text).unwrap();
+                            assert_eq!(actor, ActorId::KernelDispatcher);
+                            failed_events.push(event);
+                        }
+                        Event::TaskCompleted {
+                            idempotency_key, ..
+                        } if idempotency_key == task_id => {
+                            panic!("dead-worker reaper must not emit task.completed")
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(failed_events.len(), 1, "exactly one reaper task.failed");
+                match &failed_events[0] {
+                    Event::TaskFailed {
+                        idempotency_key,
+                        reason,
+                        agent_message,
+                        ..
+                    } => {
+                        assert_eq!(idempotency_key, &task_id);
+                        // The `-1` probe sentinel is hidden behind "outcome unknown", not leaked.
+                        assert!(
+                            reason.contains("outcome unknown")
+                                && reason.contains("supervisor probe"),
+                            "expected provider reason, got {reason:?}"
+                        );
+                        assert!(!reason.contains("exit Some(-1)"));
+                        assert_eq!(agent_message, &None);
+                    }
+                    other => panic!("expected task.failed, got {other:?}"),
+                }
+
+                let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
+                assert_eq!(task_row.status, TaskStatus::Failed);
+                // Classifier + reason tail (the reaper path).
+                let detail = task_row.status_detail.clone().unwrap_or_default();
+                assert_eq!(
+                    calm_server::db::sqlite::status_detail_class(&detail),
+                    "spawn-failed"
+                );
+                let session = repo
+                    .session_get(&session_id)
+                    .await
+                    .unwrap()
+                    .expect("session exists");
+                assert_eq!(session.state, WorkerSessionState::Failed);
+                assert_eq!(session.exit_code, Some(-1));
+
+                let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
+                assert!(
+                    cards.iter().any(|c| c.id == worker_card.id),
+                    "dead-worker convergence does not reap the worker card"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    let fake = Arc::new(FakeProvider::new().with_probe_script([Liveness::Exited {
-        evidence: ExitEvidence {
-            exit_code: Some(-1),
-            signal_killed: false,
-            observed_at_ms: now_ms(),
-            source: ExitSource::Probe,
-        },
-    }]));
-    let registry = WorkerProviderRegistry::from_entries([(
-        WorkerProviderKind::Terminal,
-        fake as Arc<dyn WorkerProvider>,
-    )]);
-    let reaper = Reaper::new(
-        repo.clone(),
-        registry,
-        events.clone(),
-        WriteContext::new(role_cache.clone(), track_area_cache.clone()),
-    );
-    reaper_on_boot();
-    reaper.sweep_all().await;
-
-    // Exactly one kernel task.failed.
-    let rows = repo.events_since(baseline_id, i64::MAX).await.unwrap();
-    let mut failed_events = Vec::new();
-    for (id, _version, scope, event) in rows {
-        if scope.track_id() != Some(&track.id) {
-            continue;
-        }
-        match event {
-            Event::TaskFailed {
-                ref idempotency_key,
-                ..
-            } if idempotency_key == &task_id => {
-                let actor_text: String =
-                    sqlx::query_scalar("SELECT actor FROM events WHERE id = ?1")
-                        .bind(id)
-                        .fetch_one(pool.read_pool())
-                        .await
-                        .unwrap();
-                let actor: ActorId = serde_json::from_str(&actor_text).unwrap();
-                assert_eq!(actor, ActorId::KernelDispatcher);
-                failed_events.push(event);
-            }
-            Event::TaskCompleted {
-                idempotency_key, ..
-            } if idempotency_key == task_id => {
-                panic!("dead-worker reaper must not emit task.completed")
-            }
-            _ => {}
-        }
-    }
-    assert_eq!(failed_events.len(), 1, "exactly one reaper task.failed");
-    match &failed_events[0] {
-        Event::TaskFailed {
-            idempotency_key,
-            reason,
-            agent_message,
-            ..
-        } => {
-            assert_eq!(idempotency_key, &task_id);
-            // The `-1` probe sentinel is hidden behind "outcome unknown", not leaked.
-            assert!(
-                reason.contains("outcome unknown") && reason.contains("supervisor probe"),
-                "expected provider reason, got {reason:?}"
-            );
-            assert!(!reason.contains("exit Some(-1)"));
-            assert_eq!(agent_message, &None);
-        }
-        other => panic!("expected task.failed, got {other:?}"),
-    }
-
-    let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
-    assert_eq!(task_row.status, TaskStatus::Failed);
-    // Classifier + reason tail (the reaper path).
-    let detail = task_row.status_detail.clone().unwrap_or_default();
-    assert_eq!(
-        calm_server::db::sqlite::status_detail_class(&detail),
-        "spawn-failed"
-    );
-    let session = repo
-        .session_get(&session_id)
-        .await
-        .unwrap()
-        .expect("session exists");
-    assert_eq!(session.state, WorkerSessionState::Failed);
-    assert_eq!(session.exit_code, Some(-1));
-
-    let cards = repo.cards_by_track(track.id.as_str()).await.unwrap();
-    assert!(
-        cards.iter().any(|c| c.id == worker_card.id),
-        "dead-worker convergence does not reap the worker card"
-    );
+        .expect("independent write operation")
 }

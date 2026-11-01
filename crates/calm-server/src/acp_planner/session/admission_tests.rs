@@ -34,47 +34,51 @@ pub(super) async fn fixture() -> (AcpPlannerSession, Arc<SqlxRepo>, String) {
         })
         .await
         .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
-        track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
-        payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode","permission_mode":"never"}),
-    }, CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
-    let worker = new_id();
-    let thread = new_id();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: worker.clone(),
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let card = card_create_with_id_tx(&mut tx, new_id(), NewCard {
+            track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
+            payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode","permission_mode":"never"}),
+        }, CardRole::Planner, false, &crate::card_role_cache::CardRoleCache::new()).await.unwrap();
+        let worker = new_id();
+        let thread = new_id();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: worker.clone(),
+                card_id: card.id.to_string(),
+                kind: WorkerSessionKind::SharedPlanner,
+                agent_provider: Some(AgentProvider::OpenCode),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(thread.clone()),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: None,
+                now_ms: crate::model::now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let host = Arc::new(AcpPlannerHost::unconfigured_scratch().unwrap());
+        let session = AcpPlannerSession::open(SessionParams {
+            engine: host.execution.engine().cloned(),
+            host,
+            provider: AgentProvider::OpenCode,
+            repo: repo.clone(),
+            seals: Arc::new(ThreadSeals::new()),
+            worker_session_id: worker,
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::OpenCode),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: crate::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let host = Arc::new(AcpPlannerHost::unconfigured_scratch().unwrap());
-    let session = AcpPlannerSession::open(SessionParams {
-        engine: host.execution.engine().cloned(),
-        host,
-        provider: AgentProvider::OpenCode,
-        repo: repo.clone(),
-        seals: Arc::new(ThreadSeals::new()),
-        worker_session_id: worker,
-        card_id: card.id.to_string(),
-        track_id: track.id.to_string(),
-        cwd: "/tmp".into(),
-        instructions: String::new(),
-    });
-    (session, repo, thread)
+            track_id: track.id.to_string(),
+            cwd: "/tmp".into(),
+            instructions: String::new(),
+        });
+        (session, repo, thread)
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

@@ -347,14 +347,15 @@ async fn acp_compact_cleanup_failure_cannot_settle_completed() {
         .await
         .unwrap();
     let pool = stack.repo().sqlite_db().unwrap();
-    sqlx::query(concat!(
-        "CREATE TRIGGER refuse_compact_revoke BEFORE UPDATE OF mcp_token_hash ",
-        "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
-        "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
-    ))
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+    (pool)
+        .writer()
+        .execute(sqlx::query(concat!(
+            "CREATE TRIGGER refuse_compact_revoke BEFORE UPDATE OF mcp_token_hash ",
+            "ON worker_sessions WHEN NEW.mcp_token_hash IS NULL ",
+            "BEGIN SELECT RAISE(FAIL,'fixture revoke failure'); END",
+        )))
+        .await
+        .unwrap();
     cleanup.release.notify_one();
     wait_phase(&stack, &runtime.id, "wedged").await;
     assert_eq!(
@@ -362,8 +363,9 @@ async fn acp_compact_cleanup_failure_cannot_settle_completed() {
         "unconfirmed"
     );
     assert_eq!(compact_prompts(&root).len(), 1);
-    sqlx::query("DROP TRIGGER refuse_compact_revoke")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER refuse_compact_revoke"))
         .await
         .unwrap();
     stack.shutdown().await;

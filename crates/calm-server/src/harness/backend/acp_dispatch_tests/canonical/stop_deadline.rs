@@ -58,30 +58,39 @@ async fn accept_pending(
     fx: &Fixture,
     harness: &crate::harness::PlannerHarness,
 ) -> MessageRevisionRef {
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_content_carrier_tx(&mut tx, &fx.owner.card)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier = current_input_content_carrier_tx(&mut tx, &fx.owner.card)
+                    .await
+                    .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "pending after stop deadline".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("human")
+                };
+                harness
+                    .observe_canonical_source(message.clone(), fx.source.clone())
+                    .await
+                    .unwrap();
+                message
+            })
+        })
         .await
-        .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "pending after stop deadline".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("human")
-    };
-    harness
-        .observe_canonical_source(message.clone(), fx.source.clone())
-        .await
-        .unwrap();
-    message
+        .expect("independent write operation")
 }
 
 async fn restored_once(
@@ -174,9 +183,14 @@ async fn canonical_acp_accepted_stop_with_refused_cancel_bounds_original_without
     assert!(accepted.header.interruption_intent.is_some());
     // Native ownership changes after durable Stop acceptance. The real writer
     // must refuse it, while the exact original driver must still be bounded.
-    sqlx::query("UPDATE worker_sessions SET agent_session_id='changed-native-owner' WHERE id=?1")
-        .bind(&fx.owner.worker)
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET agent_session_id='changed-native-owner' WHERE id=?1",
+            )
+            .bind(&fx.owner.worker),
+        )
         .await
         .unwrap();
     drop(unsent);

@@ -5,14 +5,15 @@ use super::*;
 async fn canonical_claude_identity_recovery_resumes_after_bind_failure_and_restart() {
     let mut fx = Fixture::persistent("exit").await;
     // Fail the production init bind without blocking the independent replay acknowledgement.
-    sqlx::query(
-        "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
         WHEN NEW.agent_session_id IS NOT NULL
         BEGIN SELECT RAISE(ABORT,'bind failed'); END",
-    )
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     fx.dispatch().await.unwrap();
     fx.wait_end().await;
     let before = fx.checkpoint().await;
@@ -26,8 +27,9 @@ async fn canonical_claude_identity_recovery_resumes_after_bind_failure_and_resta
             .unwrap();
     assert_eq!(bound, None);
     fx.session.shutdown().await.unwrap();
-    sqlx::query("DROP TRIGGER fail_native_bind")
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
         .await
         .unwrap();
     let (backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
@@ -56,45 +58,56 @@ async fn canonical_claude_identity_recovery_resumes_after_bind_failure_and_resta
 }
 
 async fn next_input(fx: &mut Fixture) {
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-        .await
-        .unwrap();
-    let accepted = crate::conversation_inputs::accept_human_tx(
-        &mut tx,
-        &fx.source.current_principal().unwrap(),
-        &mut carrier,
-        HumanPayload {
-            text: "following human input".into(),
-            bound_attachments: vec![],
-        },
-    )
-    .await
-    .unwrap();
-    let AcceptedInputRef::Human { message } = accepted.input_ref else {
-        panic!("Human")
-    };
-    let claimed = crate::conversation_inputs::claim_initial_tx(
-        &mut tx,
-        &fx.source,
-        &mut carrier,
-        SubmissionRenderPlan::V1 {
-            segments: vec![SubmissionRenderSegment::Input {
-                input_position: 0,
-                input: SubmissionRenderInput::Human {
-                    message,
-                    author: FrozenHumanAttribution {
-                        registered_user_id: calm_types::organization::LEGACY_OWNER_USER_ID.into(),
-                        display_name: "Owner".into(),
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let accepted = crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &fx.source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "following human input".into(),
+                        bound_attachments: vec![],
                     },
-                },
-            }],
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    fx.submission = claimed.submission_id;
+                )
+                .await
+                .unwrap();
+                let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                    panic!("Human")
+                };
+                let claimed = crate::conversation_inputs::claim_initial_tx(
+                    &mut tx,
+                    &fx.source,
+                    &mut carrier,
+                    SubmissionRenderPlan::V1 {
+                        segments: vec![SubmissionRenderSegment::Input {
+                            input_position: 0,
+                            input: SubmissionRenderInput::Human {
+                                message,
+                                author: FrozenHumanAttribution {
+                                    registered_user_id:
+                                        calm_types::organization::LEGACY_OWNER_USER_ID.into(),
+                                    display_name: "Owner".into(),
+                                },
+                            },
+                        }],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                fx.submission = claimed.submission_id;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 pub(super) async fn binding(fx: &Fixture) -> Option<String> {
@@ -106,14 +119,15 @@ pub(super) async fn binding(fx: &Fixture) -> Option<String> {
 }
 
 async fn fail_bind(fx: &Fixture) {
-    sqlx::query(
-        "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_native_bind BEFORE UPDATE OF agent_session_id ON worker_sessions
         WHEN NEW.agent_session_id IS NOT NULL
         BEGIN SELECT RAISE(ABORT,'bind failed'); END",
-    )
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -137,8 +151,9 @@ async fn canonical_claude_identity_recovery_preserves_later_unknown_without_retr
     ));
     assert_eq!(binding(&fx).await, None);
     fx.session.shutdown().await.unwrap();
-    sqlx::query("DROP TRIGGER fail_native_bind")
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
         .await
         .unwrap();
     let spawns = std::fs::read_to_string(fx.dir.path().join("spawns")).unwrap();
@@ -175,8 +190,9 @@ async fn canonical_claude_identity_recovery_requires_verified_replay() {
         );
         assert_eq!(binding(&fx).await, None);
         fx.session.shutdown().await.unwrap();
-        sqlx::query("DROP TRIGGER fail_native_bind")
-            .execute(fx.owner.repo.pool())
+        (fx.owner.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
             .await
             .unwrap();
         let (_backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
@@ -334,8 +350,9 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
     assert_eq!(binding(&fx).await, None);
     fx.session.shutdown().await.unwrap();
     if matches!(lost, LostBind::Failed) {
-        sqlx::query("DROP TRIGGER fail_native_bind")
-            .execute(fx.owner.repo.pool())
+        (fx.owner.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
             .await
             .unwrap();
     }
@@ -352,70 +369,80 @@ async fn unconfirmed_launch(lost: LostBind, action: &str) {
     let (state, app) = super::settled::application(&fx).await;
     let harness = fx.start_loop_in(state.harness.clone()).await;
     super::retry::action(&fx, &app, action, "resolve-unconfirmed").await;
-    if action == "keep" {
-        tokio::time::timeout(Duration::from_secs(25), async {
-            while fx.checkpoint().await.receipts.is_empty() {
-                tokio::task::yield_now().await;
-            }
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                if action == "keep" {
+                    tokio::time::timeout(Duration::from_secs(25), async {
+                        while fx.checkpoint().await.receipts.is_empty() {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    let mut tx = write_session.begin().await.unwrap();
+                    let mut carrier =
+                        current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                            .await
+                            .unwrap();
+                    let accepted = crate::conversation_inputs::accept_human_tx(
+                        &mut tx,
+                        &fx.source.current_principal().unwrap(),
+                        &mut carrier,
+                        HumanPayload {
+                            text: "following kept input".into(),
+                            bound_attachments: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!("Human")
+                    };
+                    tx.commit().await.unwrap();
+                    harness
+                        .observe_canonical_source(message, fx.source.clone())
+                        .await
+                        .unwrap();
+                }
+                // Bounded: a held loop records no further attempt, a relaunch changes `spawns`.
+                let _ = tokio::time::timeout(Duration::from_secs(10), async {
+                    while read("spawns") == spawns && fx.checkpoint().await.attempts.len() < 2 {
+                        harness.refresh_canonical_input().await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                })
+                .await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                assert_eq!(read("spawns"), spawns, "nothing was launched again");
+                assert_eq!(read("argv"), argv);
+                assert_eq!(read("stdin"), stdin, "nothing was sent");
+                let after = fx.checkpoint().await;
+                assert_eq!(after.attempts[0].delivery, before.attempts[0].delivery);
+                assert!(
+                    after.attempts[1..].iter().all(|attempt| !matches!(
+                        attempt.delivery,
+                        InputDeliveryFact::Unknown
+                            | InputDeliveryFact::CrossingUnknown
+                            | InputDeliveryFact::Accepted { .. }
+                    )),
+                    "{:?}",
+                    after.attempts
+                );
+                assert_eq!(binding(&fx).await, None);
+                let reader = fx.backend.issuance_hold().expect("identity hold");
+                assert!(
+                    !reader.contains("fresh session") && !reader.contains("restart"),
+                    "canonical hold names no action: {reader}"
+                );
+                harness.shutdown().await.unwrap();
+                state.dispatcher.retire();
+            })
         })
         .await
-        .unwrap();
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        let mut carrier = current_input_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-            .await
-            .unwrap();
-        let accepted = crate::conversation_inputs::accept_human_tx(
-            &mut tx,
-            &fx.source.current_principal().unwrap(),
-            &mut carrier,
-            HumanPayload {
-                text: "following kept input".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!("Human")
-        };
-        tx.commit().await.unwrap();
-        harness
-            .observe_canonical_source(message, fx.source.clone())
-            .await
-            .unwrap();
-    }
-    // Bounded: a held loop records no further attempt, a relaunch changes `spawns`.
-    let _ = tokio::time::timeout(Duration::from_secs(10), async {
-        while read("spawns") == spawns && fx.checkpoint().await.attempts.len() < 2 {
-            harness.refresh_canonical_input().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(read("spawns"), spawns, "nothing was launched again");
-    assert_eq!(read("argv"), argv);
-    assert_eq!(read("stdin"), stdin, "nothing was sent");
-    let after = fx.checkpoint().await;
-    assert_eq!(after.attempts[0].delivery, before.attempts[0].delivery);
-    assert!(
-        after.attempts[1..].iter().all(|attempt| !matches!(
-            attempt.delivery,
-            InputDeliveryFact::Unknown
-                | InputDeliveryFact::CrossingUnknown
-                | InputDeliveryFact::Accepted { .. }
-        )),
-        "{:?}",
-        after.attempts
-    );
-    assert_eq!(binding(&fx).await, None);
-    let reader = fx.backend.issuance_hold().expect("identity hold");
-    assert!(
-        !reader.contains("fresh session") && !reader.contains("restart"),
-        "canonical hold names no action: {reader}"
-    );
-    harness.shutdown().await.unwrap();
-    state.dispatcher.retire();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -425,8 +452,9 @@ async fn canonical_claude_identity_unconfirmed_refuses_edit_preflight_without_sp
     fx.dispatch().await.unwrap();
     fx.wait_end().await;
     fx.session.shutdown().await.unwrap();
-    sqlx::query("DROP TRIGGER fail_native_bind")
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_native_bind"))
         .await
         .unwrap();
     let (backend, session) = super::recovery::reopen_session(&fx, fx.owner.repo.clone()).await;

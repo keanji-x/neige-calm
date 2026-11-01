@@ -76,81 +76,95 @@ impl GiveBack {
         }
         let source = new_id();
         let successor = new_id();
-        let mut tx = repo.pool().begin().await.unwrap();
-        let card = card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id,
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: crate::track_creation::planner_harness_card_payload(
-                    &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-                    None,
-                    AgentProvider::Codex,
-                ),
-            },
-            CardRole::Planner,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        for (runtime, state, entries) in [
-            (
-                &source,
-                WorkerSessionState::Failed,
-                if retain_source {
-                    vec![captured.clone()]
-                } else {
-                    vec![]
-                },
-            ),
-            (
-                &successor,
-                WorkerSessionState::Idle,
-                vec![successor_entry.clone()],
-            ),
-        ] {
-            session_start_runtime_tx(
-                &mut tx,
-                WorkerSessionInit::shared_planner(
-                    runtime.clone(),
-                    card.id.to_string(),
-                    AgentProvider::Codex,
-                    state,
-                    None,
-                    serde_json::to_value(HarnessSnapshot::initial(0, entries)).unwrap(),
-                    now_ms(),
-                ),
-            )
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let card = card_create_with_id_tx(
+                        &mut tx,
+                        new_id(),
+                        NewCard {
+                            track_id: track.id,
+                            title: None,
+                            kind: "codex".into(),
+                            sort: None,
+                            payload: crate::track_creation::planner_harness_card_payload(
+                                &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                                    .unwrap(),
+                                None,
+                                AgentProvider::Codex,
+                            ),
+                        },
+                        CardRole::Planner,
+                        false,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    for (runtime, state, entries) in [
+                        (
+                            &source,
+                            WorkerSessionState::Failed,
+                            if retain_source {
+                                vec![captured.clone()]
+                            } else {
+                                vec![]
+                            },
+                        ),
+                        (
+                            &successor,
+                            WorkerSessionState::Idle,
+                            vec![successor_entry.clone()],
+                        ),
+                    ] {
+                        session_start_runtime_tx(
+                            &mut tx,
+                            WorkerSessionInit::shared_planner(
+                                runtime.clone(),
+                                card.id.to_string(),
+                                AgentProvider::Codex,
+                                state,
+                                None,
+                                serde_json::to_value(HarnessSnapshot::initial(0, entries)).unwrap(),
+                                now_ms(),
+                            ),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    session_mark_queue_harvested_tx(&mut tx, &source, now_ms())
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    // Capture through the actual producer and persisted journal, not a copied revision fixture.
+                    let taken = stranded_user_messages(
+                        &source,
+                        &serde_json::to_string(&HarnessSnapshot::initial(
+                            0,
+                            vec![captured.clone()],
+                        ))
+                        .unwrap(),
+                    )
+                    .taken;
+                    let mut output = TxOutput::new("card", Some(card.id.to_string()), json!({}));
+                    output.data = json!({"harvested_from":harvested_from_journal(&[HarvestedFrom {
+                        worker_session_id:source.clone(), messages:taken,
+                    }])});
+                    Self {
+                        repo,
+                        card_id: card.id.to_string(),
+                        source,
+                        successor,
+                        output,
+                        captured,
+                        successor_entry,
+                    }
+                })
+            })
             .await
-            .unwrap();
-        }
-        session_mark_queue_harvested_tx(&mut tx, &source, now_ms())
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        // Capture through the actual producer and persisted journal, not a copied revision fixture.
-        let taken = stranded_user_messages(
-            &source,
-            &serde_json::to_string(&HarnessSnapshot::initial(0, vec![captured.clone()])).unwrap(),
-        )
-        .taken;
-        let mut output = TxOutput::new("card", Some(card.id.to_string()), json!({}));
-        output.data = json!({"harvested_from":harvested_from_journal(&[HarvestedFrom {
-            worker_session_id:source.clone(), messages:taken,
-        }])});
-        Self {
-            repo,
-            card_id: card.id.to_string(),
-            source,
-            successor,
-            output,
-            captured,
-            successor_entry,
-        }
+            .expect("independent write operation")
     }
 
     async fn compensate(&self) -> Result<()> {

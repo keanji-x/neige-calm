@@ -285,256 +285,258 @@ async fn exercise(history: History, disposal: Disposal) {
         .resolve_task_closure(&track_id, "launch")
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    assert_eq!(
-        crate::db::sqlite::task_claim_pending_tx(
-            &mut tx,
-            &task.id,
-            crate::model::now_ms(),
-            &closure.refs,
-            closure.closure_truncated
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    tx.commit().await.unwrap();
-    let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
-    let mut establishment = matches!(
-        history,
-        History::ConcurrentUi | History::ConcurrentForeignPid
-    )
-    .then(|| crate::terminal_renderer::establishment_test_hook::install(&task.id));
-
-    let key = OperationKey {
-        operation_key: new_id(),
-        idempotency_key: Some(task.id),
-        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
-    };
-    let operations = SqlxOperationRepo::new(repo.db().clone());
-    if matches!(history, History::PidWriteFailure) {
-        sqlx::query("CREATE TRIGGER reject_terminal_pid BEFORE UPDATE OF pid ON terminals WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL,'fixture pid write failure'); END").execute(repo.pool()).await.unwrap();
-    }
-    if matches!(history, History::OldPrestart) {
-        let adapter = LegacyPreparedWorker(TerminalWorkerAdapter::new(repo.clone(), roles, areas));
-        let id = operations
-            .insert_operation(kind, key.clone(), payload.clone())
-            .await
-            .unwrap();
-        let claimed = operations
-            .claim_drive_batch(10)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|op| op.id == id)
-            .unwrap();
-        operations
-            .prepare_tx_and_advance(&claimed, &adapter, None)
-            .await
-            .unwrap()
-            .committed()
-            .unwrap();
-    } else {
-        let submitted = key.clone();
-        let drive = runtime.clone();
-        let run = tokio::spawn(async move { drive.submit(kind, submitted, payload).await });
-        struct Abort(tokio::task::AbortHandle);
-        impl Drop for Abort {
-            fn drop(&mut self) {
-                self.0.abort();
-            }
-        }
-        let _abort = Abort(run.abort_handle());
-        if let Some((_guard, entered, release)) = establishment.take() {
-            let id = tokio::time::timeout(Duration::from_secs(10), entered)
-                .await
-                .unwrap()
-                .unwrap();
-            let term = repo.terminal_get(&id).await.unwrap().unwrap();
-            assert!(term.pid.is_some());
-            assert!(state.terminal_renderer.get(&id).is_none());
-            let live = tokio::time::timeout(
-                Duration::from_secs(5),
-                crate::ws::terminal::resolve_live_renderer_for_test(&state, &id),
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        assert_eq!(
+            crate::db::sqlite::task_claim_pending_tx(
+                &mut tx,
+                &task.id,
+                crate::model::now_ms(),
+                &closure.refs,
+                closure.closure_truncated
             )
             .await
-            .unwrap()
-            .unwrap();
-            assert!(
-                matches!(live, crate::ws::terminal::TestLiveRenderer::Alive(_)),
-                "actual UI lazy attachment must win insertion"
-            );
-            assert!(state.terminal_renderer.get(&id).is_some());
-            if matches!(history, History::ConcurrentForeignPid) {
-                repo.terminal_set_pid(&id, Some(u32::try_from(term.pid.unwrap() + 1).unwrap()))
-                    .await
-                    .unwrap();
-            }
-            release.notify_one();
-        }
-        if history.successful()
-            || matches!(
-                history,
-                History::PidWriteFailure | History::ConcurrentForeignPid
-            )
-        {
-            tokio::time::timeout(Duration::from_secs(15), run)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-        } else {
-            tokio::time::timeout(Duration::from_secs(15), proxy.received.notified())
-                .await
-                .unwrap();
-            run.abort();
-            assert!(run.await.unwrap_err().is_cancelled());
-        }
-    }
-    let op = operations
-        .find_by_idempotency_key(kind, &key)
-        .await
-        .unwrap()
-        .unwrap();
-    let output = op.tx_output.as_ref().unwrap();
-    let card_id = output.output_string("card_id", "test").unwrap();
-    let term_id = output.output_string("terminal_id", "test").unwrap();
-    let terminal = repo.terminal_get(&term_id).await.unwrap().unwrap();
-    if history.successful() {
-        if matches!(
+            .unwrap(),
+            1
+        );
+        tx.commit().await.unwrap();
+        let (kind, payload) = crate::scheduler::build_worker_payload(&task).unwrap();
+        let mut establishment = matches!(
             history,
             History::ConcurrentUi | History::ConcurrentForeignPid
-        ) {
-            assert_eq!(
-                counting.ensures.load(std::sync::atomic::Ordering::SeqCst),
-                1
-            );
-        }
-        assert!(terminal.pid.is_some());
-        assert!(state.terminal_renderer.get(&term_id).is_some());
-        assert_eq!(output.data["terminal_launch"]["state"], "handed_off");
-    } else if matches!(history, History::ConcurrentForeignPid) {
-        assert!(terminal.pid.is_some());
-        assert_eq!(output.data["terminal_launch"]["state"], "requested");
-    } else {
-        assert!(terminal.pid.is_none());
-    }
-    if matches!(
-        history,
-        History::OldUnknown
-            | History::OldCompensating
-            | History::OldSuccessful
-            | History::OldPrestart
-    ) {
-        // Model exact released records: normal preparation/launch happened via
-        // the actual adapter above; only the later-added private field is absent.
-        sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
-            .bind(&op.id).execute(repo.pool()).await.unwrap();
-    }
-    if matches!(history, History::OldCompensating) {
-        let state = CompensationStateVersioned {
-            version: 1,
-            from_phase: PhaseTag::SpawnStarted,
-            reason: "lost launch".into(),
-            steps: vec![],
+        )
+        .then(|| crate::terminal_renderer::establishment_test_hook::install(&task.id));
+
+        let key = OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(task.id),
+            payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
         };
-        operations
-            .set_compensating(&op, &state, None)
-            .await
-            .unwrap()
-            .applied()
-            .unwrap();
-        sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1").bind(&op.id).execute(repo.pool()).await.unwrap();
-    }
-    if matches!(disposal, Disposal::Sweep) {
-        sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?1")
-            .bind(&term_id)
-            .execute(repo.pool())
-            .await
-            .unwrap();
-        sqlx::query("UPDATE worker_sessions SET state='failed' WHERE card_id=?1")
-            .bind(&card_id)
-            .execute(repo.pool())
-            .await
-            .unwrap();
-        assert!(
-            repo.terminals_orphaned(60)
+        let operations = SqlxOperationRepo::new(repo.db().clone());
+        if matches!(history, History::PidWriteFailure) {
+            (repo.db()).writer().execute(sqlx::query("CREATE TRIGGER reject_terminal_pid BEFORE UPDATE OF pid ON terminals WHEN NEW.pid IS NOT NULL BEGIN SELECT RAISE(FAIL,'fixture pid write failure'); END")).await.unwrap();
+        }
+        if matches!(history, History::OldPrestart) {
+            let adapter = LegacyPreparedWorker(TerminalWorkerAdapter::new(repo.clone(), roles, areas));
+            let id = operations
+                .insert_operation(kind, key.clone(), payload.clone())
+                .await
+                .unwrap();
+            let claimed = operations
+                .claim_drive_batch(10)
                 .await
                 .unwrap()
-                .iter()
-                .any(|t| t.id == term_id)
-        );
-        crate::terminal_sweeper::sweep(&state).await.unwrap();
-        release_late_process(&proxy, &execution).await;
-        assert!(
-            repo.terminal_get(&term_id).await.unwrap().is_some(),
-            "sweeper discarded unknown launch"
-        );
-        return;
-    }
-    let (method, uri, body) = match disposal {
-        Disposal::Card => ("DELETE", format!("/api/cards/{card_id}"), None),
-        Disposal::Track => ("DELETE", format!("/api/tracks/{track_id}"), None),
-        Disposal::Area => ("DELETE", format!("/api/areas/{area_id}"), None),
-        Disposal::Sweep => unreachable!(),
-        Disposal::Repoint => {
-            let target = temp.path().join("target");
-            std::fs::create_dir(&target).unwrap();
-            assert!(
-                std::process::Command::new("git")
-                    .args(["init", "-q"])
-                    .current_dir(&target)
-                    .status()
+                .into_iter()
+                .find(|op| op.id == id)
+                .unwrap();
+            operations
+                .prepare_tx_and_advance(&claimed, &adapter, None)
+                .await
+                .unwrap()
+                .committed()
+                .unwrap();
+        } else {
+            let submitted = key.clone();
+            let drive = runtime.clone();
+            let run = tokio::spawn(async move { drive.submit(kind, submitted, payload).await });
+            struct Abort(tokio::task::AbortHandle);
+            impl Drop for Abort {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let _abort = Abort(run.abort_handle());
+            if let Some((_guard, entered, release)) = establishment.take() {
+                let id = tokio::time::timeout(Duration::from_secs(10), entered)
+                    .await
                     .unwrap()
-                    .success()
-            );
-            (
-                "PATCH",
-                format!("/api/tracks/{track_id}"),
-                Some(json!({"workspace":{"kind":"attached","path":target,"attach_folder":true}})),
-            )
+                    .unwrap();
+                let term = repo.terminal_get(&id).await.unwrap().unwrap();
+                assert!(term.pid.is_some());
+                assert!(state.terminal_renderer.get(&id).is_none());
+                let live = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    crate::ws::terminal::resolve_live_renderer_for_test(&state, &id),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(
+                    matches!(live, crate::ws::terminal::TestLiveRenderer::Alive(_)),
+                    "actual UI lazy attachment must win insertion"
+                );
+                assert!(state.terminal_renderer.get(&id).is_some());
+                if matches!(history, History::ConcurrentForeignPid) {
+                    repo.terminal_set_pid(&id, Some(u32::try_from(term.pid.unwrap() + 1).unwrap()))
+                        .await
+                        .unwrap();
+                }
+                release.notify_one();
+            }
+            if history.successful()
+                || matches!(
+                    history,
+                    History::PidWriteFailure | History::ConcurrentForeignPid
+                )
+            {
+                tokio::time::timeout(Duration::from_secs(15), run)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+            } else {
+                tokio::time::timeout(Duration::from_secs(15), proxy.received.notified())
+                    .await
+                    .unwrap();
+                run.abort();
+                assert!(run.await.unwrap_err().is_cancelled());
+            }
         }
-    };
-    let (status, body) =
-        tokio::time::timeout(Duration::from_secs(15), call(app, method, &uri, body))
+        let op = operations
+            .find_by_idempotency_key(kind, &key)
             .await
+            .unwrap()
             .unwrap();
-    if history.successful() || matches!(history, History::OldPrestart) {
+        let output = op.tx_output.as_ref().unwrap();
+        let card_id = output.output_string("card_id", "test").unwrap();
+        let term_id = output.output_string("terminal_id", "test").unwrap();
+        let terminal = repo.terminal_get(&term_id).await.unwrap().unwrap();
+        if history.successful() {
+            if matches!(
+                history,
+                History::ConcurrentUi | History::ConcurrentForeignPid
+            ) {
+                assert_eq!(
+                    counting.ensures.load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+            }
+            assert!(terminal.pid.is_some());
+            assert!(state.terminal_renderer.get(&term_id).is_some());
+            assert_eq!(output.data["terminal_launch"]["state"], "handed_off");
+        } else if matches!(history, History::ConcurrentForeignPid) {
+            assert!(terminal.pid.is_some());
+            assert_eq!(output.data["terminal_launch"]["state"], "requested");
+        } else {
+            assert!(terminal.pid.is_none());
+        }
+        if matches!(
+            history,
+            History::OldUnknown
+                | History::OldCompensating
+                | History::OldSuccessful
+                | History::OldPrestart
+        ) {
+            // Model exact released records: normal preparation/launch happened via
+            // the actual adapter above; only the later-added private field is absent.
+            (repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1")
+                .bind(&op.id)).await.unwrap();
+        }
+        if matches!(history, History::OldCompensating) {
+            let state = CompensationStateVersioned {
+                version: 1,
+                from_phase: PhaseTag::SpawnStarted,
+                reason: "lost launch".into(),
+                steps: vec![],
+            };
+            operations
+                .set_compensating(&op, &state, None)
+                .await
+                .unwrap()
+                .applied()
+                .unwrap();
+            (repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1").bind(&op.id)).await.unwrap();
+        }
+        if matches!(disposal, Disposal::Sweep) {
+            (repo.db()).writer().execute(sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?1")
+                .bind(&term_id))
+                .await
+                .unwrap();
+            (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='failed' WHERE card_id=?1")
+                .bind(&card_id))
+                .await
+                .unwrap();
+            assert!(
+                repo.terminals_orphaned(60)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|t| t.id == term_id)
+            );
+            crate::terminal_sweeper::sweep(&state).await.unwrap();
+            release_late_process(&proxy, &execution).await;
+            assert!(
+                repo.terminal_get(&term_id).await.unwrap().is_some(),
+                "sweeper discarded unknown launch"
+            );
+            return;
+        }
+        let (method, uri, body) = match disposal {
+            Disposal::Card => ("DELETE", format!("/api/cards/{card_id}"), None),
+            Disposal::Track => ("DELETE", format!("/api/tracks/{track_id}"), None),
+            Disposal::Area => ("DELETE", format!("/api/areas/{area_id}"), None),
+            Disposal::Sweep => unreachable!(),
+            Disposal::Repoint => {
+                let target = temp.path().join("target");
+                std::fs::create_dir(&target).unwrap();
+                assert!(
+                    std::process::Command::new("git")
+                        .args(["init", "-q"])
+                        .current_dir(&target)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                (
+                    "PATCH",
+                    format!("/api/tracks/{track_id}"),
+                    Some(json!({"workspace":{"kind":"attached","path":target,"attach_folder":true}})),
+                )
+            }
+        };
+        let (status, body) =
+            tokio::time::timeout(Duration::from_secs(15), call(app, method, &uri, body))
+                .await
+                .unwrap();
+        if history.successful() || matches!(history, History::OldPrestart) {
+            assert_eq!(
+                status,
+                StatusCode::NO_CONTENT,
+                "normal cleanup rejected: {body}"
+            );
+            assert!(repo.card_get(&card_id).await.unwrap().is_none());
+            assert!(repo.terminal_get(&term_id).await.unwrap().is_none());
+            return;
+        }
+        // The original request can still launch after a truthful Probe(false).
+        if matches!(
+            history,
+            History::PidWriteFailure | History::ConcurrentForeignPid
+        ) {
+            assert_eq!(output.data["terminal_launch"]["state"], "requested");
+            assert!(
+                state.terminal_renderer.get(&term_id).is_some(),
+                "renderer installed but PID write failed"
+            );
+        } else {
+            release_late_process(&proxy, &execution).await;
+        }
         assert_eq!(
             status,
-            StatusCode::NO_CONTENT,
-            "normal cleanup rejected: {body}"
+            StatusCode::CONFLICT,
+            "{disposal:?} must retain unresolved owned launch: {body}"
         );
-        assert!(repo.card_get(&card_id).await.unwrap().is_none());
-        assert!(repo.terminal_get(&term_id).await.unwrap().is_none());
-        return;
-    }
-    // The original request can still launch after a truthful Probe(false).
-    if matches!(
-        history,
-        History::PidWriteFailure | History::ConcurrentForeignPid
-    ) {
-        assert_eq!(output.data["terminal_launch"]["state"], "requested");
+        assert!(repo.card_get(&card_id).await.unwrap().is_some());
+        assert!(repo.terminal_get(&term_id).await.unwrap().is_some());
+        assert!(repo.track_get(&track_id).await.unwrap().is_some());
+        assert!(repo.area_get(area_id).await.unwrap().is_some());
         assert!(
-            state.terminal_renderer.get(&term_id).is_some(),
-            "renderer installed but PID write failed"
+            workspace.join(".git").is_dir(),
+            "managed workspace must not move"
         );
-    } else {
-        release_late_process(&proxy, &execution).await;
-    }
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "{disposal:?} must retain unresolved owned launch: {body}"
-    );
-    assert!(repo.card_get(&card_id).await.unwrap().is_some());
-    assert!(repo.terminal_get(&term_id).await.unwrap().is_some());
-    assert!(repo.track_get(&track_id).await.unwrap().is_some());
-    assert!(repo.area_get(area_id).await.unwrap().is_some());
-    assert!(
-        workspace.join(".git").is_dir(),
-        "managed workspace must not move"
-    );
+
+    })).await.expect("independent write operation")
 }
 
 async fn release_late_process(proxy: &PendingProxy, execution: &Path) {

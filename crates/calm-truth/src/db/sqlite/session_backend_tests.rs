@@ -33,36 +33,56 @@ async fn fixture() -> SqlxRepo {
         .await
         .unwrap();
     for id in ["default", "other"] {
-        sqlx::query("INSERT INTO agent_backend_registry VALUES ('codex', ?, 'codex', ?, ?)")
-            .bind(id)
-            .bind(id.as_bytes())
-            .bind(id.as_bytes())
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO agent_backend_registry VALUES ('codex', ?, 'codex', ?, ?)",
+                )
+                .bind(id)
+                .bind(id.as_bytes())
+                .bind(id.as_bytes()),
+            )
             .await
             .unwrap();
     }
     for id in ["a", "b", "c"] {
-        sqlx::query(
-            "INSERT INTO worker_sessions
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO worker_sessions
             (id, track_id, provider, mode, contract, state, created_at_ms, updated_at_ms)
             VALUES (?, ?, 'codex', 'resumable', 'executor', 'running', 0, 0)",
-        )
-        .bind(id)
-        .bind(track.id.as_str())
-        .execute(repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(id)
+                .bind(track.id.as_str()),
+            )
+            .await
+            .unwrap();
     }
     repo
 }
 
 async fn bind(repo: &SqlxRepo, session: &str, backend: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    insert_tx(&mut tx, session, "codex", backend).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                insert_tx(&mut tx, session, "codex", backend).await.unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
-fn constraint(error: sqlx::Error) {
+fn constraint(error: impl Into<crate::TruthError>) {
+    let crate::TruthError::Db(error) = error.into() else {
+        panic!("expected a database constraint violation");
+    };
     assert!(
         error.as_database_error().unwrap().is_check_violation()
             || error.as_database_error().unwrap().code().as_deref() == Some("1811")
@@ -86,15 +106,15 @@ async fn agent_backend_binding_is_immutable_and_cascades() {
         CodexScope::Bound("other".into())
     );
     constraint(
-        sqlx::query(
+        (repo.db()).writer().execute(sqlx::query(
             "UPDATE worker_session_backends SET backend_id='default' WHERE worker_session_id='a'",
-        )
-        .execute(repo.pool())
+        ))
         .await
         .unwrap_err(),
     );
-    sqlx::query("DELETE FROM worker_sessions WHERE id='a'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM worker_sessions WHERE id='a'"))
         .await
         .unwrap();
     assert_eq!(
@@ -115,26 +135,41 @@ async fn agent_backend_binding_is_immutable_and_cascades() {
 #[tokio::test]
 async fn agent_backend_binding_requires_matching_provider_and_no_thread() {
     let repo = fixture().await;
-    sqlx::query("UPDATE worker_sessions SET thread_id='historical' WHERE id='a'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET thread_id='historical' WHERE id='a'",
+        ))
         .await
         .unwrap();
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(insert_tx(&mut tx, "a", "codex", "other").await.is_err());
-    assert!(insert_tx(&mut tx, "b", "claude", "other").await.is_err());
-    assert!(
-        insert_tx(&mut tx, "missing", "codex", "other")
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    bind(&repo, "b", "other").await;
-    constraint(
-        sqlx::query("UPDATE worker_sessions SET provider='claude' WHERE id='b'")
-            .execute(repo.pool())
-            .await
-            .unwrap_err(),
-    );
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(insert_tx(&mut tx, "a", "codex", "other").await.is_err());
+                assert!(insert_tx(&mut tx, "b", "claude", "other").await.is_err());
+                assert!(
+                    insert_tx(&mut tx, "missing", "codex", "other")
+                        .await
+                        .is_err()
+                );
+                tx.rollback().await.unwrap();
+                bind(&repo, "b", "other").await;
+                constraint(
+                    (repo.db())
+                        .writer()
+                        .execute(sqlx::query(
+                            "UPDATE worker_sessions SET provider='claude' WHERE id='b'",
+                        ))
+                        .await
+                        .unwrap_err(),
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -142,30 +177,42 @@ async fn agent_backend_thread_cannot_cross_bound_or_implicit_default() {
     let repo = fixture().await;
     bind(&repo, "b", "other").await;
     bind(&repo, "c", "other").await;
-    sqlx::query("UPDATE worker_sessions SET thread_id='same' WHERE id='a'")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET thread_id='same' WHERE id='a'",
+        ))
         .await
         .unwrap();
     constraint(
-        sqlx::query("UPDATE worker_sessions SET thread_id='same' WHERE id='b'")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET thread_id='same' WHERE id='b'",
+            ))
             .await
             .unwrap_err(),
     );
-    sqlx::query("UPDATE worker_sessions SET thread_id='other-thread' WHERE id IN ('b','c')")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET thread_id='other-thread' WHERE id IN ('b','c')",
+        ))
         .await
         .unwrap();
     constraint(
-        sqlx::query("UPDATE worker_sessions SET thread_id='other-thread' WHERE id='a'")
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(
+                "UPDATE worker_sessions SET thread_id='other-thread' WHERE id='a'",
+            ))
             .await
             .unwrap_err(),
     );
-    constraint(sqlx::query("INSERT INTO worker_sessions
+    constraint((repo.db()).writer().execute(sqlx::query("INSERT INTO worker_sessions
         (id, track_id, provider, mode, contract, state, thread_id, created_at_ms, updated_at_ms)
         SELECT 'direct', track_id, provider, mode, contract, state, thread_id, created_at_ms, updated_at_ms
-        FROM worker_sessions WHERE id='b'").execute(repo.pool()).await.unwrap_err());
+        FROM worker_sessions WHERE id='b'")).await.unwrap_err());
     assert_eq!(
         live_bound_threads(repo.pool(), "codex")
             .await
@@ -173,20 +220,32 @@ async fn agent_backend_thread_cannot_cross_bound_or_implicit_default() {
             .len(),
         2
     );
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert_eq!(
-        live_bound_counts_tx(&mut tx, "codex").await.unwrap(),
-        vec![("other".into(), 2)]
-    );
-    tx.rollback().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id='c'")
-        .execute(repo.pool())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    live_bound_counts_tx(&mut tx, "codex").await.unwrap(),
+                    vec![("other".into(), 2)]
+                );
+                tx.rollback().await.unwrap();
+                (repo.db())
+                    .writer()
+                    .execute(sqlx::query(
+                        "UPDATE worker_sessions SET state='exited' WHERE id='c'",
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    live_bound_threads(repo.pool(), "codex").await.unwrap(),
+                    vec![("other-thread".into(), "other".into())]
+                );
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(
-        live_bound_threads(repo.pool(), "codex").await.unwrap(),
-        vec![("other-thread".into(), "other".into())]
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -194,12 +253,13 @@ async fn agent_backend_scope_resolves_session_thread_and_implicit_default() {
     let repo = fixture().await;
     bind(&repo, "b", "other").await;
     bind(&repo, "c", "other").await;
-    sqlx::query(
-        "UPDATE worker_sessions SET thread_id=CASE id WHEN 'a' THEN 'legacy' ELSE 'bound' END",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET thread_id=CASE id WHEN 'a' THEN 'legacy' ELSE 'bound' END",
+        ))
+        .await
+        .unwrap();
     for (key, expected) in [
         (CodexScopeKey::Session("a"), "default"),
         (CodexScopeKey::Thread("legacy"), "default"),
@@ -234,13 +294,17 @@ async fn agent_backend_scope_absent_or_conflict_fails_closed() {
     .await
     .unwrap();
     for name in triggers {
-        sqlx::query(&format!("DROP TRIGGER \"{name}\""))
-            .execute(repo.pool())
+        (repo.db())
+            .writer()
+            .execute(sqlx::query(&format!("DROP TRIGGER \"{name}\"")))
             .await
             .unwrap();
     }
-    sqlx::query("UPDATE worker_sessions SET thread_id='collision' WHERE id IN ('a','b')")
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET thread_id='collision' WHERE id IN ('a','b')",
+        ))
         .await
         .unwrap();
     assert!(matches!(
@@ -254,8 +318,7 @@ async fn agent_backend_activity_scope_updates_only_owned_rows() {
     use crate::session_repo::SessionRepo;
     let repo = fixture().await;
     bind(&repo, "b", "other").await;
-    sqlx::query("UPDATE worker_sessions SET thread_id=id, last_activity_ms=10, last_thread_status='idle', last_turn_completed_ms=5")
-        .execute(repo.pool()).await.unwrap();
+    (repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET thread_id=id, last_activity_ms=10, last_thread_status='idle', last_turn_completed_ms=5")).await.unwrap();
     repo.session_record_activity_by_thread("a", 20, "active", Some(20), Some("other"))
         .await
         .unwrap();

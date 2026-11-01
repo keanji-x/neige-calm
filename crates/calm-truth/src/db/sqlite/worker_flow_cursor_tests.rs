@@ -11,60 +11,69 @@ async fn seed_card(repo: &SqlxRepo) -> String {
 
 /// Worker cards with these ids on one fresh track.
 pub(super) async fn seed_worker_cards(repo: &SqlxRepo, ids: &[&str]) -> Vec<String> {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        },
-    )
-    .await
-    .unwrap();
-    let track = track_create_tx(
-        &mut tx,
-        NewTrack {
-            template_input: None,
-            area_id: area.id.clone(),
-            title: "w".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .unwrap();
-    let mut cards = Vec::new();
-    for id in ids {
-        let card = card_create_with_id_tx(
-            &mut tx,
-            (*id).into(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "worker".into(),
-                sort: None,
-                payload: serde_json::json!({}),
-            },
-            CardRole::Worker,
-            true,
-            repo.card_role_cache(),
-        )
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "c".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .unwrap();
+                let track = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        template_input: None,
+                        area_id: area.id.clone(),
+                        title: "w".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .unwrap();
+                let mut cards = Vec::new();
+                for id in ids {
+                    let card = card_create_with_id_tx(
+                        &mut tx,
+                        (*id).into(),
+                        NewCard {
+                            track_id: track.id.clone(),
+                            title: None,
+                            kind: "worker".into(),
+                            sort: None,
+                            payload: serde_json::json!({}),
+                        },
+                        CardRole::Worker,
+                        true,
+                        repo.card_role_cache(),
+                    )
+                    .await
+                    .unwrap();
+                    cards.push(card.id.to_string());
+                }
+                tx.commit().await.unwrap();
+                cards
+            })
+        })
         .await
-        .unwrap();
-        cards.push(card.id.to_string());
-    }
-    tx.commit().await.unwrap();
-    cards
+        .expect("independent write operation")
 }
 
 /// Commit an item-less record through the production capture write; returns the stored checkpoint.
@@ -130,9 +139,12 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
 
     // Age the row directly, not through the upsert under test, so the next commit's overwrite of
     // `updated_at_ms` is observable even when both commits land in the same millisecond.
-    sqlx::query("UPDATE worker_flow_cursors SET updated_at_ms = 1 WHERE card_id = ?1")
-        .bind(&card_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_flow_cursors SET updated_at_ms = 1 WHERE card_id = ?1")
+                .bind(&card_id),
+        )
         .await
         .unwrap();
     let aged = CaptureCheckpoint::from(
@@ -181,16 +193,25 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
         14
     );
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                card_delete_tx(&mut tx, &card_id, repo.card_role_cache())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert!(
+                    repo.worker_flow_cursor_get(&card_id, "codex_rollout")
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "cursor must cascade with its card"
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(
-        repo.worker_flow_cursor_get(&card_id, "codex_rollout")
-            .await
-            .unwrap()
-            .is_none(),
-        "cursor must cascade with its card"
-    );
+        .expect("independent write operation")
 }

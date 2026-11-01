@@ -1,5 +1,5 @@
 use super::*;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::event::EventBus;
 use crate::git_candidate::commit_message::CommitMessage;
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
@@ -257,15 +257,14 @@ async fn claim_worker_operation(
 ) -> Operation {
     let payload = worker_payload(&harness.track_id, key);
     let task_id = format!("{}:{key}", harness.track_id);
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT OR IGNORE INTO tasks \
          (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'codex', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
     .bind(&harness.track_id)
-    .bind(task_key)
-    .execute(harness.repo.pool())
+    .bind(task_key))
     .await
     .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
@@ -453,40 +452,58 @@ async fn codex_worker_prepare_leaves_title_none_for_blank_task_key() {
 #[tokio::test]
 async fn task_key_for_card_title_is_fail_soft() {
     let harness = worker_lease_harness().await;
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    assert_eq!(
-        crate::operation::task_key_for_card_title(&mut tx, "no-such-task").await,
-        None
-    );
-    assert_eq!(
-        crate::operation::task_key_for_card_title(&mut tx, "").await,
-        None
-    );
-    tx.commit().await.unwrap();
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert_eq!(
+                    crate::operation::task_key_for_card_title(&mut tx, "no-such-task").await,
+                    None
+                );
+                assert_eq!(
+                    crate::operation::task_key_for_card_title(&mut tx, "").await,
+                    None
+                );
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Dropping the table inside the transaction is the cheapest way to make the statement itself fail for real.
 #[tokio::test]
 async fn task_key_for_card_title_swallows_a_failing_select() {
     let harness = worker_lease_harness().await;
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    sqlx::query("DROP TABLE tasks")
-        .execute(&mut **tx)
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlx::query("DROP TABLE tasks")
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                // The statement really is broken now — otherwise this test would pass for the wrong reason (a missing row).
+                assert!(
+                    sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE id = ?1")
+                        .bind("any")
+                        .fetch_optional(&mut **tx)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    crate::operation::task_key_for_card_title(&mut tx, "any-task").await,
+                    None
+                );
+                tx.rollback().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    // The statement really is broken now — otherwise this test would pass for the wrong reason (a missing row).
-    assert!(
-        sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE id = ?1")
-            .bind("any")
-            .fetch_optional(&mut **tx)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        crate::operation::task_key_for_card_title(&mut tx, "any-task").await,
-        None
-    );
-    tx.rollback().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn prepare_worker_app_server_interact(
@@ -672,46 +689,57 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy.as_deref(), Some("kernel"));
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let lease = crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(
-        &mut tx,
-        &sqlx::query_scalar::<_, String>(
-            "SELECT lease_id FROM workspace_leases WHERE card_id = ?1",
-        )
-        .bind(&card_id)
-        .fetch_one(harness.repo.pool())
-        .await
-        .unwrap(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        lease.delivery_policy,
-        Some(crate::operation::workspace_lease::DeliveryPolicy::Kernel)
-    );
-    assert!(lease.base.is_some());
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let lease = crate::operation::workspace_lease::facts::workspace_lease_by_id_tx(
+                    &mut tx,
+                    &sqlx::query_scalar::<_, String>(
+                        "SELECT lease_id FROM workspace_leases WHERE card_id = ?1",
+                    )
+                    .bind(&card_id)
+                    .fetch_one(harness.repo.pool())
+                    .await
+                    .unwrap(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    lease.delivery_policy,
+                    Some(crate::operation::workspace_lease::DeliveryPolicy::Kernel)
+                );
+                assert!(lease.base.is_some());
 
-    let plain_card = format!("{card_id}-plain");
-    let plain_path = harness.repo_root.path().join("plain-lease");
-    let (plain, _event) = crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
-        &mut tx,
-        &plain_card,
-        &harness.track_id,
-        "op-plain",
-        &plain_path,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(plain.delivery_policy, None);
-    let policy: Option<String> =
-        sqlx::query_scalar("SELECT delivery_policy FROM workspace_leases WHERE card_id = ?1")
-            .bind(&plain_card)
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(policy, None, "the plain fixture lease is legacy");
+                let plain_card = format!("{card_id}-plain");
+                let plain_path = harness.repo_root.path().join("plain-lease");
+                let (plain, _event) =
+                    crate::operation::workspace_lease::acquire_plain_workspace_lease_tx(
+                        &mut tx,
+                        &plain_card,
+                        &harness.track_id,
+                        "op-plain",
+                        &plain_path,
+                    )
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(plain.delivery_policy, None);
+                let policy: Option<String> = sqlx::query_scalar(
+                    "SELECT delivery_policy FROM workspace_leases WHERE card_id = ?1",
+                )
+                .bind(&plain_card)
+                .fetch_one(harness.repo.pool())
+                .await
+                .unwrap();
+                assert_eq!(policy, None, "the plain fixture lease is legacy");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -727,10 +755,13 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     .unwrap()
     .unwrap();
     let operations = SqlxOperationRepo::new(harness.repo.db().clone());
-    sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
-        .bind(now_ms() - 1)
-        .bind(&original.id)
-        .execute(harness.repo.pool())
+    (harness.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+                .bind(now_ms() - 1)
+                .bind(&original.id),
+        )
         .await
         .unwrap();
     let replacement = operations
@@ -744,16 +775,20 @@ async fn worker_prepared_evidence_cannot_be_consumed_by_a_new_claim() {
     let before: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
     ).fetch_one(harness.repo.pool()).await.unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    assert!(prepared.apply(&mut tx, &replacement).await.is_err());
-    let after: (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
-    ).fetch_one(&mut **tx).await.unwrap();
-    assert_eq!(
-        after, before,
-        "different claim must be rejected before publication"
-    );
-    tx.rollback().await.unwrap();
+    let write_db = (harness.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        assert!(prepared.apply(&mut tx, &replacement).await.is_err());
+        let after: (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM cards), (SELECT count(*) FROM worker_sessions), (SELECT count(*) FROM workspace_leases)"
+        ).fetch_one(&mut **tx).await.unwrap();
+        assert_eq!(
+            after, before,
+            "different claim must be rejected before publication"
+        );
+        tx.rollback().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[cfg(test)]

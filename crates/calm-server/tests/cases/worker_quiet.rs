@@ -329,10 +329,13 @@ async fn a_task_without_an_agent_worker_is_not_handed_over() {
     let (_terminal, _terminal_entry) = quiet_worker(&h, "terminal").await;
     // A child-Track route row: its worker is another Track, never this card.
     let (child, _child_entry) = quiet_worker(&h, "codex").await;
-    sqlx::query("UPDATE tasks SET spawn = ?2 WHERE id = ?1")
-        .bind(&child.task)
-        .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET spawn = ?2 WHERE id = ?1")
+                .bind(&child.task)
+                .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE),
+        )
         .await
         .unwrap();
     assert_only_control_delivered(&h, &control).await;
@@ -345,11 +348,14 @@ async fn a_task_that_is_not_running_is_not_handed_over() {
     let mut workers = Vec::new();
     for status in ["done", "failed", "canceled", "verifying"] {
         let (w, entry) = quiet_worker(&h, "claude").await;
-        sqlx::query("UPDATE tasks SET status = ?2, finished_at_ms = ?3 WHERE id = ?1")
-            .bind(&w.task)
-            .bind(status)
-            .bind((status != "verifying").then(now_ms))
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status = ?2, finished_at_ms = ?3 WHERE id = ?1")
+                    .bind(&w.task)
+                    .bind(status)
+                    .bind((status != "verifying").then(now_ms)),
+            )
             .await
             .unwrap();
         workers.push((w, entry));
@@ -366,88 +372,106 @@ async fn a_superseded_attempt_is_not_handed_over() {
     let (control, _control) = quiet_worker(&h, "claude").await;
     let (w, _entry) = quiet_worker(&h, "claude").await;
     let task = h.sql.task_get(&w.task).await.unwrap().unwrap();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    sqlx::query("UPDATE tasks SET status='failed', finished_at_ms=?2 WHERE id=?1")
-        .bind(&w.task)
-        .bind(now_ms())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    let origin = TaskAttemptOrigin::Recovery {
-        previous_attempt_id: w.task.clone(),
-        idempotency_key: "next-generation".into(),
-        request_fingerprint: "fingerprint".into(),
-        reason: "test explicit new attempt".into(),
-        actor: calm_server::ids::ActorId::User,
-        constraint: TaskRecoveryConstraint::V1 {
-            refs: vec![calm_types::event::TaskContextRef {
-                track_id: h.track.clone().into(),
-                block_id: "b_1000".into(),
-                rev: 1,
-                hash: "0".repeat(64),
-                is_root: true,
-            }],
-            spawn: TASK_IN_TRACK_ROUTE.into(),
-            declared_by: "user".into(),
-        },
-    };
-    let recovered = format!("{}:2", w.task);
-    sqlx::query(
-        "INSERT INTO task_attempt_allocations \
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            sqlx::query("UPDATE tasks SET status='failed', finished_at_ms=?2 WHERE id=?1")
+                                .bind(&w.task)
+                                .bind(now_ms())
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            let origin = TaskAttemptOrigin::Recovery {
+                                previous_attempt_id: w.task.clone(),
+                                idempotency_key: "next-generation".into(),
+                                request_fingerprint: "fingerprint".into(),
+                                reason: "test explicit new attempt".into(),
+                                actor: calm_server::ids::ActorId::User,
+                                constraint: TaskRecoveryConstraint::V1 {
+                                    refs: vec![calm_types::event::TaskContextRef {
+                                        track_id: h.track.clone().into(),
+                                        block_id: "b_1000".into(),
+                                        rev: 1,
+                                        hash: "0".repeat(64),
+                                        is_root: true,
+                                    }],
+                                    spawn: TASK_IN_TRACK_ROUTE.into(),
+                                    declared_by: "user".into(),
+                                },
+                            };
+                            let recovered = format!("{}:2", w.task);
+                            sqlx::query(
+                                "INSERT INTO task_attempt_allocations \
          (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
-    )
-    .bind(&recovered)
-    .bind(&h.track)
-    .bind(&task.key)
-    .bind(serde_json::to_string(&origin).unwrap())
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    // The new attempt runs and names the old worker card: that card belongs to the superseded
-    // execution, so the tools cannot reach it by the new attempt_id either.
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
+                            )
+                            .bind(&recovered)
+                            .bind(&h.track)
+                            .bind(&task.key)
+                            .bind(serde_json::to_string(&origin).unwrap())
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                            // The new attempt runs and names the old worker card: that card belongs to the superseded
+                            // execution, so the tools cannot reach it by the new attempt_id either.
+                            sqlx::query(
+                    "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
          declared_by,created_at_ms,updated_at_ms) \
          VALUES (?1,?2,?3,'claude','test','[]','running',?4,'user',?5,?5)",
-    )
-    .bind(&recovered)
-    .bind(&h.track)
-    .bind(&task.key)
-    .bind(&w.card)
-    .bind(now_ms())
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_only_control_delivered(&h, &control).await;
+                )
+                .bind(&recovered)
+                .bind(&h.track)
+                .bind(&task.key)
+                .bind(&w.card)
+                .bind(now_ms())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            assert_only_control_delivered(&h, &control).await;
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// A terminal card the Planner or the owner opened (no worker-spawn operation).
 async fn manual_terminal(h: &Harness) -> (String, String) {
     let (card, session) = (new_id(), new_id());
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (_, terminal) = card_with_terminal_create_tx(
-        &mut tx,
-        card.clone(),
-        &session,
-        None,
-        h.track.clone().into(),
-        None,
-        None,
-        "/bin/sh".into(),
-        h.root.path().to_str().unwrap().to_owned(),
-        json!({}),
-        CardRole::Worker,
-        true,
-        &CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        true,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    (card, terminal.id)
+    let write_db = (h.sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (_, terminal) = card_with_terminal_create_tx(
+                    &mut tx,
+                    card.clone(),
+                    &session,
+                    None,
+                    h.track.clone().into(),
+                    None,
+                    None,
+                    "/bin/sh".into(),
+                    h.root.path().to_str().unwrap().to_owned(),
+                    json!({}),
+                    CardRole::Worker,
+                    true,
+                    &CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    true,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                (card, terminal.id)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -460,19 +484,22 @@ async fn a_card_that_is_not_the_task_worker_is_not_handed_over() {
     // A running task whose row names a manually opened terminal card as its worker.
     let (card, terminal) = manual_terminal(&h).await;
     let _entry = live_entry(&h, &terminal, T0);
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,\
          declared_by,created_at_ms,updated_at_ms) \
          VALUES (?1,?2,?3,'terminal','test','[]','running',?4,'user',?5,?5)",
-    )
-    .bind(format!("{}:manual", h.track))
-    .bind(&h.track)
-    .bind("manual")
-    .bind(&card)
-    .bind(now_ms())
-    .execute(h.sql.pool())
-    .await
-    .unwrap();
+            )
+            .bind(format!("{}:manual", h.track))
+            .bind(&h.track)
+            .bind("manual")
+            .bind(&card)
+            .bind(now_ms()),
+        )
+        .await
+        .unwrap();
     assert_only_control_delivered(&h, &control).await;
 }
 

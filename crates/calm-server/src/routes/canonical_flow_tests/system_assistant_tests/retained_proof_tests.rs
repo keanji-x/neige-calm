@@ -48,8 +48,7 @@ async fn before_send_release_failure_recovers_original_system_pending_after_rebo
         .await
         .unwrap();
     // The only failed SQL statement releases this exact worker/operation claim.
-    sqlx::query(&format!("CREATE TRIGGER reject_retained_release BEFORE UPDATE OF spawn_op_id ON worker_sessions WHEN OLD.id='{worker}' AND OLD.spawn_op_id='{op}' AND NEW.spawn_op_id IS NULL BEGIN SELECT RAISE(ABORT,'retained release fault'); END"))
-        .execute(fixture.repo.pool()).await.unwrap();
+    (fixture.repo.db()).writer().execute(sqlx::query(&format!("CREATE TRIGGER reject_retained_release BEFORE UPDATE OF spawn_op_id ON worker_sessions WHEN OLD.id='{worker}' AND OLD.spawn_op_id='{op}' AND NEW.spawn_op_id IS NULL BEGIN SELECT RAISE(ABORT,'retained release fault'); END"))).await.unwrap();
     let sink = client.lock_outbound_sink_for_test().await;
     pause.release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -91,8 +90,9 @@ async fn before_send_release_failure_recovers_original_system_pending_after_rebo
             .await
             .unwrap();
     assert_eq!(held.as_deref(), Some(op.as_str()));
-    sqlx::query("DROP TRIGGER reject_retained_release")
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER reject_retained_release"))
         .await
         .unwrap();
     fixture.shutdown_process(&state).await;

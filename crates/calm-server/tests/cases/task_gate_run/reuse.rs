@@ -4,7 +4,7 @@
 use std::os::unix::fs::MetadataExt;
 
 use super::*;
-use calm_server::db::sqlite::begin_immediate_tx;
+
 use calm_server::ids::ActorId;
 use calm_server::operation::task_verify_adapter::{
     TASK_VERIFY_KIND, TaskVerifyAdapter, TaskVerifyOperationPayload,
@@ -341,19 +341,29 @@ pub(super) async fn prepare_without_commit(fx: &Fx, task: &Task) -> bool {
         .await
         .unwrap()
         .unwrap();
-    let mut tx = begin_immediate_tx(&fx.db()).await.unwrap();
-    let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, &op).await.unwrap() else {
-        panic!("stable preparation became stale");
-    };
-    tx.rollback().await.unwrap();
-    // The same persisted Pending op is retried by the real scheduler; only its lease expires.
-    sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
-        .bind(calm_server::model::now_ms() - 1)
-        .bind(&op_id)
-        .execute(&pool)
+    let write_db = (fx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let PreparedTxResult::Ready(output) = prepared.apply(&mut tx, &op).await.unwrap()
+                else {
+                    panic!("stable preparation became stale");
+                };
+                tx.rollback().await.unwrap();
+                // The same persisted Pending op is retried by the real scheduler; only its lease expires.
+                sqlx::query("UPDATE operations SET lease_until_ms=?1 WHERE id=?2")
+                    .bind(calm_server::model::now_ms() - 1)
+                    .bind(&op_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                output.data["target"]["kind"] == "reused"
+            })
+        })
         .await
-        .unwrap();
-    output.data["target"]["kind"] == "reused"
+        .expect("independent write operation")
 }
 
 /// A passing run on a delivered, settled attempt of `key`, its gate not driven yet.

@@ -460,50 +460,58 @@ pub(super) async fn retry_system_via_http() {
     let id =
         calm_types::conversation::RetryIntentId::parse(result["retry_intent_id"].as_str().unwrap())
             .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(flow.fixture.repo.db())
+    let write_db = (flow.fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
+                    &mut tx,
+                    &flow.card,
+                    &flow.worker,
+                )
+                .await
+                .unwrap();
+                let intent =
+                    crate::db::sqlite::conversation::retry_intent_tx(&mut tx, &carrier, &id)
+                        .await
+                        .unwrap();
+                let original = crate::db::sqlite::conversation::submission_plan_tx(
+                    &mut tx,
+                    &predecessor.attempt.submission_id,
+                )
+                .await
+                .unwrap();
+                assert_eq!(intent.plan, original);
+                assert!(original.plan.segments().iter().any(|segment| matches!(
+                    segment,
+                    calm_types::conversation::SubmissionRenderSegment::Input {
+                        input: calm_types::conversation::SubmissionRenderInput::System { .. },
+                        ..
+                    }
+                )));
+                assert!(original.plan.segments().iter().all(|segment| !matches!(
+                    segment,
+                    calm_types::conversation::SubmissionRenderSegment::Input {
+                        input: calm_types::conversation::SubmissionRenderInput::Human { .. },
+                        ..
+                    }
+                )));
+                tx.commit().await.unwrap();
+                let after = flow.fixture.carrier(&flow.track).await.2;
+                assert_eq!(
+                    after.canonical_inputs.attempts[1].attempt,
+                    predecessor.attempt
+                );
+                assert_eq!(
+                    after.canonical_inputs.attempts[1].delivery,
+                    predecessor.delivery
+                );
+                assert_eq!(after.canonical_inputs.pending.len(), 1);
+                retry_read::queued_restore_reopen(flow, id, display).await;
+            })
+        })
         .await
-        .unwrap();
-    let carrier = crate::db::sqlite::conversation::current_input_fact_carrier_tx(
-        &mut tx,
-        &flow.card,
-        &flow.worker,
-    )
-    .await
-    .unwrap();
-    let intent = crate::db::sqlite::conversation::retry_intent_tx(&mut tx, &carrier, &id)
-        .await
-        .unwrap();
-    let original = crate::db::sqlite::conversation::submission_plan_tx(
-        &mut tx,
-        &predecessor.attempt.submission_id,
-    )
-    .await
-    .unwrap();
-    assert_eq!(intent.plan, original);
-    assert!(original.plan.segments().iter().any(|segment| matches!(
-        segment,
-        calm_types::conversation::SubmissionRenderSegment::Input {
-            input: calm_types::conversation::SubmissionRenderInput::System { .. },
-            ..
-        }
-    )));
-    assert!(original.plan.segments().iter().all(|segment| !matches!(
-        segment,
-        calm_types::conversation::SubmissionRenderSegment::Input {
-            input: calm_types::conversation::SubmissionRenderInput::Human { .. },
-            ..
-        }
-    )));
-    tx.commit().await.unwrap();
-    let after = flow.fixture.carrier(&flow.track).await.2;
-    assert_eq!(
-        after.canonical_inputs.attempts[1].attempt,
-        predecessor.attempt
-    );
-    assert_eq!(
-        after.canonical_inputs.attempts[1].delivery,
-        predecessor.delivery
-    );
-    assert_eq!(after.canonical_inputs.pending.len(), 1);
-    retry_read::queued_restore_reopen(flow, id, display).await;
+        .expect("independent write operation")
 }

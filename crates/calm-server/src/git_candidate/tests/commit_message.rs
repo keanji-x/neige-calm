@@ -107,19 +107,28 @@ async fn delivery_message_is_the_stored_worker_message() {
     let inserted = fx
         .insert_delivery_with("attempt-1", worker(OWNERSHIP_MESSAGE))
         .await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let stored = delivery_by_id_tx(&mut tx, &inserted.delivery_id)
-        .await
-        .unwrap()
-        .unwrap();
-    tx.rollback().await.unwrap();
-    assert_eq!(stored, inserted);
-    assert_eq!(stored.commit_message, worker(OWNERSHIP_MESSAGE));
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let stored = delivery_by_id_tx(&mut tx, &inserted.delivery_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                assert_eq!(stored, inserted);
+                assert_eq!(stored.commit_message, worker(OWNERSHIP_MESSAGE));
 
-    let branch = track_branch_for(&fx.track_id).unwrap();
-    let payload = forge_payload_for(&stored, &fx.lease, &branch).unwrap();
-    assert_eq!(payload.argv[3], "sh");
-    assert_eq!(payload.argv[4], OWNERSHIP_MESSAGE);
+                let branch = track_branch_for(&fx.track_id).unwrap();
+                let payload = forge_payload_for(&stored, &fx.lease, &branch).unwrap();
+                assert_eq!(payload.argv[3], "sh");
+                assert_eq!(payload.argv[4], OWNERSHIP_MESSAGE);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The 0145 CHECK admits a message only on a completed row (a NULL outcome included) and only
@@ -129,21 +138,22 @@ async fn delivery_message_is_the_stored_worker_message() {
 async fn commit_message_is_completed_only_and_immutable() {
     let fx = db_fixture().await;
     let insert = |index: usize, outcome: Option<&'static str>, message: String| {
-        sqlx::query(
-            "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, \
+        (fx.repo.db()).writer().execute(
+            sqlx::query(
+                "INSERT INTO task_git_deliveries (delivery_id, track_id, producer_attempt_id, \
              card_id, lease_id, ordinal, operation_key, forge_idempotency_key, outcome, \
              commit_message, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, 1)",
+            )
+            .bind(format!("raw-{index}"))
+            .bind(fx.track_id.clone())
+            .bind(format!("raw-attempt-{index}"))
+            .bind(fx.card_id.clone())
+            .bind(fx.lease.lease_id.clone())
+            .bind(format!("raw-op-{index}"))
+            .bind(format!("raw-idem-{index}"))
+            .bind(outcome)
+            .bind(message),
         )
-        .bind(format!("raw-{index}"))
-        .bind(fx.track_id.clone())
-        .bind(format!("raw-attempt-{index}"))
-        .bind(fx.card_id.clone())
-        .bind(fx.lease.lease_id.clone())
-        .bind(format!("raw-op-{index}"))
-        .bind(format!("raw-idem-{index}"))
-        .bind(outcome)
-        .bind(message)
-        .execute(fx.repo.pool())
     };
     let mut accepted = Vec::new();
     for (index, (outcome, message)) in [
@@ -175,99 +185,106 @@ async fn commit_message_is_completed_only_and_immutable() {
     );
 
     // The row writer itself cannot pair a worker message with another outcome.
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let refused = insert_initial_delivery_tx(
-        &mut tx,
-        "attempt-failed",
-        &fx.lease,
-        AttemptOutcome::Failed,
-        worker("m"),
-        1,
-    )
-    .await;
-    assert!(
-        refused
-            .as_ref()
-            .is_err_and(|error| error.to_string().contains("CHECK constraint failed")),
-        "{refused:?}"
-    );
-    tx.rollback().await.unwrap();
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            let refused = insert_initial_delivery_tx(
+                                &mut tx,
+                                "attempt-failed",
+                                &fx.lease,
+                                AttemptOutcome::Failed,
+                                worker("m"),
+                                1,
+                            )
+                            .await;
+                            assert!(
+                                refused
+                                    .as_ref()
+                                    .is_err_and(|error| error.to_string().contains("CHECK constraint failed")),
+                                "{refused:?}"
+                            );
+                            tx.rollback().await.unwrap();
 
-    // Immutable: a settlement UPDATE that also rewrites the message passes the 0113 trigger (it
-    // names its columns) and is stopped by 0145's; a bare rewrite is refused too.
-    let candidate_row = fx
-        .insert_delivery_with("attempt-candidate", worker("first"))
-        .await;
-    let rewrite = sqlx::query(
-        "UPDATE task_git_deliveries SET settlement = 'candidate', settled_event_id = 1, \
+                            // Immutable: a settlement UPDATE that also rewrites the message passes the 0113 trigger (it
+                            // names its columns) and is stopped by 0145's; a bare rewrite is refused too.
+                            let candidate_row = fx
+                                .insert_delivery_with("attempt-candidate", worker("first"))
+                                .await;
+                            let rewrite = (fx.repo.db()).writer().execute(sqlx::query(
+                    "UPDATE task_git_deliveries SET settlement = 'candidate', settled_event_id = 1, \
          wake_reason = 'ungated_candidate', commit_message = 'second' WHERE delivery_id = ?1",
-    )
-    .bind(&candidate_row.delivery_id)
-    .execute(fx.repo.pool())
-    .await
-    .unwrap_err();
-    assert!(
-        rewrite
-            .to_string()
-            .contains("git delivery commit message is immutable"),
-        "{rewrite}"
-    );
-    for value in [Some("second"), None] {
-        let bare = sqlx::query(
-            "UPDATE task_git_deliveries SET commit_message = ?2 WHERE delivery_id = ?1",
-        )
-        .bind(&candidate_row.delivery_id)
-        .bind(value)
-        .execute(fx.repo.pool())
-        .await
-        .unwrap_err();
-        assert!(bare.to_string().contains("immutable"), "{bare}");
-    }
+                )
+                .bind(&candidate_row.delivery_id))
+                .await
+                .unwrap_err();
+                            assert!(
+                                rewrite
+                                    .to_string()
+                                    .contains("git delivery commit message is immutable"),
+                                "{rewrite}"
+                            );
+                            for value in [Some("second"), None] {
+                                let bare = (fx.repo.db()).writer().execute(sqlx::query(
+                        "UPDATE task_git_deliveries SET commit_message = ?2 WHERE delivery_id = ?1",
+                    )
+                    .bind(&candidate_row.delivery_id)
+                    .bind(value))
+                    .await
+                    .unwrap_err();
+                                assert!(bare.to_string().contains("immutable"), "{bare}");
+                            }
 
-    // Both settlement UPDATEs settle a messaged row and leave the message as written.
-    let failed_row = fx
-        .insert_delivery_with("attempt-failed-settle", worker("failed settle"))
-        .await;
-    let mut tx = begin_immediate_tx(fx.repo.db()).await.unwrap();
-    let candidate = fx.candidate_for(&candidate_row, &"c".repeat(40));
-    assert_eq!(
-        settle_candidate_tx(
-            &mut tx,
-            &candidate_row.delivery_id,
-            1,
-            DeliveryWakeReason::UngatedCandidate,
-            &candidate,
-        )
+                            // Both settlement UPDATEs settle a messaged row and leave the message as written.
+                            let failed_row = fx
+                                .insert_delivery_with("attempt-failed-settle", worker("failed settle"))
+                                .await;
+                            let mut tx = write_session.begin().await.unwrap();
+                            let candidate = fx.candidate_for(&candidate_row, &"c".repeat(40));
+                            assert_eq!(
+                                settle_candidate_tx(
+                                    &mut tx,
+                                    &candidate_row.delivery_id,
+                                    1,
+                                    DeliveryWakeReason::UngatedCandidate,
+                                    &candidate,
+                                )
+                                .await
+                                .unwrap(),
+                                1
+                            );
+                            assert_eq!(
+                                settle_failed_tx(
+                                    &mut tx,
+                                    &failed_row.delivery_id,
+                                    2,
+                                    DeliveryFailureCode::CommitFailed,
+                                    "hook",
+                                    true,
+                                )
+                                .await
+                                .unwrap(),
+                                1
+                            );
+                            let candidate_after = delivery_by_id_tx(&mut tx, &candidate_row.delivery_id)
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            let failed_after = delivery_by_id_tx(&mut tx, &failed_row.delivery_id)
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            assert!(candidate_after.settlement.is_some());
+                            assert_eq!(candidate_after.commit_message, worker("first"));
+                            assert!(failed_after.settlement.is_some());
+                            assert_eq!(failed_after.commit_message, worker("failed settle"));
+            })
+        })
         .await
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        settle_failed_tx(
-            &mut tx,
-            &failed_row.delivery_id,
-            2,
-            DeliveryFailureCode::CommitFailed,
-            "hook",
-            true,
-        )
-        .await
-        .unwrap(),
-        1
-    );
-    let candidate_after = delivery_by_id_tx(&mut tx, &candidate_row.delivery_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let failed_after = delivery_by_id_tx(&mut tx, &failed_row.delivery_id)
-        .await
-        .unwrap()
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(candidate_after.settlement.is_some());
-    assert_eq!(candidate_after.commit_message, worker("first"));
-    assert!(failed_after.settlement.is_some());
-    assert_eq!(failed_after.commit_message, worker("failed settle"));
+        .expect("independent write operation")
 }
 
 fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
@@ -294,7 +311,7 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
         .run(&pool)
         .await
         .expect("apply migrations through 0140 (4140 production)");
-    sqlx::raw_sql(
+    { let query = sqlx::raw_sql(
         "INSERT INTO areas (id, name, color, sort, created_at, updated_at) \
            VALUES ('area-4140', 'a', '#000', 0, 1, 1); \
          INSERT INTO tracks (id, area_id, title, sort, created_at, updated_at) \
@@ -309,9 +326,7 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
            lease_id, ordinal, operation_key, forge_idempotency_key, outcome, created_at_ms) \
            VALUES ('dlv-4140', 'track-4140', 'attempt-4140', 'card-4140', 'lease-4140', 1, \
            'op-key-4140', 'idem-4140', 'completed', 1);",
-    )
-    .execute(&pool)
-    .await
+    ); sqlx::Executor::execute(&pool, query).await }
     .expect("seed a 4140-shaped unsettled delivery");
 
     calm_truth::MIGRATOR
@@ -319,17 +334,28 @@ async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
         .await
         .expect("upgrade to head");
 
-    let mut tx = begin_immediate_tx(&db).await.unwrap();
-    let row = delivery_by_id_tx(&mut tx, "dlv-4140")
-        .await
-        .unwrap()
-        .unwrap();
-    let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
-    tx.rollback().await.unwrap();
-    assert_eq!(row.commit_message, DeliveryMessage::Kernel);
-    assert!(row.settlement.is_none());
+    let write_db = (db).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let row = delivery_by_id_tx(&mut tx, "dlv-4140")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let lease = lease_for_delivery_tx(&mut tx, &row).await.unwrap();
+                tx.rollback().await.unwrap();
+                assert_eq!(row.commit_message, DeliveryMessage::Kernel);
+                assert!(row.settlement.is_none());
 
-    let branch = track_branch_for("track-4140").unwrap();
-    let payload = forge_payload_for(&row, &lease, &branch).unwrap();
-    assert!(payload.argv[4] == "neige: attempt attempt-4140 completed (delivery dlv-4140)");
+                let branch = track_branch_for("track-4140").unwrap();
+                let payload = forge_payload_for(&row, &lease, &branch).unwrap();
+                assert!(
+                    payload.argv[4] == "neige: attempt attempt-4140 completed (delivery dlv-4140)"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

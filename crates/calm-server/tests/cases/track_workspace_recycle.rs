@@ -635,10 +635,13 @@ async fn the_same_track_in_a_user_area_deletes_normally() {
     );
 
     let user_area = create_area(&b, "Atlas").await;
-    sqlx::query("UPDATE tracks SET area_id=?1 WHERE id=?2")
-        .bind(&user_area)
-        .bind(&track_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?1 WHERE id=?2")
+                .bind(&user_area)
+                .bind(&track_id),
+        )
         .await
         .unwrap();
 
@@ -717,29 +720,37 @@ async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspac
     let (root_id, _) = managed_track(&b, &area_id, "root").await;
     let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
     let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
-    sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=1 WHERE id=?1")
-        .bind(&root_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET created_at=0,tree_task_budget=1 WHERE id=?1")
+                .bind(&root_id),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
-        .bind(&root_id)
-        .bind(&victim_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=1 WHERE id=?2")
+                .bind(&root_id)
+                .bind(&victim_id),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
-        .bind(&root_id)
-        .bind(&survivor_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1,created_at=2 WHERE id=?2")
+                .bind(&root_id)
+                .bind(&survivor_id),
+        )
         .await
         .unwrap();
-    sqlx::query(
+    (b.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) \
          VALUES('survivor:fixed',?1,'fixed','codex','fixed','{}','[]',0,'running','spec',0,0)",
     )
-    .bind(&survivor_id)
-    .execute(b.repo.pool())
+    .bind(&survivor_id))
     .await
     .unwrap();
 
@@ -769,21 +780,26 @@ async fn invalid_survivor_report_fails_before_teardown_or_recycling() {
     let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
     let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
     let worker_session_id = install_live_harness(&b, &victim_id).await;
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
-        .bind(&root_id)
-        .bind(&victim_id)
-        .bind(&survivor_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
+                .bind(&root_id)
+                .bind(&victim_id)
+                .bind(&survivor_id),
+        )
         .await
         .unwrap();
-    let corrupted =
-        sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
-            .bind(b"not-an-automerge-document".as_slice())
-            .bind(&survivor_id)
-            .execute(b.repo.pool())
-            .await
-            .unwrap()
-            .rows_affected();
+    let corrupted = (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
+                .bind(b"not-an-automerge-document".as_slice())
+                .bind(&survivor_id),
+        )
+        .await
+        .unwrap()
+        .rows_affected();
     assert_eq!(corrupted, 1);
     let before = fingerprint(&victim_path);
 
@@ -1009,9 +1025,12 @@ async fn deletion_shuts_down_a_live_harness_even_when_its_session_is_failed() {
     let area_id = create_area(&b, "Atlas").await;
     let (track_id, _) = managed_track(&b, &area_id, "failed but live").await;
     let worker_session_id = install_live_harness(&b, &track_id).await;
-    sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
-        .bind(&worker_session_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1")
+                .bind(&worker_session_id),
+        )
         .await
         .unwrap();
     assert!(b.harness.get(&worker_session_id).is_some());
@@ -1158,11 +1177,14 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     let (root_id, _) = managed_track(&b, &area_id, "root").await;
     let (victim_id, victim_path) = managed_track(&b, &area_id, "victim").await;
     let (survivor_id, _) = managed_track(&b, &area_id, "survivor").await;
-    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
-        .bind(&root_id)
-        .bind(&victim_id)
-        .bind(&survivor_id)
-        .execute(b.repo.pool())
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id IN (?2,?3)")
+                .bind(&root_id)
+                .bind(&victim_id)
+                .bind(&survivor_id),
+        )
         .await
         .unwrap();
     let hook = calm_server::routes::tracks::TrackDeleteCommitHook {
@@ -1189,14 +1211,16 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     hook.entered.notified().await;
     assert!(!victim_path.exists(), "victim must already be recycled");
 
-    let corrupted =
-        sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
-            .bind(b"not-an-automerge-document".as_slice())
-            .bind(&survivor_id)
-            .execute(b.repo.pool())
-            .await
-            .unwrap()
-            .rows_affected();
+    let corrupted = (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET body_crdt=?1 WHERE track_id=?2 AND kind='track-report'")
+                .bind(b"not-an-automerge-document".as_slice())
+                .bind(&survivor_id),
+        )
+        .await
+        .unwrap()
+        .rows_affected();
     assert_eq!(corrupted, 1);
 
     let area_app = b.app.clone();
@@ -1500,18 +1524,21 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
 
     let task_id = format!("{parent_track_id}:child");
     let now = calm_server::model::now_ms();
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
+    (b.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,acceptance_criteria,\
          depends_on_json,priority,status,declared_by,spawn,created_at_ms,updated_at_ms) \
          VALUES(?1,?2,'child','codex','child goal','{}','done','[]',0,'dispatched',\
          'spec','sub-track',?3,?3)",
-    )
-    .bind(&task_id)
-    .bind(parent_track_id)
-    .bind(now)
-    .execute(b.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&task_id)
+            .bind(parent_track_id)
+            .bind(now),
+        )
+        .await
+        .unwrap();
 
     let payload = serde_json::to_value(ChildTrackOperationPayload {
         task_id: task_id.clone(),
@@ -1556,13 +1583,22 @@ async fn support_child_track(b: &Boot, parent_track_id: &str) -> String {
             .with_file_name("objective-checks"),
         b.teardown_targets.clone(),
     );
-    let mut tx = b.repo.pool().begin().await.unwrap();
-    let output = adapter
-        .prepare_tx(&mut tx, &payload, &operation)
+    let write_db = (b.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let output = adapter
+                    .prepare_tx(&mut tx, &payload, &operation)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                output.data["child_track_id"].as_str().unwrap().to_string()
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    output.data["child_track_id"].as_str().unwrap().to_string()
+        .expect("independent write operation")
 }
 
 #[tokio::test]

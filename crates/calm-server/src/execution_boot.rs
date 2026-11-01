@@ -111,27 +111,36 @@ mod port_contract {
             Arc::new(crate::execution_store::tests::NoopProjection),
         );
         let intent = test_support::intent(temp.path().to_owned());
-        let mut tx = pool.writer_pool().begin().await.unwrap();
-        store.insert(&mut tx, &intent).await.unwrap();
-        tx.commit().await.unwrap();
-        let engine = recover(&cfg, pool, &[]).await.unwrap().unwrap();
-        assert!(!engine.available());
-        assert_eq!(engine.recover().await.scheduled, 1);
-        assert_eq!(store.pending().await.unwrap(), vec![intent.metadata.id]);
-        #[cfg(feature = "fixtures")]
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while cfg
-                .execution_recovery_faults
-                .pending_calls
-                .load(std::sync::atomic::Ordering::SeqCst)
-                < 4
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        stop.send(()).unwrap();
-        server.await.unwrap().unwrap();
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    store.insert(&mut tx, &intent).await.unwrap();
+                    tx.commit().await.unwrap();
+                    let engine = recover(&cfg, pool, &[]).await.unwrap().unwrap();
+                    assert!(!engine.available());
+                    assert_eq!(engine.recover().await.scheduled, 1);
+                    assert_eq!(store.pending().await.unwrap(), vec![intent.metadata.id]);
+                    #[cfg(feature = "fixtures")]
+                    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        while cfg
+                            .execution_recovery_faults
+                            .pending_calls
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                            < 4
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    stop.send(()).unwrap();
+                    server.await.unwrap().unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }

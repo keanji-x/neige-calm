@@ -153,17 +153,23 @@ async fn message_waits_for_its_worker_to_start() {
 async fn message_waits_through_dispatch_for_its_worker_card_and_start() {
     let h = Harness::start().await;
     let f = unstarted(&h, "claude", true, false).await;
-    sqlx::query("UPDATE tasks SET status='dispatched',worker_card_id=NULL WHERE id=?1")
-        .bind(&f.worker.task)
-        .execute(h.sql.pool())
+    (h.sql.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='dispatched',worker_card_id=NULL WHERE id=?1")
+                .bind(&f.worker.task),
+        )
         .await
         .unwrap();
     let start = async {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        sqlx::query("UPDATE tasks SET status='running',worker_card_id=?2 WHERE id=?1")
-            .bind(&f.worker.task)
-            .bind(&f.worker.card)
-            .execute(h.sql.pool())
+        (h.sql.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status='running',worker_card_id=?2 WHERE id=?1")
+                    .bind(&f.worker.task)
+                    .bind(&f.worker.card),
+            )
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -333,28 +339,37 @@ async fn replace_session(
         .await
         .unwrap()
         .unwrap();
-    let mut tx = sql.pool().begin().await.unwrap();
-    session_supersede_and_start_tx(
-        &mut tx,
-        &session.to_owned(),
-        WorkerSessionInit {
-            id,
-            card_id: card.to_owned(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(terminal.to_owned()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: old.spawn_op_id,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (sql.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_supersede_and_start_tx(
+                    &mut tx,
+                    &session.to_owned(),
+                    WorkerSessionInit {
+                        id,
+                        card_id: card.to_owned(),
+                        kind: WorkerSessionKind::ClaudeCard,
+                        agent_provider: Some(AgentProvider::Claude),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(terminal.to_owned()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: old.spawn_op_id,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Only this worker session's own `UserPromptSubmit` starts it: another hook kind, another card's
@@ -436,9 +451,14 @@ async fn queued_message_refused_when_prompt_submit_is_pruned() {
         &h,
         &f,
         async {
-            sqlx::query("UPDATE events SET at=0 WHERE kind='claude.hook' AND scope_card=?1")
-                .bind(&f.worker.card)
-                .execute(h.sql.pool())
+            (h.sql.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE events SET at=0 WHERE kind='claude.hook' AND scope_card=?1",
+                    )
+                    .bind(&f.worker.card),
+                )
                 .await
                 .unwrap();
             let pruned = calm_server::events_prune::prune_events_once(

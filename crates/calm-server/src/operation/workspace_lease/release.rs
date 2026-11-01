@@ -16,8 +16,7 @@ use super::{
     row_to_workspace_lease,
 };
 use crate::db::sqlite::{
-    TaskReporter, begin_immediate_tx, status_detail_with_reason, task_fail_from_worker_tx,
-    task_get_tx,
+    TaskReporter, status_detail_with_reason, task_fail_from_worker_tx, task_get_tx,
 };
 #[cfg(any(test, feature = "fixtures"))]
 use crate::db::{RepoEventWrite, write_in_tx_typed};
@@ -152,28 +151,36 @@ pub(crate) async fn release_workspace_lease_by_id(
     lease_id: &str,
     delivery: ReleaseDelivery,
 ) -> Result<bool> {
-    let mut tx = begin_immediate_tx(pool).await?;
-    let sql = format!(
-        "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                let sql = format!(
+                    "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE lease_id = ?1 AND state IN ('held','releasing')"
-    );
-    let Some(row) = sqlx::query(&sql)
-        .bind(lease_id)
-        .fetch_optional(&mut **tx)
-        .await?
-    else {
-        tx.rollback().await?;
-        return Ok(false);
-    };
-    let lease = row_to_workspace_lease(row)?;
-    let released = release_lease_tx(&mut tx, &lease, delivery).await?;
-    let envelopes = append_workspace_events_tx(&mut tx, released).await?;
-    tx.commit().await?;
-    let released = !envelopes.is_empty();
-    for envelope in envelopes {
-        events.emit_envelope(envelope);
-    }
-    Ok(released)
+                );
+                let Some(row) = sqlx::query(&sql)
+                    .bind(lease_id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+                else {
+                    tx.rollback().await?;
+                    return Ok(false);
+                };
+                let lease = row_to_workspace_lease(row)?;
+                let released = release_lease_tx(&mut tx, &lease, delivery).await?;
+                let envelopes = append_workspace_events_tx(&mut tx, released).await?;
+                tx.commit().await?;
+                let released = !envelopes.is_empty();
+                for envelope in envelopes {
+                    events.emit_envelope(envelope);
+                }
+                Ok(released)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 async fn release_lease_tx(
@@ -271,33 +278,45 @@ pub(crate) async fn reclaim_dead_workspace_leases_on_boot(
 ) -> Result<usize> {
     let current_boot_id = read_boot_id();
     let mut reclaimed = 0;
-    for lease in active_workspace_leases(pool.read_pool()).await? {
-        if !lease_should_reclaim_on_boot(pool.read_pool(), &lease, current_boot_id.as_deref())
-            .await?
-        {
-            continue;
-        }
-        let mut tx = begin_immediate_tx(pool).await?;
-        let mut released = fail_lease_attempt_tx(&mut tx, &lease).await?;
-        let lease_events = release_lease_tx(
-            &mut tx,
-            &lease,
-            ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
-        )
-        .await?;
-        if lease_events.is_empty() {
-            tx.rollback().await?;
-            continue;
-        }
-        released.extend(lease_events);
-        let envelopes = append_workspace_events_tx(&mut tx, released).await?;
-        tx.commit().await?;
-        for envelope in envelopes {
-            events.emit_envelope(envelope);
-        }
-        reclaimed += 1;
-    }
-    Ok(reclaimed)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                for lease in active_workspace_leases(pool.read_pool()).await? {
+                    if !lease_should_reclaim_on_boot(
+                        pool.read_pool(),
+                        &lease,
+                        current_boot_id.as_deref(),
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
+                    let mut tx = write_session.begin().await?;
+                    let mut released = fail_lease_attempt_tx(&mut tx, &lease).await?;
+                    let lease_events = release_lease_tx(
+                        &mut tx,
+                        &lease,
+                        ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
+                    )
+                    .await?;
+                    if lease_events.is_empty() {
+                        tx.rollback().await?;
+                        continue;
+                    }
+                    released.extend(lease_events);
+                    let envelopes = append_workspace_events_tx(&mut tx, released).await?;
+                    tx.commit().await?;
+                    for envelope in envelopes {
+                        events.emit_envelope(envelope);
+                    }
+                    reclaimed += 1;
+                }
+                Ok(reclaimed)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Codex workers are daemon-resident threads, so operation spawn artifacts are not a liveness

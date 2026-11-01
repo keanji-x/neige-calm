@@ -79,40 +79,49 @@ async fn seed_null_card_worker(repo: &SqlxRepo) {
         .await
         .unwrap();
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_insert_tx(
-        &mut tx,
-        WorkerSession {
-            id: WorkerSessionId::from("ws-null-active"),
-            track_id: track.id,
-            provider: WorkerProviderKind::Codex,
-            mode: SessionMode::Resumable,
-            contract: WorkerContract::Executor,
-            parent_session_id: None,
-            requester_session_id: None,
-            state: WorkerSessionState::Running,
-            mcp_token_hash: None,
-            thread_id: Some("thread-null-active".into()),
-            agent_session_id: None,
-            active_turn_id: None,
-            terminal_run_id: None,
-            card_id: None,
-            handle_state_json: None,
-            liveness: LivenessTag::Unknown,
-            liveness_probed_at_ms: None,
-            exit_code: None,
-            exit_interpretation: None,
-            spawn_op_id: None,
-            last_activity_ms: None,
-            last_thread_status: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            completed_at_ms: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_insert_tx(
+                    &mut tx,
+                    WorkerSession {
+                        id: WorkerSessionId::from("ws-null-active"),
+                        track_id: track.id,
+                        provider: WorkerProviderKind::Codex,
+                        mode: SessionMode::Resumable,
+                        contract: WorkerContract::Executor,
+                        parent_session_id: None,
+                        requester_session_id: None,
+                        state: WorkerSessionState::Running,
+                        mcp_token_hash: None,
+                        thread_id: Some("thread-null-active".into()),
+                        agent_session_id: None,
+                        active_turn_id: None,
+                        terminal_run_id: None,
+                        card_id: None,
+                        handle_state_json: None,
+                        liveness: LivenessTag::Unknown,
+                        liveness_probed_at_ms: None,
+                        exit_code: None,
+                        exit_interpretation: None,
+                        spawn_op_id: None,
+                        last_activity_ms: None,
+                        last_thread_status: None,
+                        created_at_ms: 1,
+                        updated_at_ms: 1,
+                        completed_at_ms: None,
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// Seed via the **unchecked** repo primitive, since the checked writer would refuse overlapping rows.

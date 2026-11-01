@@ -319,9 +319,12 @@ mod tests {
     #[tokio::test]
     async fn planner_turn_budget_missing_card_is_retryable_without_reset_advice() {
         let fx = Fixture::new().await;
-        sqlx::query("DELETE FROM cards WHERE id=?1")
-            .bind(fx.harness.inner.card_id.as_str())
-            .execute(fx.repo.pool())
+        (fx.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("DELETE FROM cards WHERE id=?1")
+                    .bind(fx.harness.inner.card_id.as_str()),
+            )
             .await
             .unwrap();
         let failure = sample(&fx.harness.inner).await.unwrap_err();

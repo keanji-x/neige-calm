@@ -130,8 +130,11 @@ pub use events::{
     append_actor_events_in_tx, append_decision_event_in_tx, append_decision_events_in_tx,
     broadcast_actor_events,
 };
+#[cfg(any(test, feature = "fixtures"))]
+pub use infra::{HeldWriter, WriterPoolState};
 pub use infra::{
-    ObservedTransaction, SqliteDb, begin_immediate_tx, begin_immediate_tx_once, is_sqlite_busy,
+    NestedWrite, SqliteDb, WriteConnection, WriteManager, WriteSession,
+    WriteTx, inherit_write_scope, is_sqlite_busy,
 };
 #[cfg(test)]
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;
@@ -258,10 +261,12 @@ impl SqlxRepo {
         // about, before sqlx can apply any pending known migration.
         check_no_unknown_future_migrations(pool, &crate::MIGRATOR).await?;
 
-        crate::MIGRATOR
-            .run(pool)
-            .await
-            .map_err(|e| CalmError::Internal(format!("migrate: {e}")))?;
+        db.writer().with_writer(|write_session| Box::pin(async move {
+            write_session.autocommit(|connection| Box::pin(async move {
+                crate::MIGRATOR.run_direct(&mut **connection).await
+                    .map_err(|error| CalmError::Internal(format!("migrate: {error}")))
+            })).await
+        })).await??;
 
         canonical_input_revision_migration::migrate(&db).await?;
         subtrack_route_migration::migrate(&db).await?;
@@ -272,7 +277,11 @@ impl SqlxRepo {
         let track_area_cache = TrackAreaCache::new();
         track_area_cache.seed_from_db(pool).await?;
 
-        let database_id = Arc::new(database_identity::ensure_database_identity(pool).await?);
+        let database_id = Arc::new(db.writer().with_writer(|write_session| Box::pin(async move {
+            write_session.autocommit(|connection| Box::pin(async move {
+                database_identity::ensure_database_identity(&mut **connection).await
+            })).await
+        })).await??);
 
         Ok(Self {
             db,
@@ -287,7 +296,7 @@ impl SqlxRepo {
         self.db.has_memory_cache_anchor()
     }
 
-    /// Pool access for tests / fixtures; production code must go through the trait.
+    /// Read-only pool access. Fixture mutations use `db().writer()`; production uses the traits.
     #[doc(hidden)]
     pub fn pool(&self) -> &SqlitePool {
         self.db.read_pool()

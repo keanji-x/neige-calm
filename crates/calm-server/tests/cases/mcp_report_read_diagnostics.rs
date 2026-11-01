@@ -13,19 +13,22 @@ async fn fixture(duplicate: bool) -> (Boot, String) {
         let key = format!("done-{n}");
         body.push_str(&render_fence("task", &json!({"key":key,"kind":"terminal","command":"true","ready":false,"declared_by":PLANNER_DECLARATION_AUTHOR})));
         body.push('\n');
-        sqlx::query(
-            "INSERT INTO tasks \
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO tasks \
              (id,track_id,key,kind,goal,context_json,depends_on_json,priority, \
               status,declared_by,created_at_ms,updated_at_ms) \
              VALUES(?1,?2,?3,'terminal','true','{}','[]',0,'done',?4,0,0)",
-        )
-        .bind(format!("task-{n}"))
-        .bind(boot.track_id.as_str())
-        .bind(key)
-        .bind(PLANNER_DECLARATION_AUTHOR)
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
+                )
+                .bind(format!("task-{n}"))
+                .bind(boot.track_id.as_str())
+                .bind(key)
+                .bind(PLANNER_DECLARATION_AUTHOR),
+            )
+            .await
+            .unwrap();
     }
     let payload = if duplicate {
         json!({"key":"duplicate","kind":"terminal","command":"true","ready":false,"declared_by":PLANNER_DECLARATION_AUTHOR})
@@ -37,10 +40,13 @@ async fn fixture(duplicate: bool) -> (Boot, String) {
         body.push('\n');
         body.push_str(&render_fence("task", &payload));
     }
-    sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
-        .bind(json!({"schemaVersion":4,"summary":"diagnostics","body":body}).to_string())
-        .bind(boot.report_card_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
+                .bind(json!({"schemaVersion":4,"summary":"diagnostics","body":body}).to_string())
+                .bind(boot.report_card_id.as_str()),
+        )
         .await
         .unwrap();
     let blocks = calm_server::track_report_read::load_report_doc_snapshot(
@@ -116,8 +122,9 @@ async fn duplicate_evaluates_the_whole_document() {
 async fn index_skips_diagnostics_evaluation() {
     let (boot, _) = fixture(false).await;
     // Make the production diagnostics query fail while leaving the document readable.
-    sqlx::query("DROP TABLE tasks")
-        .execute(boot.repo.sqlite_db().unwrap().writer_pool())
+    (boot.repo.sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DROP TABLE tasks"))
         .await
         .unwrap();
     assert_eq!(
@@ -149,17 +156,20 @@ async fn assistant_receives_no_diagnostics() {
 async fn orphan_withdrawals_belong_only_to_full_reads() {
     let (boot, id) = fixture(false).await;
     let pool = boot.repo.sqlite_db().unwrap();
-    sqlx::query(
-        "INSERT INTO tasks \
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO tasks \
          (id,track_id,key,kind,goal,context_json,depends_on_json,priority, \
           status,declared_by,created_at_ms,updated_at_ms) \
          VALUES('orphan',?1,'orphan','terminal','true','{}','[]',0,'running',?2,0,0)",
-    )
-    .bind(boot.track_id.as_str())
-    .bind(PLANNER_DECLARATION_AUTHOR)
-    .execute(pool.writer_pool())
-    .await
-    .unwrap();
+            )
+            .bind(boot.track_id.as_str())
+            .bind(PLANNER_DECLARATION_AUTHOR),
+        )
+        .await
+        .unwrap();
     let out = read(&boot, json!({})).await;
     let orphan = out["task_diagnostics"]
         .as_array()
@@ -208,26 +218,32 @@ async fn pending_reason_keeps_terminal_dependency_blockers_but_not_waits() {
         let payload = json!({"key":key,"kind":"terminal","command":"true","ready":true,"depends_on":dependencies,"declared_by":PLANNER_DECLARATION_AUTHOR});
         body.push_str(&render_fence("task", &payload));
         body.push('\n');
-        sqlx::query(
-            "INSERT INTO tasks \
+        (pool)
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO tasks \
              (id,track_id,key,kind,goal,context_json,depends_on_json,priority, \
               status,declared_by,created_at_ms,updated_at_ms) \
              VALUES(?1,?2,?3,'terminal','true','{}',?4,0,?5,?6,0,0)",
-        )
-        .bind(format!("dependency-{key}"))
-        .bind(boot.track_id.as_str())
-        .bind(key)
-        .bind(json!(dependencies).to_string())
-        .bind(status)
-        .bind(PLANNER_DECLARATION_AUTHOR)
-        .execute(pool.writer_pool())
-        .await
-        .unwrap();
+                )
+                .bind(format!("dependency-{key}"))
+                .bind(boot.track_id.as_str())
+                .bind(key)
+                .bind(json!(dependencies).to_string())
+                .bind(status)
+                .bind(PLANNER_DECLARATION_AUTHOR),
+            )
+            .await
+            .unwrap();
     }
-    sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
-        .bind(json!({"schemaVersion":4,"summary":"dependencies","body":body}).to_string())
-        .bind(boot.report_card_id.as_str())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
+                .bind(json!({"schemaVersion":4,"summary":"dependencies","body":body}).to_string())
+                .bind(boot.report_card_id.as_str()),
+        )
         .await
         .unwrap();
     assert_eq!(

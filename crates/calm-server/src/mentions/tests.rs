@@ -115,14 +115,13 @@ async fn report(
         .unwrap();
     let card_id = format!("report-{}", track.id.as_str());
     let initial = if crdt { "" } else { body };
-    sqlx::query(
+    (fx.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO cards (id, track_id, kind, sort, payload, role, deletable, created_at, updated_at) \
          VALUES (?1, ?2, 'track-report', -1, ?3, 'reportcard', 0, 1, 1)",
     )
     .bind(&card_id)
     .bind(track.id.as_str())
-    .bind(json!({ "schemaVersion": 4, "summary": "", "body": initial }).to_string())
-    .execute(fx.repo.pool())
+    .bind(json!({ "schemaVersion": 4, "summary": "", "body": initial }).to_string()))
     .await
     .unwrap();
     if crdt {
@@ -152,18 +151,32 @@ async fn report(
 /// Tags through the production tag writer, as `neige report tag` applies them.
 async fn add_tags(fx: &Fixture, track_id: &str, tags: &[&str]) {
     let add: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
-    let mut tx = fx.repo.pool().begin().await.unwrap();
-    crate::report_tags::store::apply_tx(&mut tx, track_id, &add, &[])
+    let write_db = (fx.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::report_tags::store::apply_tx(&mut tx, track_id, &add, &[])
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
+        .expect("independent write operation")
 }
 
 async fn set_updated_at(fx: &Fixture, track_id: &str, updated_at: i64) {
-    sqlx::query("UPDATE cards SET updated_at = ?1 WHERE track_id = ?2 AND kind = 'track-report'")
-        .bind(updated_at)
-        .bind(track_id)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET updated_at = ?1 WHERE track_id = ?2 AND kind = 'track-report'",
+            )
+            .bind(updated_at)
+            .bind(track_id),
+        )
         .await
         .unwrap();
 }
@@ -738,10 +751,15 @@ async fn read_block_ids(fx: &Fixture, area: &AreaId, file: &str) -> Vec<String> 
 }
 
 async fn set_payload(fx: &Fixture, track_id: &str, payload: &str) {
-    sqlx::query("UPDATE cards SET payload = ?1 WHERE track_id = ?2 AND kind = 'track-report'")
-        .bind(payload)
-        .bind(track_id)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = ?1 WHERE track_id = ?2 AND kind = 'track-report'",
+            )
+            .bind(payload)
+            .bind(track_id),
+        )
         .await
         .unwrap();
 }
@@ -792,9 +810,14 @@ async fn a_crdt_row_mentions_its_stored_projection_without_loading_the_crdt() {
     assert_eq!(assert_inserts_resolve(&fx, &a, &before).await, 1 + 2);
 
     // A blob no loader could open: the mention read never touches it.
-    sqlx::query("UPDATE cards SET body_crdt = x'00' WHERE track_id = ?1 AND kind = 'track-report'")
-        .bind(&track)
-        .execute(fx.repo.pool())
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET body_crdt = x'00' WHERE track_id = ?1 AND kind = 'track-report'",
+            )
+            .bind(&track),
+        )
         .await
         .unwrap();
     assert_eq!(mentions(&fx, &a, "", Some(&track)).await, before);
@@ -806,14 +829,17 @@ async fn a_crdt_row_without_a_projection_lists_its_report_without_blocks() {
     let [a, _] = fx.areas.clone();
     let bare = report(&fx, &a, "bare", TWO_BLOCKS, true, &["kept"], 10).await;
     let other = report(&fx, &a, "other", TWO_BLOCKS, true, &[], 20).await;
-    sqlx::query(
-        "UPDATE cards SET payload = json_remove(payload, '$.blocks') \
+    (fx.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE cards SET payload = json_remove(payload, '$.blocks') \
          WHERE track_id = ?1 AND kind = 'track-report'",
-    )
-    .bind(&bare)
-    .execute(fx.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&bare),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         read_block_ids(&fx, &a, "bare.md").await.len(),
         2,

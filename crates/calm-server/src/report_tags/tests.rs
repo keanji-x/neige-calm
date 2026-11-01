@@ -39,14 +39,13 @@ async fn track(repo: &SqlxRepo, area_id: &crate::ids::AreaId) -> String {
         })
         .await
         .unwrap();
-    sqlx::query(
+    (repo.db()).writer().execute(sqlx::query(
         "INSERT INTO cards (id, track_id, kind, sort, payload, role, deletable, created_at, updated_at) \
          VALUES (?1, ?2, 'track-report', -1, '{\"schemaVersion\":4,\"summary\":\"\",\"body\":\"\"}', \
                  'reportcard', 0, 1, 1)",
     )
     .bind(format!("report-{}", track.id.as_str()))
-    .bind(track.id.as_str())
-    .execute(repo.pool())
+    .bind(track.id.as_str()))
     .await
     .unwrap();
     track.id.as_str().to_string()
@@ -62,10 +61,18 @@ async fn apply(
     add: &[&str],
     remove: &[&str],
 ) -> Result<Applied, CalmError> {
-    let mut tx = repo.pool().begin().await.unwrap();
-    let applied = store::apply_tx(&mut tx, track_id, &tags(add), &tags(remove)).await?;
-    tx.commit().await.unwrap();
-    Ok(applied)
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let applied = store::apply_tx(&mut tx, track_id, &tags(add), &tags(remove)).await?;
+                tx.commit().await.unwrap();
+                Ok(applied)
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 async fn report_updated_at(repo: &SqlxRepo, track_id: &str) -> i64 {
@@ -130,9 +137,9 @@ async fn a_change_bumps_the_report_updated_at_and_a_no_op_does_not() {
     assert!(bumped > 1, "tag add bumps the report card: {bumped}");
     assert_eq!(applied.touched_report.unwrap().updated_at, bumped);
 
-    sqlx::query("UPDATE cards SET updated_at = 1 WHERE track_id = ?1")
-        .bind(&track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET updated_at = 1 WHERE track_id = ?1").bind(&track))
         .await
         .unwrap();
     apply(&repo, &track, &["x"], &["absent"]).await.unwrap();
@@ -149,9 +156,9 @@ async fn a_change_bumps_the_report_updated_at_and_a_no_op_does_not() {
 async fn adding_and_removing_the_same_absent_tag_is_a_no_op() {
     let (repo, track) = fixture().await;
     apply(&repo, &track, &["kept"], &[]).await.unwrap();
-    sqlx::query("UPDATE cards SET updated_at = 1 WHERE track_id = ?1")
-        .bind(&track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET updated_at = 1 WHERE track_id = ?1").bind(&track))
         .await
         .unwrap();
     let applied = apply(&repo, &track, &["x"], &["x"]).await.unwrap();
@@ -183,9 +190,9 @@ async fn tracks_do_not_share_tags_and_deleting_a_track_cascades_its_rows() {
         tags(&["theirs"])
     );
 
-    sqlx::query("DELETE FROM tracks WHERE id = ?1")
-        .bind(&track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM tracks WHERE id = ?1").bind(&track))
         .await
         .unwrap();
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM report_tags WHERE track_id = ?1")
@@ -218,9 +225,9 @@ async fn an_untagged_report_lists_empty_and_the_count_bound_rolls_back() {
 #[tokio::test]
 async fn a_track_without_a_report_card_is_refused() {
     let (repo, track) = fixture().await;
-    sqlx::query("DELETE FROM cards WHERE track_id = ?1")
-        .bind(&track)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(sqlx::query("DELETE FROM cards WHERE track_id = ?1").bind(&track))
         .await
         .unwrap();
     let err = apply(&repo, &track, &["x"], &[]).await.unwrap_err();

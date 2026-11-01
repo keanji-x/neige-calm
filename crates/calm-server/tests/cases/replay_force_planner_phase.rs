@@ -168,9 +168,12 @@ async fn area_chat_planner_start_backdoors_are_forbidden_without_runtime_rows() 
                 .await
                 .unwrap();
         assert_eq!(before, i64::from(!historical));
-        sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-            .bind(&track_id)
-            .execute(boot.repo.pool())
+        (boot.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+                    .bind(&track_id),
+            )
             .await
             .unwrap();
 
@@ -212,9 +215,11 @@ async fn area_chat_planner_start_backdoors_are_forbidden_without_runtime_rows() 
 async fn area_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
     let boot = boot().await;
     let (track_id, _) = create_track(&boot).await;
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(&track_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1").bind(&track_id),
+        )
         .await
         .unwrap();
     let chat = boot
@@ -625,38 +630,42 @@ async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_b
                 .unwrap();
         let id = calm_server::model::new_id();
         let roles = boot.state.card_role_cache.clone();
-        let mut tx = boot.repo.pool().begin().await.unwrap();
-        calm_server::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
-            track_id:track.clone().into(),title:None,kind:"codex".into(),sort:None,
-            payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
-        },CardRole::Assistant,false,&roles).await.unwrap();
-        tx.commit().await.unwrap();
-        let outcome =
-            replay::force_planner_phase(&boot.state, boot.dyn_repo(), &id, HarnessPhaseTag::Idle)
+        let write_db = (boot.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            calm_server::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
+                track_id:track.clone().into(),title:None,kind:"codex".into(),sort:None,
+                payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+            },CardRole::Assistant,false,&roles).await.unwrap();
+            tx.commit().await.unwrap();
+            let outcome =
+                replay::force_planner_phase(&boot.state, boot.dyn_repo(), &id, HarnessPhaseTag::Idle)
+                    .await
+                    .unwrap();
+            let runtime = boot
+                .repo
+                .session_projection_active_for_card(&id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(runtime.kind, WorkerSessionKind::ManagedAssistant);
+            assert_eq!(runtime.agent_provider, Some(provider));
+            let root: Option<String> =
+                sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
+                    .bind(&track)
+                    .fetch_one(boot.repo.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(root, root_before);
+            assert_ne!(root.as_deref(), Some(outcome.worker_session_id.as_str()));
+            boot.state
+                .harness
+                .remove(&outcome.worker_session_id)
+                .unwrap()
+                .shutdown()
                 .await
                 .unwrap();
-        let runtime = boot
-            .repo
-            .session_projection_active_for_card(&id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(runtime.kind, WorkerSessionKind::ManagedAssistant);
-        assert_eq!(runtime.agent_provider, Some(provider));
-        let root: Option<String> =
-            sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
-                .bind(&track)
-                .fetch_one(boot.repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(root, root_before);
-        assert_ne!(root.as_deref(), Some(outcome.worker_session_id.as_str()));
-        boot.state
-            .harness
-            .remove(&outcome.worker_session_id)
-            .unwrap()
-            .shutdown()
-            .await
-            .unwrap();
+
+    })).await.expect("independent write operation")
     }
 }

@@ -65,68 +65,77 @@ async fn isolation_none_scheduler_refuses_upstream_worker_before_fetch_writes() 
     dispatched.id = format!("{}:none", track.id);
     dispatched.track_id = track.id.to_string();
     dispatched.start = TaskStart::Upstream;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(concrete.db())
+    let write_db = (concrete.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::test_support::insert_task_tx(&mut tx, &dispatched)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let events = EventBus::new();
+                let write = WriteContext::new(
+                    concrete.card_role_cache().clone(),
+                    concrete.track_area_cache().clone(),
+                );
+                let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
+                    concrete.db().clone(),
+                ));
+                let completion = crate::operation::OperationCompletionBus::new();
+                let runtime = Arc::new(OperationRuntime::new_unchecked(
+                    operation_repo.clone(),
+                    Vec::new(),
+                    events.clone(),
+                    completion.clone(),
+                    crate::operation::SpawnCtx::new(
+                        route_repo.clone(),
+                        operation_repo,
+                        Arc::new(crate::state::DaemonClient::new_stub()),
+                        crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(
+                            route_repo,
+                        ),
+                        events.clone(),
+                        completion,
+                    ),
+                ));
+                let scheduler = Scheduler::new(
+                    repo.clone(),
+                    events,
+                    write,
+                    Arc::downgrade(&runtime),
+                    crate::per_card_lock::new_per_card_locks(),
+                    Arc::new(Semaphore::new(1)),
+                    source.path().join("unused-gate-logs"),
+                    crate::scheduler::WorkerLiveness::DEFAULT,
+                    crate::scheduler::WorkerIdleWake::new(
+                        crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
+                        crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                        crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+                    ),
+                );
+                let before = bytes(source.path());
+                scheduler
+                    .drive_spawn(&dispatched, &track, false)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    bytes(source.path()),
+                    before,
+                    "none must be refused before upstream refresh"
+                );
+                assert_eq!(
+                    repo.task_get(&dispatched.id).await.unwrap().unwrap().status,
+                    TaskStatus::Failed
+                );
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM operations")
+                    .fetch_one(concrete.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0);
+            })
+        })
         .await
-        .unwrap();
-    crate::test_support::insert_task_tx(&mut tx, &dispatched)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let events = EventBus::new();
-    let write = WriteContext::new(
-        concrete.card_role_cache().clone(),
-        concrete.track_area_cache().clone(),
-    );
-    let operation_repo = Arc::new(crate::operation::SqlxOperationRepo::new(
-        concrete.db().clone(),
-    ));
-    let completion = crate::operation::OperationCompletionBus::new();
-    let runtime = Arc::new(OperationRuntime::new_unchecked(
-        operation_repo.clone(),
-        Vec::new(),
-        events.clone(),
-        completion.clone(),
-        crate::operation::SpawnCtx::new(
-            route_repo.clone(),
-            operation_repo,
-            Arc::new(crate::state::DaemonClient::new_stub()),
-            crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(route_repo),
-            events.clone(),
-            completion,
-        ),
-    ));
-    let scheduler = Scheduler::new(
-        repo.clone(),
-        events,
-        write,
-        Arc::downgrade(&runtime),
-        crate::per_card_lock::new_per_card_locks(),
-        Arc::new(Semaphore::new(1)),
-        source.path().join("unused-gate-logs"),
-        crate::scheduler::WorkerLiveness::DEFAULT,
-        crate::scheduler::WorkerIdleWake::new(
-            crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
-            crate::scheduler::WORKER_IDLE_TURN_GRACE,
-            crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
-        ),
-    );
-    let before = bytes(source.path());
-    scheduler
-        .drive_spawn(&dispatched, &track, false)
-        .await
-        .unwrap();
-    assert_eq!(
-        bytes(source.path()),
-        before,
-        "none must be refused before upstream refresh"
-    );
-    assert_eq!(
-        repo.task_get(&dispatched.id).await.unwrap().unwrap().status,
-        TaskStatus::Failed
-    );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM operations")
-        .fetch_one(concrete.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
+        .expect("independent write operation")
 }

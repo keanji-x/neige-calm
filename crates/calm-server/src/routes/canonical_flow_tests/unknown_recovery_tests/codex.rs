@@ -31,27 +31,31 @@ async fn canonical_codex_cold_accepted_completion_rechecks_current_carrier() {
 }
 
 pub(super) async fn bind_other_backend(fixture: &Fixture, worker: &str) {
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    // Controlled namespace change: persisted backend metadata is the owning authority.
-    sqlx::query(concat!("INSERT INTO agent_backend_registry(provider,backend_id,protocol,configured_home,canonical_home) ","VALUES('codex','other','codex',?1,?1)"))
-        .bind(fixture.root.path().join("other-home").to_str().unwrap().as_bytes()).execute(&mut **tx).await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
-        .bind(worker)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    crate::db::sqlite::session_backend::insert_tx(&mut tx, worker, "codex", "other")
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
-        .bind(THREAD)
-        .bind(worker)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        // Controlled namespace change: persisted backend metadata is the owning authority.
+        sqlx::query(concat!("INSERT INTO agent_backend_registry(provider,backend_id,protocol,configured_home,canonical_home) ","VALUES('codex','other','codex',?1,?1)"))
+            .bind(fixture.root.path().join("other-home").to_str().unwrap().as_bytes()).execute(&mut **tx).await.unwrap();
+        sqlx::query("UPDATE worker_sessions SET thread_id=NULL WHERE id=?1")
+            .bind(worker)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        crate::db::sqlite::session_backend::insert_tx(&mut tx, worker, "codex", "other")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+            .bind(THREAD)
+            .bind(worker)
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -114,9 +118,9 @@ async fn codex_completion(scenario: &str) {
     let pending = before.canonical_inputs.pending.clone();
     // Snapshot the actual production checkpoint BEFORE normal shutdown can persist Stop intent.
     let cold = fixture.root.path().join("cold-completion.db");
-    sqlx::query("VACUUM INTO ?1")
-        .bind(cold.to_str().unwrap())
-        .execute(fixture.repo.pool())
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query("VACUUM INTO ?1").bind(cold.to_str().unwrap()))
         .await
         .unwrap();
     super::native_attempt_recovery_tests::shutdown(&state, &worker, &mut peer).await;
@@ -162,7 +166,7 @@ async fn codex_completion(scenario: &str) {
                             assert_eq!(call["params"]["threadId"],THREAD);
                             if scenario=="revoke" {post(&app,&cookie,"/api/auth/logout","logout",json!({})).await;}
                             if scenario=="backend-race" {bind_other_backend(&fixture,&worker).await;}
-                            if scenario=="carrier-race" {sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1").bind(&worker).execute(fixture.repo.pool()).await.unwrap();}
+                            if scenario=="carrier-race" {(fixture.repo.db()).writer().execute(sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id=?1").bind(&worker)).await.unwrap();}
 
                             json!({"thread":{"id":if scenario=="wrong-thread"{"another-thread"}else{THREAD},"status":{"type":if scenario=="cold"{"notLoaded"}else{"idle"}},"turns":[completed.clone()]}})
                         }

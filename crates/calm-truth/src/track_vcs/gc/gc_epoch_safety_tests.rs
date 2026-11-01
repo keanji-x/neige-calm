@@ -1,7 +1,7 @@
 //! Public GC safety against source transitions which resemble same-tree head extensions.
 use super::gc_epoch_tests::{epoch, replace_commit};
 use super::gc_writer_tests::{Fixture, Phase, finish, start};
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::track_vcs;
 
 #[tokio::test]
@@ -65,28 +65,39 @@ async fn gc_epoch_nondirect_same_tree_ref_target_protects_unseen_ancestor() {
     let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
     pause.entered().await;
     let before = epoch(&f).await;
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlx::query("UPDATE track_vcs_refs SET head_hash='nondirect-child' WHERE track_id=?1")
-        .bind(f.track.as_str())
-        .execute(&mut **tx)
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                sqlx::query(
+                    "UPDATE track_vcs_refs SET head_hash='nondirect-child' WHERE track_id=?1",
+                )
+                .bind(f.track.as_str())
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert!(epoch(&f).await > before);
+                pause.release();
+                assert_eq!(finish(sweep).await.unwrap(), 1);
+                assert!(f.exists(&ancestor.tree_hash).await);
+                for entry in ancestor.manifest.entries.values() {
+                    assert!(f.exists(&entry.blob_hash).await);
+                }
+                assert!(!f.exists(&orphan).await);
+                assert_eq!(
+                    track_vcs::head(f.repo.pool(), &f.track)
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some("nondirect-child")
+                );
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(epoch(&f).await > before);
-    pause.release();
-    assert_eq!(finish(sweep).await.unwrap(), 1);
-    assert!(f.exists(&ancestor.tree_hash).await);
-    for entry in ancestor.manifest.entries.values() {
-        assert!(f.exists(&entry.blob_hash).await);
-    }
-    assert!(!f.exists(&orphan).await);
-    assert_eq!(
-        track_vcs::head(f.repo.pool(), &f.track)
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("nondirect-child")
-    );
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -141,46 +152,56 @@ async fn gc_epoch_replacing_another_root_uses_global_tree_coverage() {
     replace_commit(&f, "second-root-head", "second-root", None, &old.tree_hash)
         .await
         .unwrap();
-    let mut tx = begin_immediate_tx(f.repo.db()).await.unwrap();
-    sqlx::query(
-        "INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('second-root','second-root-head')",
-    )
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let orphan = f.orphan("global roots unrelated garbage").await;
-    let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
-    pause.entered().await;
-    let before = epoch(&f).await;
-    replace_commit(
-        &f,
-        "second-root-head",
-        f.track.as_str(),
-        Some(&f.commit),
-        &f.tree.tree_hash,
-    )
-    .await
-    .unwrap();
-    assert_eq!(epoch(&f).await, before);
-    pause.release();
-    assert_eq!(finish(sweep).await.unwrap(), 1);
-    assert_eq!(pause.metadata_queries(), 1);
-    assert_eq!(
-        track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
-        Some(f.commit.clone())
-    );
-    let second: String =
-        sqlx::query_scalar("SELECT head_hash FROM track_vcs_refs WHERE track_id='second-root'")
-            .fetch_one(f.repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(second, "second-root-head");
-    for tree in [&f.tree, &old] {
-        assert!(f.exists(&tree.tree_hash).await);
-        for entry in tree.manifest.entries.values() {
-            assert!(f.exists(&entry.blob_hash).await);
-        }
-    }
-    assert!(!f.exists(&orphan).await);
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            sqlx::query(
+                    "INSERT INTO track_vcs_refs(track_id,head_hash) VALUES('second-root','second-root-head')",
+                )
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let orphan = f.orphan("global roots unrelated garbage").await;
+                            let (pause, sweep) = start(f.repo.db().clone(), vec![Phase::BeforeDelete]);
+                            pause.entered().await;
+                            let before = epoch(&f).await;
+                            replace_commit(
+                                &f,
+                                "second-root-head",
+                                f.track.as_str(),
+                                Some(&f.commit),
+                                &f.tree.tree_hash,
+                            )
+                            .await
+                            .unwrap();
+                            assert_eq!(epoch(&f).await, before);
+                            pause.release();
+                            assert_eq!(finish(sweep).await.unwrap(), 1);
+                            assert_eq!(pause.metadata_queries(), 1);
+                            assert_eq!(
+                                track_vcs::head(f.repo.pool(), &f.track).await.unwrap(),
+                                Some(f.commit.clone())
+                            );
+                            let second: String = sqlx::query_scalar(
+                                "SELECT head_hash FROM track_vcs_refs WHERE track_id='second-root'",
+                            )
+                            .fetch_one(f.repo.pool())
+                            .await
+                            .unwrap();
+                            assert_eq!(second, "second-root-head");
+                            for tree in [&f.tree, &old] {
+                                assert!(f.exists(&tree.tree_hash).await);
+                                for entry in tree.manifest.entries.values() {
+                                    assert!(f.exists(&entry.blob_hash).await);
+                                }
+                            }
+                            assert!(!f.exists(&orphan).await);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

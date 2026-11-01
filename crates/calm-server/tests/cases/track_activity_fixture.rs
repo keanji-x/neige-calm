@@ -33,9 +33,9 @@ use calm_server::track_activity::{ActivityPayload, Recompute, TrackActivityProje
 use calm_server::track_area_cache::TrackAreaCache;
 use calm_server::track_report::{persist_report, resolve_report_for_track, tasks_rebuild_tx};
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_create_with_id_tx, overlay_upsert_tx,
-    session_start_runtime_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_from_worker_tx, task_mark_running_tx,
+    SqlxRepo, card_create_with_id_tx, overlay_upsert_tx, session_start_runtime_tx,
+    task_claim_pending_tx, task_complete_from_worker_tx, task_fail_from_worker_tx,
+    task_mark_running_tx,
 };
 use calm_types::report_blocks::render_fence;
 use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
@@ -343,12 +343,21 @@ impl Fx {
         at_ms: i64,
     ) {
         let refs = self.closure(track_id, key).await;
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let n = task_claim_pending_tx(&mut tx, attempt_id, at_ms, &refs, false)
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let n = task_claim_pending_tx(&mut tx, attempt_id, at_ms, &refs, false)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(n, 1, "claim {key}");
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(n, 1, "claim {key}");
+            .expect("independent write operation")
     }
 
     /// `dispatched → running` + `worker_card_id` (the post-spawn stamp).
@@ -359,18 +368,27 @@ impl Fx {
         worker_card_id: &str,
         at_ms: i64,
     ) {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let n = task_mark_running_tx(
-            &mut tx,
-            &Self::task_id(track_id, key),
-            Some(worker_card_id),
-            at_ms,
-            i64::MAX,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(n, 1, "mark_running {key}");
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let n = task_mark_running_tx(
+                        &mut tx,
+                        &Self::task_id(track_id, key),
+                        Some(worker_card_id),
+                        at_ms,
+                        i64::MAX,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(n, 1, "mark_running {key}");
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// The worker's `neige_task_done` flip (`done` + `finished_at_ms`).
@@ -381,41 +399,59 @@ impl Fx {
         worker_card_id: &str,
         at_ms: i64,
     ) {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let n = task_complete_from_worker_tx(
-            &mut tx,
-            &Self::task_id(track_id, key),
-            track_id,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: worker_card_id,
-                owns_key: true,
-            },
-            at_ms,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(n, 1, "complete {key}");
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let n = task_complete_from_worker_tx(
+                        &mut tx,
+                        &Self::task_id(track_id, key),
+                        track_id,
+                        calm_server::db::sqlite::TaskReporter::Card {
+                            card_id: worker_card_id,
+                            owns_key: true,
+                        },
+                        at_ms,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(n, 1, "complete {key}");
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// The worker's `neige_task_fail` flip (`failed` + `finished_at_ms`).
     pub(crate) async fn fail(&self, track_id: &str, key: &str, worker_card_id: &str, at_ms: i64) {
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        let n = task_fail_from_worker_tx(
-            &mut tx,
-            &Self::task_id(track_id, key),
-            track_id,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: worker_card_id,
-                owns_key: true,
-            },
-            "worker-failed: fixture",
-            at_ms,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(n, 1, "fail {key}");
+        let write_db = (self.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let n = task_fail_from_worker_tx(
+                        &mut tx,
+                        &Self::task_id(track_id, key),
+                        track_id,
+                        calm_server::db::sqlite::TaskReporter::Card {
+                            card_id: worker_card_id,
+                            owns_key: true,
+                        },
+                        "worker-failed: fixture",
+                        at_ms,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(n, 1, "fail {key}");
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 
     /// A second attempt for a failed key, as a released recovery allocation (4140 keeps one; no code
@@ -439,21 +475,25 @@ impl Fx {
                 declared_by: "user".into(),
             },
         };
-        let mut tx = begin_immediate_tx(self.repo.db()).await.unwrap();
-        sqlx::query(
-            "INSERT INTO task_attempt_allocations \
+        let write_db = (self.repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            sqlx::query(
+                "INSERT INTO task_attempt_allocations \
              (attempt_id,track_id,key,generation,origin_json,created_at_ms) VALUES (?1,?2,?3,2,?4,0)",
-        )
-        .bind(&attempt_id)
-        .bind(track_id)
-        .bind(key)
-        .bind(serde_json::to_string(&origin).unwrap())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        tasks_rebuild_tx(&mut tx, track_id).await.unwrap();
-        tx.commit().await.unwrap();
-        attempt_id
+            )
+            .bind(&attempt_id)
+            .bind(track_id)
+            .bind(key)
+            .bind(serde_json::to_string(&origin).unwrap())
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+            tasks_rebuild_tx(&mut tx, track_id).await.unwrap();
+            tx.commit().await.unwrap();
+            attempt_id
+
+    })).await.expect("independent write operation")
     }
 
     pub(crate) async fn task_status(

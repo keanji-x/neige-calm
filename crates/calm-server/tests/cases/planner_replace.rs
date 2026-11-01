@@ -543,9 +543,12 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
 
     // The tx is conditional on this runtime still carrying the card; its refusal rolls the whole
     // commit back, the message in the queue included.
-    sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
     let rows_before = rows(&boot).await;
@@ -579,9 +582,12 @@ async fn every_refusal_changes_nothing_and_binds_nothing() {
             .await
             .is_empty()
     );
-    sqlx::query("UPDATE worker_sessions SET state = 'idle' WHERE id = ?1")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'idle' WHERE id = ?1")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
 
@@ -796,9 +802,12 @@ async fn a_conversation_with_no_live_harness_is_dormant() {
         .observe(Observation::TrackGoal { text: "x".into() })
         .unwrap();
     boot.harness.shutdown().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
-        .bind(&boot.worker_session_id)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET state = 'failed' WHERE id = ?1")
+                .bind(&boot.worker_session_id),
+        )
         .await
         .unwrap();
     let (status, body) = replace(&boot, TURN_A, "edited").await;
@@ -842,8 +851,9 @@ async fn an_agent_actor_or_a_blank_turn_replaces_nothing() {
 }
 
 async fn rename_table(boot: &Boot, from: &str, to: &str) {
-    sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}"))
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!("ALTER TABLE {from} RENAME TO {to}")))
         .await
         .unwrap();
 }

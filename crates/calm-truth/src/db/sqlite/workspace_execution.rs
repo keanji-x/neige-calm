@@ -92,11 +92,21 @@ pub async fn settle_tx(
 
 pub async fn finish(pool: &crate::db::sqlite::SqliteDb, id: &str) -> Result<(), sqlx::Error> {
     // The CHECK rejects finishing before settlement; exact replays remain harmless.
-    let result =
+    let query =
         sqlx::query("UPDATE workspace_executions SET secrets_json = NULL WHERE execution_id = ?")
-            .bind(id)
-            .execute(pool.writer_pool())
-            .await?;
+            .bind(id);
+    let result = pool
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                write_session
+                    .autocommit(move |connection| {
+                        Box::pin(async move { query.execute(&mut **connection).await })
+                    })
+                    .await
+            })
+        })
+        .await??;
     if result.rows_affected() == 0 {
         return Err(sqlx::Error::RowNotFound);
     }
@@ -382,30 +392,40 @@ mod tests {
     async fn alias_has_execution_includes_retired() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let pool = repo.pool();
+        let db = repo.db();
         let alias = terminal_alias("history");
         assert!(!alias_has_execution(pool, &alias).await.unwrap());
 
-        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-        insert(&mut tx, "history-id", "track", &alias, "{}", "{}")
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    insert(&mut tx, "history-id", "track", &alias, "{}", "{}")
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    assert!(alias_has_execution(pool, &alias).await.unwrap());
+                    assert!(
+                        !alias_has_execution(pool, &terminal_alias("missing"))
+                            .await
+                            .unwrap()
+                    );
+
+                    let mut tx = write_session.begin().await.unwrap();
+                    request(&mut tx, "history-id", "retire").await.unwrap();
+                    tx.commit().await.unwrap();
+                    assert!(alias_has_execution(pool, &alias).await.unwrap());
+
+                    let mut tx = write_session.begin().await.unwrap();
+                    settle_tx(&mut tx, "history-id", "{}", 1).await.unwrap();
+                    tx.commit().await.unwrap();
+                    finish(db, "history-id").await.unwrap();
+                    assert!(alias_has_execution(pool, &alias).await.unwrap());
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        assert!(alias_has_execution(pool, &alias).await.unwrap());
-        assert!(
-            !alias_has_execution(pool, &terminal_alias("missing"))
-                .await
-                .unwrap()
-        );
-
-        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-        request(&mut tx, "history-id", "retire").await.unwrap();
-        tx.commit().await.unwrap();
-        assert!(alias_has_execution(pool, &alias).await.unwrap());
-
-        let mut tx = super::super::begin_immediate_tx(repo.db()).await.unwrap();
-        settle_tx(&mut tx, "history-id", "{}", 1).await.unwrap();
-        tx.commit().await.unwrap();
-        finish(repo.db(), "history-id").await.unwrap();
-        assert!(alias_has_execution(pool, &alias).await.unwrap());
+            .expect("independent write operation")
     }
 }

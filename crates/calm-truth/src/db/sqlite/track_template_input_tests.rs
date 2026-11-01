@@ -7,78 +7,87 @@ use serde_json::json;
 #[tokio::test]
 async fn track_create_round_trips_template_input() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
-    let mut tx = repo.pool().begin().await.expect("begin tx");
-    let area = area_create_tx(
-        &mut tx,
-        calm_types::organization::LEGACY_OWNER_USER_ID,
-        NewArea {
-            name: "template input round trip".into(),
-            color: "#202020".into(),
-            sort: None,
-        },
-    )
-    .await
-    .expect("create area");
-    let input = json!({
-        "issue_url": "https://github.com/o/r/issues/891",
-        "issue_number": 891,
-        "merge_policy": "ask"
-    });
-    let with_input = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id.clone(),
-            title: "with input".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: Some("dev".into()),
-            plugin_scope: None,
-            template_input: Some(input.clone()),
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        Some("area-chat"),
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create track with input");
-    assert_eq!(with_input.template_input.as_ref(), Some(&input));
-    let without_input = track_create_tx(
-        &mut tx,
-        NewTrack {
-            area_id: area.id,
-            title: "without input".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            template_id: None,
-            plugin_scope: None,
-            template_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        },
-        None,
-        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
-        None,
-        repo.track_area_cache(),
-    )
-    .await
-    .expect("create track without input");
-    tx.commit().await.expect("commit tx");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin tx");
+                let area = area_create_tx(
+                    &mut tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "template input round trip".into(),
+                        color: "#202020".into(),
+                        sort: None,
+                    },
+                )
+                .await
+                .expect("create area");
+                let input = json!({
+                    "issue_url": "https://github.com/o/r/issues/891",
+                    "issue_number": 891,
+                    "merge_policy": "ask"
+                });
+                let with_input = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id.clone(),
+                        title: "with input".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: Some("dev".into()),
+                        plugin_scope: None,
+                        template_input: Some(input.clone()),
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    Some("area-chat"),
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create track with input");
+                assert_eq!(with_input.template_input.as_ref(), Some(&input));
+                let without_input = track_create_tx(
+                    &mut tx,
+                    NewTrack {
+                        area_id: area.id,
+                        title: "without input".into(),
+                        sort: None,
+                        cwd: "/tmp".into(),
+                        template_id: None,
+                        plugin_scope: None,
+                        template_input: None,
+                        attach_folder: false,
+                        theme: RequestTheme::default_dark(),
+                    },
+                    None,
+                    &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+                    None,
+                    repo.track_area_cache(),
+                )
+                .await
+                .expect("create track without input");
+                tx.commit().await.expect("commit tx");
 
-    let stored = repo
-        .track_get(with_input.id.as_str())
-        .await
-        .expect("get track")
-        .expect("track exists");
-    assert_eq!(stored.template_input.as_ref(), Some(&input));
-    assert_eq!(stored.purpose.as_deref(), Some("area-chat"));
+                let stored = repo
+                    .track_get(with_input.id.as_str())
+                    .await
+                    .expect("get track")
+                    .expect("track exists");
+                assert_eq!(stored.template_input.as_ref(), Some(&input));
+                assert_eq!(stored.purpose.as_deref(), Some("area-chat"));
 
-    let stored_none = repo
-        .track_get(without_input.id.as_str())
+                let stored_none = repo
+                    .track_get(without_input.id.as_str())
+                    .await
+                    .expect("get track")
+                    .expect("track exists");
+                assert_eq!(stored_none.template_input, None);
+            })
+        })
         .await
-        .expect("get track")
-        .expect("track exists");
-    assert_eq!(stored_none.template_input, None);
+        .expect("independent write operation")
 }

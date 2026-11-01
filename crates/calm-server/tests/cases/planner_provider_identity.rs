@@ -124,11 +124,10 @@ async fn a_corrupt_planner_provider_survives_and_the_card_is_not_a_harness() {
     let (_, planner) = created_planner(&b, "provider-corrupt").await;
     let card_id = planner["id"].as_str().unwrap();
     b.shutdown_harnesses().await;
-    sqlx::query(
+    (b.repo.db()).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'gpt') WHERE id = ?1",
     )
-    .bind(card_id)
-    .execute(b.repo.pool())
+    .bind(card_id))
     .await
     .unwrap();
     let replacement = without_server_owned_keys(&planner["payload"]);

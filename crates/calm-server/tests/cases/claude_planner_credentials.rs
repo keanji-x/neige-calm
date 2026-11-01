@@ -296,15 +296,24 @@ async fn rewrite_snapshot(
         .expect("row");
     let mut snapshot = HarnessSnapshot::from_value_strict(row.handle_state_json.expect("snapshot"));
     edit(&mut snapshot);
-    let mut tx = repo.pool().begin().await.expect("tx");
-    session_set_handle_state_tx(
-        &mut tx,
-        &worker_session_id.to_string(),
-        Some(serde_json::to_value(&snapshot).expect("snapshot json")),
-    )
-    .await
-    .expect("write snapshot");
-    tx.commit().await.expect("commit");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("tx");
+                session_set_handle_state_tx(
+                    &mut tx,
+                    &worker_session_id.to_string(),
+                    Some(serde_json::to_value(&snapshot).expect("snapshot json")),
+                )
+                .await
+                .expect("write snapshot");
+                tx.commit().await.expect("commit");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn outcome_of<'a>(outcomes: &'a [Value], turn_id: &str) -> Vec<&'a Value> {
@@ -441,11 +450,10 @@ async fn a_failed_reset_compensates_even_when_the_binding_became_unreadable() {
     tokio::time::timeout(BUDGET, failure.entered.notified())
         .await
         .expect("the reset reached the spawn");
-    sqlx::query(
+    (stack.repo().sqlite_db().expect("pool")).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.planner_provider', 'unknown') WHERE id = ?1",
     )
-    .bind(&card_id)
-    .execute(stack.repo().sqlite_db().expect("pool").writer_pool())
+    .bind(&card_id))
     .await
     .expect("corrupt the binding");
     failure.release.notify_one();

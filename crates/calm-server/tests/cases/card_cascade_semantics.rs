@@ -111,33 +111,42 @@ async fn boot() -> Boot {
 
 /// Card row, terminal row, `card_mcp_tokens` row and an ACTIVE `worker_sessions` row, in one committed transaction.
 async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
-    let mut tx = boot.repo.pool().begin().await.expect("begin mint tx");
-    let (card, term, token) = card_with_codex_create_tx(
-        &mut tx,
-        new_id(),
-        &new_id(),
-        None,
-        boot.track_id.clone().into(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({"CODEX_HOME": "/tmp/codex-home"}),
-        None,
-        None,
-        None,
-        CardRole::Worker,
-        true, // user-facing worker card: deletable via REST
-        boot.repo.card_role_cache(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint codex worker card");
-    tx.commit().await.expect("commit mint tx");
-    assert!(
-        token.is_some(),
-        "Worker-role codex card mints an MCP token in the same tx"
-    );
-    (card, term)
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin mint tx");
+                let (card, term, token) = card_with_codex_create_tx(
+                    &mut tx,
+                    new_id(),
+                    &new_id(),
+                    None,
+                    boot.track_id.clone().into(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({"CODEX_HOME": "/tmp/codex-home"}),
+                    None,
+                    None,
+                    None,
+                    CardRole::Worker,
+                    true, // user-facing worker card: deletable via REST
+                    boot.repo.card_role_cache(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("mint codex worker card");
+                tx.commit().await.expect("commit mint tx");
+                assert!(
+                    token.is_some(),
+                    "Worker-role codex card mints an MCP token in the same tx"
+                );
+                (card, term)
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn count(repo: &SqlxRepo, sql: &str, bind: &str) -> i64 {
@@ -264,28 +273,37 @@ async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
     let runtime_id = assert_identity_present(&boot.repo, &card_id).await;
 
     // The terminal row must go first — terminals.card_id is ON DELETE RESTRICT.
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    let deleted = terminal_delete_tx(&mut tx, &term.id).await.unwrap();
-    assert!(deleted.retire.is_none());
-    card_delete_tx(&mut tx, card.id.as_ref(), boot.repo.card_role_cache())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (boot.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let deleted = terminal_delete_tx(&mut tx, &term.id).await.unwrap();
+                assert!(deleted.retire.is_none());
+                card_delete_tx(&mut tx, card.id.as_ref(), boot.repo.card_role_cache())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
 
-    assert!(boot.repo.card_get(&card_id).await.unwrap().is_none());
-    assert_eq!(
-        token_rows(&boot.repo, &card_id).await,
-        0,
-        "token row gone with no explicit token delete in the tx: pure FK CASCADE"
-    );
-    assert_eq!(
-        runtime_rows(&boot.repo, &card_id).await,
-        0,
-        "worker_sessions row gone via card_delete_tx's explicit same-tx cleanup"
-    );
-    assert_eq!(
-        worker_session_rows(&boot.repo, &runtime_id).await,
-        0,
-        "worker session row gone via card_delete_tx's explicit same-tx cleanup"
-    );
+                assert!(boot.repo.card_get(&card_id).await.unwrap().is_none());
+                assert_eq!(
+                    token_rows(&boot.repo, &card_id).await,
+                    0,
+                    "token row gone with no explicit token delete in the tx: pure FK CASCADE"
+                );
+                assert_eq!(
+                    runtime_rows(&boot.repo, &card_id).await,
+                    0,
+                    "worker_sessions row gone via card_delete_tx's explicit same-tx cleanup"
+                );
+                assert_eq!(
+                    worker_session_rows(&boot.repo, &runtime_id).await,
+                    0,
+                    "worker session row gone via card_delete_tx's explicit same-tx cleanup"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

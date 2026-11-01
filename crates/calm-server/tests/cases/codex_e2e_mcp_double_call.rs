@@ -92,55 +92,73 @@ async fn seed_planner_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> 
         .unwrap();
 
     let card_id = new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        card_id.clone(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "codex_source": "shared",
-                "planner_harness": true, "planner_provider": "codex",
-                "permission_mode": "never"
-            }),
-        },
-        CardRole::Planner,
-        false,
-        card_role_cache,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                card_create_with_id_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({
+                            "schemaVersion": 1,
+                            "codex_source": "shared",
+                            "planner_harness": true, "planner_provider": "codex",
+                            "permission_mode": "never"
+                        }),
+                    },
+                    CardRole::Planner,
+                    false,
+                    card_role_cache,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    (card_id, track.id.to_string())
+                (card_id, track.id.to_string())
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn seed_shared_planner_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &str) {
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: new_id(),
-            card_id: card_id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: new_id(),
+                        card_id: card_id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id.to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn item_type(params: &Value) -> Option<&str> {

@@ -80,17 +80,27 @@ impl Harness {
             .unwrap();
         let mut output = TxOutput::new("card", Some(card.clone()), json!({}));
         output.data = json!({});
-        sqlx::query("UPDATE operations SET phase='spawn_started',tx_output_json=?2 WHERE id=?1")
-            .bind(&id)
-            .bind(serde_json::to_string(&output).unwrap())
-            .execute(db.pool())
+        (db.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET phase='spawn_started',tx_output_json=?2 WHERE id=?1",
+                )
+                .bind(&id)
+                .bind(serde_json::to_string(&output).unwrap()),
+            )
             .await
             .unwrap();
         if card_target {
-            sqlx::query("UPDATE operations SET target_type='card',target_id=?2 WHERE id=?1")
-                .bind(&id)
-                .bind(&card)
-                .execute(db.pool())
+            (db.db())
+                .writer()
+                .execute(
+                    sqlx::query(
+                        "UPDATE operations SET target_type='card',target_id=?2 WHERE id=?1",
+                    )
+                    .bind(&id)
+                    .bind(&card),
+                )
                 .await
                 .unwrap();
         }
@@ -158,70 +168,84 @@ impl Harness {
         .unwrap();
         let op = repo.get_operation(&id).await.unwrap().unwrap();
         let record = record(CONFIG, &op).unwrap();
-        let mut tx = crate::db::sqlite::begin_immediate_tx(db.db())
+        let write_db = (db.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let metadata: ExecutionMetadata = serde_json::from_str(
+                        &calm_truth::db::sqlite::workspace_execution::intent_tx(
+                            &mut tx,
+                            record.execution_id.as_str(),
+                        )
+                        .await
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    // These cases exercise a running child. A Stop before Spawned legitimately
+                    // revokes the reservation and can clear secrets without an owner Retire.
+                    let running = ctx.execution.engine().unwrap();
+                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        loop {
+                            let generation = running.output_generation().await.unwrap();
+                            if matches!(
+                                running.output(&metadata.id, None).await,
+                                Ok(ExecutionReply::Observation {
+                                    state: ExecutionState::Spawned,
+                                    receipt: Some(_),
+                                    ref output,
+                                    ..
+                                }) if !card_target || output == b"ready"
+                            ) {
+                                break;
+                            }
+                            generation.changed().await.unwrap();
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    let runtime = Arc::new(OperationRuntime::new_unchecked(
+                        repo.clone(),
+                        vec![],
+                        ctx.events.clone(),
+                        ctx.completion.clone(),
+                        ctx.clone(),
+                    ));
+                    Self {
+                        db,
+                        repo,
+                        ctx,
+                        runtime,
+                        store,
+                        op,
+                        metadata,
+                        _executor: executor,
+                    }
+                })
+            })
             .await
-            .unwrap();
-        let metadata: ExecutionMetadata = serde_json::from_str(
-            &calm_truth::db::sqlite::workspace_execution::intent_tx(
-                &mut tx,
-                record.execution_id.as_str(),
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        tx.commit().await.unwrap();
-        // These cases exercise a running child. A Stop before Spawned legitimately
-        // revokes the reservation and can clear secrets without an owner Retire.
-        let running = ctx.execution.engine().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let generation = running.output_generation().await.unwrap();
-                if matches!(
-                    running.output(&metadata.id, None).await,
-                    Ok(ExecutionReply::Observation {
-                        state: ExecutionState::Spawned,
-                        receipt: Some(_),
-                        ref output,
-                        ..
-                    }) if !card_target || output == b"ready"
-                ) {
-                    break;
-                }
-                generation.changed().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-        let runtime = Arc::new(OperationRuntime::new_unchecked(
-            repo.clone(),
-            vec![],
-            ctx.events.clone(),
-            ctx.completion.clone(),
-            ctx.clone(),
-        ));
-        Self {
-            db,
-            repo,
-            ctx,
-            runtime,
-            store,
-            op,
-            metadata,
-            _executor: executor,
-        }
+            .expect("independent write operation")
     }
     async fn stop(&self) {
-        let mut tx = crate::db::sqlite::begin_immediate_tx(self.db.db())
+        let write_db = (self.db.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    CONFIG
+                        .prepare_disposal_tx(&mut tx, &self.metadata)
+                        .await
+                        .unwrap();
+                    let _events = CONFIG.stop_tx(&mut tx, &self.metadata).await.unwrap();
+                    tx.commit().await.unwrap();
+                    self.ctx.execution.drive([self.metadata.id.clone()]);
+                })
+            })
             .await
-            .unwrap();
-        CONFIG
-            .prepare_disposal_tx(&mut tx, &self.metadata)
-            .await
-            .unwrap();
-        let _events = CONFIG.stop_tx(&mut tx, &self.metadata).await.unwrap();
-        tx.commit().await.unwrap();
-        self.ctx.execution.drive([self.metadata.id.clone()]);
+            .expect("independent write operation")
     }
     async fn settle(&self) {
         self.ctx
@@ -273,99 +297,120 @@ async fn w_owned_pipe_disposal_fences_stale_release_completion_and_readmission()
             .is_err()
         );
     }
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
+    let write_db = (h.db.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(retire(CONFIG, &mut tx, &h.op).await.is_err());
+                tx.rollback().await.unwrap();
+                let root = h._executor._root.path().canonicalize().unwrap();
+                let program = h.metadata.program.clone();
+                assert!(
+                    admit(CONFIG, &h.op, &h.ctx, root, "track", program, None)
+                        .await
+                        .is_err()
+                );
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_executions")
+                    .fetch_one(h.db.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(count, 1);
+                // Replayed disposal does not replace the live observer lease or change the reason.
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    !CONFIG
+                        .stop_for_disposal_tx(&mut tx, &h.metadata)
+                        .await
+                        .unwrap()
+                );
+                tx.rollback().await.unwrap();
+                h.stop().await;
+                h.settle().await;
+            })
+        })
         .await
-        .unwrap();
-    assert!(retire(CONFIG, &mut tx, &h.op).await.is_err());
-    tx.rollback().await.unwrap();
-    let root = h._executor._root.path().canonicalize().unwrap();
-    let program = h.metadata.program.clone();
-    assert!(
-        admit(CONFIG, &h.op, &h.ctx, root, "track", program, None)
-            .await
-            .is_err()
-    );
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspace_executions")
-        .fetch_one(h.db.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 1);
-    // Replayed disposal does not replace the live observer lease or change the reason.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    assert!(
-        !CONFIG
-            .stop_for_disposal_tx(&mut tx, &h.metadata)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    h.stop().await;
-    h.settle().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn w_owned_pipe_disposal_is_atomic_and_preserves_natural_completion() {
     let h = Harness::new().await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
+    let write_db = (h.db.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    CONFIG
+                        .stop_for_disposal_tx(&mut tx, &h.metadata)
+                        .await
+                        .unwrap()
+                );
+                tx.rollback().await.unwrap();
+                let row = calm_truth::db::sqlite::workspace_execution::load(
+                    h.db.pool(),
+                    h.metadata.id.as_str(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(row.desired, "run");
+                assert_eq!(
+                    record(
+                        CONFIG,
+                        &h.repo.get_operation(&h.op.id).await.unwrap().unwrap()
+                    )
+                    .unwrap()
+                    .decision,
+                    Decision::Observing
+                );
+                // Natural owner completion wins before the disposal transaction.
+                (h.db.db())
+                    .writer()
+                    .execute(
+                        sqlx::query(
+                            "UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1",
+                        )
+                        .bind(&h.op.id),
+                    )
+                    .await
+                    .unwrap();
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    !CONFIG
+                        .stop_for_disposal_tx(&mut tx, &h.metadata)
+                        .await
+                        .unwrap()
+                );
+                tx.commit().await.unwrap();
+                let row = calm_truth::db::sqlite::workspace_execution::load(
+                    h.db.pool(),
+                    h.metadata.id.as_str(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(row.desired, "run");
+                assert!(CONFIG.finish(&h.runtime, &h.metadata).await.unwrap());
+                // The owner would normally have already retired it. Stop our deliberately held fixture.
+                let mut tx = write_session.begin().await.unwrap();
+                calm_truth::db::sqlite::workspace_execution::request(
+                    &mut tx,
+                    h.metadata.id.as_str(),
+                    "stop",
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                h.ctx.execution.drive([h.metadata.id.clone()]);
+                h.settle().await;
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        CONFIG
-            .stop_for_disposal_tx(&mut tx, &h.metadata)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    let row =
-        calm_truth::db::sqlite::workspace_execution::load(h.db.pool(), h.metadata.id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(row.desired, "run");
-    assert_eq!(
-        record(
-            CONFIG,
-            &h.repo.get_operation(&h.op.id).await.unwrap().unwrap()
-        )
-        .unwrap()
-        .decision,
-        Decision::Observing
-    );
-    // Natural owner completion wins before the disposal transaction.
-    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1")
-        .bind(&h.op.id)
-        .execute(h.db.pool())
-        .await
-        .unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    assert!(
-        !CONFIG
-            .stop_for_disposal_tx(&mut tx, &h.metadata)
-            .await
-            .unwrap()
-    );
-    tx.commit().await.unwrap();
-    let row =
-        calm_truth::db::sqlite::workspace_execution::load(h.db.pool(), h.metadata.id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(row.desired, "run");
-    assert!(CONFIG.finish(&h.runtime, &h.metadata).await.unwrap());
-    // The owner would normally have already retired it. Stop our deliberately held fixture.
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    calm_truth::db::sqlite::workspace_execution::request(&mut tx, h.metadata.id.as_str(), "stop")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    h.ctx.execution.drive([h.metadata.id.clone()]);
-    h.settle().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -383,50 +428,54 @@ async fn w_owned_disposal_missing_ports_and_corrupt_owner_retain_execution() {
     ));
     let mut damaged = h.metadata.clone();
     damaged.alias.0 = "wrong-alias".into();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
-        .await
-        .unwrap();
-    assert!(matches!(
-        CONFIG.prepare_disposal_tx(&mut tx, &damaged).await,
-        Err(CalmError::Conflict(_))
-    ));
-    tx.rollback().await.unwrap();
-    let unregistered = SqliteExecutionStore::new(h.db.db().clone());
-    let no_ports = SqliteExecutionStore::new(h.db.db().clone()).with_projection(
-        CONFIG.consumer.into(),
-        Arc::new(crate::execution_store::tests::NoopProjection),
-    );
-    for store in [&unregistered, &no_ports] {
+    let write_db = (h.db.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
         assert!(matches!(
-            dispose(store, &h.runtime, std::slice::from_ref(&h.metadata.id)).await,
+            CONFIG.prepare_disposal_tx(&mut tx, &damaged).await,
             Err(CalmError::Conflict(_))
         ));
-    }
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.version',2) WHERE id=?1").bind(&h.op.id).execute(h.db.pool()).await.unwrap();
-    assert!(matches!(
-        dispose(&h.store, &h.runtime, std::slice::from_ref(&h.metadata.id)).await,
-        Err(CalmError::Conflict(_))
-    ));
-    let row =
-        calm_truth::db::sqlite::workspace_execution::load(h.db.pool(), h.metadata.id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(row.desired, "run");
-    assert!(row.secrets_json.is_some());
-    assert_eq!(
-        h.repo
-            .get_operation(&h.op.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .lease_owner,
-        h.op.lease_owner
-    );
-    // Restore only the faulted record field before orderly fixture cleanup.
-    sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.version',1) WHERE id=?1").bind(&h.op.id).execute(h.db.pool()).await.unwrap();
-    h.stop().await;
-    h.settle().await;
+        tx.rollback().await.unwrap();
+        let unregistered = SqliteExecutionStore::new(h.db.db().clone());
+        let no_ports = SqliteExecutionStore::new(h.db.db().clone()).with_projection(
+            CONFIG.consumer.into(),
+            Arc::new(crate::execution_store::tests::NoopProjection),
+        );
+        for store in [&unregistered, &no_ports] {
+            assert!(matches!(
+                dispose(store, &h.runtime, std::slice::from_ref(&h.metadata.id)).await,
+                Err(CalmError::Conflict(_))
+            ));
+        }
+        (h.db.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.version',2) WHERE id=?1").bind(&h.op.id)).await.unwrap();
+        assert!(matches!(
+            dispose(&h.store, &h.runtime, std::slice::from_ref(&h.metadata.id)).await,
+            Err(CalmError::Conflict(_))
+        ));
+        let row =
+            calm_truth::db::sqlite::workspace_execution::load(h.db.pool(), h.metadata.id.as_str())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(row.desired, "run");
+        assert!(row.secrets_json.is_some());
+        assert_eq!(
+            h.repo
+                .get_operation(&h.op.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lease_owner,
+            h.op.lease_owner
+        );
+        // Restore only the faulted record field before orderly fixture cleanup.
+        (h.db.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.version',1) WHERE id=?1").bind(&h.op.id)).await.unwrap();
+        h.stop().await;
+        h.settle().await;
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]
@@ -453,40 +502,50 @@ async fn w_owned_disposal_waits_for_owner_completion_and_retirement() {
     // Production owner completion/retire is the obligation being coordinated; use the
     // real completion record fence rather than replacing the owner's live claim.
     let current = h.repo.get_operation(&h.op.id).await.unwrap().unwrap();
-    let mut tx = crate::db::sqlite::begin_immediate_tx(h.db.db())
+    let write_db = (h.db.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &current)
+                    .await
+                    .unwrap();
+                retire(CONFIG, &mut tx, &current).await.unwrap();
+                sqlx::query(
+                    "UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1",
+                )
+                .bind(&h.op.id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                h.ctx.execution.drive([h.metadata.id.clone()]);
+                disposed.await.unwrap();
+                let row = calm_truth::db::sqlite::workspace_execution::load(
+                    h.db.pool(),
+                    h.metadata.id.as_str(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(row.desired, "retire");
+                assert!(row.settlement_json.is_some());
+                assert!(row.secrets_json.is_none());
+            })
+        })
         .await
-        .unwrap();
-    crate::operation::repo_sqlite::require_live_claim_tx(&mut tx, &current)
-        .await
-        .unwrap();
-    retire(CONFIG, &mut tx, &current).await.unwrap();
-    sqlx::query("UPDATE operations SET phase='succeeded',completed_at_ms=1 WHERE id=?1")
-        .bind(&h.op.id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    h.ctx.execution.drive([h.metadata.id.clone()]);
-    disposed.await.unwrap();
-    let row =
-        calm_truth::db::sqlite::workspace_execution::load(h.db.pool(), h.metadata.id.as_str())
-            .await
-            .unwrap()
-            .unwrap();
-    assert_eq!(row.desired, "retire");
-    assert!(row.settlement_json.is_some());
-    assert!(row.secrets_json.is_none());
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn w_owned_disposal_timeout_retains_scope_and_original_claim() {
     let h = Harness::new().await;
-    sqlx::query(
+    (h.db.db()).writer().execute(sqlx::query(
         "UPDATE operations SET phase='parked',parked_at_ms=1,parked_deadline_ms=?2 WHERE id=?1",
     )
     .bind(&h.op.id)
-    .bind(crate::model::now_ms() + 60_000)
-    .execute(h.db.pool())
+    .bind(crate::model::now_ms() + 60_000))
     .await
     .unwrap();
     assert!(matches!(

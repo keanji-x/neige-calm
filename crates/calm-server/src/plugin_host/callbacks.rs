@@ -1348,11 +1348,10 @@ mod tests {
         .unwrap();
         let cid = create["id"].as_str().unwrap().to_string();
         let task_id = format!("{}:delete-worker", h.track_id);
-        sqlx::query("INSERT INTO tasks
+        (h.ctx_storage.sqlx_repo.db()).writer().execute(sqlx::query("INSERT INTO tasks
             (id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms)
             VALUES (?1,?2,'delete-worker','codex','test','[]','running',?3,'user',1,1)")
-            .bind(&task_id).bind(&h.track_id).bind(&cid)
-            .execute(h.ctx_storage.sqlx_repo.pool()).await.unwrap();
+            .bind(&task_id).bind(&h.track_id).bind(&cid)).await.unwrap();
         let res = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
             .await
             .unwrap();
@@ -1388,37 +1387,46 @@ mod tests {
     async fn card_delete_refused_for_undeletable_card() {
         let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
         let cache = h.ctx_storage.write.role_cache().clone();
-        let mut tx = h.ctx_storage.sqlx_repo.pool().begin().await.unwrap();
-        let undeletable = crate::db::sqlite::card_create_with_id_tx(
-            &mut tx,
-            crate::model::new_id(),
-            NewCard {
-                track_id: h.track_id.clone().into(),
-                title: None,
-                kind: "plugin:p1:demo".into(),
-                sort: None,
-                payload: json!({}),
-            },
-            CardRole::Worker,
-            false, // ← kernel-owned bit
-            &cache,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        let cid = undeletable.id.as_str().to_string();
+        let write_db = (h.ctx_storage.sqlx_repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let undeletable = crate::db::sqlite::card_create_with_id_tx(
+                        &mut tx,
+                        crate::model::new_id(),
+                        NewCard {
+                            track_id: h.track_id.clone().into(),
+                            title: None,
+                            kind: "plugin:p1:demo".into(),
+                            sort: None,
+                            payload: json!({}),
+                        },
+                        CardRole::Worker,
+                        false, // ← kernel-owned bit
+                        &cache,
+                    )
+                    .await
+                    .unwrap();
+                    tx.commit().await.unwrap();
+                    let cid = undeletable.id.as_str().to_string();
 
-        let err = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
+                    let err = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
+                        .await
+                        .expect_err("undeletable card must refuse plugin-callback delete");
+                    // Asserting on the code (-32001, permission_denied) rather than the message keeps the test resistant to wording tweaks.
+                    assert_eq!(
+                        err.code, -32001,
+                        "expected permission_denied (-32001); got: {err:?}",
+                    );
+
+                    let still_there = h.ctx_storage.repo.card_get(&cid).await.unwrap();
+                    assert!(still_there.is_some(), "undeletable card survives refusal");
+                })
+            })
             .await
-            .expect_err("undeletable card must refuse plugin-callback delete");
-        // Asserting on the code (-32001, permission_denied) rather than the message keeps the test resistant to wording tweaks.
-        assert_eq!(
-            err.code, -32001,
-            "expected permission_denied (-32001); got: {err:?}",
-        );
-
-        let still_there = h.ctx_storage.repo.card_get(&cid).await.unwrap();
-        assert!(still_there.is_some(), "undeletable card survives refusal");
+            .expect("independent write operation")
     }
 
     #[tokio::test]

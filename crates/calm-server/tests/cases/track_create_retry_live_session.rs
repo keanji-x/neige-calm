@@ -45,17 +45,20 @@ impl Boot {
 
     /// A start of `card_id` that another instance holds the lease of, so no driver here takes it.
     async fn start_in_flight_elsewhere(&self, card_id: &str) {
-        sqlx::query(
-            "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
                target_json, payload_json, phase, lease_owner, lease_until_ms, created_at_ms, \
                updated_at_ms) \
              VALUES ('in-flight', 'in-flight', 'planner-harness-start', 'h', 'track', '{}', ?1, \
                'tx_committed', 'elsewhere', 9223372036854775807, 0, 0)",
-        )
-        .bind(serde_json::json!({ PLANNER_START_CARD_KEY: card_id }).to_string())
-        .execute(self.repo.pool())
-        .await
-        .unwrap();
+                )
+                .bind(serde_json::json!({ PLANNER_START_CARD_KEY: card_id }).to_string()),
+            )
+            .await
+            .unwrap();
     }
 }
 

@@ -59,43 +59,47 @@ async fn historical_edit_capability_uses_current_private_source_and_actual_backe
         run(&app, &paired, &card).await["history_replacement_supported"],
         true
     );
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
-        .await
-        .unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area["id"].as_str().unwrap())
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let alice = format!(
-        "calm-session={}",
-        auth.sessions.create(
-            crate::auth::SessionIdentity {
-                user_id: "alice".into(),
-                display_name: "Alice".into(),
-                role: "member".into()
-            },
-            crate::auth::SessionAuthority::PairedDevice
+    let write_db = (fixture.repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
         )
-    );
-    assert_eq!(
-        run(&app, &alice, &card).await["history_replacement_supported"],
-        false,
-        "read access and an actual capable backend do not grant historical private effects"
-    );
-    let handle = state.harness.remove(&worker).unwrap();
-    handle.shutdown().await.unwrap();
-    assert_eq!(
-        run(&app, &cookie, &card).await["history_replacement_supported"],
-        false,
-        "without the actual execution backend the reader cannot offer an edit"
-    );
+        .bind(area["id"].as_str().unwrap())
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let alice = format!(
+            "calm-session={}",
+            auth.sessions.create(
+                crate::auth::SessionIdentity {
+                    user_id: "alice".into(),
+                    display_name: "Alice".into(),
+                    role: "member".into()
+                },
+                crate::auth::SessionAuthority::PairedDevice
+            )
+        );
+        assert_eq!(
+            run(&app, &alice, &card).await["history_replacement_supported"],
+            false,
+            "read access and an actual capable backend do not grant historical private effects"
+        );
+        let handle = state.harness.remove(&worker).unwrap();
+        handle.shutdown().await.unwrap();
+        assert_eq!(
+            run(&app, &cookie, &card).await["history_replacement_supported"],
+            false,
+            "without the actual execution backend the reader cannot offer an edit"
+        );
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

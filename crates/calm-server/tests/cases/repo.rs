@@ -86,19 +86,28 @@ fn runtime_init(
 }
 
 async fn start_root_runtime(repo: &SqlxRepo, card: &Card) -> String {
-    let mut tx = repo.pool().begin().await.expect("begin runtime tx");
-    let runtime = session_start_runtime_tx(
-        &mut tx,
-        runtime_init(
-            card.id.to_string(),
-            WorkerSessionKind::SharedPlanner,
-            Some(AgentProvider::Codex),
-        ),
-    )
-    .await
-    .expect("start root runtime");
-    tx.commit().await.expect("commit runtime tx");
-    runtime.id
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                let runtime = session_start_runtime_tx(
+                    &mut tx,
+                    runtime_init(
+                        card.id.to_string(),
+                        WorkerSessionKind::SharedPlanner,
+                        Some(AgentProvider::Codex),
+                    ),
+                )
+                .await
+                .expect("start root runtime");
+                tx.commit().await.expect("commit runtime tx");
+                runtime.id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 async fn make_overlay(
@@ -170,10 +179,13 @@ async fn area_updates_advance_timestamp_strictly() {
     let repo = fresh_repo().await;
     let area = make_area(&repo, "Original").await;
     let future = now_ms() + 60_000;
-    sqlx::query("UPDATE areas SET updated_at = ?1 WHERE id = ?2")
-        .bind(future)
-        .bind(area.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE areas SET updated_at = ?1 WHERE id = ?2")
+                .bind(future)
+                .bind(area.id.as_str()),
+        )
         .await
         .expect("seed future Area timestamp");
 
@@ -676,14 +688,23 @@ async fn area_delete_sweeps_all_overlays_transitively() {
 #[tokio::test]
 async fn overlay_sweep_is_idempotent_no_rows() {
     let repo = fresh_repo().await;
-    let mut tx = repo.pool().begin().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
 
-    let rows = overlay_delete_by_entity_tx(&mut tx, "card", "missing-card")
+                let rows = overlay_delete_by_entity_tx(&mut tx, "card", "missing-card")
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+
+                assert_eq!(rows, 0);
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    assert_eq!(rows, 0);
+        .expect("independent write operation")
 }
 
 // `terminals.card_id` is `ON DELETE RESTRICT`: a parent with a live terminal cannot be deleted until the terminal row is removed.
@@ -1050,67 +1071,76 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (card, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        &calm_server::model::new_id(),
-        None,
-        w.id.clone(),
-        None,
-        None,
-        "bash".into(),
-        "/tmp".into(),
-        json!({"FOO": "bar"}),
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .expect("atomic create");
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (card, term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    &calm_server::model::new_id(),
+                    None,
+                    w.id.clone(),
+                    None,
+                    None,
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({"FOO": "bar"}),
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .expect("atomic create");
+                tx.commit().await.unwrap();
 
-    let got_card = repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card row");
-    assert_eq!(got_card.kind, "terminal");
-    assert!(
-        got_card.payload.get("terminal_id").is_none(),
-        "terminal_id must not be persisted in cards.payload: {}",
-        got_card.payload
-    );
-    assert_eq!(got_card.payload["schemaVersion"], json!(1));
-    let runtime = repo
-        .session_projection_active_for_card(&card.id.to_string())
-        .await
-        .unwrap()
-        .expect("runtime row");
-    assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
-    let mut projected = got_card.clone();
-    project_runtime_into_card_payload(&repo, &mut projected)
-        .await
-        .unwrap();
-    assert_eq!(projected.payload["terminal_id"], json!(term.id));
-    assert_eq!(
-        projected.runtime.as_ref().unwrap().updated_at_ms,
-        Some(runtime.updated_at_ms),
-        "projected card activity must use the authoritative session clock"
-    );
+                let got_card = repo
+                    .card_get(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .expect("card row");
+                assert_eq!(got_card.kind, "terminal");
+                assert!(
+                    got_card.payload.get("terminal_id").is_none(),
+                    "terminal_id must not be persisted in cards.payload: {}",
+                    got_card.payload
+                );
+                assert_eq!(got_card.payload["schemaVersion"], json!(1));
+                let runtime = repo
+                    .session_projection_active_for_card(&card.id.to_string())
+                    .await
+                    .unwrap()
+                    .expect("runtime row");
+                assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
+                let mut projected = got_card.clone();
+                project_runtime_into_card_payload(&repo, &mut projected)
+                    .await
+                    .unwrap();
+                assert_eq!(projected.payload["terminal_id"], json!(term.id));
+                assert_eq!(
+                    projected.runtime.as_ref().unwrap().updated_at_ms,
+                    Some(runtime.updated_at_ms),
+                    "projected card activity must use the authoritative session clock"
+                );
 
-    let got_term = repo
-        .terminal_get_by_card(card.id.as_str())
+                let got_term = repo
+                    .terminal_get_by_card(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .expect("terminal row");
+                assert_eq!(got_term.id, term.id);
+                assert_eq!(got_term.program, "bash");
+                assert_eq!(got_term.cwd, "/tmp");
+                assert_eq!(got_term.env, json!({"FOO": "bar"}));
+            })
+        })
         .await
-        .unwrap()
-        .expect("terminal row");
-    assert_eq!(got_term.id, term.id);
-    assert_eq!(got_term.program, "bash");
-    assert_eq!(got_term.cwd, "/tmp");
-    assert_eq!(got_term.env, json!({"FOO": "bar"}));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1121,42 +1151,51 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_track() {
 
     assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_truth::db::sqlite::card_with_terminal_create_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        &calm_server::model::new_id(),
-        None,
-        "track-that-does-not-exist".into(),
-        None,
-        None,
-        "bash".into(),
-        "/tmp".into(),
-        json!({}),
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .expect_err("unknown track must error");
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = calm_truth::db::sqlite::card_with_terminal_create_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    &calm_server::model::new_id(),
+                    None,
+                    "track-that-does-not-exist".into(),
+                    None,
+                    None,
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .expect_err("unknown track must error");
+                tx.rollback().await.unwrap();
 
-    let err = CalmError::from(err);
-    assert!(matches!(err, CalmError::NotFound(_)));
+                let err = CalmError::from(err);
+                assert!(matches!(err, CalmError::NotFound(_)));
 
-    let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
-    assert!(
-        cards_in_w.is_empty(),
-        "no card rows should have leaked from the rolled-back txn"
-    );
-    let term_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM terminals")
-        .fetch_one(repo.pool())
+                let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
+                assert!(
+                    cards_in_w.is_empty(),
+                    "no card rows should have leaked from the rolled-back txn"
+                );
+                let term_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM terminals")
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(term_count.0, 0, "no terminal rows should have been written");
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(term_count.0, 0, "no terminal rows should have been written");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1165,32 +1204,41 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
     let c = make_area(&repo, "C").await;
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        &calm_server::model::new_id(),
-        None,
-        w.id.clone(),
-        None,
-        Some(42.0),
-        "bash".into(),
-        "/tmp".into(),
-        json!({}),
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    &calm_server::model::new_id(),
+                    None,
+                    w.id.clone(),
+                    None,
+                    Some(42.0),
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    assert_eq!(card.sort, 42.0);
-    let got = repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(got.sort, 42.0);
+                assert_eq!(card.sort, 42.0);
+                let got = repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+                assert_eq!(got.sort, 42.0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1202,30 +1250,39 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
     let _c1 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let _c2 = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        &calm_server::model::new_id(),
-        None,
-        w.id.clone(),
-        None,
-        None,
-        "bash".into(),
-        "/tmp".into(),
-        json!({}),
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-        false,
-        calm_types::card_presentation::CardCreationSource::Manual,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (card, _term) = calm_truth::db::sqlite::card_with_terminal_create_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    &calm_server::model::new_id(),
+                    None,
+                    w.id.clone(),
+                    None,
+                    None,
+                    "bash".into(),
+                    "/tmp".into(),
+                    json!({}),
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                    false,
+                    calm_types::card_presentation::CardCreationSource::Manual,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    assert_eq!(card.sort, 3.0);
+                assert_eq!(card.sort, 3.0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1236,46 +1293,64 @@ async fn terminal_create_tx_enforces_unique_card_id() {
     let card = make_card(&repo, w.id.as_str(), "terminal", json!({"hello":"world","terminal_presentation":{"source":"unrecorded","in_workbench":false}})).await;
     let _seeded = make_terminal(&repo, card.id.as_str()).await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_truth::db::sqlite::terminal_create_tx(
-        &mut tx,
-        NewTerminal {
-            card_id: card.id.clone(),
-            program: "zsh".into(),
-            cwd: "/tmp".into(),
-            env: json!({}),
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        },
-    )
-    .await
-    .expect_err("duplicate terminal for same card must conflict");
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = calm_truth::db::sqlite::terminal_create_tx(
+                    &mut tx,
+                    NewTerminal {
+                        card_id: card.id.clone(),
+                        program: "zsh".into(),
+                        cwd: "/tmp".into(),
+                        env: json!({}),
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    },
+                )
+                .await
+                .expect_err("duplicate terminal for same card must conflict");
+                tx.rollback().await.unwrap();
 
-    let err = CalmError::from(err);
-    assert!(matches!(err, CalmError::Conflict(_)));
+                let err = CalmError::from(err);
+                assert!(matches!(err, CalmError::Conflict(_)));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
 async fn terminal_create_tx_rejects_unknown_card_id() {
     let repo = fresh_repo().await;
 
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_truth::db::sqlite::terminal_create_tx(
-        &mut tx,
-        NewTerminal {
-            card_id: "no-such-card".into(),
-            program: "bash".into(),
-            cwd: "/tmp".into(),
-            env: json!({}),
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        },
-    )
-    .await
-    .expect_err("unknown card must error");
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = calm_truth::db::sqlite::terminal_create_tx(
+                    &mut tx,
+                    NewTerminal {
+                        card_id: "no-such-card".into(),
+                        program: "bash".into(),
+                        cwd: "/tmp".into(),
+                        env: json!({}),
+                        theme: calm_server::routes::theme::RequestTheme::default_dark(),
+                    },
+                )
+                .await
+                .expect_err("unknown card must error");
+                tx.rollback().await.unwrap();
 
-    let err = CalmError::from(err);
-    assert!(matches!(err, CalmError::NotFound(_)));
+                let err = CalmError::from(err);
+                assert!(matches!(err, CalmError::NotFound(_)));
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1285,70 +1360,79 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (card, term, mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &calm_server::model::new_id(),
-        None,
-        w.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({"CODEX_HOME": "/tmp/cx"}),
-        None,
-        Some("#111111".into()),
-        Some("#ffffff".into()),
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("atomic codex create");
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (card, term, mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
+                    &mut tx,
+                    card_id.clone(),
+                    &calm_server::model::new_id(),
+                    None,
+                    w.id.clone(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({"CODEX_HOME": "/tmp/cx"}),
+                    None,
+                    Some("#111111".into()),
+                    Some("#ffffff".into()),
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect("atomic codex create");
+                tx.commit().await.unwrap();
 
-    assert!(
-        mcp_token.is_some(),
-        "Worker codex cards must mint an MCP token"
-    );
-    assert_eq!(card.id.as_str(), card_id, "caller-supplied id must persist");
-    let got_card = repo
-        .card_get(card.id.as_str())
-        .await
-        .unwrap()
-        .expect("card row");
-    assert_eq!(got_card.kind, "codex");
-    assert!(
-        got_card.payload.get("terminal_id").is_none(),
-        "terminal_id must not be persisted in cards.payload: {}",
-        got_card.payload
-    );
-    assert_eq!(got_card.payload["schemaVersion"], json!(1));
-    assert_eq!(got_card.payload["icon_bg"], json!("#111111"));
-    assert_eq!(got_card.payload["icon_fg"], json!("#ffffff"));
-    assert_eq!(got_card.payload["cwd"], json!("/workspace"));
-    let runtime = repo
-        .session_projection_active_for_card(&card.id.to_string())
-        .await
-        .unwrap()
-        .expect("runtime row");
-    assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
-    let mut projected = got_card.clone();
-    project_runtime_into_card_payload(&repo, &mut projected)
-        .await
-        .unwrap();
-    assert_eq!(projected.payload["terminal_id"], json!(term.id));
+                assert!(
+                    mcp_token.is_some(),
+                    "Worker codex cards must mint an MCP token"
+                );
+                assert_eq!(card.id.as_str(), card_id, "caller-supplied id must persist");
+                let got_card = repo
+                    .card_get(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .expect("card row");
+                assert_eq!(got_card.kind, "codex");
+                assert!(
+                    got_card.payload.get("terminal_id").is_none(),
+                    "terminal_id must not be persisted in cards.payload: {}",
+                    got_card.payload
+                );
+                assert_eq!(got_card.payload["schemaVersion"], json!(1));
+                assert_eq!(got_card.payload["icon_bg"], json!("#111111"));
+                assert_eq!(got_card.payload["icon_fg"], json!("#ffffff"));
+                assert_eq!(got_card.payload["cwd"], json!("/workspace"));
+                let runtime = repo
+                    .session_projection_active_for_card(&card.id.to_string())
+                    .await
+                    .unwrap()
+                    .expect("runtime row");
+                assert_eq!(runtime.terminal_run_id.as_deref(), Some(term.id.as_str()));
+                let mut projected = got_card.clone();
+                project_runtime_into_card_payload(&repo, &mut projected)
+                    .await
+                    .unwrap();
+                assert_eq!(projected.payload["terminal_id"], json!(term.id));
 
-    let got_term = repo
-        .terminal_get_by_card(card.id.as_str())
+                let got_term = repo
+                    .terminal_get_by_card(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .expect("terminal row");
+                assert_eq!(got_term.id, term.id);
+                assert_eq!(got_term.program, "codex");
+                assert_eq!(got_term.cwd, "/workspace");
+                assert_eq!(got_term.env, json!({"CODEX_HOME": "/tmp/cx"}));
+            })
+        })
         .await
-        .unwrap()
-        .expect("terminal row");
-    assert_eq!(got_term.id, term.id);
-    assert_eq!(got_term.program, "codex");
-    assert_eq!(got_term.cwd, "/workspace");
-    assert_eq!(got_term.env, json!({"CODEX_HOME": "/tmp/cx"}));
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1360,42 +1444,51 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_track() {
     assert!(repo.cards_by_track(w.id.as_str()).await.unwrap().is_empty());
 
     let card_id = calm_server::model::new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let err = calm_truth::db::sqlite::card_with_codex_create_tx(
-        &mut tx,
-        card_id,
-        &calm_server::model::new_id(),
-        None,
-        "track-that-does-not-exist".into(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect_err("unknown track must error");
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = calm_truth::db::sqlite::card_with_codex_create_tx(
+                    &mut tx,
+                    card_id,
+                    &calm_server::model::new_id(),
+                    None,
+                    "track-that-does-not-exist".into(),
+                    None,
+                    None,
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .expect_err("unknown track must error");
+                tx.rollback().await.unwrap();
 
-    let err = CalmError::from(err);
-    assert!(matches!(err, CalmError::NotFound(_)));
+                let err = CalmError::from(err);
+                assert!(matches!(err, CalmError::NotFound(_)));
 
-    let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
-    assert!(
-        cards_in_w.is_empty(),
-        "no card rows should have leaked from the rolled-back txn"
-    );
-    let term_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM terminals")
-        .fetch_one(repo.pool())
+                let cards_in_w = repo.cards_by_track(w.id.as_str()).await.unwrap();
+                assert!(
+                    cards_in_w.is_empty(),
+                    "no card rows should have leaked from the rolled-back txn"
+                );
+                let term_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM terminals")
+                    .fetch_one(repo.pool())
+                    .await
+                    .unwrap();
+                assert_eq!(term_count.0, 0, "no terminal rows should have been written");
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(term_count.0, 0, "no terminal rows should have been written");
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -1405,32 +1498,41 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
     let w = make_track(&repo, c.id.as_str(), "W").await;
 
     let card_id = calm_server::model::new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let (card, _term, _mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
-        &mut tx,
-        card_id,
-        &calm_server::model::new_id(),
-        None,
-        w.id.clone(),
-        None,
-        Some(7.0),
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        calm_server::model::CardRole::Worker,
-        true,
-        &calm_server::card_role_cache::CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (card, _term, _mcp_token) = calm_truth::db::sqlite::card_with_codex_create_tx(
+                    &mut tx,
+                    card_id,
+                    &calm_server::model::new_id(),
+                    None,
+                    w.id.clone(),
+                    None,
+                    Some(7.0),
+                    "/workspace".into(),
+                    json!({}),
+                    None,
+                    None,
+                    None,
+                    calm_server::model::CardRole::Worker,
+                    true,
+                    &calm_server::card_role_cache::CardRoleCache::new(),
+                    calm_server::routes::theme::RequestTheme::default_dark(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    assert_eq!(card.sort, 7.0);
-    let got = repo.card_get(card.id.as_str()).await.unwrap().unwrap();
-    assert_eq!(got.sort, 7.0);
+                assert_eq!(card.sort, 7.0);
+                let got = repo.card_get(card.id.as_str()).await.unwrap().unwrap();
+                assert_eq!(got.sort, 7.0);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 fn sample_new_plugin(id: &str, enabled: bool) -> NewPlugin {
@@ -1634,17 +1736,20 @@ async fn open_refuses_unknown_future_migration() {
     {
         let repo = SqlxRepo::open(&url).await.expect("initial open");
         // Only `version` matters for the guard; the other columns are arbitrary.
-        sqlx::query(
-            r#"INSERT INTO _sqlx_migrations
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    r#"INSERT INTO _sqlx_migrations
                    (version, description, installed_on, success, checksum, execution_time)
                VALUES (?1, ?2, CURRENT_TIMESTAMP, 1, ?3, 0)"#,
-        )
-        .bind(99_999_999_i64)
-        .bind("synthetic future migration")
-        .bind(b"\0\0\0\0".as_slice())
-        .execute(repo.pool())
-        .await
-        .expect("insert synthetic future migration row");
+                )
+                .bind(99_999_999_i64)
+                .bind("synthetic future migration")
+                .bind(b"\0\0\0\0".as_slice()),
+            )
+            .await
+            .expect("insert synthetic future migration row");
         // Drop `repo` so its pool releases the file lock before reopen.
     }
 
@@ -1765,196 +1870,205 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_planners() {
     let cache = CardRoleCache::new();
 
     let pending_card_id = calm_server::model::new_id();
-    let mut tx = repo.pool().begin().await.unwrap();
-    let mapped = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        NewCard {
-            track_id: mapped_track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "codex_source": "shared",
-                "codex_thread_id": "T-shared-mapped",
-                "appserver_sock": "unix:///tmp/shared.sock",
-            }),
-        },
-        CardRole::Planner,
-        false,
-        &cache,
-    )
-    .await
-    .expect("create mapped shared planner card");
-    let pending = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        pending_card_id.clone(),
-        NewCard {
-            track_id: pending_track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "appserver_sock": "unix:///tmp/shared.sock",
-            }),
-        },
-        CardRole::Planner,
-        false,
-        &cache,
-    )
-    .await
-    .expect("create pending shared planner card");
-    let phantom = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        NewCard {
-            track_id: phantom_track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "appserver_sock": "unix:///tmp/shared.sock",
-            }),
-        },
-        CardRole::Planner,
-        false,
-        &cache,
-    )
-    .await
-    .expect("create deferred placeholder shared planner card");
-    let chat = calm_server::db::sqlite::card_create_with_id_tx(
-        &mut tx,
-        calm_server::model::new_id(),
-        NewCard {
-            track_id: pending_track.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({
-                "schemaVersion": 1,
-                "harness_profile": "plain_chat",
-                "appserver_sock": "unix:///tmp/shared.sock",
-            }),
-        },
-        CardRole::Worker,
-        false,
-        &cache,
-    )
-    .await
-    .expect("create plain-chat card");
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let mapped = calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    NewCard {
+                        track_id: mapped_track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({
+                            "codex_source": "shared",
+                            "codex_thread_id": "T-shared-mapped",
+                            "appserver_sock": "unix:///tmp/shared.sock",
+                        }),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &cache,
+                )
+                .await
+                .expect("create mapped shared planner card");
+                let pending = calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    pending_card_id.clone(),
+                    NewCard {
+                        track_id: pending_track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({
+                            "appserver_sock": "unix:///tmp/shared.sock",
+                        }),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &cache,
+                )
+                .await
+                .expect("create pending shared planner card");
+                let phantom = calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    NewCard {
+                        track_id: phantom_track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({
+                            "appserver_sock": "unix:///tmp/shared.sock",
+                        }),
+                    },
+                    CardRole::Planner,
+                    false,
+                    &cache,
+                )
+                .await
+                .expect("create deferred placeholder shared planner card");
+                let chat = calm_server::db::sqlite::card_create_with_id_tx(
+                    &mut tx,
+                    calm_server::model::new_id(),
+                    NewCard {
+                        track_id: pending_track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({
+                            "schemaVersion": 1,
+                            "harness_profile": "plain_chat",
+                            "appserver_sock": "unix:///tmp/shared.sock",
+                        }),
+                    },
+                    CardRole::Worker,
+                    false,
+                    &cache,
+                )
+                .await
+                .expect("create plain-chat card");
+                tx.commit().await.unwrap();
 
-    let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
-    let term = make_terminal(&repo, pending.id.as_str()).await;
-    let chat_term = make_terminal(&repo, chat.id.as_str()).await;
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: calm_server::model::new_id(),
-            card_id: mapped.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Running,
-            terminal_run_id: Some(mapped_term.id.to_string()),
-            thread_id: Some("T-shared-mapped".to_string()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: calm_server::model::new_id(),
-            card_id: chat.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some(chat_term.id.to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(json!({"mode": "harness"})),
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: calm_server::model::new_id(),
-            card_id: pending.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::TurnPending,
-            terminal_run_id: Some(term.id.to_string()),
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: None,
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    let phantom_session_id = calm_server::model::new_id();
-    session_prepare_deferred_planner_tx(
-        &mut tx,
-        &WorkerSessionInit {
-            id: phantom_session_id.clone(),
-            card_id: phantom.id.to_string(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Starting,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(json!({"mode": "harness"})),
-            spawn_op_id: None,
-            now_ms: calm_server::model::now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+                let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
+                let term = make_terminal(&repo, pending.id.as_str()).await;
+                let chat_term = make_terminal(&repo, chat.id.as_str()).await;
+                let mut tx = write_session.begin().await.unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: calm_server::model::new_id(),
+                        card_id: mapped.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Running,
+                        terminal_run_id: Some(mapped_term.id.to_string()),
+                        thread_id: Some("T-shared-mapped".to_string()),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: calm_server::model::new_id(),
+                        card_id: chat.id.to_string(),
+                        kind: WorkerSessionKind::CodexCard,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some(chat_term.id.to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(json!({"mode": "harness"})),
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: calm_server::model::new_id(),
+                        card_id: pending.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: Some(term.id.to_string()),
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: None,
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                let phantom_session_id = calm_server::model::new_id();
+                session_prepare_deferred_planner_tx(
+                    &mut tx,
+                    &WorkerSessionInit {
+                        id: phantom_session_id.clone(),
+                        card_id: phantom.id.to_string(),
+                        kind: WorkerSessionKind::SharedPlanner,
+                        agent_provider: Some(AgentProvider::Codex),
+                        status: WorkerSessionState::Starting,
+                        terminal_run_id: None,
+                        thread_id: None,
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(json!({"mode": "harness"})),
+                        spawn_op_id: None,
+                        now_ms: calm_server::model::now_ms(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    let phantom_mirror: Option<String> =
-        sqlx::query_scalar("SELECT id FROM worker_sessions WHERE id = ?1")
-            .bind(&phantom_session_id)
-            .fetch_optional(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(phantom_mirror.as_deref(), Some(phantom_session_id.as_str()));
+                let phantom_mirror: Option<String> =
+                    sqlx::query_scalar("SELECT id FROM worker_sessions WHERE id = ?1")
+                        .bind(&phantom_session_id)
+                        .fetch_optional(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(phantom_mirror.as_deref(), Some(phantom_session_id.as_str()));
 
-    assert_eq!(
-        repo.shared_planner_cards_for_initial_prompt_takeover()
-            .await
-            .expect("shared pending takeover query"),
-        vec![(
-            pending.id.to_string(),
-            pending_track.id.to_string(),
-            term.id.to_string(),
-            0,
-        )]
-    );
+                assert_eq!(
+                    repo.shared_planner_cards_for_initial_prompt_takeover()
+                        .await
+                        .expect("shared pending takeover query"),
+                    vec![(
+                        pending.id.to_string(),
+                        pending_track.id.to_string(),
+                        term.id.to_string(),
+                        0,
+                    )]
+                );
 
-    repo.terminal_set_exit(term.id.as_str(), Some(0), false)
+                repo.terminal_set_exit(term.id.as_str(), Some(0), false)
+                    .await
+                    .unwrap();
+                assert!(
+                    repo.shared_planner_cards_for_initial_prompt_takeover()
+                        .await
+                        .expect("shared pending takeover query after terminal exit")
+                        .is_empty(),
+                    "exited terminal must drop the card from shared pending takeover"
+                );
+            })
+        })
         .await
-        .unwrap();
-    assert!(
-        repo.shared_planner_cards_for_initial_prompt_takeover()
-            .await
-            .expect("shared pending takeover query after terminal exit")
-            .is_empty(),
-        "exited terminal must drop the card from shared pending takeover"
-    );
+        .expect("independent write operation")
 }

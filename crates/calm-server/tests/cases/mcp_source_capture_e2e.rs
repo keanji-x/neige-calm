@@ -28,9 +28,8 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_truth::db::sqlite::{
-    SqlxRepo, begin_immediate_tx, card_mcp_token_set_tx, card_with_codex_create_tx,
-    session_bind_attribution_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
-    session_start_runtime_tx,
+    SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
+    session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -115,100 +114,107 @@ async fn mint_card_with_thread(
 ) -> (String, String) {
     let card_id = calm_server::model::new_id();
     let worker_session_id = calm_server::model::new_id();
-    let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
-    let mcp_token = if role == CardRole::Planner {
-        Some(
-            crate::support::planner::mint_tx(
-                &mut tx,
-                card_id.clone(),
-                &worker_session_id,
-                track_id,
-                card_role_cache,
-            )
-            .await,
-        )
-    } else {
-        let (_, _, token) = card_with_codex_create_tx(
-            &mut tx,
-            card_id.clone(),
-            &worker_session_id,
-            None,
-            track_id,
-            None,
-            None,
-            "/workspace".into(),
-            json!({}),
-            None,
-            None,
-            None,
-            role,
-            true,
-            card_role_cache,
-            calm_server::routes::theme::RequestTheme::default_dark(),
-        )
+    let write_db = (sqlx_repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("begin card tx");
+                let mcp_token = if role == CardRole::Planner {
+                    Some(
+                        crate::support::planner::mint_tx(
+                            &mut tx,
+                            card_id.clone(),
+                            &worker_session_id,
+                            track_id,
+                            card_role_cache,
+                        )
+                        .await,
+                    )
+                } else {
+                    let (_, _, token) = card_with_codex_create_tx(
+                        &mut tx,
+                        card_id.clone(),
+                        &worker_session_id,
+                        None,
+                        track_id,
+                        None,
+                        None,
+                        "/workspace".into(),
+                        json!({}),
+                        None,
+                        None,
+                        None,
+                        role,
+                        true,
+                        card_role_cache,
+                        calm_server::routes::theme::RequestTheme::default_dark(),
+                    )
+                    .await
+                    .expect("mint card");
+                    token
+                };
+                let raw_token = match mcp_token {
+                    Some(token) => token,
+                    None => {
+                        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+                        let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+                        card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+                            .await
+                            .expect("mint card MCP token");
+                        session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
+                            .await
+                            .expect("mint session MCP token");
+                        token.into_inner()
+                    }
+                };
+                tx.commit().await.expect("commit card tx");
+                let thread_id = format!("thread-{card_id}");
+                let mut tx = write_session.begin().await.expect("begin runtime tx");
+                if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, &card_id)
+                    .await
+                    .expect("active runtime lookup")
+                {
+                    session_bind_attribution_tx(
+                        &mut tx,
+                        &runtime.id,
+                        ThreadAttribution {
+                            worker_session_id: runtime.id.clone(),
+                            provider: AgentProvider::Codex,
+                            thread_id: Some(thread_id.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                        },
+                    )
+                    .await
+                    .expect("bind thread attribution");
+                } else {
+                    session_start_runtime_tx(
+                        &mut tx,
+                        WorkerSessionInit {
+                            id: calm_server::model::new_id(),
+                            card_id: card_id.clone(),
+                            kind: WorkerSessionKind::CodexCard,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Running,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_id.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: None,
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        },
+                    )
+                    .await
+                    .expect("start runtime");
+                }
+                tx.commit().await.expect("commit runtime tx");
+                (raw_token, thread_id)
+            })
+        })
         .await
-        .expect("mint card");
-        token
-    };
-    let raw_token = match mcp_token {
-        Some(token) => token,
-        None => {
-            let token = calm_server::mcp_server::auth::CardMcpToken::generate();
-            let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-            card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
-                .await
-                .expect("mint card MCP token");
-            session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
-                .await
-                .expect("mint session MCP token");
-            token.into_inner()
-        }
-    };
-    tx.commit().await.expect("commit card tx");
-    let thread_id = format!("thread-{card_id}");
-    let mut tx = begin_immediate_tx(sqlx_repo.db())
-        .await
-        .expect("begin runtime tx");
-    if let Some(runtime) = session_projection_active_for_card_tx(&mut tx, &card_id)
-        .await
-        .expect("active runtime lookup")
-    {
-        session_bind_attribution_tx(
-            &mut tx,
-            &runtime.id,
-            ThreadAttribution {
-                worker_session_id: runtime.id.clone(),
-                provider: AgentProvider::Codex,
-                thread_id: Some(thread_id.clone()),
-                session_id: None,
-                active_turn_id: None,
-            },
-        )
-        .await
-        .expect("bind thread attribution");
-    } else {
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit {
-                id: calm_server::model::new_id(),
-                card_id: card_id.clone(),
-                kind: WorkerSessionKind::CodexCard,
-                agent_provider: Some(AgentProvider::Codex),
-                status: WorkerSessionState::Running,
-                terminal_run_id: None,
-                thread_id: Some(thread_id.clone()),
-                session_id: None,
-                active_turn_id: None,
-                handle_state_json: None,
-                spawn_op_id: None,
-                now_ms: now_ms(),
-            },
-        )
-        .await
-        .expect("start runtime");
-    }
-    tx.commit().await.expect("commit runtime tx");
-    (raw_token, thread_id)
+        .expect("independent write operation")
 }
 
 async fn boot() -> Fixture {

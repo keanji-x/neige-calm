@@ -465,10 +465,13 @@ impl ProviderAdapter for DropThenFailRedriven {
             .collect();
         assert_eq!(kept.len() + 1, before.len(), "premise: one entry delivered");
         snapshot.set_pending_entries(kept);
-        sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
-            .bind(serde_json::to_string(&snapshot).unwrap())
-            .bind(&id)
-            .execute(self.repo.pool())
+        (self.repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+                    .bind(serde_json::to_string(&snapshot).unwrap())
+                    .bind(&id),
+            )
             .await
             .unwrap();
         Err(CalmError::Internal(
@@ -566,10 +569,13 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
         "premise: the fold holds two ids"
     );
     snapshot.set_pending_entries(entries);
-    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
-        .bind(serde_json::to_string(&snapshot).unwrap())
-        .bind(&wedged)
-        .execute(boot.repo.pool())
+    (boot.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+                .bind(serde_json::to_string(&snapshot).unwrap())
+                .bind(&wedged),
+        )
         .await
         .unwrap();
 

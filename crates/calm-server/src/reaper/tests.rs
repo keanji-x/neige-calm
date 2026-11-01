@@ -110,9 +110,12 @@ async fn sweep_exited_failed_converges_dead_worker_task() {
     let card = insert_session(&repo, session("ws-dead-worker", track_id.clone(), 1)).await;
     // §3.7: a first report may precede the task's card stamp, with an op-target proof.
     let op_id = insert_spawn_operation(&repo, Some(&task.id), Some(card.id.as_str())).await;
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'ws-dead-worker'")
-        .bind(op_id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET spawn_op_id = ? WHERE id = 'ws-dead-worker'")
+                .bind(op_id),
+        )
         .await
         .unwrap();
 
@@ -194,10 +197,13 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     worker.thread_id = Some("t-codex-dead".into());
     worker.spawn_op_id = Some(op_id);
     let card = insert_session(&repo, worker).await;
-    sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-        .bind(card.id.as_str())
-        .bind(&task.id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                .bind(card.id.as_str())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
 
@@ -276,10 +282,13 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
     worker.thread_id = Some("t-codex-lease-dead".into());
     worker.spawn_op_id = Some(op_id.clone());
     let card = insert_session(&repo, worker).await;
-    sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
-        .bind(card.id.as_str())
-        .bind(&task.id)
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET worker_card_id = ? WHERE id = ?")
+                .bind(card.id.as_str())
+                .bind(&task.id),
+        )
         .await
         .unwrap();
     let (lease_id, lease_path) =

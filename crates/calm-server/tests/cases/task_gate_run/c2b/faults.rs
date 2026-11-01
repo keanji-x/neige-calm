@@ -160,9 +160,11 @@ async fn settled(fx: &Fx, operation: &Operation) {
 }
 
 async fn expire(fx: &Fx, operation: &Operation) {
-    sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?")
-        .bind(&operation.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?").bind(&operation.id),
+        )
         .await
         .unwrap();
 }
@@ -217,19 +219,19 @@ async fn release_handoff(fail_write: bool, replacement: bool, child_waits: bool)
         settled(&fx, &before).await;
     }
     if fail_write {
-        sqlx::query(
+        (fx.db()).writer().execute(sqlx::query(
             "CREATE TRIGGER refuse_decision BEFORE UPDATE OF tx_output_json ON operations \
              WHEN json_extract(NEW.tx_output_json,'$.data.gate_execution.decision.Stopping.reason')='ReleaseRefused' \
              BEGIN SELECT RAISE(ABORT,'one-shot refusal persistence failure'); END",
-        )
-            .execute(&fx.pool()).await.unwrap();
+        )).await.unwrap();
         resume.notify_one();
         tokio::time::timeout(WAIT, retry_entered.notified())
             .await
             .unwrap();
         assert_eq!(record(&op(&fx, &a.task.id).await)["decision"], "Observing");
-        sqlx::query("DROP TRIGGER refuse_decision")
-            .execute(&fx.pool())
+        (fx.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER refuse_decision"))
             .await
             .unwrap();
     }

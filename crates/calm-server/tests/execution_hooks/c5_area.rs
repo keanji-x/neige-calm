@@ -17,10 +17,19 @@ async fn admit(f: &Fixture, owner: &str, root: std::path::PathBuf) -> ExecutionI
     let mut intent = crate::support::execution::occupancy_intent(root);
     intent.metadata.track = exec::TrackId(owner.into());
     let id = intent.metadata.id.clone();
-    let mut tx = sqlite::begin_immediate_tx(f.repo.db()).await.unwrap();
-    let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
-    tx.commit().await.unwrap();
-    id
+    let write_db = (f.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let _ticket = f.engine.admit(&mut tx, intent).await.unwrap();
+                tx.commit().await.unwrap();
+                id
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 fn branch_exists(track: &Track) -> bool {
     std::process::Command::new("git")
@@ -173,10 +182,13 @@ async fn c5_area_delete_lock_blocks_container_terminal_creation() {
         .as_str()
         .unwrap()
         .to_owned();
-    sqlx::query("UPDATE tracks SET area_id=? WHERE id=?")
-        .bind(owner_area)
-        .bind(&f.track)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=? WHERE id=?")
+                .bind(owner_area)
+                .bind(&f.track),
+        )
         .await
         .unwrap();
     f.repo.track_area_cache().remove(&f.track.clone().into());
@@ -267,10 +279,13 @@ async fn c5_area_committed_worktree_before_sweep_admission_is_busy() {
         .as_str()
         .unwrap()
         .to_owned();
-    sqlx::query("UPDATE tracks SET area_id=? WHERE id=?")
-        .bind(owner_area)
-        .bind(&f.track)
-        .execute(f.repo.db().writer_pool())
+    (f.repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=? WHERE id=?")
+                .bind(owner_area)
+                .bind(&f.track),
+        )
         .await
         .unwrap();
     f.repo.track_area_cache().remove(&f.track.clone().into());

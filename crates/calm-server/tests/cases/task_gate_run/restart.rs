@@ -67,51 +67,58 @@ async fn new_worker_waits_for_independent_file_writer_after_boot() {
             .unwrap();
         assert_eq!(busy_timeout, 5000);
     }
-    let holder = calm_server::db::sqlite::begin_immediate_tx(&independent)
+    let write_db = (independent).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let holder = write_session.begin().await.unwrap();
+                            // Poll the real card/session helper while the independent file writer holds admission.
+                            let mut create = Box::pin(fx.new_worker("writer-admission", AgentProvider::Codex));
+                            assert!(
+                                tokio::time::timeout(Duration::from_secs(1), &mut create)
+                                    .await
+                                    .is_err(),
+                                "worker creation completed while an independent writer was held"
+                            );
+                            holder.rollback().await.unwrap();
+                            let worker = tokio::time::timeout(WAIT, create).await.unwrap();
+                            let cards: Vec<(String, String, String)> =
+                                sqlx::query_as("SELECT track_id, role, session_id FROM cards WHERE id = ?")
+                                    .bind(&worker.card_id)
+                                    .fetch_all(&fx.pool())
+                                    .await
+                                    .unwrap();
+                            assert_eq!(
+                                cards,
+                                vec![(
+                                    fx.track().into(),
+                                    "worker".into(),
+                                    worker.session_id.clone()
+                                )]
+                            );
+                            let sessions: Vec<(String, String, String, String, String)> = sqlx::query_as(
+                    "SELECT id, track_id, provider, contract, state FROM worker_sessions WHERE card_id = ?",
+                )
+                .bind(&worker.card_id)
+                .fetch_all(&fx.pool())
+                .await
+                .unwrap();
+                            assert_eq!(
+                                sessions,
+                                vec![(
+                                    worker.session_id,
+                                    fx.track().into(),
+                                    "codex".into(),
+                                    "executor".into(),
+                                    "starting".into()
+                                )]
+                            );
+                            child.sigkill_and_reap();
+            })
+        })
         .await
-        .unwrap();
-    // Poll the real card/session helper while the independent file writer holds admission.
-    let mut create = Box::pin(fx.new_worker("writer-admission", AgentProvider::Codex));
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), &mut create)
-            .await
-            .is_err(),
-        "worker creation completed while an independent writer was held"
-    );
-    holder.rollback().await.unwrap();
-    let worker = tokio::time::timeout(WAIT, create).await.unwrap();
-    let cards: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT track_id, role, session_id FROM cards WHERE id = ?")
-            .bind(&worker.card_id)
-            .fetch_all(&fx.pool())
-            .await
-            .unwrap();
-    assert_eq!(
-        cards,
-        vec![(
-            fx.track().into(),
-            "worker".into(),
-            worker.session_id.clone()
-        )]
-    );
-    let sessions: Vec<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT id, track_id, provider, contract, state FROM worker_sessions WHERE card_id = ?",
-    )
-    .bind(&worker.card_id)
-    .fetch_all(&fx.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        sessions,
-        vec![(
-            worker.session_id,
-            fx.track().into(),
-            "codex".into(),
-            "executor".into(),
-            "starting".into()
-        )]
-    );
-    child.sigkill_and_reap();
+        .expect("independent write operation")
 }
 
 fn typed_record(op: &Operation) -> Value {
@@ -379,80 +386,93 @@ async fn a_restart_during_a_step_ends_it_as_infra() {
     let key = format!("{}#r1", a.task.id);
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     let hash = calm_server::mcp_server::auth::hash_token(token.as_str());
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&fx.db())
-        .await
-        .unwrap();
-    calm_server::db::sqlite::card_mcp_token_set_tx(&mut tx, &a.worker.card_id, &hash)
-        .await
-        .unwrap();
-    calm_server::db::sqlite::session_mcp_token_set_tx(&mut tx, &a.worker.session_id, &hash)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE cards SET session_id=? WHERE id=?")
-        .bind(&a.worker.session_id)
-        .bind(&a.worker.card_id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
-        .bind(&a.worker.thread_id)
-        .bind(&a.worker.session_id)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let _request = crate::support::mcp::send_tool_call_without_reply(
-        &world.tmp_path.join("data/mcp/kernel.sock"),
-        token.as_str(),
-        &a.worker.thread_id,
-        2,
-        GATE,
-        json!({"attempt_id":a.task.id,"commit_message":"test: checkpoint restarted worker"}),
-    )
-    .await;
-    let op = wait_run_op(fx, &key, "parked", |op| {
-        op.phase.tag() == PhaseTag::Parked && typed_record(op)["execution_id"].is_string()
-    })
-    .await;
-    let execution: workspace_runtime::execution::ExecutionId =
-        serde_json::from_value(typed_record(&op)["execution_id"].clone()).unwrap();
-    tokio::time::timeout(WAIT, async {
-        while !log_of(&world, &a.task.id).contains("::gate-step block") {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the step started");
-    boot1.sigkill_and_reap();
-    assert!(matches!(
-        fx.execution
-            .lifecycle
-            .engine()
-            .unwrap()
-            .output(&execution, None)
-            .await
-            .unwrap(),
-        workspace_runtime::execution::ExecutionReply::Observation {
-            state: workspace_runtime::execution::ExecutionState::Spawned,
-            ..
-        }
-    ));
+    let write_db = (fx.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            calm_server::db::sqlite::card_mcp_token_set_tx(&mut tx, &a.worker.card_id, &hash)
+                                .await
+                                .unwrap();
+                            calm_server::db::sqlite::session_mcp_token_set_tx(
+                                &mut tx,
+                                &a.worker.session_id,
+                                &hash,
+                            )
+                            .await
+                            .unwrap();
+                            sqlx::query("UPDATE cards SET session_id=? WHERE id=?")
+                                .bind(&a.worker.session_id)
+                                .bind(&a.worker.card_id)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            sqlx::query("UPDATE worker_sessions SET thread_id=? WHERE id=?")
+                                .bind(&a.worker.thread_id)
+                                .bind(&a.worker.session_id)
+                                .execute(&mut **tx)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            let _request = crate::support::mcp::send_tool_call_without_reply(
+                    &world.tmp_path.join("data/mcp/kernel.sock"),
+                    token.as_str(),
+                    &a.worker.thread_id,
+                    2,
+                    GATE,
+                    json!({"attempt_id":a.task.id,"commit_message":"test: checkpoint restarted worker"}),
+                )
+                .await;
+                            let op = wait_run_op(fx, &key, "parked", |op| {
+                                op.phase.tag() == PhaseTag::Parked
+                                    && typed_record(op)["execution_id"].is_string()
+                            })
+                            .await;
+                            let execution: workspace_runtime::execution::ExecutionId =
+                                serde_json::from_value(typed_record(&op)["execution_id"].clone()).unwrap();
+                            tokio::time::timeout(WAIT, async {
+                                while !log_of(&world, &a.task.id).contains("::gate-step block") {
+                                    tokio::time::sleep(Duration::from_millis(20)).await;
+                                }
+                            })
+                            .await
+                            .expect("the step started");
+                            boot1.sigkill_and_reap();
+                            assert!(matches!(
+                                fx.execution
+                                    .lifecycle
+                                    .engine()
+                                    .unwrap()
+                                    .output(&execution, None)
+                                    .await
+                                    .unwrap(),
+                                workspace_runtime::execution::ExecutionReply::Observation {
+                                    state: workspace_runtime::execution::ExecutionState::Spawned,
+                                    ..
+                                }
+                            ));
 
-    let Some(mut boot2) = launch(&world, "boot-2") else {
-        return; // SKIP was printed
-    };
-    let op = wait_run_op(fx, &key, "failed", |op| {
-        op.phase.tag() == PhaseTag::Succeeded
-    })
-    .await;
-    boot2.sigkill_and_reap();
-    infra_result(&op);
-    let row: Option<String> =
-        sqlx::query_scalar("SELECT settlement_json FROM workspace_executions WHERE execution_id=?")
-            .bind(execution.as_str())
-            .fetch_one(&fx.pool())
-            .await
-            .unwrap();
-    assert!(row.is_some(), "the executor durably drained before verdict");
-    assert!(!flag.exists(), "the step was never released");
+                            let Some(mut boot2) = launch(&world, "boot-2") else {
+                                return; // SKIP was printed
+                            };
+                            let op = wait_run_op(fx, &key, "failed", |op| {
+                                op.phase.tag() == PhaseTag::Succeeded
+                            })
+                            .await;
+                            boot2.sigkill_and_reap();
+                            infra_result(&op);
+                            let row: Option<String> = sqlx::query_scalar(
+                                "SELECT settlement_json FROM workspace_executions WHERE execution_id=?",
+                            )
+                            .bind(execution.as_str())
+                            .fetch_one(&fx.pool())
+                            .await
+                            .unwrap();
+                            assert!(row.is_some(), "the executor durably drained before verdict");
+                            assert!(!flag.exists(), "the step was never released");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

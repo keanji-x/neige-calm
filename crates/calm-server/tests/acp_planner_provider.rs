@@ -380,46 +380,58 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
     // Restore the durable state at the real post-dispatch/pre-settlement crash checkpoint.
     snapshot.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
     assert!(snapshot.pending_entries().is_empty());
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            sqlx::query(
+                    "UPDATE acp_submissions SET state='sending',outcome_json=NULL WHERE worker_session_id=?1",
+                )
+                .bind(&runtime.id)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
+                            sqlx::query(
+                                "UPDATE worker_sessions SET handle_state_json=?2,active_turn_id=?3 WHERE id=?1",
+                            )
+                            .bind(&runtime.id)
+                            .bind(serde_json::to_string(&snapshot).unwrap())
+                            .bind(outcome["id"].as_str().unwrap())
+                            .execute(&mut **tx)
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                            let stack = boot(&root).await;
+                            let outcomes = stack.wait_outcomes(&card, 1).await;
+                            assert_eq!(outcomes[0]["id"], outcome["id"]);
+                            assert_eq!(outcomes[0]["status"], "failed");
+                            assert!(
+                                outcomes[0]["error"]["message"]
+                                    .as_str()
+                                    .unwrap()
+                                    .contains("unknown")
+                            );
+                            assert_eq!(
+                                requests(&root, "session/prompt").len(),
+                                1,
+                                "recovery cannot resend"
+                            );
+                            assert!(
+                                calm_server::db::sqlite::acp_submission_unresolved(
+                                    pool.read_pool(),
+                                    &runtime.id
+                                )
+                                .await
+                                .unwrap()
+                            );
+                            stack.shutdown().await;
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query(
-        "UPDATE acp_submissions SET state='sending',outcome_json=NULL WHERE worker_session_id=?1",
-    )
-    .bind(&runtime.id)
-    .execute(&mut **tx)
-    .await
-    .unwrap();
-    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2,active_turn_id=?3 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&snapshot).unwrap())
-        .bind(outcome["id"].as_str().unwrap())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let stack = boot(&root).await;
-    let outcomes = stack.wait_outcomes(&card, 1).await;
-    assert_eq!(outcomes[0]["id"], outcome["id"]);
-    assert_eq!(outcomes[0]["status"], "failed");
-    assert!(
-        outcomes[0]["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown")
-    );
-    assert_eq!(
-        requests(&root, "session/prompt").len(),
-        1,
-        "recovery cannot resend"
-    );
-    assert!(
-        calm_server::db::sqlite::acp_submission_unresolved(pool.read_pool(), &runtime.id)
-            .await
-            .unwrap()
-    );
-    stack.shutdown().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -451,10 +463,13 @@ async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
         Vec::new(),
     ));
     checkpoint.set_pending_entries(entries);
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                .bind(&runtime.id)
+                .bind(serde_json::to_string(&checkpoint).unwrap()),
+        )
         .await
         .unwrap();
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
@@ -581,56 +596,63 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
     let mut checkpoint = stack.harness(&runtime.id).snapshot().await.unwrap();
     stack.shutdown().await;
     checkpoint.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                delete_checkpoint_rows(&mut tx, &card, "item/completed").await;
+                delete_checkpoint_rows(&mut tx, &card, "item/started").await;
+                delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                    .bind(&runtime.id)
+                    .bind(serde_json::to_string(&checkpoint).unwrap())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                let stack = boot(&root).await;
+                let rows = stack
+                    .repo()
+                    .transcript_rows_of_thread(&card, runtime.thread_id.as_deref().unwrap())
+                    .await
+                    .unwrap();
+                assert!(
+                    rows.iter()
+                        .any(|row| row.params.contains("retain this reply")
+                            && row.item_type.as_deref() == Some("agentMessage")),
+                    "completed reply must recover from its receipt"
+                );
+                let completed: Vec<Value> = rows
+                    .iter()
+                    .filter(|row| row.method == "item/completed")
+                    .map(|row| serde_json::from_str::<Value>(&row.params).unwrap()["item"].clone())
+                    .collect();
+                assert_eq!(completed.len(), 3);
+                assert_eq!(completed[0]["text"], "before operation");
+                assert_eq!(completed[1]["type"], "dynamicToolCall");
+                assert!(
+                    completed[2]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("retain this reply")
+                );
+                assert_eq!(
+                    completed
+                        .iter()
+                        .map(|item| item["id"].as_str().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len(),
+                    3
+                );
+                assert_eq!(stack.outcomes(&card).await[0]["id"], outcome["id"]);
+                assert_eq!(requests(&root, "session/prompt").len(), 1);
+                stack.shutdown().await;
+            })
+        })
         .await
-        .unwrap();
-    delete_checkpoint_rows(&mut tx, &card, "item/completed").await;
-    delete_checkpoint_rows(&mut tx, &card, "item/started").await;
-    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let stack = boot(&root).await;
-    let rows = stack
-        .repo()
-        .transcript_rows_of_thread(&card, runtime.thread_id.as_deref().unwrap())
-        .await
-        .unwrap();
-    assert!(
-        rows.iter()
-            .any(|row| row.params.contains("retain this reply")
-                && row.item_type.as_deref() == Some("agentMessage")),
-        "completed reply must recover from its receipt"
-    );
-    let completed: Vec<Value> = rows
-        .iter()
-        .filter(|row| row.method == "item/completed")
-        .map(|row| serde_json::from_str::<Value>(&row.params).unwrap()["item"].clone())
-        .collect();
-    assert_eq!(completed.len(), 3);
-    assert_eq!(completed[0]["text"], "before operation");
-    assert_eq!(completed[1]["type"], "dynamicToolCall");
-    assert!(
-        completed[2]["text"]
-            .as_str()
-            .unwrap()
-            .contains("retain this reply")
-    );
-    assert_eq!(
-        completed
-            .iter()
-            .map(|item| item["id"].as_str().unwrap())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        3
-    );
-    assert_eq!(stack.outcomes(&card).await[0]["id"], outcome["id"]);
-    assert_eq!(requests(&root, "session/prompt").len(), 1);
-    stack.shutdown().await;
+        .expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -655,8 +677,8 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
         .unwrap();
     // Crash replay uses the operation's original Idle snapshot while boot has
     // independently recovered and dispatched this runtime's current input.
-    sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-        .bind(&operation).execute(pool.writer_pool()).await.unwrap();
+    (pool).writer().execute(sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+        .bind(&operation)).await.unwrap();
     calm_server::recover_operations_on_boot(&stack.state)
         .await
         .unwrap();
@@ -707,64 +729,68 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
     stack.wait_outcomes(&card, 1).await;
     let pool = stack.repo().sqlite_db().unwrap();
     stack.shutdown().await;
-    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-        .bind(&runtime.id)
-        .bind(serde_json::to_string(&checkpoint).unwrap())
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-    let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
-        .bind(&track)
-        .fetch_one(&mut **tx)
-        .await
-        .unwrap();
-    let report: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND kind='track-report'")
+    let write_db = (pool).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+            .bind(&runtime.id)
+            .bind(serde_json::to_string(&checkpoint).unwrap())
+            .execute(&mut **tx)
+            .await
+            .unwrap();
+        let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
             .bind(&track)
             .fetch_one(&mut **tx)
             .await
             .unwrap();
-    let later = calm_server::db::sqlite::append_decision_event_in_tx(
-        &mut tx,
-        &ActorId::User,
-        &EventScope::Track {
-            area: area.into(),
-            track: TrackId::from(track.clone()),
-        },
-        None,
-        &Event::TrackReportEdited {
-            track_id: track.clone().into(),
-            card_id: CardId::from(report),
-            author: EditAuthor::User,
-            author_plugin_id: None,
-            edit_id: "later-edit".into(),
-            summary_before: String::new(),
-            summary_after: String::new(),
-            body_before: "original report".into(),
-            body_after: "later report".into(),
-            agent_message: None,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let stack = boot(&root).await;
-    let recovered = stack.harness(&runtime.id).snapshot().await.unwrap();
-    let entries = recovered.pending_entries();
-    assert_eq!(
-        entries.len(),
-        1,
-        "only the undispatched report edit remains"
-    );
-    assert_eq!(entries[0].envelope_id(), Some(later));
-    assert!(
-        matches!(entries[0].observation(), Observation::ReportEdited { body, .. } if body == "later report")
-    );
-    assert_eq!(requests(&root, "session/prompt").len(), 1);
-    stack.shutdown().await;
+        let report: String =
+            sqlx::query_scalar("SELECT id FROM cards WHERE track_id=? AND kind='track-report'")
+                .bind(&track)
+                .fetch_one(&mut **tx)
+                .await
+                .unwrap();
+        let later = calm_server::db::sqlite::append_decision_event_in_tx(
+            &mut tx,
+            &ActorId::User,
+            &EventScope::Track {
+                area: area.into(),
+                track: TrackId::from(track.clone()),
+            },
+            None,
+            &Event::TrackReportEdited {
+                track_id: track.clone().into(),
+                card_id: CardId::from(report),
+                author: EditAuthor::User,
+                author_plugin_id: None,
+                edit_id: "later-edit".into(),
+                summary_before: String::new(),
+                summary_after: String::new(),
+                body_before: "original report".into(),
+                body_after: "later report".into(),
+                agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let stack = boot(&root).await;
+        let recovered = stack.harness(&runtime.id).snapshot().await.unwrap();
+        let entries = recovered.pending_entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the undispatched report edit remains"
+        );
+        assert_eq!(entries[0].envelope_id(), Some(later));
+        assert!(
+            matches!(entries[0].observation(), Observation::ReportEdited { body, .. } if body == "later report")
+        );
+        assert_eq!(requests(&root, "session/prompt").len(), 1);
+        stack.shutdown().await;
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

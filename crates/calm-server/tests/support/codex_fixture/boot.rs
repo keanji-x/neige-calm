@@ -150,9 +150,12 @@ pub async fn boot_forge_e2e_fixture(
         .await
         .expect("make the track worktree");
     if !fixture.require_task_gates {
-        sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
-            .bind(track.id.as_str())
-            .execute(sqlx_repo.pool())
+        (sqlx_repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
+                    .bind(track.id.as_str()),
+            )
             .await
             .expect("disable task gates for fixture track");
     }

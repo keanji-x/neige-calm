@@ -27,7 +27,7 @@ type AnchorClose = Shared<BoxFuture<'static, ()>>;
 
 struct Inner {
     read: SqlitePool,
-    writer: SqlitePool,
+    writer: super::WriteManager,
     // Both roles must retain the same memory database across connection recovery.
     memory_cache_anchor: Option<AnchorClose>,
 }
@@ -70,23 +70,35 @@ impl SqliteDb {
             ));
         }
 
-        let pool = pool_options().connect_with(opts.clone()).await?;
+        // Bootstrap the private writer first; published readers never need create/write access.
+        let writer = pool_options(PoolRole::Writer)
+            .max_connections(1)
+            .connect_with(opts.clone())
+            .await?;
 
         // Anchor in-memory shared caches BEFORE anything else touches the pool.
         // `pragma_database_list.file` is empty for in-memory (and temp-file) DBs.
-        let mut candidate = pool.acquire().await?;
+        let mut candidate = writer.acquire().await?;
         let main_db_file: String =
             sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
                 .fetch_one(&mut *candidate)
                 .await?;
-        let memory_cache_anchor = if main_db_file.is_empty() {
+        let memory = main_db_file.is_empty();
+        let memory_cache_anchor = if memory {
             Some(candidate.detach())
         } else {
             drop(candidate);
             None
         };
 
-        let writer = pool_options().max_connections(1).connect_with(opts).await?;
+        let read_options = if memory {
+            opts
+        } else {
+            opts.read_only(true).create_if_missing(false)
+        };
+        let pool = pool_options(PoolRole::Read)
+            .connect_with(read_options)
+            .await?;
         Ok(Self::new(pool, writer, memory_cache_anchor))
     }
 
@@ -98,7 +110,7 @@ impl SqliteDb {
         Self {
             inner: Arc::new(Inner {
                 read,
-                writer,
+                writer: super::WriteManager::new(writer),
                 // Retain the real SQLx close future so cancellation or another clone
                 // cannot mistake taking the connection for its close acknowledgement.
                 memory_cache_anchor: memory_cache_anchor.map(|anchor| {
@@ -117,9 +129,8 @@ impl SqliteDb {
         &self.inner.read
     }
 
-    /// Domain-owned autocommit mutations (including RETURNING and VACUUM) use this pool.
-    /// Its single SQLx lease is held through statement consumption and worker cleanup.
-    pub fn writer_pool(&self) -> &SqlitePool {
+    /// The only public capability that can obtain managed writer admission.
+    pub fn writer(&self) -> &super::WriteManager {
         &self.inner.writer
     }
 
@@ -129,7 +140,7 @@ impl SqliteDb {
     /// Errors follow SQLx pool's best-effort close semantics and are not returned;
     /// this does not strengthen the driver's exceptional termination guarantees.
     pub async fn close(&self) {
-        futures::future::join(self.inner.read.close(), self.inner.writer.close()).await;
+        futures::future::join(self.inner.read.close(), self.inner.writer.pool.close()).await;
         if let Some(anchor_close) = &self.inner.memory_cache_anchor {
             anchor_close.clone().await;
         }
@@ -146,17 +157,31 @@ impl SqliteDb {
 
 // One connection/recovery contract for both roles. SQLx defaults preserve read capacity
 // (10), acquisition fairness, and worker ping on return; only writer capacity differs.
-fn pool_options() -> SqlitePoolOptions {
+#[derive(Clone, Copy)]
+enum PoolRole {
+    Read,
+    Writer,
+}
+
+fn pool_options(role: PoolRole) -> SqlitePoolOptions {
     SqlitePoolOptions::new()
         .acquire_timeout(Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS))
         // Re-issue the pragmas per connection: connect options are dropped for some URL forms (e.g. memory).
-        .after_connect(|conn, _meta| {
+        .after_connect(move |conn, _meta| {
             Box::pin(async move {
                 conn.execute("PRAGMA foreign_keys = ON;").await?;
                 let busy_timeout_pragma =
                     format!("PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};");
                 conn.execute(busy_timeout_pragma.as_str()).await?;
-                conn.execute("PRAGMA journal_mode = WAL;").await?;
+                match role {
+                    PoolRole::Writer => {
+                        conn.execute("PRAGMA journal_mode = WAL;").await?;
+                    }
+                    // Reapply on every recovered connection, including shared in-memory caches.
+                    PoolRole::Read => {
+                        conn.execute("PRAGMA query_only = ON;").await?;
+                    }
+                }
                 Ok(())
             })
         })
@@ -197,3 +222,6 @@ fn pool_options() -> SqlitePoolOptions {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod read_only_tests;

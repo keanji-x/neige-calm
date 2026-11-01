@@ -142,10 +142,13 @@ async fn hook_boot() -> HookBoot {
         .await
         .unwrap();
 
-    sqlx::query("UPDATE cards SET role = 'worker' WHERE id IN (?1, ?2)")
-        .bind(claude_card.id.as_str())
-        .bind(codex_card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'worker' WHERE id IN (?1, ?2)")
+                .bind(claude_card.id.as_str())
+                .bind(codex_card.id.as_str()),
+        )
         .await
         .unwrap();
 

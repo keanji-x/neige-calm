@@ -49,16 +49,16 @@ async fn c4_acp_existing_execution_refuses_before_credential_mint() {
         .await
         .unwrap();
     // Observe transient minting too: later cleanup must not hide a fence bypass.
-    sqlx::query("CREATE TABLE c43_mints (token TEXT)")
-        .execute(pool.writer_pool())
+    (pool)
+        .writer()
+        .execute(sqlx::query("CREATE TABLE c43_mints (token TEXT)"))
         .await
         .unwrap();
-    sqlx::query(concat!(
+    (pool).writer().execute(sqlx::query(concat!(
         "CREATE TRIGGER c43_mint AFTER UPDATE OF mcp_token_hash ON worker_sessions WHEN ",
         "NEW.mcp_token_hash IS NOT NULL BEGIN INSERT INTO c43_mints VALUES (NEW.mcp_token_hash); ",
         "END",
-    ))
-    .execute(pool.writer_pool())
+    )))
     .await
     .unwrap();
     let before = requests(&root, "initialize").len();
@@ -447,51 +447,58 @@ async fn c4_acp_boot_never_resends_held_or_releasing_payload() {
             )
         })
         .await;
-        if releasing {
-            let mut tx = calm_truth::db::sqlite::begin_immediate_tx(&pool)
-                .await
-                .unwrap();
-            assert!(matches!(
-                sql::advance_release(&mut tx, &worker, &admitted, 1)
-                    .await
-                    .unwrap(),
-                sql::Cas::Applied(_)
-            ));
-            tx.commit().await.unwrap();
-        }
-        drop(guard); // a new kernel has no live protocol driver
-        // A new kernel owns a fresh boot proof. Keep the original owner/Engine
-        // below only to observe settlement of the exact registered execution.
-        let rebooted_host = calm_server::acp_planner::config::AcpPlannerHost::new(
-            None,
-            &root.data_dir(),
-            session.host().mcp_shim.clone(),
-            session.host().mcp_socket.clone(),
-        )
-        .unwrap();
-        calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)
+        let write_db = (pool).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    if releasing {
+                        let mut tx = write_session.begin().await.unwrap();
+                        assert!(matches!(
+                            sql::advance_release(&mut tx, &worker, &admitted, 1)
+                                .await
+                                .unwrap(),
+                            sql::Cas::Applied(_)
+                        ));
+                        tx.commit().await.unwrap();
+                    }
+                    drop(guard); // a new kernel has no live protocol driver
+                    // A new kernel owns a fresh boot proof. Keep the original owner/Engine
+                    // below only to observe settlement of the exact registered execution.
+                    let rebooted_host = calm_server::acp_planner::config::AcpPlannerHost::new(
+                        None,
+                        &root.data_dir(),
+                        session.host().mcp_shim.clone(),
+                        session.host().mcp_socket.clone(),
+                    )
+                    .unwrap();
+                    calm_server::acp_planner::config::boot(stack.repo(), &rebooted_host)
+                        .await
+                        .unwrap();
+                    let after = claim(&stack, &worker).await.unwrap();
+                    assert!(matches!(
+                        after.record().decision,
+                        sql::Decision::Stopping {
+                            reason: sql::StopReason::KernelRestarted,
+                            ..
+                        }
+                    ));
+                    wait(async || {
+                        owner.sweep(&pool, Some(engine)).await.unwrap();
+                        claim(&stack, &worker).await.is_none()
+                    })
+                    .await;
+                    assert!(!root.path().join("forbidden-release").exists());
+                    assert_eq!(
+                        requests(&root, "session/prompt").len(),
+                        1,
+                        "boot cannot resend a prompt"
+                    );
+                    stack.shutdown().await;
+                })
+            })
             .await
-            .unwrap();
-        let after = claim(&stack, &worker).await.unwrap();
-        assert!(matches!(
-            after.record().decision,
-            sql::Decision::Stopping {
-                reason: sql::StopReason::KernelRestarted,
-                ..
-            }
-        ));
-        wait(async || {
-            owner.sweep(&pool, Some(engine)).await.unwrap();
-            claim(&stack, &worker).await.is_none()
-        })
-        .await;
-        assert!(!root.path().join("forbidden-release").exists());
-        assert_eq!(
-            requests(&root, "session/prompt").len(),
-            1,
-            "boot cannot resend a prompt"
-        );
-        stack.shutdown().await;
+            .expect("independent write operation")
     }
 }
 

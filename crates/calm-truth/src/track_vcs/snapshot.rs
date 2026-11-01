@@ -1,5 +1,5 @@
 use crate::db::rows::TRACK_SELECT_COLUMNS;
-use crate::db::sqlite::begin_immediate_tx_once;
+
 use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::{CardId, TrackId};
@@ -24,18 +24,26 @@ use super::types::{BlobContent, CardProjection, CardVisibility};
 use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeSnapshot};
 
 pub async fn backfill_existing_tracks(pool: &crate::db::sqlite::SqliteDb) -> Result<usize> {
-    let mut tx = begin_immediate_tx_once(pool).await?;
-    let res = backfill_existing_tracks_tx(&mut tx).await;
-    match res {
-        Ok(count) => {
-            tx.commit().await?;
-            Ok(count)
-        }
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
-    }
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_once().await?;
+                let res = backfill_existing_tracks_tx(&mut tx).await;
+                match res {
+                    Ok(count) => {
+                        tx.commit().await?;
+                        Ok(count)
+                    }
+                    Err(e) => {
+                        let _ = tx.rollback().await;
+                        Err(e)
+                    }
+                }
+            })
+        })
+        .await.map_err(crate::TruthError::from)?
 }
 
 async fn backfill_existing_tracks_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<usize> {

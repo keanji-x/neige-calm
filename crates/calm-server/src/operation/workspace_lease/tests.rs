@@ -3,7 +3,7 @@ use std::process::Command;
 
 use super::base::BaseSource;
 use super::*;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::event::EventBus;
 use crate::git_candidate::delivery::AttemptOutcome;
 use workspace::git::WorkspaceLeaseTarget;
@@ -15,34 +15,45 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
     let (repo, track_id, card_id) = lease_fixture(tmp.path()).await;
     let path = tmp.path().join("plain-lease");
 
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let (lease, _event) =
-        acquire_plain_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &path)
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let (lease, _event) = acquire_plain_workspace_lease_tx(
+                    &mut tx, &card_id, &track_id, "op-test", &path,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
 
-    assert_eq!(lease.path, path.to_string_lossy().to_string());
-    assert_eq!(lease.delivery_policy, None, "a plain lease is legacy");
-    assert!(path.is_dir(), "plain lease acquisition creates the leaf");
+                assert_eq!(lease.path, path.to_string_lossy().to_string());
+                assert_eq!(lease.delivery_policy, None, "a plain lease is legacy");
+                assert!(path.is_dir(), "plain lease acquisition creates the leaf");
 
-    let events = EventBus::new();
-    assert!(
-        release_workspace_lease_for_card_repo(
-            &repo,
-            &events,
-            &card_id,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
-        )
+                let events = EventBus::new();
+                assert!(
+                    release_workspace_lease_for_card_repo(
+                        &repo,
+                        &events,
+                        &card_id,
+                        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+                    )
+                    .await
+                    .unwrap()
+                );
+                assert!(path.exists(), "plain lease release preserves the leaf");
+                let deliveries: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM task_git_deliveries")
+                        .fetch_one(repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(deliveries, 0, "a plain lease has no kernel delivery");
+            })
+        })
         .await
-        .unwrap()
-    );
-    assert!(path.exists(), "plain lease release preserves the leaf");
-    let deliveries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM task_git_deliveries")
-        .fetch_one(repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(deliveries, 0, "a plain lease has no kernel delivery");
+        .expect("independent write operation")
 }
 
 /// A track worktree (#1830 S1) as `ensure_track_worktree` makes it: `<repo>/.claude/worktrees/
@@ -154,40 +165,44 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
         .trim()
         .to_string();
 
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let plan = prepare_worker_lease_as_tx(
-        &mut tx,
-        &track_id,
-        crate::model::TaskAccess::ReadWrite,
-        &unused_workspace_root(),
-    )
-    .await
-    .unwrap();
-    let (lease, event) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &plan)
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let plan = prepare_worker_lease_as_tx(
+            &mut tx,
+            &track_id,
+            crate::model::TaskAccess::ReadWrite,
+            &unused_workspace_root(),
+        )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+        let (lease, event) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &plan)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
 
-    assert_eq!(plan.path, target.path);
-    assert_eq!(plan.branch, format!("neige/track-{track_id}"));
-    let base = lease.base.expect("a worker lease records its base");
-    assert_eq!(base.base_sha, head);
-    assert_eq!(base.base_source, BaseSource::Commit);
-    assert_eq!(base.canonical_path, target.path.canonicalize().unwrap());
-    assert_eq!(
-        base.git_common_dir,
-        target.repo_root.join(".git").canonicalize().unwrap()
-    );
-    assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
-    assert_eq!(lease.path, target.path.to_str().unwrap());
-    assert!(matches!(event.event, Event::WorkspaceLeased { ref path, .. } if path == &lease.path));
-    workspace::base::verify_worktree_base(
-        &target.path,
-        &plan.branch,
-        &base.base_sha,
-        &base.canonical_path,
-    )
-    .unwrap();
+        assert_eq!(plan.path, target.path);
+        assert_eq!(plan.branch, format!("neige/track-{track_id}"));
+        let base = lease.base.expect("a worker lease records its base");
+        assert_eq!(base.base_sha, head);
+        assert_eq!(base.base_source, BaseSource::Commit);
+        assert_eq!(base.canonical_path, target.path.canonicalize().unwrap());
+        assert_eq!(
+            base.git_common_dir,
+            target.repo_root.join(".git").canonicalize().unwrap()
+        );
+        assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
+        assert_eq!(lease.path, target.path.to_str().unwrap());
+        assert!(matches!(event.event, Event::WorkspaceLeased { ref path, .. } if path == &lease.path));
+        workspace::base::verify_worktree_base(
+            &target.path,
+            &plan.branch,
+            &base.base_sha,
+            &base.canonical_path,
+        )
+        .unwrap();
+
+    })).await.expect("independent write operation")
 }
 
 /// D1: an attached track without a worktree (the pre-#1830 shape) is refused and writes nothing.
@@ -197,26 +212,35 @@ async fn prepare_refuses_an_attached_track_without_a_worktree() {
     init_git_repo(tmp.path());
     let (repo, track_id, _card_id) = lease_fixture(tmp.path()).await;
 
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let err = prepare_worker_lease_as_tx(
-        &mut tx,
-        &track_id,
-        crate::model::TaskAccess::ReadWrite,
-        &unused_workspace_root(),
-    )
-    .await
-    .unwrap_err();
-    tx.rollback().await.unwrap();
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = prepare_worker_lease_as_tx(
+                    &mut tx,
+                    &track_id,
+                    crate::model::TaskAccess::ReadWrite,
+                    &unused_workspace_root(),
+                )
+                .await
+                .unwrap_err();
+                tx.rollback().await.unwrap();
 
-    let CalmError::Conflict(message) = err else {
-        panic!("a refusal is a Conflict: {err}");
-    };
-    assert!(
-        message.starts_with(
-            "refused: track-without-worktree: this track predates per-track worktrees"
-        ),
-        "{message}"
-    );
+                let CalmError::Conflict(message) = err else {
+                    panic!("a refusal is a Conflict: {err}");
+                };
+                assert!(
+                    message.starts_with(
+                        "refused: track-without-worktree: this track predates per-track worktrees"
+                    ),
+                    "{message}"
+                );
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// D6: a tracked edit and an untracked file refuse the worker and are listed, an ignored file is
@@ -277,61 +301,71 @@ async fn clean_check_of_a_missing_checkout_is_unavailable() {
 async fn prepare_supersedes_a_stuck_owners_lease() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, track_id, card_id, _target) = worktree_track_fixture(tmp.path()).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let plan = prepare_worker_lease_as_tx(
-        &mut tx,
-        &track_id,
-        crate::model::TaskAccess::ReadWrite,
-        &unused_workspace_root(),
-    )
-    .await
-    .unwrap();
-    let (stuck, _) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-stuck", &plan)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query(
-        "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            let plan = prepare_worker_lease_as_tx(
+                                &mut tx,
+                                &track_id,
+                                crate::model::TaskAccess::ReadWrite,
+                                &unused_workspace_root(),
+                            )
+                            .await
+                            .unwrap();
+                            let (stuck, _) =
+                                acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-stuck", &plan)
+                                    .await
+                                    .unwrap();
+                            tx.commit().await.unwrap();
+                            (repo.db()).writer().execute(sqlx::query(
+                    "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
          target_type, target_id, target_json, payload_json, phase, created_at_ms, updated_at_ms) \
          VALUES ('op-stuck', 'k-stuck', 'codex-worker', NULL, 'h', 'card', NULL, '{}', '{}', \
          'stuck', 1, 1)",
-    )
-    .execute(repo.pool())
-    .await
-    .unwrap();
+                ))
+                .await
+                .unwrap();
 
-    let next_card = new_card(&repo, &track_id).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let plan = prepare_worker_lease_as_tx(
-        &mut tx,
-        &track_id,
-        crate::model::TaskAccess::ReadWrite,
-        &unused_workspace_root(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        plan.superseded.len(),
-        1,
-        "the stuck owner's lease is released"
-    );
-    acquire_workspace_lease_tx(&mut tx, &next_card, &track_id, "op-next", &plan)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+                            let next_card = new_card(&repo, &track_id).await;
+                            let mut tx = write_session.begin().await.unwrap();
+                            let plan = prepare_worker_lease_as_tx(
+                                &mut tx,
+                                &track_id,
+                                crate::model::TaskAccess::ReadWrite,
+                                &unused_workspace_root(),
+                            )
+                            .await
+                            .unwrap();
+                            assert_eq!(
+                                plan.superseded.len(),
+                                1,
+                                "the stuck owner's lease is released"
+                            );
+                            acquire_workspace_lease_tx(&mut tx, &next_card, &track_id, "op-next", &plan)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
 
-    let state: String =
-        sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
-            .bind(&stuck.lease_id)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
-    assert_eq!(state, "released");
-    let deliveries: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM task_git_deliveries")
-        .fetch_one(repo.pool())
+                            let state: String =
+                                sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+                                    .bind(&stuck.lease_id)
+                                    .fetch_one(repo.pool())
+                                    .await
+                                    .unwrap();
+                            assert_eq!(state, "released");
+                            let deliveries: i64 =
+                                sqlx::query_scalar("SELECT COUNT(*) FROM task_git_deliveries")
+                                    .fetch_one(repo.pool())
+                                    .await
+                                    .unwrap();
+                            assert_eq!(deliveries, 0, "a superseded lease writes no delivery row");
+            })
+        })
         .await
-        .unwrap();
-    assert_eq!(deliveries, 0, "a superseded lease writes no delivery row");
+        .expect("independent write operation")
 }
 
 /// Every reader of a lease row takes the base columns by name through `WORKSPACE_LEASE_COLUMNS`
@@ -345,110 +379,127 @@ async fn every_lease_reader_returns_base_and_policy() {
     let head = git_stdout(&target.path, ["rev-parse", "HEAD"])
         .trim()
         .to_string();
-    let take = |card_id: String| {
-        let repo = &repo;
-        let track_id = &track_id;
-        async move {
-            let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-            let plan = prepare_worker_lease_as_tx(
-                &mut tx,
-                track_id,
-                crate::model::TaskAccess::ReadWrite,
-                &unused_workspace_root(),
-            )
-            .await
-            .unwrap();
-            let (lease, _event) =
-                acquire_workspace_lease_tx(&mut tx, &card_id, track_id, "op-test", &plan)
-                    .await
-                    .unwrap();
-            tx.commit().await.unwrap();
-            assert_eq!(lease.base.as_ref(), Some(&plan.base));
-            assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
-            lease
-        }
-    };
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let take = |card_id: String| {
+                    let repo = &repo;
+                    let track_id = &track_id;
+                    async move {
+                        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session_1| Box::pin(async move {
+let mut tx = write_session_1.begin().await.unwrap();
+                        let plan = prepare_worker_lease_as_tx(
+                            &mut tx,
+                            track_id,
+                            crate::model::TaskAccess::ReadWrite,
+                            &unused_workspace_root(),
+                        )
+                        .await
+                        .unwrap();
+                        let (lease, _event) = acquire_workspace_lease_tx(
+                            &mut tx, &card_id, track_id, "op-test", &plan,
+                        )
+                        .await
+                        .unwrap();
+                        tx.commit().await.unwrap();
+                        assert_eq!(lease.base.as_ref(), Some(&plan.base));
+                        assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
+                        lease
 
-    // The card-repo release.
-    take(first_card.clone()).await;
-    assert!(
-        release_workspace_lease_for_card_repo(
-            &repo,
-            &events,
-            &first_card,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
-        )
+        })).await.expect("independent write operation")
+}
+                };
+
+                // The card-repo release.
+                take(first_card.clone()).await;
+                assert!(
+                    release_workspace_lease_for_card_repo(
+                        &repo,
+                        &events,
+                        &first_card,
+                        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+                    )
+                    .await
+                    .unwrap()
+                );
+                // The card-tx release.
+                let card_tx = new_card(&repo, &track_id).await;
+                take(card_tx.clone()).await;
+                let mut tx = write_session.begin().await.unwrap();
+                let released = release_workspace_lease_for_card_tx(
+                    &mut tx,
+                    &card_tx,
+                    ReleaseDelivery::Commit(AttemptOutcome::Failed),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(released.len(), 1, "card-tx release decodes the based row");
+                // By id (the compensation step), and by id in any state (the delivery hand-off's reader).
+                let card_by_id = new_card(&repo, &track_id).await;
+                let lease_by_id = take(card_by_id).await;
+                let mut tx = write_session.begin().await.unwrap();
+                let any_state = facts::workspace_lease_by_id_tx(&mut tx, &lease_by_id.lease_id)
+                    .await
+                    .unwrap()
+                    .expect("row by id in any state");
+                tx.commit().await.unwrap();
+                assert_eq!(any_state.delivery_policy, Some(DeliveryPolicy::Kernel));
+                assert!(
+                    release::release_workspace_lease_by_id(
+                        repo.db(),
+                        &events,
+                        &lease_by_id.lease_id,
+                        ReleaseDelivery::Commit(AttemptOutcome::SpawnFailed),
+                    )
+                    .await
+                    .unwrap()
+                );
+                // The facts reader.
+                let card_facts = new_card(&repo, &track_id).await;
+                take(card_facts.clone()).await;
+                let mut tx = write_session.begin().await.unwrap();
+                let facts = facts::worker_worktree_facts_tx(&mut tx, &card_facts)
+                    .await
+                    .unwrap()
+                    .expect("facts for a leased card");
+                tx.commit().await.unwrap();
+                assert_eq!(facts.base_sha.as_deref(), Some(head.as_str()));
+                assert_eq!(
+                    facts.branch.as_deref(),
+                    Some(format!("neige/track-{track_id}").as_str())
+                );
+                // All active (boot reclaim's reader), then the track release.
+                let all_active = active_workspace_leases(repo.pool()).await.unwrap();
+                assert_eq!(all_active.len(), 1);
+                assert!(all_active.iter().all(|lease| lease.base.is_some()));
+                let mut tx = write_session.begin().await.unwrap();
+                let release = release_workspace_leases_for_track_tx(
+                    &mut tx,
+                    &track_id,
+                    std::slice::from_ref(&track_id),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    release.events.len(),
+                    1,
+                    "track release decodes the held based row"
+                );
+                let sweep = release.sweep.expect("track sweep plan");
+                assert_eq!(
+                    sweep.git_common_dirs,
+                    vec![target.repo_root.join(".git").canonicalize().unwrap()]
+                );
+                assert_eq!(sweep.workspace.worktree.as_deref(), target.path.to_str());
+            })
+        })
         .await
-        .unwrap()
-    );
-    // The card-tx release.
-    let card_tx = new_card(&repo, &track_id).await;
-    take(card_tx.clone()).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let released = release_workspace_lease_for_card_tx(
-        &mut tx,
-        &card_tx,
-        ReleaseDelivery::Commit(AttemptOutcome::Failed),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(released.len(), 1, "card-tx release decodes the based row");
-    // By id (the compensation step), and by id in any state (the delivery hand-off's reader).
-    let card_by_id = new_card(&repo, &track_id).await;
-    let lease_by_id = take(card_by_id).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let any_state = facts::workspace_lease_by_id_tx(&mut tx, &lease_by_id.lease_id)
-        .await
-        .unwrap()
-        .expect("row by id in any state");
-    tx.commit().await.unwrap();
-    assert_eq!(any_state.delivery_policy, Some(DeliveryPolicy::Kernel));
-    assert!(
-        release::release_workspace_lease_by_id(
-            repo.db(),
-            &events,
-            &lease_by_id.lease_id,
-            ReleaseDelivery::Commit(AttemptOutcome::SpawnFailed),
-        )
-        .await
-        .unwrap()
-    );
-    // The facts reader.
-    let card_facts = new_card(&repo, &track_id).await;
-    take(card_facts.clone()).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let facts = facts::worker_worktree_facts_tx(&mut tx, &card_facts)
-        .await
-        .unwrap()
-        .expect("facts for a leased card");
-    tx.commit().await.unwrap();
-    assert_eq!(facts.base_sha.as_deref(), Some(head.as_str()));
-    assert_eq!(
-        facts.branch.as_deref(),
-        Some(format!("neige/track-{track_id}").as_str())
-    );
-    // All active (boot reclaim's reader), then the track release.
-    let all_active = active_workspace_leases(repo.pool()).await.unwrap();
-    assert_eq!(all_active.len(), 1);
-    assert!(all_active.iter().all(|lease| lease.base.is_some()));
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let release =
-        release_workspace_leases_for_track_tx(&mut tx, &track_id, std::slice::from_ref(&track_id))
-            .await
-            .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        release.events.len(),
-        1,
-        "track release decodes the held based row"
-    );
-    let sweep = release.sweep.expect("track sweep plan");
-    assert_eq!(
-        sweep.git_common_dirs,
-        vec![target.repo_root.join(".git").canonicalize().unwrap()]
-    );
-    assert_eq!(sweep.workspace.worktree.as_deref(), target.path.to_str());
+        .expect("independent write operation")
 }
 
 /// The base is read with the allowlisted git environment: a hostile `GIT_DIR` in the kernel's
@@ -576,24 +627,27 @@ async fn lease_check_rejects_every_invalid_tuple() {
             Some(_) => (Some("/cp"), Some("/gcd")),
             None => (None, None),
         };
-        let result = sqlx::query(
-            "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, \
+        let result = (repo.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO workspace_leases (lease_id, card_id, track_id, path, state, \
              lease_owner, lease_until_ms, boot_id, created_at_ms, updated_at_ms, \
              base_sha, base_source, base_attempt_id, canonical_path, git_common_dir) \
              VALUES (?1, ?2, ?3, ?4, 'released', 'op-test', NULL, NULL, 1, 1, \
              ?5, ?6, ?7, ?8, ?9)",
-        )
-        .bind(format!("lease-{index}"))
-        .bind(&card_id)
-        .bind(&track_id)
-        .bind(format!("/tuple/{index}"))
-        .bind(sha)
-        .bind(source)
-        .bind(attempt)
-        .bind(canonical_path)
-        .bind(git_common_dir)
-        .execute(repo.pool())
-        .await;
+                )
+                .bind(format!("lease-{index}"))
+                .bind(&card_id)
+                .bind(&track_id)
+                .bind(format!("/tuple/{index}"))
+                .bind(sha)
+                .bind(source)
+                .bind(attempt)
+                .bind(canonical_path)
+                .bind(git_common_dir),
+            )
+            .await;
         match result {
             Ok(_) => accepted.push((sha, source, attempt)),
             Err(error) => {
@@ -752,16 +806,25 @@ async fn isolation_none_worker_refusal_explains_isolation() {
     let tmp = tempfile::tempdir().unwrap();
     init_git_repo(tmp.path());
     let (repo, track_id, _) = lease_fixture(tmp.path()).await;
-    let mut tx = begin_immediate_tx(repo.db()).await.unwrap();
-    let err = prepare_worker_lease_as_tx(
-        &mut tx,
-        &track_id,
-        crate::model::TaskAccess::ReadWrite,
-        &unused_workspace_root(),
-    )
-    .await
-    .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert!(err.to_string().contains("track-without-worktree"));
-    assert!(err.to_string().contains("isolation is none"), "{err}");
+    let write_db = (repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = prepare_worker_lease_as_tx(
+                    &mut tx,
+                    &track_id,
+                    crate::model::TaskAccess::ReadWrite,
+                    &unused_workspace_root(),
+                )
+                .await
+                .unwrap_err();
+                tx.rollback().await.unwrap();
+                assert!(err.to_string().contains("track-without-worktree"));
+                assert!(err.to_string().contains("isolation is none"), "{err}");
+            })
+        })
+        .await
+        .expect("independent write operation")
 }

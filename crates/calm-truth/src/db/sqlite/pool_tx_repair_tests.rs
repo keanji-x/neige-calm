@@ -7,7 +7,7 @@ use sqlx::Connection;
 use sqlx::SqlitePool;
 use sqlx::pool::PoolConnection;
 
-use super::{SqlxRepo, begin_immediate_tx};
+use super::SqlxRepo;
 
 const STALL_BOUND: Duration = Duration::from_secs(30);
 
@@ -55,26 +55,37 @@ async fn pool_repairs_leaked_open_transaction_on_release() {
         poison_one_connection(pool, None).await;
         wait_for_pool_settled(pool).await;
 
-        let tx = tokio::time::timeout(STALL_BOUND, begin_immediate_tx(repo.db()))
-            .await
-            .expect("BEGIN IMMEDIATE must not stall on a leaked transaction's write lock")
-            .expect("pool must repair leaked transaction on release");
-        tx.commit().await.unwrap();
-        wait_for_pool_settled(pool).await;
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let tx = tokio::time::timeout(STALL_BOUND, write_session.begin())
+                        .await
+                        .expect(
+                            "BEGIN IMMEDIATE must not stall on a leaked transaction's write lock",
+                        )
+                        .expect("pool must repair leaked transaction on release");
+                    tx.commit().await.unwrap();
+                    wait_for_pool_settled(pool).await;
 
-        // Routing-independent: `begin_with` on every pooled connection directly.
-        // Held idle connections don't hold sqlite locks, so this cannot deadlock.
-        let settled = pool.size() as usize;
-        let mut held: Vec<PoolConnection<sqlx::Sqlite>> = Vec::with_capacity(settled);
-        for _ in 0..settled {
-            held.push(pool.acquire().await.unwrap());
-        }
-        for conn in &mut held {
-            let tx = Connection::begin_with(&mut **conn, "BEGIN IMMEDIATE")
-                .await
-                .expect("every pooled connection must accept begin_with after repair");
-            tx.rollback().await.unwrap();
-        }
+                    // Routing-independent: `begin_with` on every pooled connection directly.
+                    // Held idle connections don't hold sqlite locks, so this cannot deadlock.
+                    let settled = pool.size() as usize;
+                    let mut held: Vec<PoolConnection<sqlx::Sqlite>> = Vec::with_capacity(settled);
+                    for _ in 0..settled {
+                        held.push(pool.acquire().await.unwrap());
+                    }
+                    for conn in &mut held {
+                        let tx = Connection::begin_with(&mut **conn, "BEGIN IMMEDIATE")
+                            .await
+                            .expect("every pooled connection must accept begin_with after repair");
+                        tx.rollback().await.unwrap();
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -117,20 +128,24 @@ async fn pool_repair_rolls_back_leaked_uncommitted_writes() {
         drop(held);
         wait_for_pool_settled(pool).await;
 
-        let mut tx = tokio::time::timeout(STALL_BOUND, begin_immediate_tx(repo.db()))
-            .await
-            .expect("BEGIN IMMEDIATE must not stall on a leaked transaction's write lock")
-            .unwrap();
-        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('committed', 'y', 0)")
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        let committed: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = 'committed'")
-                .fetch_one(pool)
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = tokio::time::timeout(STALL_BOUND, write_session.begin())
+                .await
+                .expect("BEGIN IMMEDIATE must not stall on a leaked transaction's write lock")
+                .unwrap();
+            sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('committed', 'y', 0)")
+                .execute(&mut **tx)
                 .await
                 .unwrap();
-        assert_eq!(committed, 1);
+            tx.commit().await.unwrap();
+            let committed: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = 'committed'")
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            assert_eq!(committed, 1);
+
+    })).await.expect("independent write operation")
     }
 }

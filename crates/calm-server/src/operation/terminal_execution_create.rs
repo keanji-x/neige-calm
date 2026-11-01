@@ -125,139 +125,151 @@ pub async fn create(
     let mut track_fence = None;
     let mut location_fence = None;
     let mut legacy_drive = None;
-    let mut tx = loop {
-        let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        if let Some(idempotency_key) = &key.idempotency_key {
-            let existing: Option<(String, String)> = sqlx::query_as(
-                "SELECT id, payload_hash FROM operations WHERE kind IN ('terminal-create', \
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = loop {
+                    let mut tx = write_session.begin().await?;
+                    if let Some(idempotency_key) = &key.idempotency_key {
+                        let existing: Option<(String, String)> = sqlx::query_as(
+                    "SELECT id, payload_hash FROM operations WHERE kind IN ('terminal-create', \
                  'terminal-execution-create') AND idempotency_key = ?",
-            )
-            .bind(idempotency_key)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some((id, hash)) = existing {
-                if hash != key.payload_hash {
-                    return Err(super::idempotency_payload_conflict(Some(idempotency_key)));
-                }
-                tx.rollback().await?;
-                drop(track_fence);
-                drop(location_fence);
-                drop(legacy_drive);
-                return Ok(CreatedTerminal {
-                    result: runtime.wait(&id).await?,
-                    newly_admitted: false,
-                });
-            }
-        }
-        if !typed && explicit_cwd.is_none() {
-            // Keep Legacy's validate/insert/drive path, including concurrent keyed inserts.
-            // The endpoint lookup above also permits replay of a typed row after config-off.
-            let track = serde_json::from_value::<
-                super::terminal_adapter::TerminalCreateOperationPayload,
-            >(payload.clone())?
-            .request
-            .track_id;
-            crate::workspace_service::reclaim::operation::terminal_admission_tx(&mut tx, &track)
+                )
+                .bind(idempotency_key)
+                .fetch_optional(&mut **tx)
                 .await?;
-            tx.rollback().await?;
-            // Fail promptly for a fresh request; Pending preparation re-admits under the same
-            // reservation, so releasing it before drive cannot authorize a racing start.
-            drop(runtime.try_launch_fence(&track)?);
-            let id = runtime.submit("terminal-create", key, payload).await?;
-            return Ok(CreatedTerminal {
-                result: runtime.wait(&id).await?,
-                newly_admitted: false,
-            });
-        }
-        if !typed && legacy_drive.is_none() {
-            tx.rollback().await?;
-            let request = serde_json::from_value::<
-                super::terminal_adapter::TerminalCreateOperationPayload,
-            >(payload.clone())?
-            .request;
-            // Refuse a busy target before waiting for ordinary Legacy driving.
-            // Release this preliminary observation before drive -> track acquisition;
-            // the actual admission takes the same fence again under drive below.
-            let own = runtime.try_launch_fence(&request.track_id)?;
-            let location = runtime
-                .try_location_fence(
-                    explicit_cwd.as_deref().expect("explicit Legacy cwd"),
-                    Some(&own),
+                        if let Some((id, hash)) = existing {
+                            if hash != key.payload_hash {
+                                return Err(super::idempotency_payload_conflict(Some(
+                                    idempotency_key,
+                                )));
+                            }
+                            tx.rollback().await?;
+                            drop(track_fence);
+                            drop(location_fence);
+                            drop(legacy_drive);
+                            return Ok(CreatedTerminal {
+                                result: runtime.wait(&id).await?,
+                                newly_admitted: false,
+                            });
+                        }
+                    }
+                    if !typed && explicit_cwd.is_none() {
+                        // Keep Legacy's validate/insert/drive path, including concurrent keyed inserts.
+                        // The endpoint lookup above also permits replay of a typed row after config-off.
+                        let track = serde_json::from_value::<
+                            super::terminal_adapter::TerminalCreateOperationPayload,
+                        >(payload.clone())?
+                        .request
+                        .track_id;
+                        crate::workspace_service::reclaim::operation::terminal_admission_tx(
+                            &mut tx, &track,
+                        )
+                        .await?;
+                        tx.rollback().await?;
+                        // Fail promptly for a fresh request; Pending preparation re-admits under the same
+                        // reservation, so releasing it before drive cannot authorize a racing start.
+                        drop(runtime.try_launch_fence(&track)?);
+                        let id = runtime.submit("terminal-create", key, payload).await?;
+                        return Ok(CreatedTerminal {
+                            result: runtime.wait(&id).await?,
+                            newly_admitted: false,
+                        });
+                    }
+                    if !typed && legacy_drive.is_none() {
+                        tx.rollback().await?;
+                        let request = serde_json::from_value::<
+                            super::terminal_adapter::TerminalCreateOperationPayload,
+                        >(payload.clone())?
+                        .request;
+                        // Refuse a busy target before waiting for ordinary Legacy driving.
+                        // Release this preliminary observation before drive -> track acquisition;
+                        // the actual admission takes the same fence again under drive below.
+                        let own = runtime.try_launch_fence(&request.track_id)?;
+                        let location = runtime
+                            .try_location_fence(
+                                explicit_cwd.as_deref().expect("explicit Legacy cwd"),
+                                Some(&own),
+                            )
+                            .await?;
+                        drop(location);
+                        drop(own);
+                        legacy_drive = Some(runtime.lock_for_track_delete().await);
+                        continue;
+                    }
+                    if validated {
+                        break tx;
+                    }
+                    // A replay/conflict needs no new-request validation. Shared Terminal validation reads
+                    // through the repository, so release the transaction before borrowing its connection.
+                    // Recheck the key under the final write lock after validation to close that race.
+                    tx.rollback().await?;
+                    let track = serde_json::from_value::<
+                        super::terminal_adapter::TerminalCreateOperationPayload,
+                    >(payload.clone())?
+                    .request
+                    .track_id;
+                    track_fence = Some(runtime.try_launch_fence(&track)?);
+                    if let Some(cwd) = &explicit_cwd {
+                        location_fence = Some(
+                            runtime
+                                .try_location_fence(cwd, track_fence.as_ref())
+                                .await?,
+                        );
+                    }
+                    runtime
+                        .adapter("terminal-create")?
+                        .validate(&payload)
+                        .await?;
+                    #[cfg(feature = "fixtures")]
+                    crate::test_seams::pause_point("c5-terminal-location-fenced", &track).await;
+                    validated = true;
+                };
+                if let Some(fence) = &location_fence {
+                    fence.recheck(&mut tx).await?;
+                }
+                let kind = if typed { KIND } else { "terminal-create" };
+                let adapter = runtime.adapter(kind)?;
+                let id = crate::model::new_id();
+                insert_pending_row(&id, kind, &key, &payload)?
+                    .execute(&mut **tx)
+                    .await?;
+                let row = sqlx::query("SELECT * FROM operations WHERE id = ?")
+                    .bind(&id)
+                    .fetch_one(&mut **tx)
+                    .await?;
+                let op = operation_from_row(&row)?;
+                let mut output = adapter.prepare_tx(&mut tx, &payload, &op).await?;
+                let envelopes = std::mem::take(&mut output.post_commit_events);
+                write_phase_and_tx_output(
+                    &mut tx,
+                    PhaseWrite::Inserted(&op),
+                    &if typed {
+                        super::Phase::Succeeded
+                    } else {
+                        super::Phase::TxCommitted
+                    },
+                    &output,
                 )
                 .await?;
-            drop(location);
-            drop(own);
-            legacy_drive = Some(runtime.lock_for_track_delete().await);
-            continue;
-        }
-        if validated {
-            break tx;
-        }
-        // A replay/conflict needs no new-request validation. Shared Terminal validation reads
-        // through the repository, so release the transaction before borrowing its connection.
-        // Recheck the key under the final write lock after validation to close that race.
-        tx.rollback().await?;
-        let track = serde_json::from_value::<
-            super::terminal_adapter::TerminalCreateOperationPayload,
-        >(payload.clone())?
-        .request
-        .track_id;
-        track_fence = Some(runtime.try_launch_fence(&track)?);
-        if let Some(cwd) = &explicit_cwd {
-            location_fence = Some(
-                runtime
-                    .try_location_fence(cwd, track_fence.as_ref())
-                    .await?,
-            );
-        }
-        runtime
-            .adapter("terminal-create")?
-            .validate(&payload)
-            .await?;
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("c5-terminal-location-fenced", &track).await;
-        validated = true;
-    };
-    if let Some(fence) = &location_fence {
-        fence.recheck(&mut tx).await?;
-    }
-    let kind = if typed { KIND } else { "terminal-create" };
-    let adapter = runtime.adapter(kind)?;
-    let id = crate::model::new_id();
-    insert_pending_row(&id, kind, &key, &payload)?
-        .execute(&mut **tx)
-        .await?;
-    let row = sqlx::query("SELECT * FROM operations WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&mut **tx)
-        .await?;
-    let op = operation_from_row(&row)?;
-    let mut output = adapter.prepare_tx(&mut tx, &payload, &op).await?;
-    let envelopes = std::mem::take(&mut output.post_commit_events);
-    write_phase_and_tx_output(
-        &mut tx,
-        PhaseWrite::Inserted(&op),
-        &if typed {
-            super::Phase::Succeeded
-        } else {
-            super::Phase::TxCommitted
-        },
-        &output,
-    )
-    .await?;
-    tx.commit().await?;
-    drop(track_fence);
-    drop(location_fence);
-    for envelope in envelopes {
-        events.emit_envelope(envelope);
-    }
-    if let Some(drive) = legacy_drive {
-        runtime.drive_admitted(drive).await?;
-    }
-    Ok(CreatedTerminal {
-        result: runtime.wait(&id).await?,
-        newly_admitted: typed,
-    })
+                tx.commit().await?;
+                drop(track_fence);
+                drop(location_fence);
+                for envelope in envelopes {
+                    events.emit_envelope(envelope);
+                }
+                if let Some(drive) = legacy_drive {
+                    runtime.drive_admitted(drive).await?;
+                }
+                Ok(CreatedTerminal {
+                    result: runtime.wait(&id).await?,
+                    newly_admitted: typed,
+                })
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 /// Both fresh commits and replays carry the durable execution identity in their result.

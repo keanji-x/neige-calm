@@ -85,13 +85,14 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES ('task.context_frozen', '{"task_id":"w:old","refs":[]}', 'kernel', 0, 1)"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert historical freeze");
+        ))
+        .await
+        .expect("insert historical freeze");
 
     let rows = repo.events_since(0, 10).await.expect("events_since");
     assert_eq!(
@@ -118,8 +119,10 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'harness.transcript.cleared',
              '{"card_id":"card-old","worker_session_id":"rt-old","track_id":"track-old"}',
@@ -127,10 +130,9 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
              0,
              1
            )"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert historical transcript reset");
+        ))
+        .await
+        .expect("insert historical transcript reset");
 
     let rows = repo.events_since(0, 10).await.expect("events_since");
     assert_eq!(
@@ -163,8 +165,10 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
         .await
         .expect("open sqlite repo");
     let before = seed_area_updates(&repo, 1).await;
-    sqlx::query(
-        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+    (repo.db())
+        .writer()
+        .execute(sqlx::query(
+            r#"INSERT INTO events (kind, payload, actor, at, event_version)
            VALUES (
              'workflow.registered',
              '{"pluginId":"gitforge","workflowId":"issue-development"}',
@@ -172,10 +176,9 @@ async fn events_since_skips_retired_workflow_registered_without_error() {
              0,
              9
            )"#,
-    )
-    .execute(repo.pool())
-    .await
-    .expect("insert retired workflow.registered");
+        ))
+        .await
+        .expect("insert retired workflow.registered");
     let after = seed_area_updates(&repo, 1).await;
 
     let rows = repo

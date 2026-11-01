@@ -105,13 +105,12 @@ async fn capability_stamped_only_for_template_init() {
     let dir = tempfile::tempdir().unwrap();
     let (s, repo, area) = fixture(dir.path()).await;
     // Also prove stamp order: structural report initialization updates the report card.
-    sqlx::raw_sql(concat!(
+    (repo.db()).writer().execute(sqlx::raw_sql(concat!(
         "CREATE TRIGGER capability_before_report BEFORE UPDATE ON cards WHEN NEW.kind='track-report' AND ",
         "(SELECT template_id FROM tracks WHERE id=NEW.track_id)='site/cap' BEGIN SELECT CASE WHEN NOT ",
         "EXISTS(SELECT 1 FROM track_capabilities WHERE track_id=NEW.track_id AND capability='objectives') ",
         "THEN RAISE(ABORT,'capability must precede report') END; END;",
-    ))
-        .execute(repo.pool()).await.unwrap();
+    ))).await.unwrap();
     let template = create(
         &s,
         &area,
@@ -126,84 +125,88 @@ async fn capability_stamped_only_for_template_init() {
         preparation::NamedSource::Fork(template.id.to_string()),
     )
     .await;
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
-        .await
-        .unwrap();
-    let recipe =
-        calm_truth::db::sqlite::track_recipe_create_tx(
+    let write_db = (repo.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        let recipe =
+            calm_truth::db::sqlite::track_recipe_create_tx(
+                &mut tx,
+                "capability",
+                &calm_types::report_contract::canonical_line(
+                    &calm_types::track_report::work_brief_header(),
+                ),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let recipe = create(&s, &area, preparation::NamedSource::Recipe(recipe.id)).await;
+        let builtin = create(
+            &s,
+            &area,
+            preparation::NamedSource::Template(crate::templates::INVESTMENT_RESEARCH.into()),
+        )
+        .await;
+        for track in [&blank, &fork, &recipe, &builtin] {
+            assert!(capabilities(&repo, track).await.is_empty(), "{}", track.id);
+        }
+        let mut tx = write_session.begin()
+            .await
+            .unwrap();
+        let subtrack = track_create_tx(
             &mut tx,
-            "capability",
-            &calm_types::report_contract::canonical_line(
-                &calm_types::track_report::work_brief_header(),
-            ),
+            new_track(&area, None),
+            None,
+            &TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
+            None,
+            s.write.area_cache(),
         )
         .await
         .unwrap();
-    tx.commit().await.unwrap();
-    let recipe = create(&s, &area, preparation::NamedSource::Recipe(recipe.id)).await;
-    let builtin = create(
-        &s,
-        &area,
-        preparation::NamedSource::Template(crate::templates::INVESTMENT_RESEARCH.into()),
-    )
-    .await;
-    for track in [&blank, &fork, &recipe, &builtin] {
-        assert!(capabilities(&repo, track).await.is_empty(), "{}", track.id);
-    }
-    let mut tx = calm_truth::db::sqlite::begin_immediate_tx(repo.db())
+        crate::track_creation::initialize_track_tx(
+            &mut tx,
+            &subtrack,
+            ("child-planner", "child-report"),
+            crate::track_creation::TrackInitialization::Subtrack {
+                seed: "delegated objective".into(),
+                provider: AgentProvider::Codex,
+                permission: crate::planner_permission_mode::PlannerPermissionMode::Never,
+                selection: crate::planner_model::CardModelSelection::default(),
+            },
+            s.write.role_cache(),
+            &s.acp_planner,
+        )
         .await
         .unwrap();
-    let subtrack = track_create_tx(
-        &mut tx,
-        new_track(&area, None),
-        None,
-        &TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
-        None,
-        s.write.area_cache(),
-    )
-    .await
-    .unwrap();
-    crate::track_creation::initialize_track_tx(
-        &mut tx,
-        &subtrack,
-        ("child-planner", "child-report"),
-        crate::track_creation::TrackInitialization::Subtrack {
-            seed: "delegated objective".into(),
-            provider: AgentProvider::Codex,
-            permission: crate::planner_permission_mode::PlannerPermissionMode::Never,
-            selection: crate::planner_model::CardModelSelection::default(),
-        },
-        s.write.role_cache(),
-        &s.acp_planner,
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    assert!(capabilities(&repo, &subtrack).await.is_empty());
-    let identity = crate::managed_track::ManagedTrackIdentity {
-        owner: "capability-test".into(),
-        identity: "reports".into(),
-        report_read_scope: crate::managed_track::ReportReadScope::Area,
-        report_time_zone: chrono_tz::UTC,
-        tool_policy: crate::managed_track::ToolPolicy::Reports,
-        kernel_controls_lifecycle: true,
-    };
-    let managed = create_managed_track(
-        s.clone(),
-        new_track(&area, Some(crate::templates::DAILY_PLANNER)),
-        identity.clone(),
-    )
-    .await
-    .unwrap();
-    assert!(capabilities(&repo, &managed).await.is_empty());
-    let before: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM track_capabilities),(SELECT count(*) FROM cards)").fetch_one(repo.pool()).await.unwrap();
-    let mut identity = identity;
-    identity.identity = "forbidden".into();
-    let result =
-        create_managed_track(s.clone(), new_track(&area, Some("site/cap")), identity).await;
-    assert!(matches!(result, Err(CalmError::Internal(_))), "{result:?}");
-    let after: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM track_capabilities),(SELECT count(*) FROM cards)").fetch_one(repo.pool()).await.unwrap();
-    assert_eq!(before, after);
+        tx.commit().await.unwrap();
+        assert!(capabilities(&repo, &subtrack).await.is_empty());
+        let identity = crate::managed_track::ManagedTrackIdentity {
+            owner: "capability-test".into(),
+            identity: "reports".into(),
+            report_read_scope: crate::managed_track::ReportReadScope::Area,
+            report_time_zone: chrono_tz::UTC,
+            tool_policy: crate::managed_track::ToolPolicy::Reports,
+            kernel_controls_lifecycle: true,
+        };
+        let managed = create_managed_track(
+            s.clone(),
+            new_track(&area, Some(crate::templates::DAILY_PLANNER)),
+            identity.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(capabilities(&repo, &managed).await.is_empty());
+        let before: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM track_capabilities),(SELECT count(*) FROM cards)").fetch_one(repo.pool()).await.unwrap();
+        let mut identity = identity;
+        identity.identity = "forbidden".into();
+        let result =
+            create_managed_track(s.clone(), new_track(&area, Some("site/cap")), identity).await;
+        assert!(matches!(result, Err(CalmError::Internal(_))), "{result:?}");
+        let after: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks),(SELECT count(*) FROM track_capabilities),(SELECT count(*) FROM cards)").fetch_one(repo.pool()).await.unwrap();
+        assert_eq!(before, after);
+
+    })).await.expect("independent write operation")
 }
 
 #[tokio::test]

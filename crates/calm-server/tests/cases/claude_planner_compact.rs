@@ -301,16 +301,18 @@ async fn a_compact_failing_before_the_spawn_restores_the_phase() {
     assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
     root.remove_fake("version");
 
-    sqlx::query(
-        "CREATE TRIGGER c4_block_admission BEFORE INSERT ON workspace_executions
+    (stack.repo().sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER c4_block_admission BEFORE INSERT ON workspace_executions
          BEGIN SELECT RAISE(FAIL, 'admission blocked'); END",
-    )
-    .execute(stack.repo().sqlite_db().unwrap().writer_pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let (status, body) = compact(&stack, &card_id).await;
-    sqlx::query("DROP TRIGGER c4_block_admission")
-        .execute(stack.repo().sqlite_db().unwrap().writer_pool())
+    (stack.repo().sqlite_db().unwrap())
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER c4_block_admission"))
         .await
         .unwrap();
     assert_eq!(status, StatusCode::CONFLICT, "{body}");

@@ -19,16 +19,14 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
             .unwrap();
         match failure {
             Failure::Revoke => {
-                sqlx::query(concat!(
+                (fx.owner.repo.db()).writer().execute(sqlx::query(concat!(
                     "CREATE TRIGGER refuse_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions ",
                     "WHEN NEW.mcp_token_hash IS NULL BEGIN SELECT RAISE(ABORT,'refuse revoke'); END"
-                ))
-                    .execute(fx.owner.repo.pool()).await.unwrap();
+                ))).await.unwrap();
             }
             Failure::Stop => crate::test_support::execution::block_stops(fx.owner.repo.db()).await,
             Failure::Receipt => {
-                sqlx::query("CREATE TRIGGER refuse_receipt BEFORE UPDATE ON acp_submissions BEGIN SELECT RAISE(ABORT,'refuse receipt'); END")
-                    .execute(fx.owner.repo.pool()).await.unwrap();
+                (fx.owner.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_receipt BEFORE UPDATE ON acp_submissions BEGIN SELECT RAISE(ABORT,'refuse receipt'); END")).await.unwrap();
             }
         }
         pause.release.notify_one();
@@ -50,8 +48,9 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
         assert_eq!(fx.prompts(), 1);
         match failure {
             Failure::Revoke => {
-                sqlx::query("DROP TRIGGER refuse_revoke")
-                    .execute(fx.owner.repo.pool())
+                (fx.owner.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DROP TRIGGER refuse_revoke"))
                     .await
                     .unwrap();
             }
@@ -59,8 +58,9 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
                 crate::test_support::execution::unblock_stops(fx.owner.repo.db()).await
             }
             Failure::Receipt => {
-                sqlx::query("DROP TRIGGER refuse_receipt")
-                    .execute(fx.owner.repo.pool())
+                (fx.owner.repo.db())
+                    .writer()
+                    .execute(sqlx::query("DROP TRIGGER refuse_receipt"))
                     .await
                     .unwrap();
             }
@@ -73,10 +73,9 @@ async fn canonical_acp_revoke_stop_and_receipt_failures_never_qualify_end() {
 #[tokio::test]
 async fn canonical_acp_uncertain_receipt_commit_is_unknown_even_when_sqlite_rolled_back() {
     let fx = Fixture::new("reply").await;
-    sqlx::raw_sql("CREATE TABLE commit_fault(worker TEXT REFERENCES worker_sessions(id) DEFERRABLE INITIALLY DEFERRED);
+    (fx.owner.repo.db()).writer().execute(sqlx::raw_sql("CREATE TABLE commit_fault(worker TEXT REFERENCES worker_sessions(id) DEFERRABLE INITIALLY DEFERRED);
         CREATE TRIGGER defer_receipt_failure AFTER INSERT ON acp_submissions
-        BEGIN INSERT INTO commit_fault VALUES('missing-worker'); END;")
-        .execute(fx.owner.repo.pool()).await.unwrap();
+        BEGIN INSERT INTO commit_fault VALUES('missing-worker'); END;")).await.unwrap();
     let report = fx.dispatch().await.unwrap();
     assert!(matches!(
         report.report.delivery(),
@@ -101,10 +100,9 @@ async fn canonical_acp_uncertain_receipt_commit_is_unknown_even_when_sqlite_roll
 #[tokio::test]
 async fn canonical_acp_completed_receipt_cannot_bypass_failed_canonical_report_commit() {
     let fx = Fixture::new("reply").await;
-    sqlx::query("CREATE TRIGGER refuse_canonical_report BEFORE UPDATE OF handle_state_json ON worker_sessions
+    (fx.owner.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER refuse_canonical_report BEFORE UPDATE OF handle_state_json ON worker_sessions
         WHEN json_extract(NEW.handle_state_json,'$.canonical_inputs.attempts[0].delivery.kind')='unknown'
-        BEGIN SELECT RAISE(ABORT,'canonical report failed'); END")
-        .execute(fx.owner.repo.pool()).await.unwrap();
+        BEGIN SELECT RAISE(ABORT,'canonical report failed'); END")).await.unwrap();
     assert!(fx.dispatch().await.is_err());
     fx.wait_idle().await;
     let receipt = crate::db::sqlite::acp_submission_get(
@@ -119,29 +117,40 @@ async fn canonical_acp_completed_receipt_cannot_bypass_failed_canonical_report_c
         receipt.state,
         crate::db::sqlite::AcpSubmissionState::Completed
     ));
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                let before = carrier.checkpoint().clone();
+                assert!(matches!(
+                    before.attempt(&fx.submission).unwrap().delivery,
+                    InputDeliveryFact::CrossingUnknown
+                ));
+                tx.commit().await.unwrap();
+                assert!(
+                    fx.complete().await.is_none(),
+                    "END must not bypass the canonical fact owner"
+                );
+                assert!(fx.dispatch().await.is_err());
+                let mut tx = write_session.begin().await.unwrap();
+                let carrier =
+                    current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
+                        .await
+                        .unwrap();
+                assert_eq!(carrier.checkpoint(), &before);
+                tx.commit().await.unwrap();
+                assert_eq!(fx.prompts(), 1);
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap();
-    let before = carrier.checkpoint().clone();
-    assert!(matches!(
-        before.attempt(&fx.submission).unwrap().delivery,
-        InputDeliveryFact::CrossingUnknown
-    ));
-    tx.commit().await.unwrap();
-    assert!(
-        fx.complete().await.is_none(),
-        "END must not bypass the canonical fact owner"
-    );
-    assert!(fx.dispatch().await.is_err());
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let carrier = current_input_fact_carrier_tx(&mut tx, &fx.owner.card, &fx.owner.worker)
-        .await
-        .unwrap();
-    assert_eq!(carrier.checkpoint(), &before);
-    tx.commit().await.unwrap();
-    assert_eq!(fx.prompts(), 1);
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -162,8 +171,8 @@ async fn canonical_acp_invalid_receipted_turn_is_unknown_with_original_correlati
         serde_json::from_value(input["association"]["logical_turn_id"].clone()).unwrap();
     let proof: SubmissionDispatchProof =
         serde_json::from_value(input["association"]["proof"].clone()).unwrap();
-    sqlx::query("UPDATE acp_submissions SET turn_id='not-a-local-uuid' WHERE worker_session_id=?1 AND client_id=?2")
-        .bind(&fx.owner.worker).bind(fx.submission.as_str()).execute(fx.owner.repo.pool()).await.unwrap();
+    (fx.owner.repo.db()).writer().execute(sqlx::query("UPDATE acp_submissions SET turn_id='not-a-local-uuid' WHERE worker_session_id=?1 AND client_id=?2")
+        .bind(&fx.owner.worker).bind(fx.submission.as_str())).await.unwrap();
     let report = fx
         .backend
         .dispatch_input(

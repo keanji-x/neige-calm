@@ -13,33 +13,40 @@ async fn launch(
 }
 
 async fn seed_launch(fx: &Fixture, card: &str, track: &str, thread: &str) {
-    sqlx::query(
-        "INSERT INTO claude_session_launches
+    (fx.owner.repo.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO claude_session_launches
         (worker_session_id, card_id, track_id, thread_id, execution_id, created_at_ms)
         VALUES (?, ?, ?, ?, 'earlier-execution', 0)",
-    )
-    .bind(&fx.owner.worker)
-    .bind(card)
-    .bind(track)
-    .bind(thread)
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+            )
+            .bind(&fx.owner.worker)
+            .bind(card)
+            .bind(track)
+            .bind(thread),
+        )
+        .await
+        .unwrap();
 }
 
 async fn fail_launch_writes(fx: &Fixture, operation: &str) {
-    sqlx::query(&format!(
-        "CREATE TRIGGER fail_launch_{operation} BEFORE {operation} ON claude_session_launches
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!(
+            "CREATE TRIGGER fail_launch_{operation} BEFORE {operation} ON claude_session_launches
         BEGIN SELECT RAISE(ABORT,'launch record {operation} failed'); END"
-    ))
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        )))
+        .await
+        .unwrap();
 }
 
 async fn drop_trigger(fx: &Fixture, operation: &str) {
-    sqlx::query(&format!("DROP TRIGGER fail_launch_{operation}"))
-        .execute(fx.owner.repo.pool())
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!(
+            "DROP TRIGGER fail_launch_{operation}"
+        )))
         .await
         .unwrap();
 }
@@ -78,13 +85,14 @@ async fn canonical_claude_identity_launch_record_write_failure_launches_nothing(
 #[tokio::test]
 async fn canonical_claude_identity_launch_refused_admission_leaves_no_record() {
     let fx = Fixture::persistent("exit").await;
-    sqlx::query(
-        "CREATE TRIGGER fail_admission BEFORE INSERT ON workspace_executions
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER fail_admission BEFORE INSERT ON workspace_executions
         BEGIN SELECT RAISE(FAIL,'admission blocked'); END",
-    )
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert_not_dispatched(&fx).await;
     assert_eq!(launch(&fx).await, None);
     assert_eq!(fx.backend.issuance_hold(), None);
@@ -102,15 +110,27 @@ async fn canonical_claude_identity_launch_crossing_its_owner_refuses_and_holds()
         seed_launch(&fx, card, track, &fx.owner.thread).await;
         assert_not_dispatched(&fx).await;
         assert!(launch(&fx).await.is_some(), "{crossed}: evidence is kept");
-        let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-        assert!(
-            crate::claude_planner::recovery::identity_unconfirmed_tx(&mut tx, &fx.owner.worker)
-                .await
-                .unwrap(),
-            "{crossed}: crossed evidence is held"
-        );
-        tx.commit().await.unwrap();
-        fx.session.shutdown().await.unwrap();
+        let write_db = (fx.owner.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    assert!(
+                        crate::claude_planner::recovery::identity_unconfirmed_tx(
+                            &mut tx,
+                            &fx.owner.worker
+                        )
+                        .await
+                        .unwrap(),
+                        "{crossed}: crossed evidence is held"
+                    );
+                    tx.commit().await.unwrap();
+                    fx.session.shutdown().await.unwrap();
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -119,24 +139,36 @@ async fn canonical_claude_identity_launch_for_another_thread_is_stale() {
     let fx = Fixture::persistent("exit").await;
     let other = uuid::Uuid::new_v4().to_string();
     seed_launch(&fx, &fx.owner.card, &fx.owner.track, &other).await;
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    assert!(
-        !crate::claude_planner::recovery::identity_unconfirmed_tx(&mut tx, &fx.owner.worker)
-            .await
-            .unwrap(),
-        "another thread's launch says nothing about this one"
-    );
-    tx.commit().await.unwrap();
-    fx.dispatch().await.unwrap();
-    fx.wait_end().await;
-    let argv = std::fs::read_to_string(fx.dir.path().join("argv")).unwrap();
-    assert!(argv.lines().any(|arg| arg == "--session-id"), "{argv}");
-    assert_eq!(
-        binding(&fx).await.as_deref(),
-        Some(fx.owner.thread.as_str())
-    );
-    assert_eq!(launch(&fx).await, None, "the bind retired this launch");
-    fx.session.shutdown().await.unwrap();
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    !crate::claude_planner::recovery::identity_unconfirmed_tx(
+                        &mut tx,
+                        &fx.owner.worker
+                    )
+                    .await
+                    .unwrap(),
+                    "another thread's launch says nothing about this one"
+                );
+                tx.commit().await.unwrap();
+                fx.dispatch().await.unwrap();
+                fx.wait_end().await;
+                let argv = std::fs::read_to_string(fx.dir.path().join("argv")).unwrap();
+                assert!(argv.lines().any(|arg| arg == "--session-id"), "{argv}");
+                assert_eq!(
+                    binding(&fx).await.as_deref(),
+                    Some(fx.owner.thread.as_str())
+                );
+                assert_eq!(launch(&fx).await, None, "the bind retired this launch");
+                fx.session.shutdown().await.unwrap();
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 /// The bind and the retirement of its launch commit together: a failed delete leaves
@@ -172,25 +204,38 @@ async fn canonical_claude_identity_launch_delete_failure_keeps_the_bind_unpersis
 }
 
 async fn held(fx: &Fixture) -> bool {
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    let held = crate::claude_planner::recovery::identity_unconfirmed_tx(&mut tx, &fx.owner.worker)
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let held = crate::claude_planner::recovery::identity_unconfirmed_tx(
+                    &mut tx,
+                    &fx.owner.worker,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                held
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    held
+        .expect("independent write operation")
 }
 
 /// Fail the claim's release at one transition: `Releasing` before any payload byte, or
 /// `Released` after the whole payload reached the process.
 async fn fail_release(fx: &Fixture, to: &str) {
-    sqlx::query(&format!(
+    (fx.owner.repo.db())
+        .writer()
+        .execute(sqlx::query(&format!(
         "CREATE TRIGGER fail_release BEFORE UPDATE OF provider_execution_json ON worker_sessions
         WHEN NEW.provider_execution_json LIKE '%\"{to}\"%'
         BEGIN SELECT RAISE(ABORT,'release to {to} failed'); END"
-    ))
-    .execute(fx.owner.repo.pool())
-    .await
-    .unwrap();
+    )))
+        .await
+        .unwrap();
 }
 
 /// A release refused while the claim is still held never ran Claude: the launch is retired
@@ -315,17 +360,26 @@ async fn canonical_claude_identity_bound_row_retires_matching_launch_on_open() {
 async fn canonical_claude_identity_stale_completion_cannot_retire_newer_launch() {
     let fx = Fixture::persistent("exit").await;
     seed_launch(&fx, &fx.owner.card, &fx.owner.track, &fx.owner.thread).await;
-    let mut tx = begin_immediate_tx(fx.owner.repo.db()).await.unwrap();
-    assert!(
-        !crate::db::sqlite::claude_session_launch::retire(
-            &mut tx,
-            &fx.owner.worker,
-            "stale-execution"
-        )
+    let write_db = (fx.owner.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                assert!(
+                    !crate::db::sqlite::claude_session_launch::retire(
+                        &mut tx,
+                        &fx.owner.worker,
+                        "stale-execution"
+                    )
+                    .await
+                    .unwrap()
+                );
+                tx.commit().await.unwrap();
+                assert_eq!(launch(&fx).await.unwrap().execution_id, "earlier-execution");
+                fx.session.shutdown().await.unwrap();
+            })
+        })
         .await
-        .unwrap()
-    );
-    tx.commit().await.unwrap();
-    assert_eq!(launch(&fx).await.unwrap().execution_id, "earlier-execution");
-    fx.session.shutdown().await.unwrap();
+        .expect("independent write operation")
 }

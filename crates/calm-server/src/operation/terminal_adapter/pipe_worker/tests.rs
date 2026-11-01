@@ -164,9 +164,14 @@ impl Harness {
         self.clear_claim().await;
     }
     async fn clear_claim(&self) {
-        sqlx::query("UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
-            .bind(&self.id)
-            .execute(self.db.pool())
+        (self.db.db())
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET lease_owner=NULL,lease_until_ms=NULL WHERE id=?1",
+                )
+                .bind(&self.id),
+            )
             .await
             .unwrap();
     }
@@ -289,18 +294,18 @@ async fn w_terminal_worker_release_refused_when_superseded() {
             declared_by: "user".into(),
         },
     };
-    sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1")
-        .bind(&h.task.id)
-        .execute(h.db.pool())
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1").bind(&h.task.id))
         .await
         .unwrap();
-    sqlx::query("INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) \
+    (h.db.db()).writer().execute(sqlx::query("INSERT INTO task_attempt_allocations(attempt_id,track_id,key,generation,origin_json,created_at_ms) \
          SELECT attempt_id||'-replacement',track_id,key,2,?2,created_at_ms \
          FROM task_attempt_allocations WHERE attempt_id=?1")
-        .bind(&h.task.id).bind(serde_json::to_string(&origin).unwrap()).execute(h.db.pool()).await.unwrap();
-    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-        .bind(&h.task.id)
-        .execute(h.db.pool())
+        .bind(&h.task.id).bind(serde_json::to_string(&origin).unwrap())).await.unwrap();
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&h.task.id))
         .await
         .unwrap();
     h.release().await;
@@ -394,9 +399,11 @@ async fn w_terminal_worker_kernel_restart_held_releases_only_with_authority() {
         let h = Harness::new("printf launched > ran").await;
         h.park().await;
         if !valid {
-            sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1")
-                .bind(&h.task.id)
-                .execute(h.db.pool())
+            (h.db.db())
+                .writer()
+                .execute(
+                    sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1").bind(&h.task.id),
+                )
                 .await
                 .unwrap();
         }
@@ -523,9 +530,9 @@ async fn w_terminal_worker_admission_refuses_verifying() {
         .applied()
         .unwrap();
     let op = h.ops.claim_drive_operation(&h.id).await.unwrap().unwrap();
-    sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1")
-        .bind(&h.task.id)
-        .execute(h.db.pool())
+    (h.db.db())
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='verifying' WHERE id=?1").bind(&h.task.id))
         .await
         .unwrap();
     let result = h

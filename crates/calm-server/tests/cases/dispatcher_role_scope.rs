@@ -73,9 +73,11 @@ async fn seed_worker_in_track(
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?1")
-        .bind(card.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?1").bind(card.id.as_str()),
+        )
         .await
         .unwrap();
     cache.insert(
@@ -209,9 +211,11 @@ async fn worker_emitting_other_card_scope_is_rejected() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?1")
-        .bind(card_b.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'worker' WHERE id = ?1").bind(card_b.id.as_str()),
+        )
         .await
         .unwrap();
     cache.insert(card_b.id.clone(), CardRole::Worker, track.clone());
@@ -451,9 +455,12 @@ async fn planner_emitting_track_scope_is_accepted() {
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
-        .bind(planner.id.as_str())
-        .execute(repo.pool())
+    (repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?1")
+                .bind(planner.id.as_str()),
+        )
         .await
         .unwrap();
     cache.insert(

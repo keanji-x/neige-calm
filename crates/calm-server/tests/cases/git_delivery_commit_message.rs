@@ -278,47 +278,51 @@ async fn upgrade_restart_settles_a_legacy_null_message_without_a_forge_op() {
         .await;
     // Restore the persisted pre-deploy shape; the migration-level regression separately
     // constructs this row at the base schema and upgrades it with the real migrator.
-    let mut tx = fx.pool().begin().await.unwrap();
-    let triggers: Vec<(String, String)> = sqlx::query_as(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'task_git_deliveries'"
-    ).fetch_all(&mut *tx).await.unwrap();
-    for (name, _) in &triggers {
-        sqlx::query(&format!("DROP TRIGGER {name}"))
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    sqlx::query(
-        "UPDATE task_git_deliveries SET commit_message = NULL WHERE producer_attempt_id = ?1",
-    )
-    .bind(&task.id)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    for (_, definition) in triggers {
-        sqlx::query(&definition).execute(&mut *tx).await.unwrap();
-    }
-    tx.commit().await.unwrap();
-    assert_eq!(fx.forge_op_count().await, 0);
-    fx.reboot().await;
-    fx.wait_settled(&task.id).await;
-    let row = fx.delivery_row(&task.id).await.unwrap();
-    let candidate = fx.candidate_row(&task.id).await.unwrap();
-    assert_eq!(
-        commit_message_of(&lease.path, &candidate.commit_sha),
-        format!(
-            "neige: attempt {} completed (delivery {})\n",
-            task.id, row.delivery_id
+    let write_db = (fx.db()).clone();
+    write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin().await.unwrap();
+        let triggers: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'task_git_deliveries'"
+        ).fetch_all(&mut **tx).await.unwrap();
+        for (name, _) in &triggers {
+            sqlx::query(&format!("DROP TRIGGER {name}"))
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "UPDATE task_git_deliveries SET commit_message = NULL WHERE producer_attempt_id = ?1",
         )
-    );
-    assert!(row.settlement.is_some());
-    // A new kernel lease proves the checkout is no longer Busy after settlement.
-    let next = fx
-        .new_worker(
-            "after-legacy",
-            calm_server::session_projection_repo::AgentProvider::Codex,
-        )
-        .await;
-    let next_lease = fx.kernel_lease(&next.card_id).await;
-    assert_eq!(next_lease.path, lease.path);
+        .bind(&task.id)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+        for (_, definition) in triggers {
+            sqlx::query(&definition).execute(&mut **tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        assert_eq!(fx.forge_op_count().await, 0);
+        fx.reboot().await;
+        fx.wait_settled(&task.id).await;
+        let row = fx.delivery_row(&task.id).await.unwrap();
+        let candidate = fx.candidate_row(&task.id).await.unwrap();
+        assert_eq!(
+            commit_message_of(&lease.path, &candidate.commit_sha),
+            format!(
+                "neige: attempt {} completed (delivery {})\n",
+                task.id, row.delivery_id
+            )
+        );
+        assert!(row.settlement.is_some());
+        // A new kernel lease proves the checkout is no longer Busy after settlement.
+        let next = fx
+            .new_worker(
+                "after-legacy",
+                calm_server::session_projection_repo::AgentProvider::Codex,
+            )
+            .await;
+        let next_lease = fx.kernel_lease(&next.card_id).await;
+        assert_eq!(next_lease.path, lease.path);
+
+    })).await.expect("independent write operation")
 }

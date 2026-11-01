@@ -1305,14 +1305,20 @@ async fn public_track_lists_hide_only_area_chat_and_repo_keeps_full_set() {
     let ordinary = seed_track(&boot.repo, &boot.area_id).await;
     let launchpad = seed_track(&boot.repo, &boot.area_id).await;
     let chat = seed_track(&boot.repo, &boot.area_id).await;
-    sqlx::query("UPDATE tracks SET purpose = 'launchpad' WHERE id = ?1")
-        .bind(launchpad.id.as_str())
-        .execute(boot.sqlx_repo.pool())
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'launchpad' WHERE id = ?1")
+                .bind(launchpad.id.as_str()),
+        )
         .await
         .unwrap();
-    sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
-        .bind(chat.id.as_str())
-        .execute(boot.sqlx_repo.pool())
+    (boot.sqlx_repo.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET purpose = 'area-chat' WHERE id = ?1")
+                .bind(chat.id.as_str()),
+        )
         .await
         .unwrap();
 

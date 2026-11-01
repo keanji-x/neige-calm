@@ -109,94 +109,105 @@ async fn canonical_claude_creation_key_replay_preserves_original_ack_and_source(
     let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let original = fixture.receipt(body["area_id"].as_str().unwrap()).await;
     let (card, origin, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
-    let mut tx = crate::db::sqlite::begin_immediate_tx(fixture.repo.db())
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            use crate::db::sqlite::conversation::*;
+                            let mut carrier = current_input_carrier_tx(&mut tx, &card, &origin)
+                                .await
+                                .unwrap();
+                            let plan = human_plan_for_pending_prefix_tx(
+                                &mut tx,
+                                &carrier,
+                                std::num::NonZeroU32::MIN,
+                                vec![],
+                            )
+                            .await
+                            .unwrap();
+                            claim_initial_submission_tx(
+                    &mut tx,
+                    &mut carrier,
+                    plan,
+                    &calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+                        deployment_owner_user_id: calm_types::organization::LEGACY_OWNER_USER_ID.into(),
+                        provider: calm_types::runtime::AgentProvider::Claude,
+                        profile: crate::harness::profile::HarnessProfile::Planner,
+                    },
+                )
+                .await
+                .unwrap();
+                            let checkpoint = carrier.checkpoint().clone();
+                            let snapshot = carrier.snapshot().clone();
+                            let replacement = crate::model::new_id();
+                            crate::db::sqlite::session_supersede_and_start_tx(
+                                &mut tx,
+                                &origin,
+                                crate::session_projection_repo::WorkerSessionInit::shared_planner(
+                                    replacement.clone(),
+                                    card.clone(),
+                                    calm_types::runtime::AgentProvider::Claude,
+                                    crate::session_projection_repo::WorkerSessionState::Idle,
+                                    None,
+                                    snapshot,
+                                    crate::model::now_ms(),
+                                ),
+                            )
+                            .await
+                            .unwrap();
+                            crate::db::sqlite::session_delete_tx(&mut tx, &origin)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
+                            post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
+                            assert_eq!(
+                                fixture
+                                    .receipt(body["area_id"].as_str().unwrap())
+                                    .await
+                                    .acknowledgement,
+                                original.acknowledgement
+                            );
+                            let (_, worker, after) = fixture.carrier(created["id"].as_str().unwrap()).await;
+                            assert_eq!(worker, replacement);
+                            assert_eq!(after.canonical_inputs, checkpoint);
+                            assert_eq!(frame.canonical_inputs.pending.len(), 1);
+                            for (field, value) in [
+                                ("planner_provider", json!("codex")),
+                                ("first_message", json!("changed")),
+                                ("model", json!("other-model")),
+                            ] {
+                                let mut changed = body.clone();
+                                changed[field] = value;
+                                assert_eq!(
+                                    status(&app, &cookie, "/api/tracks", "first", changed).await,
+                                    StatusCode::CONFLICT
+                                );
+                            }
+                            let area = body["area_id"].as_str().unwrap();
+                            (fixture.repo.db())
+                                .writer()
+                                .execute(sqlx::query("DELETE FROM area_members WHERE area_id=?1").bind(area))
+                                .await
+                                .unwrap();
+                            assert_eq!(
+                                status(&app, &cookie, "/api/tracks", "first", body.clone()).await,
+                                StatusCode::FORBIDDEN
+                            );
+                            assert_eq!(
+                                status(&app, &cookie, "/api/auth/logout", "logout", json!({})).await,
+                                StatusCode::OK
+                            );
+                            assert_eq!(
+                                status(&app, &cookie, "/api/tracks", "first", body).await,
+                                StatusCode::UNAUTHORIZED
+                            );
+                            fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    use crate::db::sqlite::conversation::*;
-    let mut carrier = current_input_carrier_tx(&mut tx, &card, &origin)
-        .await
-        .unwrap();
-    let plan =
-        human_plan_for_pending_prefix_tx(&mut tx, &carrier, std::num::NonZeroU32::MIN, vec![])
-            .await
-            .unwrap();
-    claim_initial_submission_tx(
-        &mut tx,
-        &mut carrier,
-        plan,
-        &calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id: calm_types::organization::LEGACY_OWNER_USER_ID.into(),
-            provider: calm_types::runtime::AgentProvider::Claude,
-            profile: crate::harness::profile::HarnessProfile::Planner,
-        },
-    )
-    .await
-    .unwrap();
-    let checkpoint = carrier.checkpoint().clone();
-    let snapshot = carrier.snapshot().clone();
-    let replacement = crate::model::new_id();
-    crate::db::sqlite::session_supersede_and_start_tx(
-        &mut tx,
-        &origin,
-        crate::session_projection_repo::WorkerSessionInit::shared_planner(
-            replacement.clone(),
-            card.clone(),
-            calm_types::runtime::AgentProvider::Claude,
-            crate::session_projection_repo::WorkerSessionState::Idle,
-            None,
-            snapshot,
-            crate::model::now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    crate::db::sqlite::session_delete_tx(&mut tx, &origin)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
-    assert_eq!(
-        fixture
-            .receipt(body["area_id"].as_str().unwrap())
-            .await
-            .acknowledgement,
-        original.acknowledgement
-    );
-    let (_, worker, after) = fixture.carrier(created["id"].as_str().unwrap()).await;
-    assert_eq!(worker, replacement);
-    assert_eq!(after.canonical_inputs, checkpoint);
-    assert_eq!(frame.canonical_inputs.pending.len(), 1);
-    for (field, value) in [
-        ("planner_provider", json!("codex")),
-        ("first_message", json!("changed")),
-        ("model", json!("other-model")),
-    ] {
-        let mut changed = body.clone();
-        changed[field] = value;
-        assert_eq!(
-            status(&app, &cookie, "/api/tracks", "first", changed).await,
-            StatusCode::CONFLICT
-        );
-    }
-    let area = body["area_id"].as_str().unwrap();
-    sqlx::query("DELETE FROM area_members WHERE area_id=?1")
-        .bind(area)
-        .execute(fixture.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(
-        status(&app, &cookie, "/api/tracks", "first", body.clone()).await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        status(&app, &cookie, "/api/auth/logout", "logout", json!({})).await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        status(&app, &cookie, "/api/tracks", "first", body).await,
-        StatusCode::UNAUTHORIZED
-    );
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -213,13 +224,14 @@ async fn canonical_claude_creation_failure_never_mints_historical_delivery() {
         .fetch_one(fixture.repo.pool())
         .await
         .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER refuse_canonical_creation BEFORE INSERT ON worker_sessions \
+    (fixture.repo.db())
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER refuse_canonical_creation BEFORE INSERT ON worker_sessions \
         BEGIN SELECT RAISE(ABORT,'canonical allocation refused'); END",
-    )
-    .execute(fixture.repo.pool())
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     let status = status(&app, &cookie, "/api/tracks", "fresh-failure", body).await;
     assert!(status.is_server_error(), "{status}");
     let counts: (i64, i64, i64, i64) = sqlx::query_as(count_query)
@@ -239,38 +251,49 @@ async fn canonical_claude_creation_shared_member_acceptance_is_not_execution_gra
     let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
     let mut body = create_body(&app, &cookie).await;
     let area = body["area_id"].as_str().unwrap();
-    let mut tx = fixture.repo.pool().begin().await.unwrap();
-    crate::db::sqlite::area_membership::application_user_register(&mut tx, "alice", "Alice")
+    let write_db = (fixture.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            crate::db::sqlite::area_membership::application_user_register(
+                                &mut tx, "alice", "Alice",
+                            )
+                            .await
+                            .unwrap();
+                            sqlx::query(
+                    "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
+                )
+                .bind(area)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                            tx.commit().await.unwrap();
+                            let token = auth.sessions.create(
+                                crate::auth::SessionIdentity {
+                                    user_id: "alice".into(),
+                                    display_name: "Alice".into(),
+                                    role: "member".into(),
+                                },
+                                crate::auth::SessionAuthority::PasswordLogin,
+                            );
+                            let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
+                            body["first_message"] = json!(FIRST_BODY);
+                            let created = post(&app, &alice, "/api/tracks", "first", body.clone()).await;
+                            let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
+                            assert_eq!(receipt.source_user_id, "alice");
+                            let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
+                            assert_eq!(frame.canonical_inputs.pending.len(), 1);
+                            assert!(frame.canonical_inputs.active.is_none());
+                            assert!(frame.canonical_inputs.attempts.is_empty());
+                            assert!(frame.header.last_thread_id.is_none());
+                            post(&app, &alice, "/api/tracks", "first", body).await;
+                            fixture.shutdown_process(&state).await;
+            })
+        })
         .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO area_members(area_id,user_id,role,joined_at) VALUES(?1,'alice','member',0)",
-    )
-    .bind(area)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let token = auth.sessions.create(
-        crate::auth::SessionIdentity {
-            user_id: "alice".into(),
-            display_name: "Alice".into(),
-            role: "member".into(),
-        },
-        crate::auth::SessionAuthority::PasswordLogin,
-    );
-    let alice = format!("{}={token}", crate::auth::SESSION_COOKIE);
-    body["first_message"] = json!(FIRST_BODY);
-    let created = post(&app, &alice, "/api/tracks", "first", body.clone()).await;
-    let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
-    assert_eq!(receipt.source_user_id, "alice");
-    let (_, _, frame) = fixture.carrier(created["id"].as_str().unwrap()).await;
-    assert_eq!(frame.canonical_inputs.pending.len(), 1);
-    assert!(frame.canonical_inputs.active.is_none());
-    assert!(frame.canonical_inputs.attempts.is_empty());
-    assert!(frame.header.last_thread_id.is_none());
-    post(&app, &alice, "/api/tracks", "first", body).await;
-    fixture.shutdown_process(&state).await;
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -306,10 +329,9 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
         let (state, app, cookie) = fixture.application().await;
         // Hold only the actual crossing-marker transaction. The production
         // route must install its retained session and claim the saved input.
-        sqlx::query("CREATE TRIGGER hold_creation_marker BEFORE UPDATE OF handle_state_json ON worker_sessions \
+        (fixture.repo.db()).writer().execute(sqlx::query("CREATE TRIGGER hold_creation_marker BEFORE UPDATE OF handle_state_json ON worker_sessions \
             WHEN json_array_length(NEW.handle_state_json,'$.canonical_inputs.attempts') > 0 \
-            BEGIN SELECT RAISE(ABORT,'hold creation crossing'); END")
-            .execute(fixture.repo.pool()).await.unwrap();
+            BEGIN SELECT RAISE(ABORT,'hold creation crossing'); END")).await.unwrap();
         let input_uri = format!("/api/cards/{card}/planner/input");
         post(
             &app,
@@ -338,8 +360,9 @@ async fn canonical_claude_creation_first_send_reuses_checkpoint_and_h2_hold() {
             release: Arc::default(),
         };
         session.fail_user_flush_for_test(pause.clone());
-        sqlx::query("DROP TRIGGER hold_creation_marker")
-            .execute(fixture.repo.pool())
+        (fixture.repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER hold_creation_marker"))
             .await
             .unwrap();
         harness.refresh_canonical_input().await.unwrap();

@@ -2944,11 +2944,59 @@ mod tests {
         base.phase = HarnessPhaseTag::Idle;
 
         let mut expected = Vec::new();
-        let mut tx = repo.pool().begin().await.expect("begin tx");
-        for profile in [HarnessProfile::Assistant, HarnessProfile::PlainChat] {
-            let (minted_role, minted_marker) =
-                minted_card_shape(profile).expect("conversation profile mints a card");
-            let card = card_create_with_id_tx(
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.expect("begin tx");
+            for profile in [HarnessProfile::Assistant, HarnessProfile::PlainChat] {
+                let (minted_role, minted_marker) =
+                    minted_card_shape(profile).expect("conversation profile mints a card");
+                let card = card_create_with_id_tx(
+                    &mut tx,
+                    new_id(),
+                    NewCard {
+                        track_id: track.id.clone(),
+                        title: None,
+                        kind: "codex".into(),
+                        sort: None,
+                        payload: json!({"schemaVersion": 1, "harness_profile": minted_marker, "assistant_provider":"codex"}),
+                    },
+                    minted_role,
+                    false,
+                    repo.card_role_cache(),
+                )
+                .await
+                .expect("mint conversation card");
+
+                let worker_session_id = new_id();
+                let thread_id = format!("thread-{}", card.id.as_str());
+                let mut snapshot = base.clone();
+                snapshot.last_thread_id = Some(thread_id.clone());
+                session_start_runtime_tx(
+                    &mut tx,
+                    WorkerSessionInit {
+                        id: worker_session_id.clone(),
+                        card_id: card.id.to_string(),
+                        kind: session_kind_for(profile),
+                        agent_provider: Some(AgentProvider::Codex),
+                        // The state the restart bug bites in: a turn was in flight.
+                        status: WorkerSessionState::TurnPending,
+                        terminal_run_id: None,
+                        thread_id: Some(thread_id),
+                        session_id: None,
+                        active_turn_id: None,
+                        handle_state_json: Some(
+                            serde_json::to_value(&snapshot).expect("serialize snapshot"),
+                        ),
+                        spawn_op_id: None,
+                        now_ms: now_ms(),
+                    },
+                )
+                .await
+                .expect("start runtime");
+                expected.push(worker_session_id);
+            }
+            // A Claude Planner row is recovered too: its own arm, on a Planner card.
+            let planner = card_create_with_id_tx(
                 &mut tx,
                 new_id(),
                 NewCard {
@@ -2956,100 +3004,56 @@ mod tests {
                     title: None,
                     kind: "codex".into(),
                     sort: None,
-                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker, "assistant_provider":"codex"}),
+                    payload: crate::track_creation::planner_harness_card_payload(
+                        &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
+                        None,
+                        AgentProvider::Claude,
+                    ),
                 },
-                minted_role,
+                CardRole::Planner,
                 false,
                 repo.card_role_cache(),
             )
             .await
-            .expect("mint conversation card");
-
+            .expect("mint planner card");
             let worker_session_id = new_id();
-            let thread_id = format!("thread-{}", card.id.as_str());
             let mut snapshot = base.clone();
-            snapshot.last_thread_id = Some(thread_id.clone());
+            snapshot.last_thread_id = Some(format!("thread-{}", planner.id.as_str()));
             session_start_runtime_tx(
                 &mut tx,
-                WorkerSessionInit {
-                    id: worker_session_id.clone(),
-                    card_id: card.id.to_string(),
-                    kind: session_kind_for(profile),
-                    agent_provider: Some(AgentProvider::Codex),
-                    // The state the restart bug bites in: a turn was in flight.
-                    status: WorkerSessionState::TurnPending,
-                    terminal_run_id: None,
-                    thread_id: Some(thread_id),
-                    session_id: None,
-                    active_turn_id: None,
-                    handle_state_json: Some(
-                        serde_json::to_value(&snapshot).expect("serialize snapshot"),
-                    ),
-                    spawn_op_id: None,
-                    now_ms: now_ms(),
-                },
+                WorkerSessionInit::shared_planner(
+                    worker_session_id.clone(),
+                    planner.id.to_string(),
+                    AgentProvider::Claude,
+                    WorkerSessionState::TurnPending,
+                    snapshot.last_thread_id.clone(),
+                    serde_json::to_value(&snapshot).expect("serialize snapshot"),
+                    now_ms(),
+                ),
             )
             .await
-            .expect("start runtime");
+            .expect("start claude planner runtime");
             expected.push(worker_session_id);
-        }
-        // A Claude Planner row is recovered too: its own arm, on a Planner card.
-        let planner = card_create_with_id_tx(
-            &mut tx,
-            new_id(),
-            NewCard {
-                track_id: track.id.clone(),
-                title: None,
-                kind: "codex".into(),
-                sort: None,
-                payload: crate::track_creation::planner_harness_card_payload(
-                    &crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().unwrap(),
-                    None,
-                    AgentProvider::Claude,
-                ),
-            },
-            CardRole::Planner,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .expect("mint planner card");
-        let worker_session_id = new_id();
-        let mut snapshot = base.clone();
-        snapshot.last_thread_id = Some(format!("thread-{}", planner.id.as_str()));
-        session_start_runtime_tx(
-            &mut tx,
-            WorkerSessionInit::shared_planner(
-                worker_session_id.clone(),
-                planner.id.to_string(),
-                AgentProvider::Claude,
-                WorkerSessionState::TurnPending,
-                snapshot.last_thread_id.clone(),
-                serde_json::to_value(&snapshot).expect("serialize snapshot"),
-                now_ms(),
-            ),
-        )
-        .await
-        .expect("start claude planner runtime");
-        expected.push(worker_session_id);
-        tx.commit().await.expect("commit seed tx");
+            tx.commit().await.expect("commit seed tx");
 
-        let mut selected = repo
-            .session_projection_recover_harnesses_on_boot()
-            .await
-            .expect("boot selector")
-            .into_iter()
-            .map(|runtime| runtime.id)
-            .collect::<Vec<_>>();
-        selected.sort();
-        expected.sort();
-        assert_eq!(
-            selected, expected,
-            "the boot selector no longer recognises a card minted by \
+            let mut selected = repo
+                .session_projection_recover_harnesses_on_boot()
+                .await
+                .expect("boot selector")
+                .into_iter()
+                .map(|runtime| runtime.id)
+                .collect::<Vec<_>>();
+            selected.sort();
+            expected.sort();
+            assert_eq!(
+                selected, expected,
+                "the boot selector no longer recognises a card minted by \
              `minted_card_shape` or a Claude Planner row: its SQL literals \
              ('assistant'/'assistant', 'worker'/'plain_chat', 'claude'/'planner') have \
              drifted from the Rust values, so a kernel restart would drop that class"
-        );
+            );
+
+    })).await.expect("independent write operation")
     }
 
     #[tokio::test]

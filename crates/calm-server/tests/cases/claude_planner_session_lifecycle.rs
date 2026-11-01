@@ -510,46 +510,58 @@ async fn a_cli_ignoring_sigterm_still_settles_by_settle_by() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
     let rig = Rig::new("exit").await;
-    let mut tx = rig.repo.pool().begin().await.expect("tx");
-    calm_server::db::sqlite::session_mark_superseded_runtime_tx(&mut tx, &rig.worker_session_id)
-        .await
-        .expect("supersede");
-    tx.commit().await.expect("commit");
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.expect("tx");
+                calm_server::db::sqlite::session_mark_superseded_runtime_tx(
+                    &mut tx,
+                    &rig.worker_session_id,
+                )
+                .await
+                .expect("supersede");
+                tx.commit().await.expect("commit");
 
-    let error = rig
-        .session()
-        .turn_start(
-            &rig.thread,
-            request(
-                rig.text("hello"),
-                &TurnModelSelection::inherit(),
-                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                &client_id(),
-            ),
-        )
+                let error = rig
+                    .session()
+                    .turn_start(
+                        &rig.thread,
+                        request(
+                            rig.text("hello"),
+                            &TurnModelSelection::inherit(),
+                            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                            &client_id(),
+                        ),
+                    )
+                    .await
+                    .expect_err("the guarded mint refuses a retired row");
+                let TurnStartFailure::Transient(error) = error else {
+                    panic!("expected transient host failure, got {error:?}");
+                };
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Claude live owner identity changed"),
+                    "{error}"
+                );
+                assert_eq!(rig.mcp_token_hash().await, None);
+                let card_rows: i64 =
+                    sqlx::query_scalar("SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1")
+                        .bind(&rig.card_id)
+                        .fetch_one(rig.repo.pool())
+                        .await
+                        .expect("count");
+                assert_eq!(
+                    card_rows, 0,
+                    "the card write rolled back with the session write"
+                );
+                assert!(rig.read_bin("spawns").is_none(), "nothing spawned");
+            })
+        })
         .await
-        .expect_err("the guarded mint refuses a retired row");
-    let TurnStartFailure::Transient(error) = error else {
-        panic!("expected transient host failure, got {error:?}");
-    };
-    assert!(
-        error
-            .to_string()
-            .contains("Claude live owner identity changed"),
-        "{error}"
-    );
-    assert_eq!(rig.mcp_token_hash().await, None);
-    let card_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1")
-            .bind(&rig.card_id)
-            .fetch_one(rig.repo.pool())
-            .await
-            .expect("count");
-    assert_eq!(
-        card_rows, 0,
-        "the card write rolled back with the session write"
-    );
-    assert!(rig.read_bin("spawns").is_none(), "nothing spawned");
+        .expect("independent write operation")
 }
 
 /// #1791 PR4 (PR2b follow-up): a bind of `agent_session_id` that fails (here cut off by its bound
@@ -573,41 +585,52 @@ async fn a_failed_bind_is_retried_on_the_next_turn() {
         .map(started)
         .expect("turn_start");
     // Hold the database write lock across the bind (the CLI names the session a second in).
-    let mut held = rig.repo.pool().begin().await.expect("tx");
-    sqlx::query("UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1")
-        .bind(&rig.worker_session_id)
-        .execute(&mut *held)
-        .await
-        .expect("take the write lock");
-    tokio::time::sleep(Duration::from_millis(6_500)).await;
-    held.rollback().await.expect("release");
-    let completed = completed_turn(&until_completed(&mut rx).await);
-    assert_eq!(completed["status"], "completed");
-    assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut held = write_session.begin().await.expect("tx");
+                sqlx::query(
+                    "UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1",
+                )
+                .bind(&rig.worker_session_id)
+                .execute(&mut **held)
+                .await
+                .expect("take the write lock");
+                tokio::time::sleep(Duration::from_millis(6_500)).await;
+                held.rollback().await.expect("release");
+                let completed = completed_turn(&until_completed(&mut rx).await);
+                assert_eq!(completed["status"], "completed");
+                assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
 
-    std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
-    let mut rx = rig.session().subscribe_events();
-    rig.session()
-        .turn_start(
-            &rig.thread,
-            request(
-                rig.text("again"),
-                &TurnModelSelection::inherit(),
-                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                &client_id(),
-            ),
-        )
+                std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
+                let mut rx = rig.session().subscribe_events();
+                rig.session()
+                    .turn_start(
+                        &rig.thread,
+                        request(
+                            rig.text("again"),
+                            &TurnModelSelection::inherit(),
+                            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                            &client_id(),
+                        ),
+                    )
+                    .await
+                    .map(started)
+                    .expect("turn_start");
+                until_completed(&mut rx).await;
+                let argv = rig.read_bin("argv").expect("argv");
+                assert!(argv.lines().any(|a| a == "--resume"), "resumed from memory");
+                assert_eq!(
+                    rig.agent_session_id().await.as_deref(),
+                    Some(rig.thread.as_str()),
+                    "the next turn retried the bind"
+                );
+            })
+        })
         .await
-        .map(started)
-        .expect("turn_start");
-    until_completed(&mut rx).await;
-    let argv = rig.read_bin("argv").expect("argv");
-    assert!(argv.lines().any(|a| a == "--resume"), "resumed from memory");
-    assert_eq!(
-        rig.agent_session_id().await.as_deref(),
-        Some(rig.thread.as_str()),
-        "the next turn retried the bind"
-    );
+        .expect("independent write operation")
 }
 
 /// #3318: the CLI named the session but its bind was cut off, and a historical turn records no
@@ -631,42 +654,53 @@ async fn a_lost_bind_holds_the_reopened_session_without_relaunching() {
         .await
         .map(started)
         .expect("turn_start");
-    let mut held = rig.repo.pool().begin().await.expect("tx");
-    sqlx::query("UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1")
-        .bind(&rig.worker_session_id)
-        .execute(&mut *held)
-        .await
-        .expect("take the write lock");
-    tokio::time::sleep(Duration::from_millis(6_500)).await;
-    held.rollback().await.expect("release");
-    let completed = completed_turn(&until_completed(&mut rx).await);
-    assert_eq!(completed["status"], "completed");
-    assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
-    rig.session().shutdown().await.expect("shutdown");
+    let write_db = (rig.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut held = write_session.begin().await.expect("tx");
+                sqlx::query(
+                    "UPDATE worker_sessions SET updated_at_ms = updated_at_ms WHERE id = ?1",
+                )
+                .bind(&rig.worker_session_id)
+                .execute(&mut **held)
+                .await
+                .expect("take the write lock");
+                tokio::time::sleep(Duration::from_millis(6_500)).await;
+                held.rollback().await.expect("release");
+                let completed = completed_turn(&until_completed(&mut rx).await);
+                assert_eq!(completed["status"], "completed");
+                assert_eq!(rig.agent_session_id().await, None, "the bind was cut off");
+                rig.session().shutdown().await.expect("shutdown");
 
-    let spawns = rig.read_bin("spawns").expect("spawns");
-    std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
-    let reopened = rig.open_session().await;
-    let error = reopened
-        .turn_start(
-            &rig.thread,
-            request(
-                rig.text("after a restart"),
-                &TurnModelSelection::inherit(),
-                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
-                &client_id(),
-            ),
-        )
+                let spawns = rig.read_bin("spawns").expect("spawns");
+                std::fs::write(rig.bin("scenario"), "exit").expect("scenario");
+                let reopened = rig.open_session().await;
+                let error = reopened
+                    .turn_start(
+                        &rig.thread,
+                        request(
+                            rig.text("after a restart"),
+                            &TurnModelSelection::inherit(),
+                            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
+                            &client_id(),
+                        ),
+                    )
+                    .await
+                    .map(|outcome| format!("{outcome:?}"))
+                    .expect_err("an unconfirmed launch is held");
+                let TurnStartFailure::AwaitingRecovery { error, reader } = error else {
+                    panic!("expected the identity hold, got {error:?}");
+                };
+                assert!(error.to_string().contains("/planner/restart"), "{error}");
+                assert!(reader.contains("Start a fresh session"), "{reader}");
+                assert_eq!(rig.read_bin("spawns"), Some(spawns), "nothing relaunched");
+                assert_eq!(rig.agent_session_id().await, None);
+            })
+        })
         .await
-        .map(|outcome| format!("{outcome:?}"))
-        .expect_err("an unconfirmed launch is held");
-    let TurnStartFailure::AwaitingRecovery { error, reader } = error else {
-        panic!("expected the identity hold, got {error:?}");
-    };
-    assert!(error.to_string().contains("/planner/restart"), "{error}");
-    assert!(reader.contains("Start a fresh session"), "{reader}");
-    assert_eq!(rig.read_bin("spawns"), Some(spawns), "nothing relaunched");
-    assert_eq!(rig.agent_session_id().await, None);
+        .expect("independent write operation")
 }
 
 /// #1791 PR4 review: a shutdown or a deletion seal that lands while the pre-spawn `--version`

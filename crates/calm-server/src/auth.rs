@@ -77,15 +77,23 @@ pub(crate) async fn initialize_owner_profile(
     cfg: &Config,
 ) -> Result<()> {
     let display_name = configured_owner_display_name(cfg);
-    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    crate::db::sqlite::area_membership::application_user_register(
-        &mut tx,
-        OWNER_USER_ID,
-        &display_name,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(())
+    let write_db = (pool).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await?;
+                crate::db::sqlite::area_membership::application_user_register(
+                    &mut tx,
+                    OWNER_USER_ID,
+                    &display_name,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await.map_err(calm_truth::TruthError::from)?
 }
 
 impl AuthConfig {

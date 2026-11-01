@@ -1,6 +1,6 @@
 use super::legacy_test_adapter::LegacyPreparedWorker;
 use super::*;
-use crate::db::sqlite::begin_immediate_tx;
+
 use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
 use std::sync::Arc;
 
@@ -103,15 +103,14 @@ async fn prepare_terminal_worker_with_cwd(
         cwd,
     })
     .unwrap();
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT OR IGNORE INTO tasks \
          (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, ?3, 'terminal', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
     .bind(&harness.track_id)
-    .bind(key)
-    .execute(harness.repo.pool())
+    .bind(key))
     .await
     .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
@@ -134,14 +133,23 @@ async fn prepare_terminal_worker_with_cwd(
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let output = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let output = harness
+                    .adapter
+                    .prepare_tx(&mut tx, &payload, &op)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                output
+            })
+        })
         .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    output
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -323,11 +331,20 @@ async fn terminal_open_without_cwd_lands_in_the_track_worktree() {
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
+                tx.commit().await.unwrap();
 
-    assert_eq!(terminal_cwd(&harness, &output).await, worktree);
+                assert_eq!(terminal_cwd(&harness, &output).await, worktree);
+            })
+        })
+        .await
+        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -349,14 +366,13 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         cwd: None,
     })
     .unwrap();
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT OR IGNORE INTO tasks \
          (id, track_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
          VALUES (?1, ?2, 'empty', 'terminal', 'test', 'null', '[]', 'dispatched', 1, 1)",
     )
     .bind(&task_id)
-    .bind(&harness.track_id)
-    .execute(harness.repo.pool())
+    .bind(&harness.track_id))
     .await
     .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.db().clone());
@@ -379,16 +395,25 @@ async fn terminal_worker_refuses_to_default_to_an_empty_workspace() {
         .into_iter()
         .find(|op| op.id == op_id)
         .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let err = harness
-        .adapter
-        .prepare_tx(&mut tx, &payload, &op)
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin().await.unwrap();
+                let err = harness
+                    .adapter
+                    .prepare_tx(&mut tx, &payload, &op)
+                    .await
+                    .expect_err("an empty workspace path must not become an empty cwd");
+                assert!(
+                    err.to_string().contains("no workspace path"),
+                    "unexpected error: {err}"
+                );
+            })
+        })
         .await
-        .expect_err("an empty workspace path must not become an empty cwd");
-    assert!(
-        err.to_string().contains("no workspace path"),
-        "unexpected error: {err}"
-    );
+        .expect("independent write operation")
 }
 
 #[cfg(test)]
@@ -493,45 +518,59 @@ async fn terminal_presentation_legacy_recovery_preserves_real_claim_cas_and_hash
             .into_iter()
             .find(|op| op.id == op_id)
             .unwrap();
-        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-        let output = adapter.prepare_tx(&mut tx, &op.payload, &op).await.unwrap();
-        tx.commit().await.unwrap();
-        assert_eq!(
-            output.result["payload"]["terminal_presentation"]["source"],
-            serde_json::to_value(expected).unwrap()
-        );
-        assert_eq!(
-            output.result["payload"]["terminal_presentation"]["in_workbench"],
-            matches!(expected, CardCreationSource::Manual)
-        );
-        assert!(
-            op_repo
-                .set_phase_and_tx_output(&op, crate::operation::Phase::TxCommitted, &output)
-                .await
-                .unwrap()
-                .is_some(),
-            "real claim CAS must survive legacy decoding"
-        );
-        let after: (String, String) =
-            sqlx::query_as("SELECT payload_json,payload_hash FROM operations WHERE id=?1")
-                .bind(op_id.as_str())
-                .fetch_one(harness.repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(after, before);
-        let mut invalid = input.clone();
-        invalid["source"] = Value::Null;
-        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-        assert!(
-            adapter.prepare_tx(&mut tx, &invalid, &op).await.is_err(),
-            "present invalid source is not a legacy record"
-        );
-        tx.rollback().await.unwrap();
-        for value in [Value::Null, json!("true")] {
-            let mut invalid = input.clone();
-            invalid["planner_hooks"] = value;
-            assert!(create_payload::decode_stored(&invalid, kind).is_err());
-        }
+        let write_db = (harness.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let output = adapter.prepare_tx(&mut tx, &op.payload, &op).await.unwrap();
+                    tx.commit().await.unwrap();
+                    assert_eq!(
+                        output.result["payload"]["terminal_presentation"]["source"],
+                        serde_json::to_value(expected).unwrap()
+                    );
+                    assert_eq!(
+                        output.result["payload"]["terminal_presentation"]["in_workbench"],
+                        matches!(expected, CardCreationSource::Manual)
+                    );
+                    assert!(
+                        op_repo
+                            .set_phase_and_tx_output(
+                                &op,
+                                crate::operation::Phase::TxCommitted,
+                                &output
+                            )
+                            .await
+                            .unwrap()
+                            .is_some(),
+                        "real claim CAS must survive legacy decoding"
+                    );
+                    let after: (String, String) = sqlx::query_as(
+                        "SELECT payload_json,payload_hash FROM operations WHERE id=?1",
+                    )
+                    .bind(op_id.as_str())
+                    .fetch_one(harness.repo.pool())
+                    .await
+                    .unwrap();
+                    assert_eq!(after, before);
+                    let mut invalid = input.clone();
+                    invalid["source"] = Value::Null;
+                    let mut tx = write_session.begin().await.unwrap();
+                    assert!(
+                        adapter.prepare_tx(&mut tx, &invalid, &op).await.is_err(),
+                        "present invalid source is not a legacy record"
+                    );
+                    tx.rollback().await.unwrap();
+                    for value in [Value::Null, json!("true")] {
+                        let mut invalid = input.clone();
+                        invalid["planner_hooks"] = value;
+                        assert!(create_payload::decode_stored(&invalid, kind).is_err());
+                    }
+                })
+            })
+            .await
+            .expect("independent write operation")
     }
 }
 
@@ -570,35 +609,49 @@ async fn terminal_presentation_legacy_generic_pending_input_cannot_mint_provenan
             .into_iter()
             .find(|op| op.id == id)
             .unwrap();
-        let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-        let output = TxOnlyAdapter::prepare_tx(&adapter, &mut tx, &op.payload, &op)
+        let write_db = (harness.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    let output = TxOnlyAdapter::prepare_tx(&adapter, &mut tx, &op.payload, &op)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                    if kind == "terminal" {
+                        assert_eq!(
+                            output.result["payload"]["terminal_presentation"],
+                            json!({"source":"unrecorded","in_workbench":false})
+                        );
+                    } else {
+                        assert!(
+                            output.result["payload"]
+                                .get("terminal_presentation")
+                                .is_none()
+                        );
+                    }
+                    assert!(
+                        op_repo
+                            .set_phase_and_tx_output(
+                                &op,
+                                crate::operation::Phase::TxCommitted,
+                                &output
+                            )
+                            .await
+                            .unwrap()
+                            .is_some()
+                    );
+                    let after: String =
+                        sqlx::query_scalar("SELECT payload_json FROM operations WHERE id=?1")
+                            .bind(id.as_str())
+                            .fetch_one(harness.repo.pool())
+                            .await
+                            .unwrap();
+                    assert_eq!(after, before);
+                })
+            })
             .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        if kind == "terminal" {
-            assert_eq!(
-                output.result["payload"]["terminal_presentation"],
-                json!({"source":"unrecorded","in_workbench":false})
-            );
-        } else {
-            assert!(
-                output.result["payload"]
-                    .get("terminal_presentation")
-                    .is_none()
-            );
-        }
-        assert!(
-            op_repo
-                .set_phase_and_tx_output(&op, crate::operation::Phase::TxCommitted, &output)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        let after: String = sqlx::query_scalar("SELECT payload_json FROM operations WHERE id=?1")
-            .bind(id.as_str())
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-        assert_eq!(after, before);
+            .expect("independent write operation")
     }
 }

@@ -569,7 +569,7 @@ pub(super) fn add_card_event_paths(delta: &mut PathDelta, card_id: &CardId) {
 mod tests {
     use super::*;
     use crate::db::prelude::*;
-    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::db::sqlite::SqlxRepo;
     use crate::model::{NewArea, NewTrack, RequestTheme};
 
     #[tokio::test]
@@ -602,53 +602,60 @@ mod tests {
             })
             .await
             .expect("create track");
-        let mut tx = begin_immediate_tx(repo.db())
-            .await
-            .expect("begin transaction");
-        sqlx::query(
-            "INSERT INTO cards \
+        let write_db = (repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.expect("begin transaction");
+                    sqlx::query(
+                        "INSERT INTO cards \
              (id, track_id, kind, sort, payload, role, deletable, created_at, updated_at) \
              VALUES ('report', ?1, 'track-report', 1.0, ?2, 'reportcard', 0, 1, 1)",
-        )
-        .bind(track.id.as_str())
-        .bind(r#"{"schemaVersion":2,"summary":"","body":"Report body"}"#)
-        .execute(&mut **tx)
-        .await
-        .expect("insert report card");
+                    )
+                    .bind(track.id.as_str())
+                    .bind(r#"{"schemaVersion":2,"summary":"","body":"Report body"}"#)
+                    .execute(&mut **tx)
+                    .await
+                    .expect("insert report card");
 
-        assert!(
-            render_path_tx(
-                &mut tx,
-                &track.id,
-                "report.md",
-                &CardVisibility::AllRows,
-                &mut None
-            )
-            .await
-            .expect("render report before transition")
-            .is_some()
-        );
+                    assert!(
+                        render_path_tx(
+                            &mut tx,
+                            &track.id,
+                            "report.md",
+                            &CardVisibility::AllRows,
+                            &mut None
+                        )
+                        .await
+                        .expect("render report before transition")
+                        .is_some()
+                    );
 
-        sqlx::query(
-            "UPDATE cards SET kind = 'codex', role = 'worker' \
+                    sqlx::query(
+                        "UPDATE cards SET kind = 'codex', role = 'worker' \
              WHERE track_id = ?1 AND kind = 'track-report'",
-        )
-        .bind(track.id.as_str())
-        .execute(&mut **tx)
-        .await
-        .expect("force formerly reachable kind transition");
+                    )
+                    .bind(track.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .expect("force formerly reachable kind transition");
 
-        assert!(
-            render_path_tx(
-                &mut tx,
-                &track.id,
-                "report.md",
-                &CardVisibility::AllRows,
-                &mut None
-            )
+                    assert!(
+                        render_path_tx(
+                            &mut tx,
+                            &track.id,
+                            "report.md",
+                            &CardVisibility::AllRows,
+                            &mut None
+                        )
+                        .await
+                        .expect("render report after transition")
+                        .is_none()
+                    );
+                })
+            })
             .await
-            .expect("render report after transition")
-            .is_none()
-        );
+            .expect("independent write operation")
     }
 }

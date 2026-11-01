@@ -15,24 +15,28 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let (repo, area, card) = super::super::tests::fixture().await;
-        let mut tx = db::begin_immediate_tx(repo.db()).await.unwrap();
-        sqlx::query("UPDATE cards SET role='assistant',payload='{\"harness_profile\":\"assistant\",\"assistant_provider\":\"codex\"}' WHERE id=?1")
-            .bind(&card).execute(&mut **tx).await.unwrap();
-        let worker = crate::model::new_id();
-        Self::start_worker(&mut tx, &card, &worker).await;
-        let track = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
-            .bind(&card)
-            .fetch_one(&mut **tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        Self {
-            repo,
-            area,
-            card,
-            track,
-            worker,
-        }
+        let write_db = (repo.db()).clone();
+        write_db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin().await.unwrap();
+            sqlx::query("UPDATE cards SET role='assistant',payload='{\"harness_profile\":\"assistant\",\"assistant_provider\":\"codex\"}' WHERE id=?1")
+                .bind(&card).execute(&mut **tx).await.unwrap();
+            let worker = crate::model::new_id();
+            Self::start_worker(&mut tx, &card, &worker).await;
+            let track = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
+                .bind(&card)
+                .fetch_one(&mut **tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            Self {
+                repo,
+                area,
+                card,
+                track,
+                worker,
+            }
+
+    })).await.expect("independent write operation")
     }
     async fn start_worker(tx: &mut Transaction<'_, Sqlite>, card: &str, worker: &str) {
         db::session_start_runtime_tx(
@@ -202,56 +206,66 @@ async fn human_and_system_creation_share_permanent_namespace_in_both_orders() {
     };
     for system_first in [false, true] {
         let f = Fixture::new().await;
-        let mut tx = db::begin_immediate_tx(f.repo.db()).await.unwrap();
-        if system_first {
-            system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
-                .await
-                .unwrap();
-        }
-        let mut carrier = current_input_carrier_tx(&mut tx, &f.card, &f.worker)
+        let write_db = (f.repo.db()).clone();
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin().await.unwrap();
+                    if system_first {
+                        system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
+                            .await
+                            .unwrap();
+                    }
+                    let mut carrier = current_input_carrier_tx(&mut tx, &f.card, &f.worker)
+                        .await
+                        .unwrap();
+                    let accepted = accept_pending_human_tx(
+                        &mut tx,
+                        &mut carrier,
+                        LEGACY_OWNER_USER_ID,
+                        HumanPayload {
+                            text: "human".into(),
+                            bound_attachments: vec![],
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let AcceptedInputRef::Human { message } = accepted.input_ref else {
+                        panic!()
+                    };
+                    let record = AssistantCreationRecord {
+                        card_id: f.card.clone(),
+                        track_id: f.track.clone(),
+                        request_sha256: "a".repeat(64),
+                        source_user_id: LEGACY_OWNER_USER_ID.into(),
+                        presentation_sequence: accepted.presentation_sequence,
+                        receipt: ConversationInitialInputReceipt {
+                            version: InitialInputReceiptVersion::V1,
+                            entry_id: message.message_id.as_str().into(),
+                            entry_rev: 1,
+                            queued_at_ms: carrier.checkpoint().pending[0].queued_at_ms(),
+                            text_sha256: text_digest("human"),
+                            initial_runtime_id: f.worker.clone(),
+                        },
+                    };
+                    let result = assistant_creation_insert_tx(&mut tx, &record).await;
+                    if system_first {
+                        assert!(matches!(result, Err(CalmError::Internal(_))));
+                    } else {
+                        result.unwrap();
+                        assert!(matches!(
+                            system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original")
+                                .await,
+                            Err(CalmError::IdempotencyKeyExhausted(_))
+                        ));
+                    }
+                    assert!(assistant_key_used_tx(&mut tx, &f.card).await.unwrap());
+                    tx.rollback().await.unwrap();
+                })
+            })
             .await
-            .unwrap();
-        let accepted = accept_pending_human_tx(
-            &mut tx,
-            &mut carrier,
-            LEGACY_OWNER_USER_ID,
-            HumanPayload {
-                text: "human".into(),
-                bound_attachments: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        let AcceptedInputRef::Human { message } = accepted.input_ref else {
-            panic!()
-        };
-        let record = AssistantCreationRecord {
-            card_id: f.card.clone(),
-            track_id: f.track.clone(),
-            request_sha256: "a".repeat(64),
-            source_user_id: LEGACY_OWNER_USER_ID.into(),
-            presentation_sequence: accepted.presentation_sequence,
-            receipt: ConversationInitialInputReceipt {
-                version: InitialInputReceiptVersion::V1,
-                entry_id: message.message_id.as_str().into(),
-                entry_rev: 1,
-                queued_at_ms: carrier.checkpoint().pending[0].queued_at_ms(),
-                text_sha256: text_digest("human"),
-                initial_runtime_id: f.worker.clone(),
-            },
-        };
-        let result = assistant_creation_insert_tx(&mut tx, &record).await;
-        if system_first {
-            assert!(matches!(result, Err(CalmError::Internal(_))));
-        } else {
-            result.unwrap();
-            assert!(matches!(
-                system_assistant_entry_insert_tx(&mut tx, &f.card, SOURCE, "original").await,
-                Err(CalmError::IdempotencyKeyExhausted(_))
-            ));
-        }
-        assert!(assistant_key_used_tx(&mut tx, &f.card).await.unwrap());
-        tx.rollback().await.unwrap();
+            .expect("independent write operation")
     }
 }
 

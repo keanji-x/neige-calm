@@ -20,7 +20,7 @@ async fn claude_reader_at_another_head_is_refused_before_spawn() {
     let harness = claude_worker_harness().await;
     let actual = git_rev(&harness.worktree, "HEAD");
     let declared = git_rev(&harness.worktree, "HEAD~1");
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms, access, head) \
          VALUES (?1, ?2, 'review', 'claude', 'review', 'null', '[]', 'dispatched', 1, 1, \
@@ -28,8 +28,7 @@ async fn claude_reader_at_another_head_is_refused_before_spawn() {
     )
     .bind(format!("{}:review", harness.track_id))
     .bind(&harness.track_id)
-    .bind(&declared)
-    .execute(harness.repo.pool())
+    .bind(&declared))
     .await
     .unwrap();
     let message = try_prepare_claude_worker(&harness, "review")
@@ -57,7 +56,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     let harness = claude_worker_harness().await;
     let head = git_rev(&harness.worktree, "HEAD");
     let task_id = format!("{}:resume", harness.track_id);
-    sqlx::query(
+    (harness.repo.db()).writer().execute(sqlx::query(
         "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
          created_at_ms, updated_at_ms, access, head) \
          VALUES (?1, ?2, 'resume', 'claude', 'review', 'null', '[]', 'dispatched', 1, 1, \
@@ -65,8 +64,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     )
     .bind(&task_id)
     .bind(&harness.track_id)
-    .bind(&head)
-    .execute(harness.repo.pool())
+    .bind(&head))
     .await
     .unwrap();
     let output = prepare_claude_worker_as_scheduled(&harness, "resume").await;
@@ -81,112 +79,126 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     )
     .await
     .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    crate::db::sqlite::session_complete_for_card_tx(&mut tx, &card_id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query(
-        "UPDATE cards SET payload = json_remove(payload, '$.idempotency_key') WHERE id = ?1",
-    )
-    .bind(&card_id)
-    .execute(harness.repo.pool())
-    .await
-    .unwrap();
+    let write_db = (harness.repo.db()).clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                            let mut tx = write_session.begin().await.unwrap();
+                            crate::db::sqlite::session_complete_for_card_tx(
+                                &mut tx,
+                                &card_id,
+                                WorkerSessionState::Exited,
+                            )
+                            .await
+                            .unwrap();
+                            tx.commit().await.unwrap();
+                            (harness.repo.db()).writer().execute(sqlx::query(
+                    "UPDATE cards SET payload = json_remove(payload, '$.idempotency_key') WHERE id = ?1",
+                )
+                .bind(&card_id))
+                .await
+                .unwrap();
 
-    let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = spawns.clone();
-    let hook: SpawnHook = Arc::new(move |_terminal_id, _command_line, _cwd, _env| {
-        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(async { Ok(SpawnHandle::NoOp) })
-    });
-    let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
-    let restart = ClaudeRestartAdapter::new_with_spawn_hook(
-        route_repo.clone(),
-        Arc::new(CodexClient::new_stub()),
-        None,
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
-        hook,
-    );
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor: ActorId::KernelDispatcher,
-        worker_session_id: None,
-        card_id: card_id.clone(),
-    })
-    .unwrap();
-    let restart_op = claude_worker_op("op-restart", payload.clone());
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let restart_output = restart
-        .prepare_tx(&mut tx, &payload, &restart_op)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+                            let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                            let counted = spawns.clone();
+                            let hook: SpawnHook = Arc::new(move |_terminal_id, _command_line, _cwd, _env| {
+                                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                Box::pin(async { Ok(SpawnHandle::NoOp) })
+                            });
+                            let route_repo: Arc<dyn crate::db::RouteRepo> = harness.repo.clone();
+                            let restart = ClaudeRestartAdapter::new_with_spawn_hook(
+                                route_repo.clone(),
+                                Arc::new(CodexClient::new_stub()),
+                                None,
+                                CardRoleCache::new(),
+                                TrackAreaCache::new(),
+                                hook,
+                            );
+                            let payload = serde_json::to_value(ClaudeRestartOperationPayload {
+                                actor: ActorId::KernelDispatcher,
+                                worker_session_id: None,
+                                card_id: card_id.clone(),
+                            })
+                            .unwrap();
+                            let restart_op = claude_worker_op("op-restart", payload.clone());
+                            let mut tx = write_session.begin().await.unwrap();
+                            let restart_output = restart
+                                .prepare_tx(&mut tx, &payload, &restart_op)
+                                .await
+                                .unwrap();
+                            tx.commit().await.unwrap();
 
-    assert!(
-        std::process::Command::new("git")
-            .args([
-                "-c",
-                "user.name=T",
-                "-c",
-                "user.email=t@example.invalid",
-                "commit"
-            ])
-            .args(["--allow-empty", "-qm", "moved"])
-            .current_dir(&harness.worktree)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let actual = git_rev(&harness.worktree, "HEAD");
-    let refused = |message: &str| {
-        message.contains(&format!("refused: {TRACK_HEAD_MISMATCH}:"))
-            && message.contains(&head)
-            && message.contains(&actual)
-    };
-    let ctx = SpawnCtx::new(
-        route_repo,
-        op_repo,
-        Arc::new(DaemonClient::new_stub()),
-        TerminalRendererRegistry::new(),
-        harness.events.clone(),
-        OperationCompletionBus::new(),
-    );
-    let message = match restart
-        .spawn_side_effect(&restart_output, &restart_op, &ctx)
-        .await
-    {
-        Ok(_) => panic!("a restart whose checkout left the declared head must not spawn"),
-        Err(error) => error.to_string(),
-    };
-    assert!(refused(&message), "{message}");
-    assert_eq!(
-        spawns.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "the provider was called"
-    );
+                            assert!(
+                                std::process::Command::new("git")
+                                    .args([
+                                        "-c",
+                                        "user.name=T",
+                                        "-c",
+                                        "user.email=t@example.invalid",
+                                        "commit"
+                                    ])
+                                    .args(["--allow-empty", "-qm", "moved"])
+                                    .current_dir(&harness.worktree)
+                                    .status()
+                                    .unwrap()
+                                    .success()
+                            );
+                            let actual = git_rev(&harness.worktree, "HEAD");
+                            let refused = |message: &str| {
+                                message.contains(&format!("refused: {TRACK_HEAD_MISMATCH}:"))
+                                    && message.contains(&head)
+                                    && message.contains(&actual)
+                            };
+                            let ctx = SpawnCtx::new(
+                                route_repo,
+                                op_repo,
+                                Arc::new(DaemonClient::new_stub()),
+                                TerminalRendererRegistry::new(),
+                                harness.events.clone(),
+                                OperationCompletionBus::new(),
+                            );
+                            let message = match restart
+                                .spawn_side_effect(&restart_output, &restart_op, &ctx)
+                                .await
+                            {
+                                Ok(_) => {
+                                    panic!("a restart whose checkout left the declared head must not spawn")
+                                }
+                                Err(error) => error.to_string(),
+                            };
+                            assert!(refused(&message), "{message}");
+                            assert_eq!(
+                                spawns.load(std::sync::atomic::Ordering::SeqCst),
+                                0,
+                                "the provider was called"
+                            );
 
-    let rows = || async {
-        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
-            .fetch_one(harness.repo.pool())
-            .await
-            .unwrap();
-        (sessions, events)
-    };
-    let before = rows().await;
-    let mut tx = begin_immediate_tx(harness.repo.db()).await.unwrap();
-    let error = restart
-        .prepare_tx(&mut tx, &payload, &restart_op)
+                            let rows = || async {
+                                let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions")
+                                    .fetch_one(harness.repo.pool())
+                                    .await
+                                    .unwrap();
+                                let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events")
+                                    .fetch_one(harness.repo.pool())
+                                    .await
+                                    .unwrap();
+                                (sessions, events)
+                            };
+                            let before = rows().await;
+                            let mut tx = write_session.begin().await.unwrap();
+                            let error = restart
+                                .prepare_tx(&mut tx, &payload, &restart_op)
+                                .await
+                                .unwrap_err();
+                            tx.rollback().await.unwrap();
+                            assert!(
+                                matches!(&error, CalmError::Conflict(message) if refused(message)),
+                                "{error}"
+                            );
+                            assert_eq!(rows().await, before, "a refused restart writes nothing");
+            })
+        })
         .await
-        .unwrap_err();
-    tx.rollback().await.unwrap();
-    assert!(
-        matches!(&error, CalmError::Conflict(message) if refused(message)),
-        "{error}"
-    );
-    assert_eq!(rows().await, before, "a refused restart writes nothing");
+        .expect("independent write operation")
 }

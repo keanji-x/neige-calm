@@ -81,10 +81,13 @@ async fn a_gate_run_is_refused_for_other_callers_and_states() {
             json!({"access": "read_only"}),
         )
         .await;
-    sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
-        .bind(json!({"steps": [{"name": "fine", "cmd": "true"}]}).to_string())
-        .bind(&read_only.id)
-        .execute(&fx.pool())
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET gate_json = ?1 WHERE id = ?2")
+                .bind(json!({"steps": [{"name": "fine", "cmd": "true"}]}).to_string())
+                .bind(&read_only.id),
+        )
         .await
         .unwrap();
     refused(
@@ -221,16 +224,19 @@ async fn a_stuck_run_does_not_hold_the_delivery() {
     .await;
     std::fs::write(a.lease.path.join("r13.txt"), "r13\n").unwrap();
     let commit = passed(&gate_run(&fx, &a, Some("Deliver r13")).await.unwrap()).to_string();
-    sqlx::query(
-        "UPDATE operations SET phase = 'stuck', \
+    (fx.db())
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase = 'stuck', \
          phase_detail_json = '{\"reason\":\"test stuck\",\"since\":1}' \
          WHERE kind = ?1 AND idempotency_key = ?2",
-    )
-    .bind(TASK_GATE_RUN_KIND)
-    .bind(format!("{}#r1", a.task.id))
-    .execute(&fx.pool())
-    .await
-    .unwrap();
+            )
+            .bind(TASK_GATE_RUN_KIND)
+            .bind(format!("{}#r1", a.task.id)),
+        )
+        .await
+        .unwrap();
 
     let err = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
         .await
