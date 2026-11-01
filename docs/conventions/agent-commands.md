@@ -201,7 +201,7 @@ Report mutation results (`neige_report_commit`, `neige_report_write`) carry a fi
 `changes` preview (32 rows / 8 KiB), `changes_total` and `changes_complete`, rather
 than a full report index. Unrelated blocks shifted by an insertion are omitted;
 authored equal-content blocks remain results. Each result keeps revision, anchor
-and warnings. `history.before` / `history.after` identify immutable Track snapshots
+and warnings. Moves grant no knowledge of unread content. `history.before` / `history.after` identify immutable Track snapshots
 (the former may be null before any history exists). `full_index` gives
 `neige_report_read {detail:"index",commit}` arguments for final block identities,
 revisions and order; the before snapshot exposes prior identities/order. Follow
