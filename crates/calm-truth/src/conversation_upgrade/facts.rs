@@ -119,8 +119,9 @@ pub struct CompleteSourceFacts<'a> {
     pub(super) nodes: Vec<SourceFact>,
     pub(super) duplicates: Vec<DuplicateMember>,
 }
-impl CompleteSourceFacts<'_> {
-    pub fn audit(&self) -> &CompleteBlockedAudit {
+impl<'a> CompleteSourceFacts<'a> {
+    // Owner annotations may borrow the audit while the ledger itself moves.
+    pub fn audit(&self) -> &'a CompleteBlockedAudit {
         self.audit
     }
     pub fn nodes(&self) -> &[SourceFact] {

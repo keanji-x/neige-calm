@@ -167,3 +167,12 @@ mod fact_oracle;
 mod source_coverage_tests;
 #[cfg(test)]
 mod strict_json_tests;
+
+mod schema_facts;
+pub use schema_facts::{
+    FieldValue, HistoricalTableFact, IdentityFact, IdentityStatus, MigrationFact,
+    MigrationTimeline, MissingMigration, MissingSchemaField, SchemaDisposition, SchemaFacts,
+    SchemaFieldFact, SchemaMetadataFact, SchemaReason, TableEvidence, schema_facts,
+};
+#[cfg(test)]
+mod schema_fact_tests;
