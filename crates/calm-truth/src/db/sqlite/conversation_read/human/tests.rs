@@ -170,30 +170,6 @@ async fn conversation_title_human_missing_revision_fails_like_display() {
 }
 
 #[tokio::test]
-async fn conversation_title_human_candidate_plan_uses_ordered_partial_index() {
-    let (repo, card) = fixture().await;
-    let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {}", candidate_query()))
-        .bind(&card)
-        .bind(0_i64)
-        .bind(32_i64)
-        .fetch_all(repo.pool())
-        .await
-        .unwrap();
-    let details: Vec<String> = plan.iter().map(|row| row.get("detail")).collect();
-    assert!(
-        details.iter().any(|detail| detail
-            .contains("SEARCH p USING INDEX conversation_presentations_human_order")
-            && detail.contains("card_id=?")
-            && detail.contains("sequence>?")),
-        "{details:?}"
-    );
-    assert!(
-        !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
-        "{details:?}"
-    );
-}
-
-#[tokio::test]
 async fn conversation_title_human_image_only_first_source_blocks_later_title() {
     use calm_types::planner_attachment::{AttachmentId, BoundAttachment};
     let (repo, card) = fixture().await;

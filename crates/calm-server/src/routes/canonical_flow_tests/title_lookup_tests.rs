@@ -202,6 +202,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
             held.push(connection);
         }
     }
+    // Allow fixed metadata overhead while rejecting even one pass over the imported prefix.
     for (case, work) in [
         ("no Human", no_human),
         ("Human", with_human),
@@ -214,7 +215,7 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
         );
         for index in 0..2 {
             assert!(
-                work[index] <= baseline[index] + 100,
+                work[index] <= baseline[index] + 30,
                 "{case} endpoint={index}: SQL VM ticks {work:?}, baseline {baseline:?}; imported history must not be scanned"
             );
         }
