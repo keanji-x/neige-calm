@@ -4,7 +4,7 @@ use crate::mcp_server::{registry::ConnectionIdentity, transport::dispatch_tools_
 use calm_types::conversation::PendingInput;
 
 async fn mcp(p: &Pair, thread: &str, name: &str, arguments: Value) {
-    dispatch_tools_call(
+    let result = dispatch_tools_call(
         &p.state.mcp_context(),
         None,
         json!({"name":name,"arguments":arguments,"_meta":{"threadId":thread}}),
@@ -13,6 +13,7 @@ async fn mcp(p: &Pair, thread: &str, name: &str, arguments: Value) {
     )
     .await
     .unwrap();
+    assert_ne!(result["isError"].as_bool(), Some(true), "{name}: {result}");
 }
 
 #[tokio::test]
@@ -121,3 +122,88 @@ async fn report_knowledge_delta_two_actual_sessions_keep_independent_baselines()
     );
     p.close().await;
 }
+
+#[tokio::test]
+async fn report_knowledge_delta_shared_history_is_loaded_once() {
+    let p = Pair::new().await;
+    mcp(&p, THREAD, "neige_report_read", json!({})).await;
+    mcp(
+        &p,
+        THREAD,
+        "neige_report_write",
+        json!({
+            "body": "# One\n\none\n\n# Two\n\ntwo\n", "message": "seed"
+        }),
+    )
+    .await;
+    p.state
+        .harness
+        .get(&p.workers[0])
+        .unwrap()
+        .pause_issuance_for_dev();
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE track_id=? AND kind='track-report'")
+            .bind(&p.track)
+            .fetch_one(p.fixture.repo.pool())
+            .await
+            .unwrap();
+    let blocks = serde_json::from_str::<crate::track_report::TrackReportPayload>(&payload)
+        .unwrap()
+        .blocks
+        .unwrap();
+    for block in &blocks {
+        let response = p
+            .app
+            .clone()
+            .oneshot(
+                Request::patch(format!(
+                    "/api/tracks/{}/report/blocks/{}",
+                    p.track, block.id
+                ))
+                .header(header::COOKIE, &p.cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"kind":"prose", "markdown":"changed\n",
+                "payload":null, "ifBlockRev":block.rev})
+                    .to_string(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    crate::report_read_ledger::history::probe::reset();
+    let text = crate::report_read_ledger::delta::for_track(
+        p.fixture.repo.as_ref(),
+        &p.track.clone().into(),
+        &p.workers[0],
+    )
+    .await
+    .unwrap();
+    assert!(
+        text.contains("block_diff") && text.contains("one") && text.contains("two"),
+        "{text}"
+    );
+    let counts = crate::report_read_ledger::history::probe::counts();
+    assert_eq!(
+        counts.len(),
+        1,
+        "the blocks share their authored history: {counts:?}"
+    );
+    assert_eq!(
+        counts.values().copied().collect::<Vec<_>>(),
+        vec![1],
+        "{counts:?}"
+    );
+    assert_eq!(
+        crate::report_read_ledger::history::probe::parses()
+            .values()
+            .sum::<usize>(),
+        1
+    );
+    p.close().await;
+}
+
+#[cfg(test)]
+mod snapshot_tests;
