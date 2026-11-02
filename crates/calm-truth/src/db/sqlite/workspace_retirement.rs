@@ -65,7 +65,8 @@ pub async fn retire_workspace_selection_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track: &str,
 ) -> Result<()> {
-    let binding: Option<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+    type RetirementBinding = (String, String, String, Option<String>, Option<String>);
+    let binding: Option<RetirementBinding> = sqlx::query_as(
         "SELECT r.id,r.ownership,r.location_root,r.observed_root,r.retirement_root FROM track_workspace_bindings b \
          JOIN workspace_resources r ON r.id=b.workspace_id JOIN tracks t ON t.id=b.track_id \
          WHERE b.track_id=?1 AND r.source_track_id=t.id AND r.root_path=b.selected_path \

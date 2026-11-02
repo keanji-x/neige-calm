@@ -51,8 +51,8 @@ impl TeardownRegistration {
         let mut paths: Vec<PathBuf> = sweep
             .extra_worktrees
             .iter()
-            .cloned()
             .filter(|path| path.is_absolute())
+            .cloned()
             .collect();
         if sweep.workspace.isolation() == WorkspaceIsolation::Worktree {
             paths.push(PathBuf::from(sweep.workspace.agent_cwd()));

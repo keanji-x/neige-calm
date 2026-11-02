@@ -211,7 +211,7 @@ pub(super) async fn deferred_reclaim_locations(
             super::workspace_retirement::extra_retirement_claim(conn, target.provision_id).await?
         {
             if claim.track_id != target.track_id
-                || PathBuf::from(&claim.path) != target.request.path
+                || std::path::Path::new(&claim.path) != target.request.path.as_path()
             {
                 tracing::warn!(operation_id=%id,"unadmitted reclaim target mismatches receipt; cleanup deferred");
             }
