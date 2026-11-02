@@ -308,3 +308,26 @@ it.each([1280, 390])('shows the complete frozen approval detail at width %i', as
   await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
   expect(requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({ answers: [{ option: 0 }] });
 });
+
+it.each([[1280, 0], [390, 0], [1280, 1], [390, 1]] as const)(
+  'answers Track plugin authorization through the real conversation at %ipx with option %i', async (width, option) => {
+    await page.viewport(width, 844);
+    const choices = ['允许此 Track 使用', '本次不更改'];
+    const { requests } = setup('light', { ...ASK, text: 'Calendar authorization',
+      action: { kind: 'track_plugin_access', plugin_id: 'calendar', enabled: true, manifest_sha256: 'digest', expected_revision: 0 },
+      questions: [{ title: '允许此 Track 使用 Calendar？', detail: '可管理本 Track 的日程，定时日程可唤醒此 Track。', options: choices }],
+    });
+    await page.getByRole('button', { name: /Conversation Planner/ }).click();
+    const ask = page.getByRole('group', { name: 'The Planner asks' });
+    await expect.element(ask).toBeVisible();
+    await expect.element(ask.getByLabelText('Question details')).toHaveTextContent('定时日程可唤醒此 Track');
+    await expect.element(ask.getByRole('textbox')).not.toBeInTheDocument();
+    expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    await page.screenshot({ path: `../../../../test-results/track-plugin-authorization-${width}-${option}.png` });
+    await ask.getByRole('button', { name: choices[option], exact: true }).click();
+    await expect.poll(() => requests.find(request => request.path.endsWith('/answer'))?.body)
+      .toEqual({ answers: [{ option }] });
+    await expect.element(ask).not.toBeInTheDocument();
+  },
+);

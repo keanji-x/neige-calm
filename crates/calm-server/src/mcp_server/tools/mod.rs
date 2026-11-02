@@ -13,6 +13,7 @@ pub mod op;
 mod output_projection;
 pub(crate) mod paging;
 pub mod plan;
+pub mod plugin_access;
 pub mod preview;
 pub mod report_links;
 pub mod report_tag;
@@ -46,6 +47,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     source::register_into(registry);
     track_rename::register_into(registry);
     user_ask::register_into(registry);
+    plugin_access::register_into(registry);
     mail::register_into(registry);
     op::register_into(registry);
     objective::register_into(registry);
@@ -239,7 +241,10 @@ mod tests {
         // classification and reminder contracts. Background quiet checks issue no
         // model requests; this fixed declaration cost is measured, not history growth.
         // #3427 adds three bytes to existing Report declarations; the inspection delta stays fixed.
-        const SURFACE_MAX_BYTES: usize = 40_362;
+        // #3481 Track plugin authorization adds one kernel tool: 709 description + 181 schema
+        // bytes. Its canonical user-confirmation workflow cannot be a plugin-owned tool.
+        // Keep the measured aggregate bound and the existing per-description cap.
+        const SURFACE_MAX_BYTES: usize = 41_252;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

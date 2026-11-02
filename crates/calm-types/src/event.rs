@@ -345,6 +345,13 @@ pub enum AskAction {
         closed_at: i64,
     },
     GrantAdmin,
+    /// A user decision for one plugin on this Track, bound to its manifest and prior decision.
+    TrackPluginAccess {
+        plugin_id: String,
+        enabled: bool,
+        manifest_sha256: String,
+        expected_revision: i64,
+    },
     /// The user's approval of one approval-gated forge action (#2617): the forge operation's
     /// idempotency key and semantic payload hash. A click on the first option grants that exact
     /// call; the answer itself has no other effect.

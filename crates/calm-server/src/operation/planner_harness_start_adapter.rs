@@ -490,8 +490,16 @@ pub(crate) async fn planner_instructions(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
     // Documentation follows the saved template; it never enables or authorizes tools.
+    let extra_plugins = crate::track_plugin_access::current_grants(
+        repo.sqlite_db().as_ref(),
+        track.id.as_str(),
+        plugin,
+    )
+    .await?;
     for component in crate::builtin_plugins::catalog() {
-        if plugin_documents_track(component.manifest(), &track) {
+        if plugin_documents_track(component.manifest(), &track)
+            || extra_plugins.contains(&component.manifest().id)
+        {
             instructions.push_str("\n\n");
             instructions.push_str(component.instructions());
         }

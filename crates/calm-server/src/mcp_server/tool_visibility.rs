@@ -15,6 +15,11 @@ pub(crate) enum TrackPluginScope {
     All,
     /// Track with `plugin_scope = Some(id)` whose plugin is running ∧ trusted.
     Only(String /* plugin_id */),
+    /// A live owner plus manifest-bound, explicitly approved extras. Never inherited.
+    Granted {
+        owner: String,
+        extras: std::collections::BTreeSet<String>,
+    },
     /// `plugin_scope` set but the plugin is unresolvable (stopped / untrusted / lookup failed) —
     /// zero plugin tools, fail-closed.
     None,
@@ -25,12 +30,14 @@ impl TrackPluginScope {
         self.allows(&manifest.id)
             && (manifest.agent_tools_scope
                 == crate::plugin_host::manifest::AgentToolsScope::Enabled
-                || matches!(self, Self::Only(owner) if owner == &manifest.id))
+                || matches!(self, Self::Only(owner) if owner == &manifest.id)
+                || matches!(self, Self::Granted { owner, .. } if owner == &manifest.id))
     }
     pub(crate) fn allows(&self, plugin_id: &str) -> bool {
         match self {
             Self::All => true,
             Self::Only(allowed) => allowed == plugin_id,
+            Self::Granted { owner, extras } => owner == plugin_id || extras.contains(plugin_id),
             Self::None => false,
         }
     }
@@ -101,7 +108,8 @@ async fn resolve_plugin_scope_for_track(
         }
     };
     let plugin_host = ctx.plugin_host.get().cloned();
-    plugin_scope_for_track_row(&track, plugin_host.as_deref()).await
+    plugin_scope_for_track_row_with_grants(ctx.sqlite_db.as_ref(), &track, plugin_host.as_deref())
+        .await
 }
 
 /// [`plugin_scope_for_track`] for a Track row already in hand.
@@ -127,6 +135,51 @@ pub(crate) async fn plugin_scope_for_track_row(
     }
 }
 
+/// Apply persisted extra decisions without changing the owner resolution contract.
+pub(crate) async fn plugin_scope_for_track_row_with_grants(
+    db: Option<&crate::db::sqlite::SqliteDb>,
+    track: &crate::model::Track,
+    host: Option<&crate::plugin_host::PluginHost>,
+) -> TrackPluginScope {
+    let base = plugin_scope_for_track_row(track, host).await;
+    let (TrackPluginScope::Only(owner), Some(host)) = (&base, host) else {
+        return base;
+    };
+    match crate::track_plugin_access::current_grants(db, track.id.as_str(), host).await {
+        Ok(extras) if extras.is_empty() => base,
+        Ok(extras) => TrackPluginScope::Granted {
+            owner: owner.clone(),
+            extras,
+        },
+        Err(error) => {
+            tracing::warn!(%error, track_id=%track.id, "plugin grant lookup failed; failing closed");
+            TrackPluginScope::None
+        }
+    }
+}
+
+/// The same decision in a caller-owned transaction: never open a pool read under a write lock.
+pub(crate) async fn plugin_scope_for_track_row_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    track: &crate::model::Track,
+    host: &crate::plugin_host::PluginHost,
+) -> crate::error::Result<TrackPluginScope> {
+    let base = plugin_scope_for_track_row(track, Some(host)).await;
+    let TrackPluginScope::Only(owner) = &base else {
+        return Ok(base);
+    };
+    let rows = crate::track_plugin_access::grants_from(&mut **tx, track.id.as_str()).await?;
+    let extras = crate::track_plugin_access::filter_grants(rows, host)?;
+    Ok(if extras.is_empty() {
+        base
+    } else {
+        TrackPluginScope::Granted {
+            owner: owner.clone(),
+            extras,
+        }
+    })
+}
+
 /// Explain a known disabled tool only to an otherwise eligible Planner.
 /// Documentation references never participate in this decision.
 pub(crate) async fn disabled_plugin_error(
@@ -139,12 +192,19 @@ pub(crate) async fn disabled_plugin_error(
     }
     let track_id = identity.track_id.as_deref()?;
     let track = ctx.repo.track_get(track_id).await.ok()??;
-    let permitted = match track.plugin_scope.as_deref() {
+    let mut permitted = match track.plugin_scope.as_deref() {
         Some(owner) => owner == manifest.id && crate::forge_trust::trusted_forge_plugin(owner),
         None => {
             manifest.agent_tools_scope == crate::plugin_host::manifest::AgentToolsScope::Enabled
         }
     };
+    if !permitted && let Some(host) = ctx.plugin_host.get() {
+        permitted =
+            crate::track_plugin_access::current_grants(ctx.sqlite_db.as_ref(), track_id, host)
+                .await
+                .ok()?
+                .contains(&manifest.id);
+    }
     if !permitted {
         return None;
     }

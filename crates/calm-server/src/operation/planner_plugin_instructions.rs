@@ -9,7 +9,7 @@ use calm_types::report_blocks::live_refs::referenced_plugin_ids;
 
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
-use crate::mcp_server::tool_visibility::plugin_scope_for_track_row;
+use crate::mcp_server::tool_visibility::plugin_scope_for_track_row_with_grants;
 use crate::model::Track;
 use crate::plugin_host::{Manifest, PluginHost};
 
@@ -71,7 +71,15 @@ async fn instructing_plugins(
     if stored.is_empty() {
         return Ok(Vec::new());
     }
-    let scope = plugin_scope_for_track_row(track, Some(plugin)).await;
+    let scope =
+        plugin_scope_for_track_row_with_grants(repo.sqlite_db().as_ref(), track, Some(plugin))
+            .await;
+    let extra_plugins = crate::track_plugin_access::current_grants(
+        repo.sqlite_db().as_ref(),
+        track.id.as_str(),
+        plugin,
+    )
+    .await?;
     stored.retain(|manifest| scope.allows_manifest(manifest));
     stored.sort_by(|a, b| a.id.cmp(&b.id));
     let referenced = if stored
@@ -85,7 +93,9 @@ async fn instructing_plugins(
     Ok(stored
         .into_iter()
         .filter(|manifest| {
-            plugin_documents_track(manifest, track) || referenced.contains(&manifest.id)
+            plugin_documents_track(manifest, track)
+                || extra_plugins.contains(&manifest.id)
+                || referenced.contains(&manifest.id)
         })
         .filter_map(|manifest| Some((manifest.id, manifest.planner_instructions?)))
         .collect())

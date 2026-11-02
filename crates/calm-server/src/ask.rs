@@ -194,7 +194,7 @@ pub(crate) async fn hold_ask_requested_tx(
 /// The track is the card's own, read in `tx`; it is never taken from the caller. A closed track
 /// is not refused: a translated provider question has nobody to refuse, and the projection keeps
 /// it either way.
-async fn requested_tx(
+pub(crate) async fn requested_tx(
     tx: &mut Transaction<'_, Sqlite>,
     planner_card: &CardId,
     questions: Vec<AskQuestion>,
@@ -392,6 +392,7 @@ pub async fn ask_answered_tx(
     events.extend(grant_admin::answer_events_tx(tx, &track_row, &ask, &answers).await?);
     events.extend(forge_approval::answer_events_tx(&ask)?);
     objective_approval::answer_events_tx(tx, track, ask_id, &ask, &answers).await?;
+    crate::track_plugin_access::answer_tx(tx, &track_row, &ask, &answers).await?;
     events.push(Event::AskAnswered {
         ask_id,
         track_id: track_row.id.clone(),

@@ -20,6 +20,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_objective_close",
         "neige_objective_evaluate",
         "neige_objective_settle",
+        "neige_plugin_access",
         "neige_preview_add",
         "neige_preview_rm",
         "neige_report_commit",

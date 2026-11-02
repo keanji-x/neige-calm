@@ -236,3 +236,16 @@ it('renders grant_admin kernel choices and sends only the clicked answer', async
   await userEvent.click(screen.getByRole('button', { name: 'Grant admin' }));
   expect(onAnswer).toHaveBeenCalledWith(ask.askId, [{ option: 0 }]);
 });
+
+it('uses the existing questions drawer for Track plugin authorization without a free-text grant', async () => {
+  const ask: OpenAsk = { askId: 81, delivery: 'wake',
+    action: { kind: 'track_plugin_access', plugin_id: 'calendar', enabled: true, manifest_sha256: 'digest', expected_revision: 0 },
+    questions: [{ title: '允许此 Track 使用 Calendar？', detail: '可管理本 Track 的日程，定时日程可唤醒此 Track。',
+      options: ['允许此 Track 使用', '本次不更改'] }],
+  };
+  const { onAnswer } = setup([ask]);
+  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(onAnswer).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: '允许此 Track 使用' }));
+  expect(onAnswer).toHaveBeenCalledWith(81, [{ option: 0 }]);
+});
