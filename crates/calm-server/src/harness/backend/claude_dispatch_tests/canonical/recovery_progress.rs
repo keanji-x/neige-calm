@@ -1,4 +1,4 @@
-//! A missed early event must be followed by the actual session owner's join hint.
+//! An early completion event still needs the post-driver claim-cleanup hint.
 use super::*;
 
 #[tokio::test]
@@ -19,16 +19,17 @@ async fn completion_progress(reopened: bool) {
         fx.session = session;
     }
     let completion = c5d::Pause::arm("claude-completed-before-claim-clear", &fx.owner.worker);
-    fx.dispatch().await.unwrap();
-    completion.entered().await;
-    assert_eq!(fx.frame().await["phase"], "turn_running");
-    // Start after TurnCompleted was broadcast: the loop cannot use that early
-    // event. It must first hold END on the retained claim, then use the join hint.
+    let native = c5d::Pause::arm("canonical-native-end-observed", &fx.owner.card);
     let registry = crate::harness::HarnessRegistry::new();
+    // The real loop dispatches and publishes the running phase. The low-level
+    // fixture dispatch helper only records delivery and cannot stand in for it.
     let harness = fx.start_loop_in(registry.clone()).await;
+    completion.entered().await;
+    native.entered().await;
     assert_eq!(fx.frame().await["phase"], "turn_running");
     let tick = c5d::Pause::arm("canonical-tick-returned", &fx.owner.card);
     harness.request_progress();
+    drop(native);
     tick.entered().await;
     // Drain our own startup/manual hints in a second pass. The first hint may
     // have arrived after an already-running pass consumed its notification.
