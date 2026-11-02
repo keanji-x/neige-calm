@@ -634,17 +634,23 @@ async fn a_non_directory_worktree_ancestor_fails_the_create_without_a_branch_or_
     let blocker = up.clone.join(".claude/worktrees");
     std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
     std::fs::write(&blocker, "not a directory\n").unwrap();
-
     let (status, body) = b.create_at(&up.clone, None, None).await;
-    assert!(!status.is_success(), "{status} {body}");
-    let track_id = b.only_track_id().await;
-    assert!(!expected_worktree(&up.clone, &track_id).exists());
-    assert!(!git_ref_exists(
-        &up.clone,
-        &format!("refs/heads/neige/track-{track_id}")
-    ));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "invalid allocation is refused before Track insertion"
+    );
+    assert!(git_stdout(&up.clone, ["for-each-ref", "refs/heads/neige/track-"]).is_empty());
     let listed = git_stdout(&up.clone, ["worktree", "list", "--porcelain"]);
-    assert!(!listed.contains(&format!("track-{track_id}")), "{listed}");
+    assert!(!listed.contains("track-"), "{listed}");
+    assert_eq!(
+        std::fs::read_to_string(blocker).unwrap(),
+        "not a directory\n"
+    );
     b.shutdown_harnesses().await;
 }
 

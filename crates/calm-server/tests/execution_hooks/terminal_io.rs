@@ -168,7 +168,8 @@ async fn term_ignoring_shell_card_and_track_delete_first_try() {
         f.retired(&id).await;
         assert!(f.repo.terminal_get(&term.id).await.unwrap().is_none());
         if delete_track {
-            assert!(!f.root.exists());
+            assert!(f.root.is_dir());
+            f.workspace_retirement(true).await;
         }
     }
 }

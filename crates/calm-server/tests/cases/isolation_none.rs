@@ -679,9 +679,9 @@ async fn isolation_none_sibling_lifecycle_preserves_admitted_subdirectory() {
     );
     assert!(worktree.exists());
     assert_eq!(delete_track(&b, &owner).await.0, StatusCode::NO_CONTENT);
-    assert!(!worktree.exists());
+    assert!(worktree.is_dir());
     assert!(
-        !Command::new("git")
+        Command::new("git")
             .arg("-C")
             .arg(&source)
             .args([

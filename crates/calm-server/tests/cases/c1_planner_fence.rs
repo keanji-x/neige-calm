@@ -134,8 +134,8 @@ async fn clean_wins(automatic: bool, rewind: bool) {
     );
     drop(arrival);
     drop(pause);
-    assert_eq!(cleaning.await.unwrap().0, 1);
-    assert!(!path.join("target/ignored").exists());
+    assert_eq!(cleaning.await.unwrap().0, 0);
+    assert!(path.join("target/ignored").exists());
     issued(&b, before).await;
     assert_eq!(status(&b, &runtime).await, "turn_pending");
     if rewind {
@@ -254,8 +254,8 @@ async fn compact_contention(shutdown: bool) {
         );
     }
     drop(pause);
-    assert_eq!(cleaning.await.unwrap().0, 1);
-    assert!(!path.join("target/ignored").exists());
+    assert_eq!(cleaning.await.unwrap().0, 0);
+    assert!(path.join("target/ignored").exists());
     if !shutdown {
         compact.take().unwrap().await.unwrap().unwrap();
         assert_eq!(status(&b, &runtime).await, "turn_pending");

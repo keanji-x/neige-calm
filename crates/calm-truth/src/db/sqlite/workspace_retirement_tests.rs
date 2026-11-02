@@ -528,3 +528,61 @@ async fn retirement_unlocated_relative_path_cannot_reserve_unrelated_execution_r
 async fn retirement_filesystem_root_cannot_reserve_all_execution_roots() {
     unadmitted_target(Some("root")).await;
 }
+
+#[tokio::test]
+async fn retirement_child_reservation_allows_parent_but_refuses_reuse_and_descendants() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let track = create(
+        &repo,
+        "",
+        TrackWorkspacePlan::ManagedUnder(parent.path().into()),
+    )
+    .await;
+    let child = Path::new(track.workspace.agent_cwd()).to_path_buf();
+    let descendant = child.join("nested");
+    std::fs::create_dir_all(&descendant).unwrap();
+    crate::db::RepoSyncDomainRaw::track_delete(&repo, track.id.as_str())
+        .await
+        .unwrap();
+    repo.db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                for plan in [
+                    TrackWorkspacePlan::AttachedFromCwd,
+                    TrackWorkspacePlan::AttachedWithTrackWorktree(parent.path().into()),
+                ] {
+                    crate::db::sqlite::admit_attached_workspace_tx(
+                        &mut tx,
+                        parent.path().to_str().unwrap(),
+                        &[],
+                        &[],
+                        &plan,
+                    )
+                    .await
+                    .unwrap();
+                }
+                require_active_workspace_path(&mut tx, parent.path())
+                    .await
+                    .unwrap();
+                for path in [&child, &descendant] {
+                    retired(
+                        crate::db::sqlite::admit_attached_workspace_tx(
+                            &mut tx,
+                            path.to_str().unwrap(),
+                            &[],
+                            &[],
+                            &TrackWorkspacePlan::AttachedFromCwd,
+                        )
+                        .await,
+                    );
+                    retired(require_active_workspace_path(&mut tx, path).await);
+                }
+                tx.rollback().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+}

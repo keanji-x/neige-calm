@@ -230,6 +230,7 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
         let url = format!("/api/tracks/{}", f.track);
         let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        f.workspace_retirement(false).await;
         assert!(f.root.is_dir());
         assert!(
             !f.state.workspace_root().join(".trash").exists(),
@@ -255,7 +256,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
             tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
                 .await
                 .unwrap();
-            assert!(!f.root.exists());
+            assert!(f.root.is_dir());
             let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
             intent.metadata.track = exec::TrackId("foreign-owner".into());
             let id = intent.metadata.id.clone();
@@ -277,6 +278,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
         let url = format!("/api/tracks/{}", f.track);
         let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        f.workspace_retirement(false).await;
         assert!(f.root.is_dir());
         assert!(f.repo.track_get(&f.track).await.unwrap().is_some());
         assert_eq!(f.desired(&id).await, "run");

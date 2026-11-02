@@ -47,7 +47,7 @@ pub(super) async fn active_workspace_location<'a>(
     let mut roots = retired_location_roots(conn).await?;
     roots.extend(super::workspace_locations::deferred_reclaim_locations(conn).await?);
     for (owner, root) in roots {
-        if candidate.overlaps_reserved(&root, false) {
+        if candidate.overlaps_reserved(&root) {
             return Err(retired_refusal(&owner));
         }
     }
@@ -117,7 +117,6 @@ pub(super) async fn extra_retirement_claim(
                 super::path_location::reserved_paths_overlap(
                     Path::new(&primary),
                     Path::new(&claim.path),
-                    false,
                 )
             })
     {

@@ -45,6 +45,9 @@ ownership, quiescence and isolation proof. Never infer it from a timestamp,
 missing directory, failed wait or successful stop request.
 
 A retired recorded root cannot be assigned again or selected as an execution root.
+Its descendants are also refused. An ancestor repository remains available: the
+retirement record does not grant recursive access isolation or authorize cleanup.
+Live owned and actively removing resources retain their existing containment fences.
 The historical alias limitation below applies when no physical observation exists.
 Admission compares the requesting path against immutable lexical and saved
 location roots, including the stored observed root when available. It does not

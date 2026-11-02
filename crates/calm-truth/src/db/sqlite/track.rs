@@ -118,7 +118,7 @@ pub async fn admit_attached_workspace_tx(
     for retired in live.iter().filter(|location| location.retired) {
         if candidates
             .iter()
-            .any(|candidate| candidate.overlaps_reserved(&retired.path, containing))
+            .any(|candidate| candidate.overlaps_reserved(&retired.path))
         {
             return Err(CalmError::BadRequest(
                 "attached workspace overlaps a retired resource",

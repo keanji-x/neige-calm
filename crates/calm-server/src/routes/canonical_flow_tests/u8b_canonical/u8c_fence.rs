@@ -356,7 +356,7 @@ async fn retained_clean_and_delete(cold: bool) {
     .await;
     fixture.shutdown_process(&state).await;
     assert!(rejected.is_err());
-    assert!(!worktree.exists());
+    assert!(worktree.is_dir());
 }
 
 #[tokio::test]
@@ -594,7 +594,6 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
             .await
             .unwrap();
         let admitted = HeldPause::arm("c5d-clean-before-track", track);
-        let fenced = HeldPause::arm("c1-clean-fenced", track);
         let cleaning = crate::test_seams::clean_idle_closed_track_worktrees_for_test(
             fixture.repo.db(),
             &state.operation_runtime,
@@ -606,26 +605,17 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         }
         drop(waiting);
         handoff.release();
-        drop(admitted);
-        let ((), refused) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(
-                async {
-                    tokio::select! {
-                        _ = fenced.entered() => {},
-                        result = &mut cleaning => panic!("clean must fence: {result:?}"),
-                    }
-                },
-                &mut wake,
-            )
-        })
-        .await
-        .unwrap();
+        // Keep the published registration until wake has observed it. Maintenance
+        // does not promise to win a Track lock race once released.
+        let refused = tokio::time::timeout(Duration::from_secs(10), &mut wake)
+            .await
+            .unwrap();
         assert!(
             matches!(refused, Err(crate::error::CalmError::WorkspaceBusy(_))),
             "{refused:?}"
         );
         no_activation_requests(&mut peer).await;
-        drop(fenced);
+        drop(admitted);
         assert_eq!(cleaning.await.unwrap(), 0);
     } else {
         let delete_waiting = HeldPause::arm("key-lock-waiting", track);
@@ -654,7 +644,7 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         .await
         .unwrap();
         assert_eq!(after, before);
-        assert!(!worktree.exists());
+        assert!(worktree.is_dir());
         assert!(state.harness.get(&worker).is_none());
     }
     fixture.shutdown_process(&state).await;
