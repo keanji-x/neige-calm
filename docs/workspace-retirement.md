@@ -97,13 +97,17 @@ absolute physical receipt path. The built-in lowerer already declares context pa
 Old Held actions without a declared target are stopped, not reconstructed from
 command arguments. Receipts without an independent physical observation, including historical
 absolute aliases and relative paths, are recorded as `unknown_location`. An
-unobserved selection is classified the same way. Their recorded spelling stays
+unobserved selection is classified the same way. Their recorded absolute spelling stays
 reserved, but historical alternative spellings (symlinks or `..`) cannot be
 reliably reserved without a prior observation. This is an explicit upgrade limit:
 no historical physical identity is invented, and none of these records authorizes
 physical cleanup. Fresh bindings save a resolved location and fresh Forge targets
 are resolved before execution; retirement never probes garbage to reconstruct
-lost historical identity.
+lost historical identity. Empty and relative historical names have no
+reliable origin: they remain in diagnostic inventory but cannot serve as global
+path reservations. An empty name must never become a prefix blocking every
+unrelated execution. Resolved locations captured by fresh bindings remain
+reserved, including when the caller originally used a relative name.
 
 The admission inventory performs metadata comparisons proportional to retained
 resources; it performs no filesystem operation on those resources. Track close

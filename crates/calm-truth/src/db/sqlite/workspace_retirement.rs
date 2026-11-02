@@ -113,7 +113,13 @@ pub(super) async fn extra_retirement_claim(
         && [Some(selected), Some(location), observed]
             .into_iter()
             .flatten()
-            .any(|primary| Path::new(&primary).starts_with(&claim.path))
+            .any(|primary| {
+                super::path_location::reserved_paths_overlap(
+                    Path::new(&primary),
+                    Path::new(&claim.path),
+                    false,
+                )
+            })
     {
         return Ok(None);
     }

@@ -37,7 +37,7 @@ impl<'a> PathLocation<'a> {
     pub fn overlaps_reserved(&self, root: &std::path::Path, containing: bool) -> bool {
         [self.lexical, self.physical.as_path()]
             .into_iter()
-            .any(|path| path.starts_with(root) || (containing && root.starts_with(path)))
+            .any(|path| reserved_paths_overlap(path, root, containing))
     }
 
     pub(super) fn resolved(&self) -> &std::path::Path {
@@ -50,6 +50,17 @@ impl<'a> PathLocation<'a> {
             physical: physical_path(path)?,
         })
     }
+}
+
+/// Historical relative/empty names have no durable origin. An empty Path is a
+/// prefix of every candidate, but cannot become a global fence or a primary root.
+pub(super) fn reserved_paths_overlap(
+    candidate: &std::path::Path,
+    root: &std::path::Path,
+    containing: bool,
+) -> bool {
+    root.is_absolute()
+        && (candidate.starts_with(root) || (containing && root.starts_with(candidate)))
 }
 
 /// Compare lexical and physical locations, preserving a missing tail below the nearest

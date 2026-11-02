@@ -342,11 +342,30 @@ async fn unadmitted_target(damage: Option<&'static str>) {
             sqlx::query("UPDATE events SET payload='unreadable' WHERE id=?")
                 .bind(event).execute(&mut **tx).await.unwrap();
         }
+        if let Some(path) = match damage {
+            Some("empty") => Some(""),
+            Some("relative") => Some(".."),
+            _ => None,
+        } {
+            sqlx::query("UPDATE events SET payload=json_set(payload,'$.path',?) WHERE id=?")
+                .bind(path).bind(event).execute(&mut **tx).await.unwrap();
+        }
         let payload = serde_json::json!({"target":{"track_id":"incorrect-owner","provision_id":event,"request":{"path":"/incorrect/path"}}});
         sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms,parked_at_ms,parked_deadline_ms) VALUES ('corrupt','corrupt','workspace-reclaim','hash','track','{}',?,'{\"data\":{\"workspace_reclaim\":{\"execution_id\":null}}}','parked',1,1,1,2)")
             .bind(payload.to_string()).execute(&mut **tx).await.unwrap();
-        require_active_workspace_path(&mut tx, &root.path().join("unrelated")).await.unwrap();
-        if !matches!(damage, Some("path" | "json")) {
+        let unrelated = if damage == Some("relative") {
+            std::path::PathBuf::from("../independent-retirement-test")
+        } else { root.path().join("unrelated") };
+        require_active_workspace_path(&mut tx, &unrelated).await.unwrap();
+        if matches!(damage, Some("empty" | "relative")) {
+            let path = if damage == Some("empty") { "" } else { ".." };
+            assert!(retire_extra_worktree_tx(&mut tx, event, "owner", Path::new(path)).await.unwrap());
+            require_active_workspace_path(&mut tx, &unrelated).await.unwrap();
+            let rows = retired_workspaces(&mut tx).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].cleanup_reason, "unknown_location");
+        }
+        if !matches!(damage, Some("path" | "json" | "empty" | "relative")) {
             retired(require_active_workspace_path(&mut tx, &root.path().join("extra")).await);
         }
         tx.rollback().await.unwrap();
@@ -492,4 +511,14 @@ async fn logical_write_with_unreadable_receipt(operation: &str) {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn retirement_unlocated_empty_path_cannot_reserve_all_execution_roots() {
+    unadmitted_target(Some("empty")).await;
+}
+
+#[tokio::test]
+async fn retirement_unlocated_relative_path_cannot_reserve_unrelated_execution_roots() {
+    unadmitted_target(Some("relative")).await;
 }
