@@ -74,12 +74,9 @@ async fn instructing_plugins(
     let scope =
         plugin_scope_for_track_row_with_grants(repo.sqlite_db().as_ref(), track, Some(plugin))
             .await;
-    let extra_plugins = crate::track_plugin_access::current_grants(
-        repo.sqlite_db().as_ref(),
-        track.id.as_str(),
-        plugin,
-    )
-    .await?;
+    let extra_plugins =
+        crate::track_plugin_access::current_grants(repo.sqlite_db().as_ref(), track, plugin)
+            .await?;
     stored.retain(|manifest| scope.allows_manifest(manifest));
     stored.sort_by(|a, b| a.id.cmp(&b.id));
     let referenced = if stored

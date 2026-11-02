@@ -78,7 +78,7 @@ async fn call(
         Input::Status => {
             let scope =
                 crate::mcp_server::tool_visibility::plugin_scope_for_track(&ctx, Some(track)).await;
-            let extras = track_plugin_access::current_grants(ctx.sqlite_db.as_ref(), track, host)
+            let extras = track_plugin_access::current_grants(ctx.sqlite_db.as_ref(), &row, host)
                 .await
                 .map_err(calm_error)?;
             let running = host.running_plugin_ids().await;

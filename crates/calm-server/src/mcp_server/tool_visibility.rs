@@ -145,7 +145,7 @@ pub(crate) async fn plugin_scope_for_track_row_with_grants(
     let (TrackPluginScope::Only(owner), Some(host)) = (&base, host) else {
         return base;
     };
-    match crate::track_plugin_access::current_grants(db, track.id.as_str(), host).await {
+    match crate::track_plugin_access::current_grants(db, track, host).await {
         Ok(extras) if extras.is_empty() => base,
         Ok(extras) => TrackPluginScope::Granted {
             owner: owner.clone(),
@@ -200,7 +200,7 @@ pub(crate) async fn disabled_plugin_error(
     };
     if !permitted && let Some(host) = ctx.plugin_host.get() {
         permitted =
-            crate::track_plugin_access::current_grants(ctx.sqlite_db.as_ref(), track_id, host)
+            crate::track_plugin_access::current_grants(ctx.sqlite_db.as_ref(), &track, host)
                 .await
                 .ok()?
                 .contains(&manifest.id);

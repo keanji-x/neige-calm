@@ -179,8 +179,9 @@ async fn track_plugin_access_roundtrip_is_durable_isolated_and_revocable() {
     ))
     .await
     .unwrap();
+    let reopened_track = reopened.track_get(track).await.unwrap().unwrap();
     assert!(
-        crate::track_plugin_access::current_grants(Some(reopened.db()), track, &fx.host)
+        crate::track_plugin_access::current_grants(Some(reopened.db()), &reopened_track, &fx.host)
             .await
             .unwrap()
             .contains("calendar")
@@ -503,5 +504,24 @@ async fn track_plugin_access_pending_decision_cannot_overwrite_a_newer_revision(
     assert_eq!(
         answer(&fx, track, ask, json!([{"option":1}]), "user").await,
         204
+    );
+}
+
+#[tokio::test]
+async fn track_plugin_access_unbound_track_needs_no_extra_grant_storage() {
+    let fx = Fixture::installed().await;
+    let who = fx.identity(CardRole::Planner).await;
+    let track = fx
+        .repo
+        .track_get(who.track_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(track.plugin_scope.is_none());
+    assert!(
+        crate::track_plugin_access::current_grants(None, &track, &fx.host)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }

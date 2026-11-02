@@ -20,7 +20,7 @@ pub(crate) fn digest(manifest: &Manifest) -> Result<String> {
     ))
 }
 
-pub(crate) async fn grants(
+async fn grants(
     db: Option<&crate::db::sqlite::SqliteDb>,
     track: &str,
 ) -> Result<Vec<(String, String, String)>> {
@@ -42,10 +42,13 @@ pub(crate) async fn grants_from<'e, E: sqlx::SqliteExecutor<'e>>(
 
 pub(crate) async fn current_grants(
     db: Option<&crate::db::sqlite::SqliteDb>,
-    track: &str,
+    track: &Track,
     host: &crate::plugin_host::PluginHost,
 ) -> Result<BTreeSet<String>> {
-    filter_grants(grants(db, track).await?, host)
+    if track.plugin_scope.is_none() {
+        return Ok(BTreeSet::new());
+    }
+    filter_grants(grants(db, track.id.as_str()).await?, host)
 }
 
 pub(crate) fn filter_grants(
