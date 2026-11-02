@@ -6,7 +6,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -26,9 +25,6 @@ use crate::operation::task_gate_run::{
 };
 
 pub const TOOL_TASK_GATE: &str = "neige_task_gate";
-
-/// How often the call re-reads the run's op row while it waits.
-const POLL: Duration = Duration::from_millis(100);
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(task_gate_descriptor(), wrap(task_gate));
@@ -85,6 +81,9 @@ async fn task_gate(
         .cloned()
         .ok_or_else(|| RpcError::internal("operation runtime not bound"))?;
     runtime.require_gate_execution().map_err(calm_error)?;
+    // Subscribe before admission/drive and the first durable read. Completion
+    // racing any of those steps is either visible in the row or retains a wake.
+    let mut completions = runtime.subscribe_completions();
     let (_, track) =
         crate::mcp_server::tools::track_file::resolve_track_for_identity(&ctx, &identity).await?;
     let card_id = identity.card_id.clone();
@@ -131,7 +130,16 @@ async fn task_gate(
                 json!({"commit": null, "state": "running", "step": step}),
             ));
         }
-        tokio::time::sleep(POLL.min(deadline - now)).await;
+        tokio::select! {
+            result = completions.recv() => {
+                if matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    return Err(RpcError::internal("operation completion channel closed"));
+                }
+                // Another operation or lagged delivery is harmless: re-read the
+                // durable result instead of trusting the notification payload.
+            }
+            _ = tokio::time::sleep_until(deadline) => {}
+        }
     }
 }
 

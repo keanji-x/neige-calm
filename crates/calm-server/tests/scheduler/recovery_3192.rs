@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use futures::FutureExt;
 
 #[cfg(target_os = "linux")]
 async fn interrupted_gate(timeout: bool) {
@@ -39,7 +41,7 @@ async fn interrupted_gate(timeout: bool) {
     .await
     .unwrap();
     std::fs::write(dir.join("interrupt"), "interrupt").unwrap();
-    tokio::time::timeout(Duration::from_secs(20), async {
+    let original_pid = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if let Some(op) = runtime
                 .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
@@ -51,19 +53,19 @@ async fn interrupted_gate(timeout: bool) {
                     .and_then(|o| o.data.get("gate_execution"))
             {
                 let id = serde_json::from_value(record["execution_id"].clone()).unwrap();
-                if matches!(
-                    boot.execution
-                        .lifecycle
-                        .engine()
-                        .unwrap()
-                        .output(&id, None)
-                        .await,
-                    Ok(workspace_runtime::execution::ExecutionReply::Observation {
-                        state: workspace_runtime::execution::ExecutionState::Unknown { .. },
-                        ..
-                    })
-                ) {
-                    break;
+                if let Ok(workspace_runtime::execution::ExecutionReply::Observation {
+                    state: workspace_runtime::execution::ExecutionState::Unknown { .. },
+                    receipt,
+                    ..
+                }) = boot
+                    .execution
+                    .lifecycle
+                    .engine()
+                    .unwrap()
+                    .output(&id, None)
+                    .await
+                {
+                    break receipt.map(|receipt| receipt.process.pid());
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -91,7 +93,36 @@ async fn interrupted_gate(timeout: bool) {
         .unwrap();
     }
     boot.execution.restart().await;
-    let row = wait_for_terminal_row(&boot, "interrupted", 15).await;
+    let terminal = std::panic::AssertUnwindSafe(wait_for_terminal_row(&boot, "interrupted", 15))
+        .catch_unwind()
+        .await;
+    let row = match terminal {
+        Ok(row) => row,
+        Err(panic) => {
+            // Capture passive evidence before any diagnostic Inspect can advance recovery.
+            let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                if let Ok(Some(op)) = runtime.find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1")).await {
+                    eprintln!("interruption owner: phase={:?} lease={:?} until={:?} error={:?}", op.phase, op.lease_owner, op.lease_until_ms, op.last_error);
+                    if let Some(record) = op.tx_output.as_ref().map(|o| &o.data["gate_execution"]) {
+                        eprintln!("interruption decision: {}", record);
+                        if let Ok(id) = serde_json::from_value::<workspace_runtime::execution::ExecutionId>(record["execution_id"].clone()) {
+                            eprintln!("interruption driver error: {:?}", boot.execution.lifecycle.engine().unwrap().error(&id));
+                        }
+                        if let Some(id) = record["execution_id"].as_str() {
+                            let row = sqlx::query_as::<_, (String, Option<String>)>(
+                                "SELECT desired,settlement_json FROM workspace_executions WHERE execution_id=?",
+                            ).bind(id).fetch_optional(boot.repo.sqlite_db().unwrap().read_pool()).await;
+                            eprintln!("interruption durable state: {row:?}");
+                        }
+                    }
+                }
+                if let Some(pid) = original_pid {
+                    eprintln!("interruption original process: {:?}", std::fs::read_to_string(format!("/proc/{pid}/stat")));
+                }
+            }).await;
+            std::panic::resume_unwind(panic)
+        }
+    };
     assert_eq!(row.status, TaskStatus::Failed);
     assert_eq!(row.status_detail.as_deref(), Some("gate-infra"));
     let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();

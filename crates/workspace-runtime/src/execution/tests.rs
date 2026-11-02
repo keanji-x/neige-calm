@@ -591,3 +591,112 @@ async fn wait_settled_cancel_keeps_driver() {
 }
 
 mod recovery_3192;
+
+#[tokio::test]
+async fn execution_changes_remembers_output_before_wait() {
+    let (_, _, executor, engine) = setup(Desired::Run, vec![]);
+    let changes = engine.changes().await.unwrap();
+    executor.changed();
+    // The notification precedes polling the wait future.
+    bounded(changes.changed()).await.unwrap();
+}
+
+#[tokio::test]
+async fn execution_changes_wakes_on_durable_settlement_without_output_event() {
+    let (intent, store, _, engine) = setup(Desired::Run, vec![Ok(drained())]);
+    let pause = Arc::new(Pause::default());
+    *store.settle_pause.lock().unwrap() = Some(pause.clone());
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    bounded(pause.entered.notified()).await;
+    // Subscribe after drive's request wake; only the durable settlement/driver
+    // notification can now wake this receiver (Inspect emitted no output event).
+    let changes = engine.changes().await.unwrap();
+    pause.resume.notify_one();
+    bounded(changes.changed()).await.unwrap();
+    assert!(
+        store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
+    idle(&engine, &intent.metadata.id).await;
+}
+
+#[tokio::test]
+async fn execution_changes_remembers_output_during_subscription() {
+    let (_, _, executor, engine) = setup(Desired::Run, vec![]);
+    let pause = Arc::new(Pause::default());
+    *executor.generation_pause.lock().unwrap() = Some(pause.clone());
+    let subscribing_engine = engine.clone();
+    let subscribe = tokio::spawn(async move { subscribing_engine.changes().await.unwrap() });
+    bounded(pause.entered.notified()).await;
+    executor.changed();
+    pause.resume.notify_one();
+    bounded(subscribe.await.unwrap().changed()).await.unwrap();
+    drop(engine); // Keep the durable change sender alive throughout the wait.
+}
+
+async fn unknown_recovers_without_executor_notification(desired: Desired) {
+    let (intent, _, _, engine) = setup(
+        desired,
+        vec![
+            Ok(journal(
+                ExecutionState::Unknown {
+                    reason: "awaiting external evidence".into(),
+                },
+                OutputEnd::Open,
+            )),
+            Ok(drained()),
+        ],
+    );
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    // Inspect returns the later physical evidence; no executor Changed is sent.
+    bounded(engine.wait_settled(&intent.metadata.id))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_running_rechecks_without_executor_notification() {
+    unknown_recovers_without_executor_notification(Desired::Run).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_stopping_rechecks_without_executor_notification() {
+    unknown_recovers_without_executor_notification(Desired::Stop).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_recheck_never_invents_settlement() {
+    let unknown = journal(
+        ExecutionState::Unknown {
+            reason: "unqualified external state".into(),
+        },
+        OutputEnd::Open,
+    );
+    let (intent, store, executor, engine) =
+        setup(Desired::Stop, vec![Ok(unknown.clone()), Ok(unknown)]);
+    let pause = Arc::new(Pause::default());
+    *executor.inspect_pause.lock().unwrap() = Some(pause.clone());
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    bounded(pause.entered.notified()).await;
+    pause.resume.notify_one();
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(250)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
+    executor.push(Ok(drained()));
+    executor.changed();
+    bounded(engine.wait_settled(&intent.metadata.id))
+        .await
+        .unwrap();
+}

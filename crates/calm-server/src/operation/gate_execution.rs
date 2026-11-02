@@ -1,7 +1,9 @@
 //! Gate-owned execution construction, durable authorization and lifecycle decisions.
+mod observation;
 use super::owned_execution::pipe;
 use super::{Operation, SpawnCtx, Tx, gate_process::GateFiles};
 use crate::error::{CalmError, Result};
+pub(crate) use observation::{GateWatch, recovery_ready};
 use workspace_runtime::execution::*;
 
 pub(crate) const KEY: &str = "gate_execution";

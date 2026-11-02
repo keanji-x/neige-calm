@@ -380,6 +380,17 @@ impl ProviderAdapter for TaskGateRunAdapter {
         })
     }
 
+    async fn owned_parked_recovery_eligible(&self, op: &Operation, ctx: &SpawnCtx) -> bool {
+        let ready = async {
+            let frozen = FrozenRun::from_output(super::required_output(op)?)?;
+            super::gate_execution::recovery_ready(ctx, op, frozen.gate.timeout_secs_clamped()).await
+        }
+        .await;
+        // Broken records and unavailable executors must remain discoverable by
+        // authoritative recovery, which records the error with lease backoff.
+        ready.unwrap_or(true)
+    }
+
     async fn recover_owned_parked(
         &self,
         op: &Operation,
@@ -541,6 +552,7 @@ impl TaskGateRunAdapter {
             hook().await;
         }
         loop {
+            let watch = execution::GateWatch::subscribe(&ctx).await;
             let read = async {
                 #[cfg(any(test, feature = "fixtures"))]
                 if let Some(hook) = &self.hooks.observer_read {
@@ -554,7 +566,7 @@ impl TaskGateRunAdapter {
                 Ok(None) => return,
                 Err(error) => {
                     tracing::warn!(op_id=%id,%error,"gate observer read failed; retrying");
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    execution::GateWatch::retry().await;
                     continue;
                 }
             };
@@ -566,6 +578,21 @@ impl TaskGateRunAdapter {
                     ctx.execution.drive([record.execution_id]);
                 }
                 return;
+            }
+            let ready = async {
+                let frozen = FrozenRun::from_output(super::required_output(&current)?)?;
+                let timeout = frozen.gate.timeout_secs_clamped();
+                watch.ready_or_wait(&ctx, &current, timeout, restart).await
+            }
+            .await;
+            match ready {
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"gate observation failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
+                }
+                Ok(true) => {}
             }
             if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await {
                 let result = async {
@@ -614,9 +641,11 @@ impl TaskGateRunAdapter {
                 .await;
                 if let Err(error) = result {
                     tracing::warn!(op_id=%id,%error,"gate execution retained");
+                    execution::GateWatch::retry().await;
                 }
+                continue;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            execution::GateWatch::retry().await;
         }
     }
 }

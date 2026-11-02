@@ -198,66 +198,94 @@ impl TaskVerifyAdapter {
             hook().await;
         }
         loop {
-            if let Ok(Some(current)) = ctx.operation_repo.get_operation(&id).await {
-                if matches!(
-                    current.phase.tag(),
-                    PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
-                ) {
-                    self.owned_parked_completed(&current, &ctx);
-                    return;
+            let watch = execution::GateWatch::subscribe(&ctx).await;
+            let current = match ctx.operation_repo.get_operation(&id).await {
+                Ok(Some(current)) => current,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"gate observer read failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
                 }
-                if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await {
-                    let result: Result<()> = async {
-                        let record = execution::record(&op)?;
-                        if record.decision == Decision::Observing {
-                            if retry_close
-                                && matches!(record.release, Release::Released { .. })
-                                && let Ok(engine) = execution::engine(&ctx)
+            };
+            if matches!(
+                current.phase.tag(),
+                PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
+            ) {
+                self.owned_parked_completed(&current, &ctx);
+                return;
+            }
+            let ready = async {
+                let frozen = FrozenVerify::from_output(super::super::required_output(&current)?)?;
+                let timeout = frozen.gate.timeout_secs_clamped();
+                watch
+                    .ready_or_wait(&ctx, &current, timeout, restart || retry_close)
+                    .await
+            }
+            .await;
+            match ready {
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"gate observation failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
+                }
+                Ok(true) => {}
+            }
+            if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await {
+                let result: Result<()> = async {
+                    let record = execution::record(&op)?;
+                    if record.decision == Decision::Observing {
+                        if retry_close
+                            && matches!(record.release, Release::Released { .. })
+                            && let Ok(engine) = execution::engine(&ctx)
+                        {
+                            // Boot retries only close; it never sends another go token.
+                            retry_close = engine.close_stdin(&record.execution_id).await.is_err();
+                        }
+                        if restart {
+                            execution::stop(&ctx, &op, StopReason::KernelRestarted).await?;
+                            restart = false;
+                        } else if record.release == Release::Held {
+                            let frozen =
+                                FrozenVerify::from_output(super::super::required_output(&op)?)?;
+                            if op.parked_deadline_ms.is_some_and(|d| now_ms() > d) {
+                                execution::stop(&ctx, &op, StopReason::Timeout).await?;
+                            } else if execution::release(
+                                &ctx,
+                                &op,
+                                execution::ReleaseAuthority::Task(&frozen.task_id),
+                                #[cfg(any(test, feature = "fixtures"))]
+                                None,
+                            )
+                            .await
+                            .is_err()
                             {
-                                // Boot retries only close; it never sends another go token.
-                                retry_close =
-                                    engine.close_stdin(&record.execution_id).await.is_err();
-                            }
-                            if restart {
-                                execution::stop(&ctx, &op, StopReason::KernelRestarted).await?;
-                                restart = false;
-                            } else if record.release == Release::Held {
-                                let frozen =
-                                    FrozenVerify::from_output(super::super::required_output(&op)?)?;
-                                if op.parked_deadline_ms.is_some_and(|d| now_ms() > d) {
-                                    execution::stop(&ctx, &op, StopReason::Timeout).await?;
-                                } else if execution::release(
-                                    &ctx,
-                                    &op,
-                                    execution::ReleaseAuthority::Task(&frozen.task_id),
-                                    #[cfg(any(test, feature = "fixtures"))]
-                                    None,
-                                )
-                                .await
-                                .is_err()
-                                {
-                                    let latest = execution::refresh_claim(&ctx, &op).await?;
-                                    execution::stop(&ctx, &latest, StopReason::ReleaseRefused)
-                                        .await?;
-                                }
+                                let latest = execution::refresh_claim(&ctx, &op).await?;
+                                execution::stop(&ctx, &latest, StopReason::ReleaseRefused).await?;
                             }
                         }
-                        let latest = execution::refresh_claim(&ctx, &op).await?;
-                        super::super::owned_parked::reconcile(
-                            &self,
-                            &latest,
-                            RecoveryMode::PreDeadlineProbe,
-                            &ctx,
-                        )
-                        .await
                     }
-                    .await;
-                    if let Err(error) = result {
-                        tracing::warn!(op_id=%id,%error,"gate execution retained");
-                    }
+                    let latest = execution::refresh_claim(&ctx, &op).await?;
+                    super::super::owned_parked::reconcile(
+                        &self,
+                        &latest,
+                        RecoveryMode::PreDeadlineProbe,
+                        &ctx,
+                    )
+                    .await
                 }
+                .await;
+                if let Err(error) = result {
+                    tracing::warn!(op_id=%id,%error,"gate execution retained");
+                    execution::GateWatch::retry().await;
+                }
+                if retry_close {
+                    execution::GateWatch::retry().await;
+                }
+                continue;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            execution::GateWatch::retry().await;
         }
     }
 }

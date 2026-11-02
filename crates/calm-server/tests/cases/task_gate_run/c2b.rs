@@ -547,7 +547,26 @@ async fn c2b_unknown_execution_never_completes_op() {
         }
     ));
     boot(&fx).await;
+    fx.db()
+        .writer()
+        .execute(sqlx::query("CREATE TABLE idle_claims (op_id TEXT)"))
+        .await
+        .unwrap();
+    fx.db()
+        .writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER observe_idle_claims AFTER UPDATE OF lease_owner ON operations \
+        WHEN NEW.lease_owner IS NOT NULL BEGIN INSERT INTO idle_claims VALUES (NEW.id); END",
+        ))
+        .await
+        .unwrap();
     resume.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM idle_claims WHERE op_id=?")
+        .bind(&before.id)
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap();
     for _ in 0..3 {
         fx.runtime.sweep_parked().await.unwrap();
         assert_eq!(op(&fx, &a.task.id).await.phase.tag(), PhaseTag::Parked);
@@ -567,7 +586,14 @@ async fn c2b_unknown_execution_never_completes_op() {
         let pid = helper.0;
         drop(helper);
         wait_until(async || !Path::new(&format!("/proc/{pid}")).exists()).await;
+        // The old native process is now gone, but cannot publish another event.
+        // Engine must re-prove quiescence and settle without another owner claim loop.
+        wait_until(async || op(&fx, &a.task.id).await.phase.tag() == PhaseTag::Succeeded).await;
     }
+    assert_eq!(
+        writes, 0,
+        "boot recovery must wait for drain without repeated claims"
+    );
 }
 
 #[tokio::test]
@@ -736,3 +762,6 @@ async fn c2b_native_terminal_gate_op_is_unproven() {
             .contains("manually stop pgid 2147483000")
     );
 }
+
+#[path = "c2b/observation.rs"]
+mod observation;

@@ -236,6 +236,12 @@ impl OperationRuntime {
             .expect("operation wait hook mutex") = Some(hook);
     }
 
+    /// Subscribe before reading the durable result; notifications are only wake
+    /// hints and a lagged receiver must reload its own operation.
+    pub fn subscribe_completions(&self) -> broadcast::Receiver<OperationResult> {
+        self.completion.subscribe()
+    }
+
     pub fn publish_completion(&self, result: OperationResult) {
         self.completion.complete(result);
     }
@@ -1386,7 +1392,9 @@ impl OperationRuntime {
         if matches!(claim_mode, ParkedClaimMode::SteadyState) {
             let adapter = self.adapter(&op.kind)?;
             if adapter.owns_parked_resource().is_some() {
-                let eligible = adapter.owned_parked_recovery_eligible(&op).await;
+                let eligible = adapter
+                    .owned_parked_recovery_eligible(&op, &self.spawn_ctx)
+                    .await;
                 if !eligible {
                     return Ok(());
                 }

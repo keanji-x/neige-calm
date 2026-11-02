@@ -5,6 +5,11 @@ use std::{
 };
 use tokio::sync::{Notify, watch};
 
+// Unknown can refer to an original process outside this executor's live handles.
+// Its disappearance need not emit Changed. Re-inspect without changing desire or
+// manufacturing quiescence; stable executions keep their event-only wait.
+const UNKNOWN_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
+
 struct Slot {
     dirty: bool,
     notify: Arc<Notify>,
@@ -72,6 +77,8 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         Ok(PendingDriveTicket(id.clone()))
     }
     pub fn drive(&self, ticket: DriveTicket) {
+        // A committed desire can change without an executor output event.
+        self.changed();
         let id = ticket.0;
         let mut slots = self.0.slots.lock().unwrap();
         if let Some(slot) = slots.get_mut(&id) {
@@ -208,7 +215,21 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
                     .await
                     .map(|_| fact.clone())
             }
-            Step::Wait => return self.wait(generation, notify).await,
+            Step::Wait => {
+                if matches!(
+                    fact,
+                    Fact::Journal {
+                        state: ExecutionState::Unknown { .. },
+                        ..
+                    }
+                ) {
+                    return tokio::select! {
+                        result = self.wait(generation, notify) => result,
+                        _ = tokio::time::sleep(UNKNOWN_RECHECK) => Ok(true),
+                    };
+                }
+                return self.wait(generation, notify).await;
+            }
             Step::Settle | Step::Finish => {
                 if settlement.is_none() {
                     self.0
@@ -266,6 +287,12 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         tokio::time::timeout(QUIESCE_DEADLINE, wait)
             .await
             .map_err(|_| DriveError::Timeout)?
+    }
+    /// Subscribe before loading durable state or inspecting executor output.
+    pub async fn changes(&self) -> Result<ExecutionChanges, DriveError> {
+        let durable = Generation::snapshot(self.0.changed.subscribe());
+        let executor = self.0.executor.generation().await?;
+        Ok(ExecutionChanges { executor, durable })
     }
     /// Subscribe before reading output, so concurrent appends cannot be missed.
     pub async fn output_generation(&self) -> Result<Generation, DriveError> {
