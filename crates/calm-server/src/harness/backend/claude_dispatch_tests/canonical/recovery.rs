@@ -245,7 +245,7 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
     let (state, app) = settled::application(&fx).await;
     let harness = fx.start_loop_in(state.harness.clone()).await;
     retry::action(&fx, &app, "retry", "retry-lost-driver").await;
-    tokio::time::timeout(Duration::from_secs(25), async {
+    let completion = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
             let cp = fx.checkpoint().await;
             if cp.attempts.len() == 2 && cp.active.is_none() {
@@ -254,9 +254,12 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
             tokio::task::yield_now().await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     let after = fx.checkpoint().await;
+    assert!(
+        completion.is_ok(),
+        "retry did not settle within 25 seconds; final checkpoint: {after:?}"
+    );
     assert!(after.pending.is_empty());
     assert_eq!(fx.session.user_line_writes_for_test(), 1);
     assert_eq!(

@@ -33,18 +33,7 @@ impl Fixture {
                         current_input_carrier_tx(&mut tx, &self.owner.card, &self.owner.worker)
                             .await
                             .unwrap();
-                    let fence = RuntimeExecutionFence::from_carrier(&carrier);
-                    let mut header = fence.header().clone();
-                    header["phase"] = serde_json::json!("issuing_turn");
-                    let written = persist_runtime_frame_tx(
-                        &mut tx,
-                        &self.owner.card,
-                        &self.owner.worker,
-                        &fence,
-                        header,
-                    )
-                    .await
-                    .unwrap();
+                    let snapshot = carrier.snapshot().clone();
                     let refs = submission_plan_tx(&mut tx, &self.submission)
                         .await
                         .unwrap()
@@ -72,7 +61,7 @@ impl Fixture {
                         backend: self.backend.clone(),
                         registry: registry.clone(),
                         config: crate::harness::HarnessConfig::default(),
-                        snapshot: HarnessRuntimeSnapshot::decode(written.snapshot).unwrap(),
+                        snapshot: HarnessRuntimeSnapshot::decode(snapshot).unwrap(),
                     })
                     .await
                     .unwrap();
