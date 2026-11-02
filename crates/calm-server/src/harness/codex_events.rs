@@ -6,7 +6,8 @@
 use calm_types::event::AskQuestion;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::broadcast::{self, error::RecvError};
+use std::sync::Arc;
+use tokio::sync::{broadcast::error::RecvError, mpsc};
 
 use crate::codex_appserver::Notification;
 use crate::shared_codex_appserver::{SharedCodexAppServer, other_turn_id};
@@ -14,14 +15,14 @@ use provider::events::{ItemPhase, PlannerEvent, PlannerEventKind};
 
 /// A subscription to the Codex daemon's notifications, received as [`PlannerEvent`]s.
 pub struct CodexEvents {
-    receiver: broadcast::Receiver<Notification>,
+    receiver: mpsc::Receiver<Arc<Notification>>,
     pending: Option<PlannerEvent>,
 }
 
 impl CodexEvents {
     pub fn subscribe(daemon: &SharedCodexAppServer) -> Self {
         Self {
-            receiver: daemon.subscribe_notifications(),
+            receiver: daemon.subscribe_harness_notifications(),
             pending: None,
         }
     }
@@ -31,7 +32,7 @@ impl CodexEvents {
         if let Some(event) = self.pending.take() {
             return Ok(event);
         }
-        let event = planner_event(self.receiver.recv().await?);
+        let event = planner_event((*self.receiver.recv().await.ok_or(RecvError::Closed)?).clone());
         if let Some(boundary) = compact_boundary(&event) {
             self.pending = Some(event);
             return Ok(boundary);

@@ -505,8 +505,9 @@ impl PlannerBackend {
 }
 
 /// One harness's subscription to its provider's events, from
-/// [`PlannerBackend::subscribe_events`], with `broadcast`'s receive semantics: `Lagged` when it
-/// fell behind, `Closed` once the provider's sender is gone.
+/// [`PlannerBackend::subscribe_events`]. Codex backpressures its shared forwarder
+/// rather than evicting frames; the other providers retain broadcast's `Lagged`
+/// semantics. All sources report `Closed` once their sender is gone.
 pub struct PlannerEvents(EventSource);
 
 /// Private like [`Arm`]: code outside this module receives events without naming a provider.
@@ -517,7 +518,7 @@ enum EventSource {
 }
 
 impl PlannerEvents {
-    /// Cancel safe, like the `broadcast::Receiver::recv` it wraps: the run loop selects on it.
+    /// Cancel safe for both channel types: the run loop selects on this receive.
     pub async fn recv(&mut self) -> std::result::Result<PlannerEvent, RecvError> {
         match &mut self.0 {
             EventSource::Codex(events) => events.recv().await,
