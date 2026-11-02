@@ -92,7 +92,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `regate` | LC | re-run an attempt's failed gate on the same candidate (Planner, #2405) | none (domain) |
 | `rerun` | LC | request a re-run of a CI run attempt's failed jobs, once the user approved that exact request (Planner, #2617) | `gh run rerun --failed` |
 | `evaluate` | LC | start an evaluation of an approved objective at one revision (Planner, #3126) | none (plain English) |
-| `settle` | LC | record the Planner's closed decision on a ready evaluation: keep, discard or done (#3126) | none (plain English) |
+| `settle` | LC | record the Planner's closed decision on a ready evaluation or task-stall notice (#3126, #3466) | none (plain English) |
 | `gate` | LC | run the attempt's declared gate now, on the Worker's changes committed as the attempt's commit (Worker, #2464) | none (domain) |
 | `done` | LC | a Worker or bound child Planner's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
 | `fail` | LC | a Worker or bound child Planner's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
@@ -104,7 +104,7 @@ Decisions, one line each:
 
 - **`done` / `fail` report assigned outcomes** for Workers or the currently bound child Planner using its Parent seed attempt_id. Child done atomically closes and completes (or verifies) the parent; fail returns kernel result_ref and keeps the child open. Active children cannot self-close. Task goal alone assigns work (new or continue); mail carries parent/child free text; user_ask is only for user decisions/approvals. The separate handback command is removed without an alias.
 
-- **`evaluate` / `settle` belong to objective measurement** (#3126): start a revision evaluation / decide a ready evaluation; `gate` runs a Worker attempt gate, `report` records the watcher verdict, and `accept` decides whether an attempt meets its task.
+- **`evaluate` starts objective measurement** (#3126). `settle` records a closed Planner decision on a ready evaluation or follow-up notice (#3466). `followup_settle` chooses wait, bypass or supported termination for one attempt-bound stall notice; settling the notice never proves execution has stopped. `gate` runs a Worker attempt gate, `report` records the watcher verdict, and `accept` decides whether an attempt meets its task.
 
 - **`ls`, not `list`.** `track_ls` already exists and Unix spells it so; `list`, `outline`,
   `reports` and `backlinks` all become `ls` on the right object. `neige tool list` becomes

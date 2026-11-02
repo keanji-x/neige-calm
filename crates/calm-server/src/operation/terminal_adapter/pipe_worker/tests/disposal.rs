@@ -288,6 +288,13 @@ async fn w_terminal_worker_never_admitted_stuck_delete() {
         let scheduler = state.scheduler_for_test();
         scheduler.mark_context_sweep_boot_complete();
         scheduler.sweep_all().await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while h.status().await != crate::model::TaskStatus::Failed {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stuck dispatched terminal is reconciled");
         (h.db.db())
             .writer()
             .execute(sqlx::query("DROP TRIGGER refuse_spawn_started"))

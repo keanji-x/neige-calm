@@ -3,6 +3,7 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 pub(crate) mod card_disposal;
+pub(crate) mod followup;
 mod terminal_completion;
 mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;
@@ -773,23 +774,33 @@ impl Scheduler {
             .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let _guard = lock.lock().await;
+        let guard = lock.lock().await;
+        let mut drives = Vec::new();
         while dirty.swap(false, Ordering::SeqCst) {
-            if let Err(e) = self.schedule_pass(&track_id).await {
-                tracing::warn!(
-                    track_id = %track_id,
-                    error = %e,
-                    "scheduler: scheduling pass failed; will retry on next trigger/sweep"
-                );
+            match self.schedule_pass(&track_id).await {
+                Ok(started) => drives.extend(started),
+                Err(error) => tracing::warn!(%track_id, %error,
+                    "scheduler: scheduling pass failed; will retry on next trigger/sweep"),
+            }
+        }
+        // Operation admission and settlement can wait indefinitely. Join only after releasing
+        // the Track lock, so later declarations can still be claimed under the usual fences.
+        drop(guard);
+        for drive in drives {
+            if let Err(error) = drive.await {
+                tracing::warn!(%track_id, %error, "scheduler: spawn drive ended unexpectedly");
             }
         }
     }
 
     /// One pass under the track lock: open gate → ready set → dispatch each ready task
     /// sequentially.
-    async fn schedule_pass(self: &Arc<Self>, track_id: &TrackId) -> Result<()> {
+    async fn schedule_pass(
+        self: &Arc<Self>,
+        track_id: &TrackId,
+    ) -> Result<Vec<tokio::task::JoinHandle<()>>> {
         let Some(track) = self.repo.track_get(track_id.as_str()).await? else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let tasks = self.repo.tasks_by_track(track_id.as_str()).await?;
         // Before the open gate: a delivery settles (and wakes the planner) on a closed track too.
@@ -812,7 +823,7 @@ impl Scheduler {
                 track_id = %track_id,
                 "scheduler: track is closed; skipping pass"
             );
-            return Ok(());
+            return Ok(Vec::new());
         }
         let pool = self
             .repo
@@ -824,26 +835,32 @@ impl Scheduler {
             "",
         )
         .await?;
+        let mut drives = Vec::new();
         for task in compute_ready(&tasks, occupancy) {
-            self.dispatch_task(task, &track).await;
+            if let Some(drive) = self.dispatch_task(task, &track).await {
+                drives.push(drive);
+            }
         }
-        Ok(())
+        Ok(drives)
     }
 
     /// Claim one ready task and drive its worker spawn. Every failure mode is contained
     /// here; the pass continues with its remaining ready tasks.
-    async fn dispatch_task(self: &Arc<Self>, task: Task, track: &Track) -> bool {
-        let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
+    async fn dispatch_task(
+        self: &Arc<Self>,
+        task: Task,
+        track: &Track,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let Some(inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
-            return false;
+            return None;
         };
-        // Global spawn cap — same semaphore the dispatcher holds across
-        // its spawn handling.
-        let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
+        // Bound claim/admission work, never the operation driver's external waits.
+        let permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!("scheduler: dispatcher semaphore closed; skipping dispatch");
-                return false;
+                return None;
             }
         };
         // The spawn is driven off the row the claim tx re-read AFTER winning: the semaphore
@@ -852,33 +869,35 @@ impl Scheduler {
         let pre_claim_task_id = task.id.clone();
         let frozen = match self.claim_task(task, track).await {
             Ok(Some(frozen)) => frozen,
-            Ok(None) => return false, // someone else won the claim
+            Ok(None) => return None, // someone else won the claim
             Err(e) => {
                 tracing::warn!(
                     task_id = %pre_claim_task_id,
                     error = %e,
                     "scheduler: claim tx failed; task stays pending for the next trigger"
                 );
-                return false;
+                return None;
             }
         };
+        drop(permit);
         let post_claim_hook = self
             .post_claim_drive_test_hook
             .lock()
             .expect("post-claim drive hook lock")
             .take();
-        if let Some(hook) = post_claim_hook {
-            hook.claimed.notify_one();
-            hook.resume.notified().await;
-        }
-        if let Err(e) = self.drive_spawn(&frozen, track, false).await {
-            tracing::warn!(
-                task_id = %pre_claim_task_id,
-                error = %e,
-                "scheduler: worker spawn drive failed; sweep will reconcile"
-            );
-        }
-        true
+        let this = Arc::clone(self);
+        let track = track.clone();
+        Some(tokio::spawn(async move {
+            let _inflight = inflight;
+            if let Some(hook) = post_claim_hook {
+                hook.claimed.notify_one();
+                hook.resume.notified().await;
+            }
+            if let Err(error) = this.drive_spawn(&frozen, &track, false).await {
+                tracing::warn!(task_id = %pre_claim_task_id, %error,
+                    "scheduler: worker spawn drive failed; sweep will reconcile");
+            }
+        }))
     }
 
     /// The claim tx, one eventized write: in-tx open re-check, single-winner
@@ -1583,9 +1602,9 @@ impl Scheduler {
             );
             return;
         }
-        let pending_tracks = self.sweep_reconcile(false).await;
+        let pending_tracks = self.sweep_reconcile().await;
         for track_id in pending_tracks {
-            self.schedule_track(TrackId::from(track_id)).await;
+            self.poke(TrackId::from(track_id));
         }
     }
 
@@ -1593,7 +1612,7 @@ impl Scheduler {
     /// dispatched work and poke pending work in the background. Worker capacity and
     /// operation settlement must not hold the HTTP listener closed.
     pub async fn sweep_boot(self: &Arc<Self>) {
-        let pending_tracks = self.sweep_reconcile(true).await;
+        let pending_tracks = self.sweep_reconcile().await;
         for track_id in pending_tracks {
             self.poke(TrackId::from(track_id));
         }
@@ -1632,10 +1651,11 @@ impl Scheduler {
 
     /// Shared sweep body: runs the reconcile arms inline and returns the set of tracks
     /// holding `pending` rows for the caller to dispatch.
-    async fn sweep_reconcile(self: &Arc<Self>, during_boot: bool) -> BTreeSet<String> {
+    async fn sweep_reconcile(self: &Arc<Self>) -> BTreeSet<String> {
         if let Err(error) = self.sweep_progress_obligations().await {
             tracing::warn!(%error, "progress-obligation sweep failed; independent watchdog will retry");
         }
+        self.inspect_stalls().await;
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade() {
@@ -1663,10 +1683,10 @@ impl Scheduler {
                     pending_tracks.insert(task.track_id.clone());
                 }
                 TaskStatus::Running if task.kind == TaskKind::Compact => {
-                    self.resume_dispatched_for_sweep(task, during_boot).await;
+                    self.resume_dispatched_for_sweep(task);
                 }
                 TaskStatus::Dispatched => {
-                    self.resume_dispatched_for_sweep(task, during_boot).await;
+                    self.resume_dispatched_for_sweep(task);
                 }
                 // Sub-track parents have their own child-state reconciler.
                 // task_has_running_liveness_deadline excludes them from timeout;
@@ -1778,14 +1798,22 @@ impl Scheduler {
     }
 
     /// Sweep `dispatched` arm: the claim landed but the spawn outcome was never reconciled.
-    async fn resume_dispatched_for_sweep(self: &Arc<Self>, task: Task, during_boot: bool) {
-        if during_boot {
-            let scheduler = Arc::clone(self);
-            tokio::spawn(async move {
-                scheduler.resume_dispatched(task).await;
-            });
-        } else {
-            self.resume_dispatched(task).await;
+    fn resume_dispatched_for_sweep(self: &Arc<Self>, task: Task) {
+        let scheduler = Arc::clone(self);
+        tokio::spawn(async move {
+            scheduler.resume_dispatched(task).await;
+        });
+    }
+
+    /// Await production recovery, including a drive already claimed by boot.
+    /// With no prior owner, crash fixtures can cancel the actual recovery waiter.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn resume_dispatched_for_test(self: &Arc<Self>, task: Task) {
+        let id = task.id.clone();
+        self.resume_dispatched(task).await;
+        while self.inflight.contains_key(&id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -1814,10 +1842,6 @@ impl Scheduler {
                 tracing::warn!(task_id = %task.id, error = %e, "scheduler sweep: track_get failed");
                 return;
             }
-        };
-        let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return,
         };
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("compact-sweep-before-drive", &task.id).await;

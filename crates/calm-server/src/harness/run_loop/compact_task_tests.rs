@@ -296,7 +296,17 @@ async fn compact_task_sweep_fails_superseded_session() {
             .unwrap();
         scheduler.sweep_all().await;
         let id = format!("{}:compact", f.harness.inner.track_id);
-        let task = f.repo.task_get(&id).await.unwrap().unwrap();
+        let task = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let task = f.repo.task_get(&id).await.unwrap().unwrap();
+                if task.status == TaskStatus::Failed {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("superseded compaction settles");
         assert_eq!(
             task.status_detail.as_deref(),
             Some("compaction-refused: superseded")
@@ -424,7 +434,8 @@ async fn compact_task_delayed_sweep_after_record_clear_is_inert() {
     let id = format!("{}:compact", inner.track_id);
     let pause = PausePoint::default();
     install_pause_for_test("compact-sweep-before-drive", &id, pause.clone());
-    let sweep = scheduler.sweep_all();
+    let recovering = f.repo.task_get(&id).await.unwrap().unwrap();
+    let sweep = scheduler.resume_dispatched_for_test(recovering);
     tokio::pin!(sweep);
     tokio::select! {
         _ = &mut sweep => panic!("sweep did not pause"),

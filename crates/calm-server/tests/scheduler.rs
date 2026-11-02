@@ -15,6 +15,8 @@ mod child_track_handback;
 mod compact;
 #[path = "scheduler/progress_obligation_tests.rs"]
 mod progress_obligation_tests;
+#[path = "scheduler/stall.rs"]
+mod stall;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -508,6 +510,16 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
         updated_at_ms: now,
         finished_at_ms: None,
     }
+}
+
+async fn wait_status(boot: &Boot, key: &str, status: TaskStatus) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while task_row(boot, key).await.status != status {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("task reaches expected lifecycle state");
 }
 
 async fn seed_task(boot: &Boot, task: Task) {
@@ -1094,6 +1106,26 @@ impl ProviderAdapter for CardSpawnAdapter {
     ) -> CalmResult<()> {
         Err(unexpected("compensate_step"))
     }
+}
+
+async fn create_child_operation(runtime: &Arc<OperationRuntime>, task: &Task) {
+    let payload = build_child_track_payload(task).unwrap();
+    let id = runtime
+        .submit(
+            "child-track",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task.id.clone()),
+                payload_hash: stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime.wait(&id).await.unwrap().outcome,
+        OperationOutcome::Succeeded { .. }
+    ));
 }
 
 /// Released-result replay with a stub bootstrap; real activation uses u11_canonical flows.
@@ -2614,6 +2646,7 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "orphan", TaskStatus::Running).await;
 
     assert_eq!(
         operation_count(&boot, "codex-worker").await,
@@ -2650,6 +2683,7 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_track_
     );
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "stale-orphan", TaskStatus::Failed).await;
 
     assert_eq!(spawned.load(Ordering::SeqCst), 0, "no worker was started");
     let row = task_row(&boot, "stale-orphan").await;
@@ -2931,6 +2965,7 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
     );
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "stale-pending", TaskStatus::Failed).await;
     assert_eq!(
         task_row(&boot, "stale-pending").await.status,
         TaskStatus::Failed
@@ -2967,58 +3002,58 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
         .await
         .unwrap()
         .unwrap();
-    let write_db = (pool).clone();
-    write_db
+    let write_db = pool.clone();
+    let output = write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut prepare_tx = write_session.begin_immediate().await.unwrap();
                 let output = adapter
                     .prepare_tx(&mut prepare_tx, &payload, &pending_op)
                     .await
                     .unwrap();
                 prepare_tx.commit().await.unwrap();
-                (pool)
-                    .writer()
-                    .execute(
-                        sqlx::query(
-                            "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
-         target_json = ?2 WHERE id = ?3",
-                        )
-                        .bind(serde_json::to_string(&output).unwrap())
-                        .bind(
-                            json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string(),
-                        )
-                        .bind(&op_id),
-                    )
-                    .await
-                    .unwrap();
-                mark_context_stale(&boot, &task_id).await;
-
-                let plan = runtime.recover_on_boot().await.unwrap();
-                runtime.apply_recovery(plan).await.unwrap();
-                assert_eq!(
-                    spawned.load(Ordering::SeqCst),
-                    1,
-                    "already-started terminal work resumes without re-entering prepare_tx"
-                );
-                let op = runtime
-                    .find_by_kind_and_idempotency("terminal-worker", &task_id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
-                assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
-
-                scheduler.sweep_all().await;
-                assert_eq!(
-                    task_row(&boot, "stale-started").await.status,
-                    TaskStatus::Running
-                );
+                output
             })
         })
         .await
-        .expect("independent write operation")
+        .expect("prepare fixture");
+    (pool)
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
+         target_json = ?2 WHERE id = ?3",
+            )
+            .bind(serde_json::to_string(&output).unwrap())
+            .bind(json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string())
+            .bind(&op_id),
+        )
+        .await
+        .unwrap();
+    mark_context_stale(&boot, &task_id).await;
+
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        1,
+        "already-started terminal work resumes without re-entering prepare_tx"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
+
+    scheduler.sweep_all().await;
+    wait_status(&boot, "stale-started", TaskStatus::Running).await;
+    assert_eq!(
+        task_row(&boot, "stale-started").await.status,
+        TaskStatus::Running
+    );
 }
 
 #[tokio::test]
@@ -3088,12 +3123,8 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
         .await
         .unwrap();
     dispatcher.reconcile_tick_for_test().await;
-    for _ in 0..100 {
-        if spawned.load(Ordering::SeqCst) == 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_status(&boot, "boot-pending-op", TaskStatus::Running).await;
+    wait_status(&boot, "boot-missing-op", TaskStatus::Running).await;
     assert_eq!(
         operation_count(&boot, "terminal-worker").await,
         2,
@@ -6911,6 +6942,7 @@ async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass(
     );
     // ONE sweep: dispatched arm resumes the op → running stamp → immediate recorded-exit reconcile.
     scheduler.sweep_all().await;
+    wait_status(&boot, "crashed", TaskStatus::Failed).await;
 
     let row = task_row(&boot, "crashed").await;
     assert_eq!(
@@ -6998,6 +7030,7 @@ async fn sweep_marks_running_when_op_succeeded_before_crash() {
     );
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "stamped", TaskStatus::Running).await;
 
     let row = task_row(&boot, "stamped").await;
     assert_eq!(row.status, TaskStatus::Running);
@@ -7051,6 +7084,7 @@ async fn sweep_redrives_half_driven_operation() {
     );
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "stalled", TaskStatus::Running).await;
 
     let row = task_row(&boot, "stalled").await;
     assert_eq!(row.status, TaskStatus::Running, "wait() re-drove the op");
@@ -7102,6 +7136,7 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
     );
 
     scheduler.sweep_all().await;
+    wait_status(&boot, "wedged", TaskStatus::Failed).await;
 
     let row = task_row(&boot, "wedged").await;
     assert_eq!(row.status, TaskStatus::Failed);
@@ -8414,7 +8449,7 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_task(&boot, task.clone()).await;
     let minted = Arc::new(AtomicUsize::new(0));
     let child_adapter = Arc::new(ChildTrackAdapter::new(
         std::sync::Arc::new(
@@ -8428,10 +8463,11 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
     )) as Arc<dyn ProviderAdapter>;
     let bootstrap_adapter =
         Arc::new(BootstrapAdapter::new(minted.clone())) as Arc<dyn ProviderAdapter>;
-    let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
-    scheduler.sweep_all().await;
+    let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
+    create_child_operation(&runtime, &task).await;
     historical_child_result(&boot, &task_id).await;
     scheduler.sweep_all().await;
+    wait_status(&boot, "repaired-bootstrap", TaskStatus::Running).await;
     assert_eq!(
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Running
@@ -8471,11 +8507,11 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .display()
         .to_string();
     proposed.worktree = None;
-    let write_db = (pool).clone();
+    let write_db = pool.clone();
     write_db
         .writer()
         .with_writer(|write_session| {
-            Box::pin(async move {
+            Box::pin(async {
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 let error = calm_server::db::sqlite::track_workspace_write_tx(
                     &mut tx, &child_id, &proposed,
@@ -8492,57 +8528,55 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
                     "{error}"
                 );
                 tx.rollback().await.unwrap();
-                assert_eq!(
-                    boot.repo
-                        .track_get(&child_id)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .workspace,
-                    before_track.workspace
-                );
-                assert_eq!(
-                    binding(pool.read_pool().clone(), child_id.clone()).await,
-                    before_binding
-                );
-                let after_output: String = sqlx::query_scalar(
-                    "SELECT tx_output_json FROM operations WHERE kind='child-track'",
-                )
-                .fetch_one(pool.read_pool())
-                .await
-                .unwrap();
-                assert_eq!(
-                    after_output, before_output,
-                    "rejected re-point must preserve historical bytes"
-                );
-
-                (pool)
-                    .writer()
-                    .execute(
-                        sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
-                            .bind(&task_id),
-                    )
-                    .await
-                    .unwrap();
-                scheduler.sweep_all().await;
-                let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-                assert_eq!(
-                    row.status,
-                    TaskStatus::Running,
-                    "re-driving the frozen child must reuse its bootstrap: {:?}",
-                    row.status_detail
-                );
-                assert_eq!(operation_count(&boot, "child-track").await, 1);
-                assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
-                assert_eq!(minted.load(Ordering::SeqCst), 1);
-                assert_eq!(
-                    binding(pool.read_pool().clone(), child_id).await,
-                    before_binding
-                );
             })
         })
         .await
-        .expect("independent write operation")
+        .expect("reject workspace change");
+
+    assert_eq!(
+        boot.repo
+            .track_get(&child_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace,
+        before_track.workspace
+    );
+    assert_eq!(
+        binding(pool.read_pool().clone(), child_id.clone()).await,
+        before_binding
+    );
+    let after_output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
+            .fetch_one(pool.read_pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        after_output, before_output,
+        "rejected re-point must preserve historical bytes"
+    );
+
+    (pool)
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id))
+        .await
+        .unwrap();
+    scheduler.sweep_all().await;
+    wait_status(&boot, "repaired-bootstrap", TaskStatus::Running).await;
+    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "re-driving the frozen child must reuse its bootstrap: {:?}",
+        row.status_detail
+    );
+    assert_eq!(operation_count(&boot, "child-track").await, 1);
+    assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
+    assert_eq!(minted.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        binding(pool.read_pool().clone(), child_id).await,
+        before_binding
+    );
 }
 
 #[tokio::test]
@@ -8622,6 +8656,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .await
         .expect("bootstrap sweep must not hang")
         .unwrap();
+    wait_status(&boot, "bootstrap", TaskStatus::Running).await;
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Running);
     assert_eq!(row.running_deadline_ms, None);
@@ -8645,6 +8680,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .await
         .unwrap();
     scheduler.sweep_all().await;
+    wait_status(&boot, "bootstrap", TaskStatus::Running).await;
     assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
     assert_eq!(minted.load(Ordering::SeqCst), 1);
@@ -8685,7 +8721,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     crash_task.spawn = "sub-track".into();
     crash_task.status = TaskStatus::Dispatched;
     let crash_task_id = crash_task.id.clone();
-    seed_task(&crash_boot, crash_task).await;
+    seed_task(&crash_boot, crash_task.clone()).await;
     let crash_minted = Arc::new(AtomicUsize::new(0));
     let crash_block = BootstrapBlockHook {
         wait_entered: Arc::new(tokio::sync::Notify::new()),
@@ -8713,12 +8749,12 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             )),
         ],
     );
-    crash_scheduler.sweep_all().await;
+    create_child_operation(&crash_runtime, &crash_task).await;
     historical_child_result(&crash_boot, &crash_task_id).await;
     crash_runtime.install_wait_entered_hook_for_test(crash_block.wait_entered.clone());
     let crashed_sweep = {
         let scheduler = crash_scheduler.clone();
-        tokio::spawn(async move { scheduler.sweep_all().await })
+        tokio::spawn(async move { scheduler.resume_dispatched_for_test(crash_task).await })
     };
     tokio::time::timeout(Duration::from_secs(1), crash_block.entered.notified())
         .await
@@ -8783,6 +8819,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         .await
         .expect("recovered bootstrap sweep must not hang")
         .unwrap();
+    wait_status(&crash_boot, "bootstrap-crash", TaskStatus::Running).await;
     assert_eq!(
         crash_boot
             .repo
@@ -8821,7 +8858,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             task.status = TaskStatus::Dispatched;
         }
         let task_id = task.id.clone();
-        seed_projected_task(&boot, task).await;
+        seed_projected_task(&boot, task.clone()).await;
         let minted = Arc::new(AtomicUsize::new(0));
         let child_adapter = Arc::new(ChildTrackAdapter::new(
             std::sync::Arc::new(
@@ -8834,10 +8871,10 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             workspace_runtime::sweep::TeardownTargets::default(),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
-        let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
+        let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
         if stage == "create" {
             // Drive the real child adapter first to preserve the post-commit tx_output and child_track_id the failure cleanup must discover.
-            scheduler.sweep_all().await;
+            create_child_operation(&runtime, &task).await;
             assert_eq!(
                 boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
                 TaskStatus::Dispatched
@@ -8875,6 +8912,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             scheduler.schedule_track(boot.track_id.clone()).await;
             historical_child_result(&boot, &task_id).await;
             scheduler.sweep_all().await;
+            wait_status(&boot, &task.key, TaskStatus::Running).await;
             (boot.repo.sqlite_db().unwrap())
                 .writer()
                 .execute(
@@ -8894,6 +8932,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
                 .bind(phase).bind(detail).bind(last_error)).await.unwrap();
         }
         scheduler.sweep_all().await;
+        wait_status(&boot, &task.key, TaskStatus::Failed).await;
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
         assert_eq!(row.status, TaskStatus::Failed, "{stage}/{phase}");
         assert_eq!(
@@ -8993,7 +9032,8 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
         .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task_id))
         .await
         .unwrap();
-    scheduler.sweep_all().await;
+    let recovering = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    scheduler.resume_dispatched_for_test(recovering).await;
     assert_eq!(
         operation_count(&boot, "child-track").await,
         1,
@@ -9182,6 +9222,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
         .await
         .unwrap();
     scheduler.sweep_all().await;
+    wait_status(&boot, "stale-child", TaskStatus::Failed).await;
     let after: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
         .fetch_one(boot.repo.sqlite_db().unwrap().read_pool())
         .await
@@ -9272,6 +9313,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() 
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     scheduler.sweep_all().await;
+    wait_status(&boot, "depth-fail", TaskStatus::Failed).await;
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Failed);
     assert_eq!(

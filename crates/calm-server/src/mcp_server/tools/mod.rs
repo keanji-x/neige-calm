@@ -243,8 +243,9 @@ mod tests {
         // #3427 adds three bytes to existing Report declarations; the inspection delta stays fixed.
         // #3481 Track plugin authorization adds one kernel tool: 709 description + 181 schema
         // bytes. Its canonical user-confirmation workflow cannot be a plugin-owned tool.
-        // Keep the measured aggregate bound and the existing per-description cap.
-        const SURFACE_MAX_BYTES: usize = 41_252;
+        // #3466 adds one bounded follow-up descriptor/schema to that aggregate budget;
+        // no additional roster or CI invocation. Lifecycle facts stay in the wake notice.
+        const SURFACE_MAX_BYTES: usize = 42_190;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

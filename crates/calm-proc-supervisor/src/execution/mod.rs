@@ -2,6 +2,8 @@
 
 mod attachment;
 mod controls;
+#[cfg(target_os = "linux")]
+mod descriptor_isolation;
 mod directory;
 mod journal;
 mod launch;

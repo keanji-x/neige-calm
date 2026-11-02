@@ -136,7 +136,8 @@ async fn child_flow(window: Window) {
     }
     let creating = tokio::spawn({
         let scheduler = state.dispatcher.scheduler();
-        async move { scheduler.sweep_all().await }
+        let recovering = fixture.repo.task_get(&task).await.unwrap().unwrap();
+        async move { scheduler.resume_dispatched_for_test(recovering).await }
     });
     until(async || {
         sqlx::query_scalar::<_, bool>("SELECT child_track_id IS NOT NULL FROM tasks WHERE id=?1")
@@ -253,6 +254,11 @@ async fn child_flow(window: Window) {
     drop((app, state));
     fixture.repo.pool().close().await;
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
+    // Boot can claim recovery before an explicit probe. Arm the same boundary first.
+    let result_ready = crate::test_seams::PausePoint::default();
+    if window == Window::Installed {
+        crate::test_seams::install_pause_for_test("u11-child-result", &task, result_ready.clone());
+    }
     let (state, _app, _cookie) = fixture.application().await;
     assert_eq!(identities(&fixture, &task).await, original);
     assert_eq!(
@@ -276,11 +282,11 @@ async fn child_flow(window: Window) {
             installed.clone(),
         );
     }
-    let result_ready = crate::test_seams::PausePoint::default();
     let probe = if window == Window::Installed {
-        crate::test_seams::install_pause_for_test("u11-child-result", &task, result_ready.clone());
         let scheduler = state.dispatcher.scheduler();
-        let probe = tokio::spawn(async move { scheduler.sweep_all().await });
+        let recovering = fixture.repo.task_get(&task).await.unwrap().unwrap();
+        let probe =
+            tokio::spawn(async move { scheduler.resume_dispatched_for_test(recovering).await });
         tokio::time::timeout(Duration::from_secs(5), result_ready.entered.notified())
             .await
             .unwrap();
@@ -605,7 +611,20 @@ async fn child_flow(window: Window) {
     fixture.repo.pool().close().await;
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     let (state, _, _) = fixture.application().await;
-    state.dispatcher.scheduler().sweep_all().await;
+    let recovering = fixture.repo.task_get(&task).await.unwrap().unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        state
+            .dispatcher
+            .scheduler()
+            .resume_dispatched_for_test(recovering),
+    )
+    .await
+    .expect("cold recovery settles without another start");
+    if window != Window::Failed {
+        // Boot may already own the single-flight drive; join its observable result.
+        until(async || task_status(&fixture, &task).await == "running").await;
+    }
     assert_eq!(
         task_status(&fixture, &task).await,
         if window == Window::Failed {

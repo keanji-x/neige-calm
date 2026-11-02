@@ -88,7 +88,8 @@ pub(super) async fn positive() {
     );
     let pause = crate::test_seams::PausePoint::default();
     crate::test_seams::install_pause_for_test("compact-sweep-before-drive", &id, pause.clone());
-    let sweep = scheduler.sweep_all();
+    let recovering = fx.original.repo.task_get(&id).await.unwrap().unwrap();
+    let sweep = scheduler.resume_dispatched_for_test(recovering);
     tokio::pin!(sweep);
     tokio::select! {
         _ = &mut sweep => panic!("sweep did not pause"),

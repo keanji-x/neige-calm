@@ -175,6 +175,58 @@
     ]
   },
   {
+    "name": "neige_followup_settle",
+    "description_sha256": "302d021037e27a44c0b22ac925068598bd93b7c54ec8f0db767a53cc4997bbd7",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "wait",
+            "bypass",
+            "terminate"
+          ]
+        },
+        "message": {
+          "description": "The audit note: why this write.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "notice_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "review_after_secs": {
+          "maximum": 86400,
+          "minimum": 60,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "notice_id",
+        "decision",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_link_ls",
     "description_sha256": "3575a4736e718132e74fa64044e1182b82c40210d56e48d92ff4320b2f469283",
     "input_schema": {

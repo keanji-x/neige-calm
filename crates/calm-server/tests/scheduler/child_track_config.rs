@@ -24,6 +24,7 @@ async fn child_track_config_invalid_provider_fails_parent_task_readably() {
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![adapter]);
     scheduler.sweep_all().await;
+    wait_status(&boot, "invalid-child-provider", TaskStatus::Failed).await;
     let task = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
     let detail = task.status_detail.unwrap();
