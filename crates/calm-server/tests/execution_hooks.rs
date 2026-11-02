@@ -255,7 +255,7 @@ impl Fixture {
         assert_eq!(self.desired(id).await, "retire");
     }
     async fn workspace_retirement(&self, expected: bool) {
-        let result = sqlite::require_active_workspace_path(
+        let result = sqlite::workspace_retirement::require_active_workspace_path(
             &mut self.repo.pool().acquire().await.unwrap(),
             &self.root,
         )
