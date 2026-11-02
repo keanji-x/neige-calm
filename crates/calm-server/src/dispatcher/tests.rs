@@ -4627,4 +4627,5 @@ async fn declared_task_notification_never_reads_mutable_task_facts() {
     }
 }
 
+#[cfg(test)]
 mod progress_obligation_tests;
