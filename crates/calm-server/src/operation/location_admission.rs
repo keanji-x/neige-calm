@@ -86,6 +86,7 @@ impl LocationAdmission {
                         |(track_id, path)| calm_truth::db::sqlite::OwnedWorkspaceLocation {
                             track_id,
                             path,
+                            reclaim_operation_id: None,
                             removing: false,
                             retired: false,
                         },
@@ -94,7 +95,7 @@ impl LocationAdmission {
         {
             if paths_overlap(&location, &owned.path, false)? {
                 if owned.removing {
-                    return Err(CalmError::WorkspaceBusy(owned.track_id));
+                    return Err(removal_blocker(&owned)?);
                 }
                 owners.insert(Owner::Track(owned.track_id));
             }
@@ -129,6 +130,21 @@ impl LocationAdmission {
             _guards: guards,
         })
     }
+}
+
+pub(crate) fn removal_blocker(
+    location: &calm_truth::db::sqlite::OwnedWorkspaceLocation,
+) -> Result<CalmError> {
+    let operation = location
+        .reclaim_operation_id
+        .as_deref()
+        .ok_or_else(|| CalmError::Conflict("removing location has no reclaim identity".into()))?;
+    Ok(CalmError::OperationBlocked(super::PendingBlocker::new(
+        super::PendingBlockerClass::WorkspaceRemoval,
+        location.track_id.clone(),
+        format!("reclaim {operation} at {}", location.path.display()),
+        "the owning reclaim durably settles",
+    )))
 }
 
 pub(crate) struct LocationFence {

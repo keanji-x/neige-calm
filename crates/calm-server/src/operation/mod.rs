@@ -61,6 +61,7 @@ pub use repo_sqlite::complete_parked_for_test;
 pub(crate) use repo_sqlite::{TxCommittedAdvance, advance_to_tx_committed_tx};
 pub(crate) use repo_sqlite::{
     checkpoint_app_server_interact_tx, complete_parked_tx, require_live_claim_tx,
+    require_original_operation_tx,
 };
 use repo_sqlite::{fetch_claimed_parked, operation_from_row};
 pub use tx_only::TxOnlyAdapter;
@@ -225,6 +226,25 @@ pub struct Operation {
     pub spawn_artifacts: Option<SpawnArtifacts>,
     pub parked_at_ms: Option<TimestampMs>,
     pub parked_deadline_ms: Option<TimestampMs>,
+}
+
+pub use calm_types::task_execution::{PendingBlocker, PendingBlockerClass};
+
+pub fn pending_blocker(op: &Operation) -> Result<Option<PendingBlocker>> {
+    if !matches!(op.phase, Phase::Pending) {
+        return Ok(None);
+    }
+    let Some(detail) = op.phase_detail.as_ref() else {
+        return Ok(None);
+    };
+    serde_json::from_value(detail.clone())
+        .map(Some)
+        .map_err(|error| {
+            CalmError::Conflict(format!(
+                "pending operation {} has unreadable blocker: {error}",
+                op.id
+            ))
+        })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -765,6 +785,11 @@ pub enum OperationWait {
     Settled(OperationResult),
     /// Parked on an execution the adapter owns; the row as read at that moment.
     OwnedParked(Box<Operation>),
+    /// The exact operation remains Pending with a durable recoverable blocker.
+    Deferred {
+        op: Box<Operation>,
+        blocker: PendingBlocker,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1062,14 +1087,103 @@ pub trait OperationRepo: Send + Sync {
     ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    /// Persist a blocker only while this caller still owns the exact Pending claim.
+    /// Keep its retry deadline so an ordinary drive pass cannot immediately
+    /// reclaim the same still-blocked row after releasing this owner.
+    async fn defer_pending_claim(&self, op: &Operation, blocker: &PendingBlocker) -> Result<bool> {
+        let db = self.sqlite_db();
+        db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await?;
+            require_live_claim_tx(&mut tx, op).await?;
+            let changed = sqlx::query(
+                "UPDATE operations SET phase_detail_json=?1,lease_owner=NULL,updated_at_ms=?2 \
+                 WHERE id=?3 AND phase='pending' AND lease_owner=?4",
+            )
+            .bind(serde_json::to_string(blocker)?)
+            .bind(now_ms())
+            .bind(&op.id)
+            .bind(
+                op.lease_owner
+                    .as_deref()
+                    .ok_or_else(|| CalmError::Conflict("pending blocker claim has no owner".into()))?,
+            )
+            .execute(&mut **tx)
+            .await?
+            .rows_affected()
+                == 1;
+            tx.commit().await?;
+            Ok(changed)
+        })).await.map_err(calm_truth::TruthError::from)?
+    }
+
+    /// A global-driver refusal happens before an operation claim. Write only when
+    /// there is no live claimant, so this observation cannot overwrite another owner.
+    async fn defer_unclaimed_pending(&self, id: &str, blocker: &PendingBlocker) -> Result<bool> {
+        let db = self.sqlite_db();
+        let now = now_ms();
+        let changed = db
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET phase_detail_json=?1,updated_at_ms=?2 \
+             WHERE id=?3 AND phase='pending' \
+               AND (lease_owner IS NULL OR lease_until_ms < ?2)",
+                )
+                .bind(serde_json::to_string(blocker)?)
+                .bind(now)
+                .bind(id),
+            )
+            .await?
+            .rows_affected()
+            == 1;
+        Ok(changed)
+    }
+    /// A scheduler retry takes a new claim without erasing the blocker first.
+    /// Only successful preparation may atomically replace that pre-effect evidence.
+    async fn claim_pending_retry(&self, original: &Operation) -> Result<Option<Operation>> {
+        let db = self.sqlite_db();
+        db.writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    repo_sqlite::require_original_operation_tx(&mut tx, original).await?;
+                    let now = now_ms();
+                    let owner = new_id();
+                    let changed = sqlx::query(
+                        "UPDATE operations SET lease_owner=?1,lease_until_ms=?2,updated_at_ms=?3 \
+                 WHERE id=?4 AND phase='pending' AND completed_at_ms IS NULL \
+                   AND (lease_owner IS NULL OR lease_until_ms < ?3)",
+                    )
+                    .bind(&owner)
+                    .bind(now + OPERATION_LEASE_MS)
+                    .bind(now)
+                    .bind(&original.id)
+                    .execute(&mut **tx)
+                    .await?;
+                    if changed.rows_affected() == 0 {
+                        return Ok(None);
+                    }
+                    let row = sqlx::query("SELECT * FROM operations WHERE id=?1")
+                        .bind(&original.id)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                    let claimed = operation_from_row(&row)?;
+                    pending_blocker(&claimed)?;
+                    tx.commit().await?;
+                    Ok(Some(claimed))
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
+    }
     /// Called under drive after a Busy waker releases track; a later phase owns its lease.
     async fn release_pending_for_retry(&self, id: &str) -> Result<()> {
         let db = self.sqlite_db();
         let write_db = (db).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
             let mut tx = write_session.begin_immediate().await?;
-            sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
-                .bind(id).execute(&mut **tx).await?;
+            sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=?1 AND phase='pending' AND (lease_owner IS NULL OR lease_until_ms < ?2)")
+                .bind(id).bind(now_ms()).execute(&mut **tx).await?;
             tx.commit().await?;
             Ok(())
 

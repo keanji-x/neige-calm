@@ -42,6 +42,86 @@ async fn expire(db: &crate::db::sqlite::SqlxRepo, op: &Operation) {
         .unwrap();
 }
 
+async fn claimed_pending_operation() -> (crate::db::sqlite::SqlxRepo, SqlxOperationRepo, Operation)
+{
+    let db = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let repo = SqlxOperationRepo::new(db.db().clone());
+    let id = repo
+        .insert_operation(
+            "claim-test",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(new_id()),
+                payload_hash: "same-payload".into(),
+            },
+            json!({"input":"original"}),
+        )
+        .await
+        .unwrap();
+    let claimed = repo.claim_drive_operation(&id).await.unwrap().unwrap();
+    (db, repo, claimed)
+}
+
+#[tokio::test]
+async fn reclaim_recovery_deferred_claim_does_not_reenter_ordinary_batch() {
+    let (db, repo, claimed) = claimed_pending_operation().await;
+    let blocker = crate::operation::PendingBlocker::new(
+        crate::operation::PendingBlockerClass::LaunchFence,
+        "track",
+        "busy-track",
+        "the owning lifecycle releases its fence",
+    );
+    assert!(repo.defer_pending_claim(&claimed, &blocker).await.unwrap());
+    assert!(
+        repo.claim_drive_batch(32).await.unwrap().is_empty(),
+        "ordinary drive must return instead of immediately reclaiming the same blocker"
+    );
+    expire(&db, &claimed).await;
+    let retried = repo.claim_drive_batch(32).await.unwrap();
+    assert_eq!(retried.len(), 1);
+    assert_eq!(retried[0].id, claimed.id);
+    assert_eq!(retried[0].idempotency_key, claimed.idempotency_key);
+}
+
+#[tokio::test]
+async fn reclaim_recovery_pending_retry_preserves_blocker_and_fences_claimants() {
+    let (db, repo, original) = claimed_pending_operation().await;
+    let blocker = crate::operation::PendingBlocker::new(
+        crate::operation::PendingBlockerClass::Checkout,
+        "track",
+        "busy-track",
+        "the checkout writer settles",
+    );
+    assert!(repo.defer_pending_claim(&original, &blocker).await.unwrap());
+    let retry = repo.claim_pending_retry(&original).await.unwrap().unwrap();
+    assert_eq!(
+        crate::operation::pending_blocker(&retry).unwrap(),
+        Some(blocker.clone())
+    );
+    assert!(repo.claim_pending_retry(&original).await.unwrap().is_none());
+    let mut wrong_identity = original.clone();
+    wrong_identity.payload_hash = "changed-input".into();
+    assert!(matches!(
+        repo.claim_pending_retry(&wrong_identity).await,
+        Err(CalmError::Conflict(_))
+    ));
+    expire(&db, &retry).await;
+    let replacement = repo.claim_pending_retry(&original).await.unwrap().unwrap();
+    assert_ne!(replacement.lease_owner, retry.lease_owner);
+    assert!(matches!(
+        repo.defer_pending_claim(&retry, &blocker).await,
+        Err(CalmError::Conflict(_))
+    ));
+    let stored = repo.get_operation(&original.id).await.unwrap().unwrap();
+    assert_eq!(stored.lease_owner, replacement.lease_owner);
+    assert_eq!(
+        crate::operation::pending_blocker(&stored).unwrap(),
+        Some(blocker)
+    );
+}
+
 #[tokio::test]
 async fn expired_claim_cannot_set_phase_without_reclaim() {
     let (db, repo, op) = claimed_operation().await;

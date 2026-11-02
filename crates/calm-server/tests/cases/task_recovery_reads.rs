@@ -381,6 +381,48 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     );
 }
 
+#[tokio::test]
+async fn reclaim_recovery_dispatched_view_names_pending_operation_blocker() {
+    let boot = boot().await;
+    declare(&boot, declaration("blocked", &[])).await;
+    let task = boot
+        .repo
+        .task_current_get(boot.track_id.as_str(), "blocked")
+        .await
+        .unwrap()
+        .unwrap();
+    let blocker = calm_server::operation::PendingBlocker::new(
+        calm_server::operation::PendingBlockerClass::WorkspaceRemoval,
+        "workspace-location",
+        "/owned/removing",
+        "the owning reclaim has durably settled",
+    );
+    let pool = boot.repo.sqlite_db().unwrap();
+    pool.writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&task.id))
+        .await
+        .unwrap();
+    pool.writer().execute(sqlx::query(
+        "INSERT INTO operations \
+         (id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,phase_detail_json,created_at_ms,updated_at_ms) \
+         VALUES ('blocked-op','blocked-op',?3,?1,'hash','task','{}',?4,'pending',?2,1,1)",
+    )
+    .bind(&task.id)
+    .bind(serde_json::to_string(&blocker).unwrap())
+    .bind(task.kind.worker_operation_kind().unwrap())
+    .bind(json!({"track_id":task.track_id,"idempotency_key":task.id}).to_string()))
+    .await
+    .unwrap();
+
+    let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "blocked")
+        .await
+        .unwrap();
+    let reason = view.current.unwrap().blocking_reason.unwrap();
+    assert!(reason.contains("blocked-op"), "{reason}");
+    assert!(reason.contains("/owned/removing"), "{reason}");
+    assert!(reason.contains("durably settled"), "{reason}");
+}
+
 async fn list_entry(boot: &crate::mcp_track_report::Boot, args: Value) -> Value {
     let list = call_tool(boot, "neige_task_ls", planner_identity(boot), args)
         .await

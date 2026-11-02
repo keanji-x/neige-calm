@@ -471,7 +471,7 @@ async fn finished_record_has_no_secrets() {
     store
         .settle(
             &intent.metadata.id,
-            &Settlement::from_fact(&tombstone(&intent)),
+            &settlement_from_fact(&tombstone(&intent)),
         )
         .await
         .unwrap();
@@ -486,7 +486,7 @@ async fn finished_record_has_no_secrets() {
     };
     assert_eq!(metadata.id, intent.metadata.id);
     assert_eq!(metadata.ticket_id, intent.metadata.ticket_id);
-    assert_eq!(settlement, Settlement::from_fact(&tombstone(&intent)));
+    assert_eq!(settlement, settlement_from_fact(&tombstone(&intent)));
     assert!(store.pending().await.unwrap().is_empty());
     store.finish(&intent.metadata.id).await.unwrap(); // idempotent
     assert!(matches!(
@@ -501,7 +501,7 @@ async fn drive_after_finish_is_noop() {
     store
         .settle(
             &intent.metadata.id,
-            &Settlement::from_fact(&tombstone(&intent)),
+            &settlement_from_fact(&tombstone(&intent)),
         )
         .await
         .unwrap();
@@ -521,7 +521,7 @@ async fn wait_settled_after_finish_returns_settled() {
     store
         .settle(
             &intent.metadata.id,
-            &Settlement::from_fact(&tombstone(&intent)),
+            &settlement_from_fact(&tombstone(&intent)),
         )
         .await
         .unwrap();

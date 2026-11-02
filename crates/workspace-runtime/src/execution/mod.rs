@@ -154,25 +154,11 @@ impl Stored {
         }
     }
 }
-/// Secret-free settlement evidence, copied directly from Inspect.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Settlement {
-    Journal(ExecutionState),
-    Retired(ExecutionTombstone),
-}
-impl Settlement {
-    /// Live-helper drain proves all descendants gone (subreaper + ECHILD).
-    /// Restart/group-only observations and tombstones do not preserve that proof.
-    pub fn descendants_complete(&self) -> bool {
-        matches!(self, Self::Journal(ExecutionState::Drained { .. }))
-    }
-
-    pub(super) fn from_fact(fact: &Fact) -> Self {
-        match fact {
-            Fact::Journal { state, .. } => Self::Journal(state.clone()),
-            Fact::Retired(t) => Self::Retired(t.clone()),
-            Fact::Absent => unreachable!("absent is not settlement evidence"),
-        }
+fn settlement_from_fact(fact: &Fact) -> Settlement {
+    match fact {
+        Fact::Journal { state, .. } => Settlement::Journal(state.clone()),
+        Fact::Retired(t) => Settlement::Retired(t.clone()),
+        Fact::Absent => unreachable!("absent is not settlement evidence"),
     }
 }
 

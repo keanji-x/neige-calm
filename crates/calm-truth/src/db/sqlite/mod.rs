@@ -228,6 +228,7 @@ pub use track::{
 };
 pub use track_occupancy::{
     CheckoutOccupancy, CheckoutWait, checkout_admission, checkout_occupancy,
+    pending_checkout_blocker,
 };
 pub use track_recipe::{track_recipe_create_tx, track_recipe_get_tx};
 pub use track_tree::{

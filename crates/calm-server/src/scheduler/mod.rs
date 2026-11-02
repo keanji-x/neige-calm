@@ -182,7 +182,10 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
             })?;
-            Ok(("codex-worker", payload))
+            Ok((
+                task.kind.worker_operation_kind().expect("checkout worker"),
+                payload,
+            ))
         }
         TaskKind::Claude => {
             let payload = serde_json::to_value(ClaudeWorkerOperationPayload {
@@ -195,7 +198,10 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 context: serde_json::from_str(&task.context_json).unwrap_or(Value::Null),
                 acceptance_criteria: task.acceptance_criteria.clone(),
             })?;
-            Ok(("claude-worker", payload))
+            Ok((
+                task.kind.worker_operation_kind().expect("checkout worker"),
+                payload,
+            ))
         }
         TaskKind::Terminal => {
             let payload = serde_json::to_value(TerminalWorkerOperationPayload {
@@ -207,7 +213,10 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 // depend on process env, so a restart under a different HOME would fail the task.
                 cwd: task.cwd.clone(),
             })?;
-            Ok(("terminal-worker", payload))
+            Ok((
+                task.kind.worker_operation_kind().expect("checkout worker"),
+                payload,
+            ))
         }
     }
 }
@@ -837,18 +846,18 @@ impl Scheduler {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
             return false;
         };
-        // Global spawn cap — same semaphore the dispatcher holds across
-        // its spawn handling.
-        let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
+        // Admission is nonwaiting: a full shared spawn cap leaves this task
+        // pending for an ordinary trigger/sweep instead of holding the Track lock.
+        let _permit = match Arc::clone(&self.semaphore).try_acquire_owned() {
             Ok(p) => p,
-            Err(_) => {
+            Err(tokio::sync::TryAcquireError::NoPermits) => return false,
+            Err(tokio::sync::TryAcquireError::Closed) => {
                 tracing::warn!("scheduler: dispatcher semaphore closed; skipping dispatch");
                 return false;
             }
         };
-        // The spawn is driven off the row the claim tx re-read AFTER winning: the semaphore
-        // wait leaves an unbounded window in which a still-pending row can be revised, so the
-        // pre-claim snapshot must never feed the payload.
+        // Context resolution can yield before the claim. Drive the row re-read
+        // AFTER winning; a revised pre-claim snapshot must never feed the payload.
         let pre_claim_task_id = task.id.clone();
         let frozen = match self.claim_task(task, track).await {
             Ok(Some(frozen)) => frozen,
@@ -936,8 +945,8 @@ impl Scheduler {
                 &self.write,
                 move |tx| {
                     Box::pin(async move {
-                        // Open gate, re-checked IN the claim tx: the pre-claim read can go stale across
-                        // the semaphore wait. Loss is silent (race-lost, no event).
+                        // Open gate, re-checked IN the claim tx: context resolution
+                        // can make the pre-claim read stale. Loss is silent.
                         let current = track_find_tx(tx, track_id.as_str())
                             .await?
                             .ok_or_else(race_lost_err)?;
@@ -1092,8 +1101,8 @@ impl Scheduler {
         }
         let (op_kind, payload) = build_worker_payload(task)?;
         let payload_hash = stable_payload_hash(&payload)?;
-        let op_id = match runtime
-            .submit(
+        let (op_id, wait) = match runtime
+            .submit_task_bounded(
                 op_kind,
                 OperationKey {
                     operation_key: new_id(),
@@ -1119,15 +1128,24 @@ impl Scheduler {
             // retry counting) — log-and-leave for the next trigger/sweep.
             Err(e) => return Err(e),
         };
-        // The preparation may be deferred past submit (a Busy fence), so the owned park can come
-        // at any point of the wait; a handed-off execution outlives this dispatch.
-        let result = match runtime.wait_settled_or_owned_parked(&op_id).await? {
+        // Deferred is a recoverable resource fact on this exact keyed operation.
+        // Return this scheduler turn so its Track lock and permit are released.
+        let result = match wait {
             crate::operation::OperationWait::Settled(result) => result,
             crate::operation::OperationWait::OwnedParked(op) => {
                 if self.acknowledge_pipe_parked(task, &op).await? {
                     return Ok(());
                 }
                 runtime.wait(&op_id).await?
+            }
+            crate::operation::OperationWait::Deferred { blocker, .. } => {
+                tracing::info!(
+                    task_id = %task.id,
+                    operation_id = %op_id,
+                    ?blocker,
+                    "scheduler: task startup deferred; a later sweep will retry the same operation"
+                );
+                return Ok(());
             }
         };
         let outcome = match result.outcome {
@@ -1815,7 +1833,8 @@ impl Scheduler {
                 return;
             }
         };
-        let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
+        // Recovery must not queue behind capacity while scanning other tasks.
+        let _permit = match Arc::clone(&self.semaphore).try_acquire_owned() {
             Ok(p) => p,
             Err(_) => return,
         };

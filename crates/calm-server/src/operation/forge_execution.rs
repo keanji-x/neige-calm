@@ -277,7 +277,9 @@ pub(crate) async fn admit_probe(
     }
     .await
     {
-        Err(error @ CalmError::WorkspaceBusy(_)) => return Err(error),
+        Err(error @ (CalmError::WorkspaceBusy(_) | CalmError::OperationBlocked(_))) => {
+            return Err(error);
+        }
         result => result,
     };
     // Collect environment/cwd I/O outside the writer, but defer its error until

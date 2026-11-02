@@ -10,6 +10,9 @@ use super::task::TASK_COLUMNS;
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskAccess, TaskStatus};
 
+mod blocked;
+pub use blocked::pending_checkout_blocker;
+
 /// Who is using a track's checkout, apart from the attempt asking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckoutOccupancy {
@@ -63,6 +66,9 @@ pub async fn checkout_occupancy(
         .iter()
         .filter(|task| task.runs_in_track_checkout())
     {
+        if pending_checkout_blocker(conn, task).await?.is_some() {
+            continue;
+        }
         occupancy = occupancy.join(task.access);
     }
     // `'stuck'` is the operations phase of an owner whose outcome is unknown (`PhaseTag::Stuck`).

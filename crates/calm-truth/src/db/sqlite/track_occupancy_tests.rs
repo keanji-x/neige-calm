@@ -68,6 +68,156 @@ async fn in_flight_tasks_count_with_their_own_access() {
 }
 
 #[tokio::test]
+async fn reclaim_recovery_dispatched_pre_effect_blocker_releases_checkout() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+    let track_id = seed_track(&repo).await;
+    let blocked = task(&repo, &track_id, "blocked", "terminal", "read_write").await;
+    repo.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&blocked))
+        .await
+        .unwrap();
+    repo.db().writer().execute(sqlx::query(
+        "INSERT INTO operations \
+         (id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,phase_detail_json,created_at_ms,updated_at_ms) \
+         VALUES ('blocked-op','blocked-op','terminal-worker',?1,'hash','task','{}',?3,'pending',?2,1,1)",
+    )
+    .bind(&blocked)
+    .bind(
+        serde_json::json!({
+            "version":"v1",
+            "class":"workspace_removal",
+            "owner_scope":"workspace-location",
+            "resource":"/removing",
+            "retry_when":"settled"
+        })
+        .to_string(),
+    )
+    .bind(serde_json::json!({"track_id":track_id,"idempotency_key":blocked}).to_string()))
+    .await
+    .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Free
+    );
+    repo.db()
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE operations SET phase_detail_json=NULL WHERE id='blocked-op'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy,
+        "missing or non-task release evidence stays fail-closed"
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_checkout_release_requires_complete_bound_blocker() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+    let track_id = seed_track(&repo).await;
+    let blocked = task(&repo, &track_id, "blocked", "terminal", "read_write").await;
+    repo.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1").bind(&blocked))
+        .await
+        .unwrap();
+    let detail = serde_json::json!({
+        "version":"v1","class":"workspace_removal",
+        "owner_scope":"workspace-location","resource":"/removing",
+        "retry_when":"settled"
+    });
+    repo.db().writer().execute(sqlx::query(
+        "INSERT INTO operations \
+         (id,operation_key,kind,idempotency_key,payload_hash,target_type,target_json,payload_json,phase,phase_detail_json,created_at_ms,updated_at_ms) \
+         VALUES ('blocked-op','blocked-op','terminal-worker',?1,'hash','task','{}',?2,'pending',?3,1,1)",
+    )
+    .bind(&blocked)
+    .bind(serde_json::json!({"track_id":track_id,"idempotency_key":blocked}).to_string())
+    .bind(detail.to_string()))
+    .await
+    .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Free
+    );
+
+    for malformed in [
+        serde_json::json!({"version":"v1","releases_checkout":true}),
+        serde_json::json!({
+            "version":"v1","class":"not-a-class","owner_scope":"workspace-location",
+            "resource":"/removing","retry_when":"settled","releases_checkout":true
+        }),
+    ] {
+        repo.db()
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET phase_detail_json=?1 WHERE id='blocked-op'")
+                    .bind(malformed.to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            occupancy(&repo, &track_id, "").await,
+            CheckoutOccupancy::Busy,
+            "partial or unknown blocker cannot release the checkout"
+        );
+    }
+    repo.db().writer().execute(sqlx::query(
+        "UPDATE operations SET phase_detail_json=?1,kind='forge-action' WHERE id='blocked-op'",
+    )
+    .bind(detail.to_string()))
+    .await
+    .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy
+    );
+
+    repo.db().writer().execute(sqlx::query(
+        "UPDATE operations SET kind='terminal-worker',payload_json=?1 WHERE id='blocked-op'",
+    )
+    .bind(serde_json::json!({"track_id":"wrong-track","idempotency_key":blocked}).to_string()))
+    .await
+    .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy
+    );
+    repo.db().writer().execute(sqlx::query("UPDATE operations SET payload_json=?1,lease_owner='active',lease_until_ms=?2 WHERE id='blocked-op'")
+        .bind(serde_json::json!({"track_id":track_id,"idempotency_key":blocked}).to_string())
+        .bind(crate::model::now_ms()+60_000)).await.unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy
+    );
+    repo.db()
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE operations SET lease_owner=NULL WHERE id='blocked-op'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Free
+    );
+    repo.db()
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE operations SET tx_output_json='{}' WHERE id='blocked-op'",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        occupancy(&repo, &track_id, "").await,
+        CheckoutOccupancy::Busy
+    );
+}
+
+#[tokio::test]
 async fn active_leases_count_with_their_own_access() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let track_id = seed_track(&repo).await;

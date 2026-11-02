@@ -5,8 +5,8 @@ use crate::{
     db::{RepoRead, sqlite::SqlxRepo},
     event::EventBus,
     operation::{
-        OperationCompletionBus, OperationKey, OperationRepo, OperationRuntime, Phase,
-        SqlxOperationRepo,
+        OperationCompletionBus, OperationKey, OperationRepo, OperationRuntime, PendingBlocker,
+        PendingBlockerClass, Phase, SqlxOperationRepo,
     },
     state::DaemonClient,
     terminal_renderer::TerminalRendererRegistry,

@@ -242,15 +242,15 @@ async fn removed_tx(tx: &mut Tx<'_>, target: &ExtraWorktree) -> Result<Vec<Broad
 }
 
 /// A lost live wait cannot release durable admission while the executor may still be removing.
-pub(crate) async fn terminal_admission_tx(tx: &mut Tx<'_>, track: &str) -> Result<()> {
+pub(crate) async fn terminal_admission_tx(tx: &mut Tx<'_>, _track: &str) -> Result<()> {
     // Implicit-cwd Terminals can cd anywhere. Preserve their global reservation,
     // using the same durable targets as explicit-cwd and attached admission.
-    if calm_truth::db::sqlite::execution_workspace_locations(tx)
+    if let Some(location) = calm_truth::db::sqlite::execution_workspace_locations(tx)
         .await?
         .iter()
-        .any(|location| location.removing)
+        .find(|location| location.removing)
     {
-        return Err(CalmError::WorkspaceBusy(track.to_owned()));
+        return Err(crate::operation::location_admission::removal_blocker(location)?);
     }
     Ok(())
 }

@@ -61,6 +61,104 @@ async fn entered(p: &PausePoint) {
         .await
         .unwrap();
 }
+
+async fn reclaim_recovery_durable_removal(f: &Fixture, path: &Path) {
+    let execution = calm_server::model::new_id();
+    let operation = calm_server::model::new_id();
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO workspace_executions \
+         (execution_id,track_id,alias,intent_json,secrets_json,desired) \
+         VALUES (?1,'removing-owner',?2,?3,'{}','run')",
+            )
+            .bind(&execution)
+            .bind(format!("reclaim:{execution}"))
+            .bind(json!({"consumer":"workspace-reclaim"}).to_string()),
+        )
+        .await
+        .unwrap();
+    f.repo.db().writer().execute(sqlx::query(
+        "INSERT INTO operations \
+         (id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) \
+         VALUES (?1,?1,'workspace-reclaim','hash','track','{}',?2,?3,'pending',1,1)",
+    )
+    .bind(&operation)
+    .bind(
+        json!({"target":{"track_id":"removing-owner","request":{"path":path}}}).to_string(),
+    )
+    .bind(
+        json!({"data":{"workspace_reclaim":{"execution_id":execution}}}).to_string(),
+    ))
+    .await
+    .unwrap();
+}
+
+async fn reclaim_recovery_terminal_request(
+    f: &Fixture,
+    cwd: Option<&Path>,
+) -> (StatusCode, String) {
+    let mut body = json!({"program":"true","theme":RequestTheme::default_dark()});
+    if let Some(cwd) = cwd {
+        body["cwd"] = json!(cwd);
+    }
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        f.request_keyed(
+            "POST",
+            &format!("/api/tracks/{}/terminal-cards", f.track),
+            Some(body),
+            None,
+        ),
+    )
+    .await
+    .expect("terminal reclaim admission must reach a finite answer")
+}
+
+#[tokio::test]
+async fn reclaim_recovery_ordinary_and_typed_terminal_keep_global_protection() {
+    for typed_terminal in [false, true] {
+        let mut f = Fixture::new().await;
+        wait(|| async { f.engine.available() }).await;
+        f.state = f
+            .state
+            .clone()
+            .with_terminal_execution(typed_terminal)
+            .with_objective_checkout_root(f._temp.path().join("objective-checks"));
+        let removing = f._temp.path().join("removing");
+        let unrelated = f._temp.path().join("unrelated");
+        let alias = f._temp.path().join("removing-alias");
+        std::fs::create_dir_all(&removing).unwrap();
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::os::unix::fs::symlink(&removing, &alias).unwrap();
+        reclaim_recovery_durable_removal(&f, &removing).await;
+        for cwd in [
+            Some(removing.as_path()),
+            Some(alias.as_path()),
+            Some(unrelated.as_path()),
+            Some(Path::new("   ")),
+            None,
+        ] {
+            let (status, body) = reclaim_recovery_terminal_request(&f, cwd).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()["code"],
+                "workspace_busy",
+                "{body}"
+            );
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM terminals")
+                .fetch_one(f.repo.pool())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+}
+
 pub(super) async fn external_worktree(f: &Fixture) -> Track {
     let repo = f._temp.path().join(calm_server::model::new_id());
     std::fs::create_dir(&repo).unwrap();

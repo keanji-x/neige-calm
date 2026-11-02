@@ -149,6 +149,16 @@ pub(crate) async fn current_blocking_reason_tx(
     allocation: &TaskAttemptAllocation,
     task: Option<&Task>,
 ) -> Result<Option<String>> {
+    if let Some(task) = task
+        && task.status == TaskStatus::Dispatched
+    {
+        if let Some((operation_id, blocker)) =
+            calm_truth::db::sqlite::pending_checkout_blocker(tx, task).await?
+        {
+            return Ok(Some(blocker.diagnostic(&operation_id)));
+        }
+        return Ok(None);
+    }
     if task.is_some_and(|task| task.status != TaskStatus::Pending) {
         return Ok(None);
     }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::RepoSyncDomainRaw;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -266,6 +267,329 @@ async fn w_terminal_worker_child_path_leads_with_kernel_bin() {
         std::env::split_paths(&path).next().unwrap(),
         crate::kernel_bin_path::kernel_bin_dir().unwrap()
     );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_global_drive_busy_releases_scheduler_capacity() {
+    let h = Harness::new("printf started > ran").await;
+    let state = h.state().await;
+    let scheduler = state.scheduler_for_test();
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    let drive = state
+        .operation_runtime
+        .lock_for_track_delete_for_test()
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(2), scheduler.sweep_all())
+        .await
+        .expect("a busy global driver must not retain the scheduler permit");
+    assert_eq!(h.status().await, crate::model::TaskStatus::Dispatched);
+    let blocked = h.op().await;
+    let blocker = crate::operation::pending_blocker(&blocked)
+        .unwrap()
+        .expect("the exact pending operation records the blocker");
+    assert!(matches!(
+        blocker,
+        PendingBlocker::V1 {
+            class: PendingBlockerClass::DriverBusy,
+            ..
+        }
+    ));
+    assert!(!h.root.path().join("ran").exists());
+
+    drop(drive);
+    let resumed = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            scheduler.sweep_all().await;
+            if matches!(
+                h.status().await,
+                crate::model::TaskStatus::Running | crate::model::TaskStatus::Done
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    if resumed.is_err() {
+        let task = h.db.task_get(&h.task.id).await.unwrap().unwrap();
+        let op = h.op().await;
+        panic!(
+            "the original task and operation did not resume: status={:?} detail={:?} \
+             op_phase={:?} op_detail={:?} lease={:?}/{:?} last_error={:?}",
+            task.status,
+            task.status_detail,
+            op.phase,
+            op.phase_detail,
+            op.lease_owner,
+            op.lease_until_ms,
+            op.last_error
+        );
+    }
+    assert_eq!(
+        state
+            .operation_runtime
+            .find_by_kind_and_idempotency("terminal-worker", &h.task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        h.id
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_pipe_rechecks_checkout_before_preparing() {
+    let h = Harness::new("printf started >> ran").await;
+    let sibling = format!("{}:follower", h.task.track_id);
+    // A real current task row models a follower already admitted while A yielded.
+    h.db.db().writer().execute(sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,created_at_ms,updated_at_ms) \
+         VALUES (?1,?2,'follower','terminal','true','{}','running','read_write',1,1)",
+    )
+    .bind(&sibling).bind(&h.task.track_id)).await.unwrap();
+    let (_, payload) = crate::scheduler::build_worker_payload(&h.task).unwrap();
+    let key = || OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(h.task.id.clone()),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
+    };
+    let (_, blocked) = h
+        .runtime
+        .submit_task_bounded("terminal-worker", key(), payload.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        blocked,
+        crate::operation::OperationWait::Deferred { .. }
+    ));
+    assert_eq!(h.op().await.phase, Phase::Pending);
+    assert!(h.op().await.tx_output.is_none());
+    assert!(!h.root.path().join("ran").exists());
+    h.db.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE id=?1").bind(sibling))
+        .await
+        .unwrap();
+    let (id, resumed) = h
+        .runtime
+        .submit_task_bounded("terminal-worker", key(), payload)
+        .await
+        .unwrap();
+    assert_eq!(id, h.id);
+    assert!(matches!(
+        resumed,
+        crate::operation::OperationWait::OwnedParked(_)
+    ));
+    h.wait_done().await;
+    assert_eq!(
+        std::fs::read_to_string(h.root.path().join("ran")).unwrap(),
+        "started"
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_ordinary_drive_returns_while_launch_fence_is_held() {
+    let h = Harness::new("printf once >> ran").await;
+    let fence =
+        crate::per_card_lock::lock_key(h.runtime.track_locks_for_test(), &h.task.track_id).await;
+    tokio::time::timeout(Duration::from_secs(2), h.runtime.drive())
+        .await
+        .expect("ordinary drive must not repeatedly reclaim a deferred row")
+        .unwrap();
+    let deferred = h.op().await;
+    assert_eq!(deferred.phase, Phase::Pending);
+    assert!(deferred.tx_output.is_none());
+    assert!(deferred.lease_owner.is_none());
+    assert!(deferred.lease_until_ms.is_some());
+    assert!(!h.root.path().join("ran").exists());
+    drop(fence);
+    let (_, payload) = crate::scheduler::build_worker_payload(&h.task).unwrap();
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(h.task.id.clone()),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
+    };
+    let (id, result) = h
+        .runtime
+        .submit_task_bounded("terminal-worker", key, payload)
+        .await
+        .unwrap();
+    assert_eq!(id, h.id);
+    assert!(matches!(
+        result,
+        crate::operation::OperationWait::OwnedParked(_)
+    ));
+    h.wait_done().await;
+    assert_eq!(
+        std::fs::read_to_string(h.root.path().join("ran")).unwrap(),
+        "once"
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_pipe_held_checkout_conflict_preserves_execution() {
+    let h = Harness::new("printf once >> ran").await;
+    h.park().await;
+    let id = pipe::record(CONFIG, &h.op().await).unwrap().execution_id;
+    let sibling = format!("{}:follower", h.task.track_id);
+    h.db.db().writer().execute(sqlx::query(
+        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,created_at_ms,updated_at_ms) \
+         VALUES (?1,?2,'follower','terminal','true','{}','running','read_write',1,1)",
+    )
+    .bind(&sibling).bind(&h.task.track_id)).await.unwrap();
+    let op = h.ops.claim_parked(&h.id).await.unwrap().unwrap();
+    h.adapter.act_pipe(&op, &h.ctx).await.unwrap();
+    let held = pipe::record(CONFIG, &h.op().await).unwrap();
+    assert_eq!(held.execution_id, id);
+    assert_eq!(held.release, Release::Held);
+    assert_eq!(held.decision, Decision::Observing);
+    assert!(!h.root.path().join("ran").exists());
+    h.clear_claim().await;
+    h.db.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tasks SET status='done' WHERE id=?1").bind(sibling))
+        .await
+        .unwrap();
+    h.release().await;
+    h.settled().await;
+    h.complete().await;
+    assert_eq!(
+        pipe::record(CONFIG, &h.op().await).unwrap().execution_id,
+        id
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.root.path().join("ran")).unwrap(),
+        "once"
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_other_track_runs_while_first_track_is_blocked() {
+    let h = Harness::new("printf original >> ran").await;
+    let track = h.db.track_get(&h.task.track_id).await.unwrap().unwrap();
+    let other_root = h.root.path().join("other");
+    std::fs::create_dir(&other_root).unwrap();
+    let other =
+        h.db.track_create(crate::model::NewTrack {
+            template_input: None,
+            area_id: track.area_id,
+            title: "other".into(),
+            sort: None,
+            cwd: other_root.to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: crate::model::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let state = h.state().await;
+    let follower = crate::operation::launch_cleanup_test_support::claimed_task(
+        h.db.clone(), state.events.clone(), state.write().clone(),
+        other.id.as_str(),
+        json!({"key":"other","kind":"terminal","command":"printf other >> ran","ready":true,"declared_by":"user"}),
+    ).await;
+    let scheduler = state.scheduler_for_test();
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    let fence = crate::per_card_lock::lock_key(
+        state.operation_runtime.track_locks_for_test(),
+        &h.task.track_id,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            scheduler.sweep_all().await;
+            if h.db.task_get(&follower.id).await.unwrap().unwrap().status
+                == crate::model::TaskStatus::Done
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the second track completes while the first fence stays held");
+    assert_eq!(h.status().await, crate::model::TaskStatus::Dispatched);
+    assert!(!h.root.path().join("ran").exists());
+    assert_eq!(
+        std::fs::read_to_string(other_root.join("ran")).unwrap(),
+        "other"
+    );
+    drop(fence);
+}
+
+#[tokio::test]
+async fn reclaim_recovery_pipe_running_ack_does_not_authorize_after_close() {
+    let h = Harness::new("printf forbidden > ran").await;
+    h.park().await;
+    let held = pipe::record(CONFIG, &h.op().await).unwrap();
+    assert_eq!(held.release, Release::Held);
+    // Hold the observer claim while the real scheduler acknowledges the durable
+    // park. Running acknowledges ownership, not delivery of the go token.
+    let _claim = h.ops.claim_parked(&h.id).await.unwrap().unwrap();
+    let state = h.state().await;
+    let scheduler = state.scheduler_for_test();
+    scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
+    scheduler.sweep_all().await;
+    assert_eq!(h.status().await, crate::model::TaskStatus::Running);
+    assert_eq!(pipe::record(CONFIG, &h.op().await).unwrap(), held);
+    h.db.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(&h.task.track_id))
+        .await
+        .unwrap();
+    h.clear_claim().await;
+    h.release().await;
+    let refused = pipe::record(CONFIG, &h.op().await).unwrap();
+    assert_eq!(refused.execution_id, held.execution_id);
+    assert_eq!(refused.release, Release::Held);
+    assert!(matches!(refused.decision, Decision::Stopping { .. }));
+    h.settled().await;
+    h.boot().await;
+    h.wait_done().await;
+    assert!(!h.root.path().join("ran").exists());
+    assert_eq!(
+        pipe::record(CONFIG, &h.op().await).unwrap().release,
+        Release::Held
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_closed_track_refuses_late_blocked_launch() {
+    let h = Harness::new("printf forbidden > ran").await;
+    let fence =
+        crate::per_card_lock::lock_key(h.runtime.track_locks_for_test(), &h.task.track_id).await;
+    h.runtime.drive().await.unwrap();
+    h.db.db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(&h.task.track_id))
+        .await
+        .unwrap();
+    drop(fence);
+    let (_, payload) = crate::scheduler::build_worker_payload(&h.task).unwrap();
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(h.task.id.clone()),
+        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
+    };
+    let (id, result) = h
+        .runtime
+        .submit_task_bounded("terminal-worker", key, payload)
+        .await
+        .unwrap();
+    assert_eq!(id, h.id);
+    assert!(matches!(
+        result,
+        crate::operation::OperationWait::Settled(crate::operation::OperationResult {
+            outcome: crate::operation::OperationOutcome::Failed { .. },
+            ..
+        })
+    ));
+    assert!(!h.root.path().join("ran").exists());
 }
 
 #[tokio::test]

@@ -1,11 +1,13 @@
 //! Owned execution locations, including removals whose live runtime may have disappeared.
 use crate::error::{CalmError, Result};
 use std::path::PathBuf;
-use workspace::execution::ExecutionId;
+use workspace::execution::{ExecutionId, Settlement};
 
 pub struct OwnedWorkspaceLocation {
     pub track_id: String,
     pub path: PathBuf,
+    /// Exact reclaim reservation owner, absent for ordinary Track worktrees.
+    pub reclaim_operation_id: Option<String>,
     /// A track lock cannot stand in for durable settlement after a lost wait or restart.
     pub removing: bool,
     pub retired: bool,
@@ -39,6 +41,7 @@ async fn inventory(
         .map(|(track_id, path)| OwnedWorkspaceLocation {
             track_id,
             path,
+            reclaim_operation_id: None,
             removing: false,
             retired: false,
         })
@@ -51,6 +54,7 @@ async fn inventory(
                 .map(|(track_id, path)| OwnedWorkspaceLocation {
                     track_id,
                     path,
+                    reclaim_operation_id: None,
                     removing: false,
                     retired: true,
                 }),
@@ -59,6 +63,7 @@ async fn inventory(
             |(track_id, path)| OwnedWorkspaceLocation {
                 track_id,
                 path,
+                reclaim_operation_id: None,
                 removing: false,
                 retired: true,
             },
@@ -111,9 +116,10 @@ async fn inventory(
         tx_output_json: Option<String>,
         intent_json: Option<String>,
         settled_at_ms: Option<i64>,
+        settlement_json: Option<String>,
     }
     let rows: Vec<ReclaimRow> = sqlx::query_as(
-            "SELECT o.id,o.payload_json,o.tx_output_json,e.intent_json,e.settled_at_ms \
+            "SELECT o.id,o.payload_json,o.tx_output_json,e.intent_json,e.settled_at_ms,e.settlement_json \
              FROM operations o LEFT JOIN workspace_executions e \
                ON e.execution_id = json_extract(o.tx_output_json,'$.data.workspace_reclaim.execution_id') \
              WHERE o.kind = 'workspace-reclaim'",
@@ -126,44 +132,57 @@ async fn inventory(
         tx_output_json: output,
         intent_json: intent,
         settled_at_ms,
+        settlement_json,
     } in rows
     {
-        let location = (|| -> Result<_> {
-            let output: Output = serde_json::from_str(
-                output
-                    .as_deref()
-                    .ok_or_else(|| CalmError::Conflict("missing reclaim output"))?,
-            )?;
-            let Some(execution_id) = output.data.workspace_reclaim.execution_id else {
-                return Ok(None);
-            };
-            let intent = intent.ok_or_else(|| {
-                CalmError::Conflict(format!(
-                    "missing reclaim execution {}",
-                    execution_id.as_str()
-                ))
-            })?;
-            let intent: Intent = serde_json::from_str(&intent)?;
-            if intent.consumer != "workspace-reclaim" {
-                return Err(CalmError::Conflict("unexpected reclaim execution consumer"));
-            }
-            // Only an existing, typed link can establish durable settlement.
-            if settled_at_ms.is_some() {
-                return Ok(None);
-            }
-            let payload: Payload = serde_json::from_str(&payload)?;
-            Ok(Some(OwnedWorkspaceLocation {
-                track_id: payload.target.track_id,
-                path: payload.target.request.path,
-                removing: true,
-                retired: false,
-            }))
-        })()
-        .map_err(|error| {
+        // A valid typed link plus settlement is authoritative and must not be
+        // re-expanded by later parsing of historical payloads.
+        let decoded_output = output
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Output>(raw).ok());
+        // Explicit null proves no physical effect was admitted. Its owning
+        // receipt is reserved by deferred_reclaim_locations above; it must not
+        // become a global execution fence or authorize a new cleanup effect.
+        if decoded_output
+            .as_ref()
+            .is_some_and(|output| output.data.workspace_reclaim.execution_id.is_none())
+        {
+            continue;
+        }
+        let typed_link = decoded_output.and_then(|output| output.data.workspace_reclaim.execution_id);
+        let typed_consumer = intent
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Intent>(raw).ok())
+            .is_some_and(|intent| intent.consumer == "workspace-reclaim");
+        let quiescent = typed_link.as_ref().is_some_and(|id| {
+            settlement_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Settlement>(raw).ok())
+                .is_some_and(|settlement| settlement.permits_handoff(id))
+        });
+        if quiescent && typed_consumer && settled_at_ms.is_some() {
+            continue;
+        }
+        // The target is decoded independently from its execution link. Once its
+        // Track/path are known, corrupt output/link/consumer facts mean an
+        // indeterminate removal at this location, not a global unknown scope.
+        let payload: Payload = serde_json::from_str(&payload).map_err(|error| {
             CalmError::Conflict(format!(
                 "workspace reclaim {id} has an unreadable owned location: {error}"
             ))
         })?;
+        if payload.target.track_id.trim().is_empty() || !payload.target.request.path.is_absolute() {
+            return Err(CalmError::Conflict(format!(
+                "workspace reclaim {id} has no absolute owned location identity"
+            )));
+        }
+        let location = Some(OwnedWorkspaceLocation {
+            track_id: payload.target.track_id,
+            path: payload.target.request.path,
+            reclaim_operation_id: Some(id),
+            removing: true,
+            retired: false,
+        });
         locations.extend(location);
     }
     Ok(locations)
@@ -252,13 +271,30 @@ mod tests {
         settled: bool,
         execution_id: &str,
     ) -> Result<Vec<OwnedWorkspaceLocation>> {
+        inventory_with_settlement(
+            payload,
+            output,
+            intent,
+            settled.then(|| json!({"Journal":{"Drained":{"status":0}}})),
+            execution_id,
+        )
+        .await
+    }
+
+    async fn inventory_with_settlement(
+        payload: Value,
+        output: Option<Value>,
+        intent: Option<Value>,
+        settlement: Option<Value>,
+        execution_id: &str,
+    ) -> Result<Vec<OwnedWorkspaceLocation>> {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         if let Some(intent) = intent {
             (repo.db()).writer().execute(sqlx::query("INSERT INTO workspace_executions(execution_id,track_id,alias,intent_json,secrets_json,desired,settled_at_ms,settlement_json) VALUES (?,'track','reclaim',?,'{}','run',?,?)")
                 .bind(execution_id)
                 .bind(intent.to_string())
-                .bind(settled.then_some(1_i64))
-                .bind(settled.then_some("{}"))).await.unwrap();
+                .bind(settlement.as_ref().map(|_| 1_i64))
+                .bind(settlement.map(|value| value.to_string()))).await.unwrap();
         }
         (repo.db()).writer().execute(sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('op','op','workspace-reclaim','hash','track','{}',?,?,'pending',1,1)")
             .bind(payload.to_string()).bind(output.map(|value| value.to_string()))).await.unwrap();
@@ -273,29 +309,150 @@ mod tests {
     fn output() -> Value {
         json!({"data": {"workspace_reclaim": {"execution_id": EXECUTION_ID}}})
     }
+
+    #[tokio::test]
+    async fn reclaim_recovery_invalid_or_nonquiescent_settlement_stays_protected() {
+        for settlement in [
+            json!({}),
+            json!({"future-settlement":{}}),
+            json!({"Journal":{"Unknown":{"reason":"still unresolved"}}}),
+            json!({"Journal":"Spawned"}),
+        ] {
+            let locations = inventory_with_settlement(
+                payload(),
+                Some(output()),
+                Some(json!({"consumer":"workspace-reclaim"})),
+                Some(settlement.clone()),
+                EXECUTION_ID,
+            )
+            .await
+            .unwrap();
+            assert_eq!(locations.len(), 1, "settlement={settlement}");
+            assert_eq!(locations[0].path, PathBuf::from("/owned/root"));
+            assert!(locations[0].removing);
+        }
+    }
+
+    async fn raw_inventory(
+        payload: Value,
+        raw_output: &str,
+        phase: &str,
+        completed: bool,
+    ) -> Result<Vec<OwnedWorkspaceLocation>> {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        repo.db().writer().execute(sqlx::query(
+            "INSERT INTO operations \
+             (id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms,completed_at_ms,parked_at_ms,parked_deadline_ms) \
+             VALUES ('op','op','workspace-reclaim','hash','track','{}',?1,?2,?3,1,1,?4,?5,?6)",
+        )
+        .bind(payload.to_string())
+        .bind(raw_output)
+        .bind(phase)
+        .bind(completed.then_some(2_i64))
+        .bind((phase == "parked").then_some(1_i64))
+        .bind((phase == "parked").then_some(i64::MAX)))
+        .await
+        .unwrap();
+        owned_workspace_locations(&mut repo.pool().acquire().await.unwrap()).await
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_relative_or_empty_target_fails_closed() {
+        for path in ["relative/root", ""] {
+            let mut target = payload();
+            target["target"]["request"]["path"] = json!(path);
+            let result = raw_inventory(target, "{}", "parked", false).await;
+            assert!(matches!(
+                result,
+                Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_completed_no_effect_releases_reservation() {
+        let output = json!({
+            "result": {"removed": false},
+            "data": {"workspace_reclaim": {"execution_id": null}}
+        });
+        assert!(
+            raw_inventory(payload(), &output.to_string(), "succeeded", true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_null_link_never_creates_a_physical_removal() {
+        let output = json!({
+            "result": {"removed": false},
+            "data": {"workspace_reclaim": {"execution_id": null}}
+        });
+        for (phase, completed, result, removing) in [
+            ("parked", false, output.clone(), false),
+            ("failed", true, output.clone(), false),
+            ("stuck", true, output.clone(), false),
+            ("succeeded", false, output.clone(), false),
+            (
+                "succeeded",
+                true,
+                json!({"result":{"removed":true},"data":{"workspace_reclaim":{"execution_id":null}}}),
+                false,
+            ),
+            (
+                "succeeded",
+                true,
+                json!({"result":{},"data":{"workspace_reclaim":{"execution_id":null}}}),
+                false,
+            ),
+            (
+                "succeeded",
+                true,
+                json!({"result":{"removed":false},"data":{"workspace_reclaim":{}}}),
+                true,
+            ),
+        ] {
+            let locations = raw_inventory(payload(), &result.to_string(), phase, completed)
+                .await
+                .unwrap();
+            assert_eq!(locations.iter().any(|location| location.removing), removing);
+        }
+    }
+
     async fn rejects(payload: Value, output: Option<Value>, consumer: Option<Value>) {
         assert!(matches!(
             inventory(payload, output, consumer, false).await,
             Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
         ));
     }
+    async fn protects(
+        payload: Value,
+        output: Option<Value>,
+        consumer: Option<Value>,
+        settled: bool,
+    ) {
+        let locations = inventory(payload, output, consumer, settled).await.unwrap();
+        assert_eq!(locations.len(), 1);
+        assert!(locations[0].removing);
+    }
 
     #[tokio::test]
-    async fn owned_workspace_locations_object_path_conflicts() {
+    async fn reclaim_recovery_unknown_object_path_fails_closed() {
         let mut payload = payload();
         payload["target"]["request"]["path"] = json!({"path": "/owned/root"});
         rejects(payload, Some(output()), Some(json!("workspace-reclaim"))).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_array_path_conflicts() {
+    async fn reclaim_recovery_unknown_array_path_fails_closed() {
         let mut payload = payload();
         payload["target"]["request"]["path"] = json!(["/owned/root"]);
         rejects(payload, Some(output()), Some(json!("workspace-reclaim"))).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_missing_track_conflicts() {
+    async fn reclaim_recovery_unknown_missing_track_fails_closed() {
         let mut payload = payload();
         payload["target"]
             .as_object_mut()
@@ -305,44 +462,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_missing_execution_link_conflicts() {
-        rejects(
+    async fn reclaim_recovery_known_target_missing_execution_link_is_localized() {
+        protects(
             payload(),
             Some(json!({"data": {"workspace_reclaim": {}}})),
             Some(json!("workspace-reclaim")),
+            false,
         )
         .await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_null_execution_link_is_excluded() {
-        assert!(
-            inventory(
-                payload(),
-                Some(json!({"data": {"workspace_reclaim": {"execution_id": null}}})),
-                None,
-                false,
-            )
-            .await
-            .unwrap()
-            .is_empty()
-        );
+    async fn reclaim_recovery_registered_null_execution_link_is_not_removing() {
+        let locations = inventory(
+            payload(),
+            Some(json!({"data": {"workspace_reclaim": {"execution_id": null}}})),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(locations.is_empty());
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_invalid_execution_link_conflicts() {
+    async fn reclaim_recovery_known_target_invalid_execution_link_is_localized() {
         for value in [json!(1), json!(true), json!({}), json!([])] {
-            rejects(
+            protects(
                 payload(),
                 Some(json!({"data": {"workspace_reclaim": {"execution_id": value}}})),
                 None,
+                false,
             )
             .await;
         }
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_malformed_target_conflicts() {
+    async fn reclaim_recovery_unknown_malformed_target_fails_closed() {
         for value in [json!({}), json!([])] {
             let mut malformed = payload();
             malformed["target"]["track_id"] = value;
@@ -357,71 +514,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_missing_output_conflicts() {
-        rejects(payload(), None, Some(json!("workspace-reclaim"))).await;
+    async fn reclaim_recovery_known_target_missing_output_is_localized() {
+        protects(payload(), None, Some(json!("workspace-reclaim")), false).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_nonexistent_execution_conflicts() {
-        rejects(payload(), Some(output()), None).await;
+    async fn reclaim_recovery_known_target_nonexistent_execution_is_localized() {
+        protects(payload(), Some(output()), None, false).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_wrong_consumer_conflicts() {
-        rejects(payload(), Some(output()), Some(json!("terminal"))).await;
+    async fn reclaim_recovery_known_target_wrong_consumer_is_localized() {
+        protects(payload(), Some(output()), Some(json!("terminal")), false).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_unreadable_consumer_conflicts() {
-        rejects(payload(), Some(output()), Some(json!({}))).await;
+    async fn reclaim_recovery_known_target_unreadable_consumer_is_localized() {
+        protects(payload(), Some(output()), Some(json!({})), false).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_settled_wrong_consumer_conflicts() {
-        assert!(matches!(
-            inventory(payload(), Some(output()), Some(json!("terminal")), true).await,
-            Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
-        ));
+    async fn reclaim_recovery_settled_wrong_consumer_stays_protected() {
+        protects(payload(), Some(output()), Some(json!("terminal")), true).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_settled_missing_consumer_conflicts() {
-        assert!(matches!(
-            inventory_with_intent(
-                payload(),
-                Some(output()),
-                Some(json!({})),
-                true,
-                EXECUTION_ID
-            )
-            .await,
-            Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
-        ));
+    async fn reclaim_recovery_settled_missing_consumer_stays_protected() {
+        let locations = inventory_with_intent(
+            payload(),
+            Some(output()),
+            Some(json!({})),
+            true,
+            EXECUTION_ID,
+        )
+        .await
+        .unwrap();
+        assert_eq!(locations.len(), 1);
+        assert!(locations[0].removing);
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_settled_unreadable_consumer_conflicts() {
-        assert!(matches!(
-            inventory(payload(), Some(output()), Some(json!({})), true).await,
-            Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
-        ));
+    async fn reclaim_recovery_settled_unreadable_consumer_stays_protected() {
+        protects(payload(), Some(output()), Some(json!({})), true).await;
     }
 
     #[tokio::test]
-    async fn owned_workspace_locations_invalid_execution_id_string_conflicts() {
+    async fn reclaim_recovery_invalid_execution_id_stays_localized() {
         let mut output = output();
         output["data"]["workspace_reclaim"]["execution_id"] = json!("execution");
-        assert!(matches!(
-            inventory_with_intent(
-                payload(),
-                Some(output),
-                Some(json!({"consumer": "workspace-reclaim"})),
-                false,
-                "execution",
-            )
-            .await,
-            Err(CalmError::Core(calm_types::error::CoreError::Conflict(_)))
-        ));
+        let locations = inventory_with_intent(
+            payload(),
+            Some(output),
+            Some(json!({"consumer": "workspace-reclaim"})),
+            false,
+            "execution",
+        )
+        .await
+        .unwrap();
+        assert_eq!(locations.len(), 1);
+        assert!(locations[0].removing);
     }
 
     #[tokio::test]
@@ -445,6 +596,23 @@ mod tests {
         assert!(
             inventory(
                 payload(),
+                Some(output()),
+                Some(json!("workspace-reclaim")),
+                true
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_settled_typed_link_does_not_reparse_historical_target() {
+        let mut historical = payload();
+        historical["target"]["request"]["path"] = json!({"released": true});
+        assert!(
+            inventory(
+                historical,
                 Some(output()),
                 Some(json!("workspace-reclaim")),
                 true

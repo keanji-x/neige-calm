@@ -20,8 +20,9 @@ use super::workspace_lease::reclaim_dead_workspace_leases_on_boot;
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationId, OperationKey,
     OperationRepo, OperationResult, OperationWait, ParkedClaimMode, ParkedCompletion,
-    ParkedOutcome, ParkedRecovery, Phase, PhaseTag, ProviderAdapter, RecoveryItem, RecoveryMode,
-    RecoveryPlan, SpawnArtifacts, SpawnCtx, SpawnOutcome, TxOutput, complete_parked_tx,
+    ParkedOutcome, ParkedRecovery, PendingBlocker, PendingBlockerClass, Phase, PhaseTag,
+    ProviderAdapter, RecoveryItem, RecoveryMode, RecoveryPlan, SpawnArtifacts, SpawnCtx,
+    SpawnOutcome, TASK_BOUND_ADAPTER_KINDS, TxOutput, complete_parked_tx,
     idempotency_payload_conflict, operation_result_from, parked_artifacts_alive, required_output,
 };
 
@@ -264,6 +265,131 @@ impl OperationRuntime {
         let op_id = self.repo.insert_operation(kind, key, payload).await?;
         self.drive().await?;
         Ok(op_id)
+    }
+
+    /// Task-bound startup gets one finite exact-operation drive attempt. It never
+    /// queues behind the global driver and never waits for a recoverable Pending
+    /// preparation; the scheduler will reacquire its normal permit on a later sweep.
+    pub async fn submit_task_bounded(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+    ) -> Result<(OperationId, OperationWait)> {
+        if !TASK_BOUND_ADAPTER_KINDS.contains(&kind) {
+            return Err(CalmError::Internal(format!(
+                "bounded submission is restricted to task-bound adapters, got {kind}"
+            )));
+        }
+        let adapter = self.adapter(kind)?;
+        Self::require_submission_key(adapter.as_ref(), &key)?;
+        let op_id = match self.keyed_replay(kind, &key).await? {
+            Some(op_id) => op_id,
+            None => {
+                adapter.validate(&payload).await?;
+                self.repo.insert_operation(kind, key, payload).await?
+            }
+        };
+        if let Some(result) = self.repo.operation_result(&op_id).await? {
+            return Ok((op_id, OperationWait::Settled(result)));
+        }
+        let Ok(_drive) = self.drive_mutex.try_lock() else {
+            let blocker = PendingBlocker::new(
+                PendingBlockerClass::DriverBusy,
+                "operation-driver",
+                "global-drive",
+                "the current finite drive turn completes",
+            );
+            self.repo.defer_unclaimed_pending(&op_id, &blocker).await?;
+            let op = self
+                .repo
+                .get_operation(&op_id)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("operation {op_id}")))?;
+            return Ok((
+                op_id,
+                OperationWait::Deferred {
+                    op: Box::new(op),
+                    blocker,
+                },
+            ));
+        };
+
+        // A retry claims this exact row while retaining its blocker. Preparation
+        // rechecks checkout admission and clears the blocker with its output commit.
+        let mut retry = if let Some(op) = self.repo.get_operation(&op_id).await?
+            && super::pending_blocker(&op)?.is_some()
+        {
+            self.repo.claim_pending_retry(&op).await?
+        } else {
+            None
+        };
+
+        // Each successful phase transition releases its SQL claim. Continue only
+        // this operation; never consume unrelated rows while holding a scheduler permit.
+        let mut visited = Vec::new();
+        loop {
+            let claimed = match retry.take() {
+                Some(op) => Some(op),
+                None => self.repo.claim_drive_operation(&op_id).await?,
+            };
+            let Some(op) = claimed else {
+                if let Some(wait) = self.observe_task_bounded(&op_id).await? {
+                    return Ok((op_id, wait));
+                }
+                let blocker = PendingBlocker::new(
+                    PendingBlockerClass::DriverBusy,
+                    "operation-claim",
+                    op_id.clone(),
+                    "the current operation claim expires or completes",
+                );
+                self.repo.defer_unclaimed_pending(&op_id, &blocker).await?;
+                let op = self
+                    .repo
+                    .get_operation(&op_id)
+                    .await?
+                    .ok_or_else(|| CalmError::NotFound(format!("operation {op_id}")))?;
+                return Ok((
+                    op_id,
+                    OperationWait::Deferred {
+                        op: Box::new(op),
+                        blocker,
+                    },
+                ));
+            };
+            let phase = op.phase.tag();
+            if visited.contains(&phase) {
+                return Err(CalmError::Internal(format!(
+                    "operation {op_id} repeated {phase:?} without a task handoff"
+                )));
+            }
+            visited.push(phase);
+            self.drive_claimed(adapter.clone(), op).await?;
+            if let Some(wait) = self.observe_task_bounded(&op_id).await? {
+                return Ok((op_id, wait));
+            }
+        }
+    }
+
+    async fn observe_task_bounded(&self, op_id: &str) -> Result<Option<OperationWait>> {
+        if let Some(result) = self.repo.operation_result(op_id).await? {
+            return Ok(Some(OperationWait::Settled(result)));
+        }
+        let Some(op) = self.repo.get_operation(op_id).await? else {
+            return Err(CalmError::NotFound(format!("operation {op_id}")));
+        };
+        if matches!(op.phase, Phase::Parked)
+            && self.adapter(&op.kind)?.owns_parked_resource().is_some()
+        {
+            return Ok(Some(OperationWait::OwnedParked(Box::new(op))));
+        }
+        if let Some(blocker) = super::pending_blocker(&op)? {
+            return Ok(Some(OperationWait::Deferred {
+                op: Box::new(op),
+                blocker,
+            }));
+        }
+        Ok(None)
     }
 
     fn require_submission_key(adapter: &dyn ProviderAdapter, key: &OperationKey) -> Result<()> {
@@ -515,6 +641,9 @@ impl OperationRuntime {
             OperationWait::Settled(result) => Ok(result),
             OperationWait::OwnedParked(_) => {
                 unreachable!("wait returns an owned park only when the caller accepts one")
+            }
+            OperationWait::Deferred { .. } => {
+                unreachable!("ordinary wait does not accept deferred task startup")
             }
         }
     }
@@ -853,7 +982,16 @@ impl OperationRuntime {
                         Some(track) => match self.try_launch_fence(&track) {
                             Ok(guard) => Some(guard),
                             Err(CalmError::WorkspaceBusy(_)) => {
-                                self.retry_after_track(&op.id, track);
+                                let blocker = PendingBlocker::new(
+                                    PendingBlockerClass::LaunchFence,
+                                    "track",
+                                    track.clone(),
+                                    "the reclaim or competing launch releases its Track fence",
+                                );
+                                self.repo.defer_pending_claim(&op, &blocker).await?;
+                                if !TASK_BOUND_ADAPTER_KINDS.contains(&op.kind.as_str()) {
+                                    self.retry_after_track(&op.id, track);
+                                }
                                 return Ok(());
                             }
                             Err(error) => return Err(error),
@@ -901,10 +1039,21 @@ impl OperationRuntime {
                             log_lost_lease(&op, PhaseTag::TxCommitted);
                             return Ok(());
                         }
-                        Err(CalmError::WorkspaceBusy(_)) => {
+                        Err(CalmError::OperationBlocked(blocker)) => {
+                            self.repo.defer_pending_claim(&op, &blocker).await?;
+                            return Ok(());
+                        }
+                        Err(CalmError::WorkspaceBusy(resource)) => {
                             // Durable owner reservations can outlive this process's locks. Keep
                             // Pending leased for the existing expiry retry, without binding a
                             // temporary refusal as a permanent keyed failure or spinning a waker.
+                            let blocker = PendingBlocker::new(
+                                PendingBlockerClass::LocationOwner,
+                                "workspace-location",
+                                resource,
+                                "the competing location owner releases its fence",
+                            );
+                            self.repo.defer_pending_claim(&op, &blocker).await?;
                             return Ok(());
                         }
                         Err(e) => {

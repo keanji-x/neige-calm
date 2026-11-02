@@ -318,6 +318,7 @@ impl OperationRepo for SqlxOperationRepo {
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::PrepareAdvance::ClaimLost);
                     }
+                    crate::task_recovery::require_operation_checkout_tx(&mut tx, op).await?;
                     let applied = match prepared {
                         Some(prepared) => prepared.apply(&mut tx, op).await,
                         None => adapter

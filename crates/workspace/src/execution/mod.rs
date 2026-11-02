@@ -2,7 +2,9 @@
 
 mod native;
 pub mod objects;
+mod settlement;
 pub use native::*;
+pub use settlement::*;
 
 use std::{fmt, io::Read};
 
