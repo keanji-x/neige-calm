@@ -412,12 +412,14 @@ async fn workspace_resource_migration_fills_gap_after_released_area_ownership() 
         7,
     )
     .await;
-    // This is the released main history: 0167 exists, while this branch's 0166 does not.
+    // Freeze the released area-ownership prefix: 0167 exists without 0166.
+    // Later migrations may depend on the workspace tables and are not part of
+    // this historical database; production boot applies them after filling the gap.
     let released = sqlx::migrate::Migrator {
         migrations: Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|migration| migration.version != 166)
+                .filter(|migration| migration.version <= 167 && migration.version != 166)
                 .cloned()
                 .collect(),
         ),
