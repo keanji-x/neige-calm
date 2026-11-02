@@ -64,13 +64,13 @@ async fn session_failure_epoch_upgrade_insert_transition_and_rollback() {
             Box::pin(async move {
                 let mut tx = write.begin_immediate().await.unwrap();
                 sqlx::query("UPDATE worker_sessions SET state='failed' WHERE id='failed'")
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await
                     .unwrap();
                 let epoch: i64 = sqlx::query_scalar(
                     "SELECT failure_epoch FROM worker_sessions WHERE id='failed'",
                 )
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .unwrap();
                 assert_eq!(epoch, 2);
