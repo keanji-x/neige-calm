@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 #[path = "cases/c4_lost_completion.rs"]
 mod c4_lost_completion;
 #[path = "cases/c4_native_completion.rs"]

@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 // Preserve each former target's helper-local test identities in the inventory.
 #![allow(clippy::duplicate_mod)]
 
