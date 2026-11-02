@@ -462,3 +462,51 @@ pub(super) async fn predeadline_without_verdict() {
         .await
         .expect("independent write operation")
 }
+
+/// Stable external work must not repeatedly acquire database write ownership.
+#[tokio::test]
+async fn c2b_verify_waits_without_idle_claim_writes() {
+    let v = held(
+        "quiet-observer",
+        "touch started; until [ -e finish ]; do sleep 0.05; done",
+        60,
+    )
+    .await;
+    park(&v).await;
+    let observer = tokio::spawn(v.observer);
+    wait_op(&v.ctx, &v.op.id, |o| {
+        record(o)["release"].get("Released").is_some() && o.lease_owner.is_none()
+    })
+    .await;
+    let db = v.ctx.operation_repo.sqlite_db();
+    db.writer()
+        .execute(sqlx::query("CREATE TABLE idle_claims (op_id TEXT)"))
+        .await
+        .unwrap();
+    db.writer().execute(sqlx::query("CREATE TRIGGER observe_idle_claims AFTER UPDATE OF lease_owner ON operations WHEN NEW.lease_owner IS NOT NULL BEGIN INSERT INTO idle_claims VALUES (NEW.id); END")).await.unwrap();
+    let runtime = OperationRuntime::new_unchecked(
+        v.ctx.operation_repo.clone(),
+        vec![Arc::new(v.adapter.clone())],
+        v.ctx.events.clone(),
+        v.ctx.completion.clone(),
+        v.ctx.clone(),
+    );
+    for _ in 0..3 {
+        v.ctx.execution.drive([id(&v.op)]);
+        runtime.sweep_parked().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM idle_claims WHERE op_id=?")
+        .bind(&v.op.id)
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    std::fs::write(v.dir.path().join("finish"), "").unwrap();
+    let op = wait_op(&v.ctx, &v.op.id, |o| o.phase.tag() == PhaseTag::Succeeded).await;
+    observer.await.unwrap();
+    assert!(op.tx_output.unwrap().result["passed"].as_bool().unwrap());
+    assert_eq!(
+        writes, 0,
+        "stable execution and recovery sweeps must not churn claims"
+    );
+}

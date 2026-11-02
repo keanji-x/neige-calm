@@ -947,7 +947,7 @@ pub trait ProviderAdapter: Send + Sync {
     /// False defers this sweep only; true never authorizes recovery or settlement.
     /// Decisions may race exit/reaping or row changes: all claimed checks still apply.
     /// Boot, explicit cancellation, and compensation do not consult this hint.
-    async fn owned_parked_recovery_eligible(&self, _op: &Operation) -> bool {
+    async fn owned_parked_recovery_eligible(&self, _op: &Operation, _ctx: &SpawnCtx) -> bool {
         true
     }
 

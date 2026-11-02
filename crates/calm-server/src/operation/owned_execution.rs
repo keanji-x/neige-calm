@@ -2,7 +2,6 @@
 pub(crate) mod pipe;
 use super::{Operation, SpawnCtx};
 use crate::error::{CalmError, Result};
-use calm_truth::db::sqlite::gate_execution as sql;
 use serde::{Deserialize, Serialize};
 use workspace_runtime::execution::*;
 
@@ -43,6 +42,7 @@ pub(crate) async fn send_release(
     let engine = engine(ctx)?;
     let send = async {
         loop {
+            let changes = engine.output_generation().await.map_err(conflict)?;
             if let Ok(ExecutionReply::Observation {
                 receipt: Some(_),
                 state: ExecutionState::Spawned,
@@ -51,7 +51,7 @@ pub(crate) async fn send_release(
             {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            changes.changed().await.map_err(conflict)?;
         }
         let mut offset = 0;
         while offset < token.len() {
@@ -99,22 +99,16 @@ pub(crate) async fn settlement(
     ctx: &SpawnCtx,
     execution_id: &ExecutionId,
 ) -> Result<Option<Settlement>> {
-    let pool = ctx.operation_repo.sqlite_db();
-    let write_db = (pool).clone();
-    write_db
-        .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                let mut tx = write_session.begin_immediate().await?;
-                let value = sql::settlement(&mut tx, execution_id.as_str()).await?;
-                tx.commit().await?;
-                value
-                    .map(|s| serde_json::from_str(&s).map_err(Into::into))
-                    .transpose()
-            })
-        })
-        .await
-        .map_err(calm_truth::TruthError::from)?
+    // Settlement is monotonic durable evidence; sampling it needs no writer
+    // reservation. Completion still holds its original claim and record fences.
+    let db = ctx.operation_repo.sqlite_db();
+    let row =
+        calm_truth::db::sqlite::workspace_execution::load(db.read_pool(), execution_id.as_str())
+            .await?
+            .ok_or_else(|| conflict("owned execution disappeared"))?;
+    row.settlement_json
+        .map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
 }
 
 /// Leader exit is not settlement: ask the executor to drain descendants before sampling.

@@ -184,6 +184,14 @@ impl ProviderAdapter for ObjectiveCheckRunAdapter {
     fn owns_parked_resource(&self) -> Option<&'static str> {
         Some(execution::KEY)
     }
+    async fn owned_parked_recovery_eligible(&self, op: &Operation, ctx: &SpawnCtx) -> bool {
+        let ready = async {
+            let frozen = Frozen::from_output(required_output(op)?)?;
+            execution::recovery_ready(ctx, op, frozen.timeout_secs).await
+        }
+        .await;
+        ready.unwrap_or(true)
+    }
     async fn spawn_side_effect(
         &self,
         output: &TxOutput,
@@ -361,11 +369,41 @@ impl ObjectiveCheckRunAdapter {
             hook().await;
         }
         loop {
-            let Ok(Some(current)) = ctx.operation_repo.get_operation(&id).await else {
-                return;
+            let watch = match execution::GateWatch::subscribe(&ctx).await {
+                Ok(watch) => watch,
+                Err(error) => {
+                    tracing::warn!(%id,%error,"objective change subscription failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
+                }
+            };
+            let current = match ctx.operation_repo.get_operation(&id).await {
+                Ok(Some(current)) => current,
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(%id,%error,"objective observer read failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
+                }
             };
             if current.phase != Phase::Parked {
                 return;
+            }
+            let ready = async {
+                let frozen = Frozen::from_output(required_output(&current)?)?;
+                watch
+                    .ready_or_wait(&ctx, &current, frozen.timeout_secs, restart)
+                    .await
+            }
+            .await;
+            match ready {
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::warn!(%id,%error,"objective observation failed; retrying");
+                    execution::GateWatch::retry().await;
+                    continue;
+                }
+                Ok(true) => {}
             }
             if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await {
                 let result: Result<()> = async {
@@ -400,9 +438,11 @@ impl ObjectiveCheckRunAdapter {
                 .await;
                 if let Err(error) = result {
                     tracing::warn!(%id, %error, "objective execution retained");
+                    execution::GateWatch::retry().await;
                 }
+                continue;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            execution::GateWatch::retry().await;
         }
     }
 }

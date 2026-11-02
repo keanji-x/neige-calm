@@ -1386,7 +1386,9 @@ impl OperationRuntime {
         if matches!(claim_mode, ParkedClaimMode::SteadyState) {
             let adapter = self.adapter(&op.kind)?;
             if adapter.owns_parked_resource().is_some() {
-                let eligible = adapter.owned_parked_recovery_eligible(&op).await;
+                let eligible = adapter
+                    .owned_parked_recovery_eligible(&op, &self.spawn_ctx)
+                    .await;
                 if !eligible {
                     return Ok(());
                 }

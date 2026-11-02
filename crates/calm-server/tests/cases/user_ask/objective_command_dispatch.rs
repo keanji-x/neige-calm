@@ -146,3 +146,39 @@ async fn objective_command_one_active_operation_per_track() {
     assert_eq!(statuses(&w).await, ["reported", "reported"]);
     assert_eq!(count(&w, "check_finished").await, 2);
 }
+
+#[tokio::test]
+async fn objective_command_waits_without_idle_claim_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let finish = dir.path().join("finish");
+    let command = format!("until [ -e '{}' ]; do sleep 0.05; done", finish.display());
+    let w = world(&command, |a| a).await;
+    approve(&w).await;
+    evaluate(&w, &w.revision).await.unwrap();
+    project(&w).await;
+    let db = w.boot.repo.sqlite_db().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let released: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE kind='objective-check-run' AND lease_owner IS NULL AND json_type(tx_output_json,'$.data.gate_execution.release.Released')='object')").fetch_one(db.read_pool()).await.unwrap();
+            if released { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    db.writer()
+        .execute(sqlx::query("CREATE TABLE idle_claims (op_id TEXT)"))
+        .await
+        .unwrap();
+    db.writer().execute(sqlx::query("CREATE TRIGGER observe_idle_claims AFTER UPDATE OF lease_owner ON operations WHEN NEW.kind='objective-check-run' AND NEW.lease_owner IS NOT NULL BEGIN INSERT INTO idle_claims VALUES (NEW.id); END")).await.unwrap();
+    for _ in 0..3 {
+        w.runtime.sweep_parked().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let writes: i64 = sqlx::query_scalar("SELECT count(*) FROM idle_claims")
+        .fetch_one(db.read_pool())
+        .await
+        .unwrap();
+    std::fs::write(&finish, "").unwrap();
+    ready(&w).await;
+    settled(&w).await;
+    assert_eq!(writes, 0, "stable objective Gate must not churn claims");
+}

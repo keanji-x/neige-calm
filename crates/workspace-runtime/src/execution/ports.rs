@@ -57,6 +57,21 @@ impl Generation {
     }
 }
 
+/// Executor facts and committed driver state can change independently. Subscribe
+/// before reading either; a change is a hint to reload, never settlement proof.
+pub struct ExecutionChanges {
+    pub(super) executor: Generation,
+    pub(super) durable: Generation,
+}
+impl ExecutionChanges {
+    pub async fn changed(self) -> Result<(), ExecError> {
+        tokio::select! {
+            result = self.executor.changed() => result,
+            result = self.durable.changed() => result,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     type Tx<'t>: Send;

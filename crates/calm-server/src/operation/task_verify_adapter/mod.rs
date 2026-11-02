@@ -333,6 +333,17 @@ impl ProviderAdapter for TaskVerifyAdapter {
         self.spawn_execution(output, op, ctx).await
     }
 
+    async fn owned_parked_recovery_eligible(&self, op: &Operation, ctx: &SpawnCtx) -> bool {
+        let ready = async {
+            let frozen = FrozenVerify::from_output(super::required_output(op)?)?;
+            super::gate_execution::recovery_ready(ctx, op, frozen.gate.timeout_secs_clamped()).await
+        }
+        .await;
+        // Broken records and unavailable executors must remain discoverable by
+        // authoritative recovery, which records the error with lease backoff.
+        ready.unwrap_or(true)
+    }
+
     async fn recover_owned_parked(
         &self,
         op: &Operation,

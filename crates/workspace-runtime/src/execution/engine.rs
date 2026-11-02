@@ -72,6 +72,8 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         Ok(PendingDriveTicket(id.clone()))
     }
     pub fn drive(&self, ticket: DriveTicket) {
+        // A committed desire can change without an executor output event.
+        self.changed();
         let id = ticket.0;
         let mut slots = self.0.slots.lock().unwrap();
         if let Some(slot) = slots.get_mut(&id) {
@@ -266,6 +268,12 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
         tokio::time::timeout(QUIESCE_DEADLINE, wait)
             .await
             .map_err(|_| DriveError::Timeout)?
+    }
+    /// Subscribe before loading durable state or inspecting executor output.
+    pub async fn changes(&self) -> Result<ExecutionChanges, DriveError> {
+        let durable = Generation::snapshot(self.0.changed.subscribe());
+        let executor = self.0.executor.generation().await?;
+        Ok(ExecutionChanges { executor, durable })
     }
     /// Subscribe before reading output, so concurrent appends cannot be missed.
     pub async fn output_generation(&self) -> Result<Generation, DriveError> {

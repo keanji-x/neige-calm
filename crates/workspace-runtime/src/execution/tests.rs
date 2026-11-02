@@ -591,3 +591,47 @@ async fn wait_settled_cancel_keeps_driver() {
 }
 
 mod recovery_3192;
+
+#[tokio::test]
+async fn execution_changes_remembers_output_before_wait() {
+    let (_, _, executor, engine) = setup(Desired::Run, vec![]);
+    let changes = engine.changes().await.unwrap();
+    executor.changed();
+    // The notification precedes polling the wait future.
+    bounded(changes.changed()).await.unwrap();
+}
+
+#[tokio::test]
+async fn execution_changes_wakes_on_durable_settlement_without_output_event() {
+    let (intent, store, _, engine) = setup(Desired::Run, vec![Ok(drained())]);
+    let pause = Arc::new(Pause::default());
+    *store.settle_pause.lock().unwrap() = Some(pause.clone());
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    bounded(pause.entered.notified()).await;
+    // Subscribe after drive's request wake; only the durable settlement/driver
+    // notification can now wake this receiver (Inspect emitted no output event).
+    let changes = engine.changes().await.unwrap();
+    pause.resume.notify_one();
+    bounded(changes.changed()).await.unwrap();
+    assert!(
+        store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
+    idle(&engine, &intent.metadata.id).await;
+}
+
+#[tokio::test]
+async fn execution_changes_remembers_output_during_subscription() {
+    let (_, _, executor, engine) = setup(Desired::Run, vec![]);
+    let pause = Arc::new(Pause::default());
+    *executor.generation_pause.lock().unwrap() = Some(pause.clone());
+    let subscribe = tokio::spawn(async move { engine.changes().await.unwrap() });
+    bounded(pause.entered.notified()).await;
+    executor.changed();
+    pause.resume.notify_one();
+    bounded(subscribe.await.unwrap().changed()).await.unwrap();
+}
