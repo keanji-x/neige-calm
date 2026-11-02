@@ -128,10 +128,17 @@
 # this existing baseline; ordinary test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# #3484 historical-upgrade fixtures add four long SQL literals (197 -> 201):
+# historical_fixtures.rs fixes the pre-0210 Track, resource, binding and Card
+# INSERT contracts. Migration tests cannot use the current retirement writer on
+# an old schema. These are SQL fixtures, not agent-facing prose. Only changes to
+# those fixture contracts edit that helper and regenerate this existing baseline;
+# ordinary new tests need no inventory. The once-per-lint scan and its existing
+# selftest are unchanged; no rule, exclusion or additional invocation is added.
 # #3484 bounded SQL exception: long_literal/crates/**/*.rs 196 -> 197.
 # Six new matches are SQL: one retirement UPDATE, one guarded receipt SELECT,
 # two legacy-operation fixtures in gitforge_reclaim_admission.rs, and two parked
-# fixtures in workspace_retirement_tests.rs. Removing the old reclaim owner and
+# fixtures in workspace_resource_tests/retirement_tests.rs. Removing the old reclaim owner and
 # receipt triggers removes five matches (two owner queries and three triggers).
 # This net one match adds no agent instructions, scan or exclusion. Ordinary
 # query/fixture changes edit their owning source and this existing baseline;
