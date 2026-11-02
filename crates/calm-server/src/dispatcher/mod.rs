@@ -1091,32 +1091,16 @@ impl Inner {
 
     async fn handle_envelope(self: Arc<Self>, envelope: BroadcastEnvelope) {
         // Failure observation must not wait for the dispatch whose failure it reports.
-        // Durable facts qualify the notice; the broadcast is only a scan accelerator.
-        if matches!(
-            &envelope.event,
-            Event::WorkerSessionStatusChanged { .. } | Event::HarnessPhaseChanged { .. }
-        ) {
-            if matches!(
-                &envelope.event,
-                Event::WorkerSessionStatusChanged {
-                    new_status: calm_types::worker::WorkerSessionState::Failed,
-                    ..
-                } | Event::HarnessPhaseChanged {
-                    new_phase: calm_types::harness::HarnessPhaseTag::Wedged,
-                    ..
+        // The main match owns every subscribed event; these observations need no start permit.
+        let _permit = match &envelope.event {
+            Event::WorkerSessionStatusChanged { .. } | Event::HarnessPhaseChanged { .. } => None,
+            _ => match Arc::clone(&self.semaphore).acquire_owned().await {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    tracing::warn!("dispatcher semaphore closed; aborting spawn");
+                    return;
                 }
-            ) && let Err(error) = self.progress_watchdog_once().await
-            {
-                tracing::warn!(%error, "child failure observation remains discoverable by the watchdog");
-            }
-            return;
-        }
-        let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::warn!("dispatcher semaphore closed; aborting spawn");
-                return;
-            }
+            },
         };
 
         #[cfg(any(test, feature = "fixtures"))]
@@ -1139,6 +1123,22 @@ impl Inner {
         // Push branch. Planner/Kernel-authored report edits are the planner writing its own
         // report; pushing them back would loop.
         match &envelope.event {
+            Event::WorkerSessionStatusChanged { .. } | Event::HarnessPhaseChanged { .. } => {
+                // Durable facts qualify the notice; a broadcast only accelerates the scan.
+                if matches!(
+                    &envelope.event,
+                    Event::WorkerSessionStatusChanged {
+                        new_status: calm_types::worker::WorkerSessionState::Failed,
+                        ..
+                    } | Event::HarnessPhaseChanged {
+                        new_phase: calm_types::harness::HarnessPhaseTag::Wedged,
+                        ..
+                    }
+                ) && let Err(error) = self.progress_watchdog_once().await
+                {
+                    tracing::warn!(%error, "child failure observation remains discoverable by the watchdog");
+                }
+            }
             Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. }
@@ -1273,11 +1273,9 @@ impl Inner {
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }
             | Event::WorkerSessionStarted { .. }
-            | Event::WorkerSessionStatusChanged { .. }
             | Event::WorkerSessionSuperseded { .. }
             | Event::HarnessPresentationChanged { .. }
         | Event::HarnessItemAdded { .. }
-            | Event::HarnessPhaseChanged { .. }
             | Event::HarnessTranscriptCleared { .. }
             | Event::HarnessTranscriptRewound { .. }
             | Event::HarnessUserMessageEnqueued { .. }

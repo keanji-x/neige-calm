@@ -548,7 +548,7 @@ fn dispatcher_filter_matches_push_kinds() {
 /// Subscription == push-capable kinds ∪ scheduler kinds, disjoint; every subscribed kind lands
 /// in a real `handle_envelope` arm and every warn-arm kind is unsubscribed.
 #[tokio::test]
-async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
+async fn dispatcher_subscription_invariant_is_push_kinds_plus_scheduler_kinds() {
     use std::collections::{BTreeMap, BTreeSet};
     let table = planner_push_wiring_table().await;
     let all = all_event_kind_tags();
