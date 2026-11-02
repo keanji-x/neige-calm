@@ -84,6 +84,8 @@ pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "area.deleted",
     "workspace.released",
     "task.regate_requested",
+    "worker_session.status_changed",
+    "harness.phase.changed",
 ];
 
 /// The one kind list the dispatcher's `SubscribeFilter` is built from.
@@ -1088,6 +1090,27 @@ impl Inner {
     }
 
     async fn handle_envelope(self: Arc<Self>, envelope: BroadcastEnvelope) {
+        // Failure observation must not wait for the dispatch whose failure it reports.
+        // Durable facts qualify the notice; the broadcast is only a scan accelerator.
+        if matches!(
+            &envelope.event,
+            Event::WorkerSessionStatusChanged { .. } | Event::HarnessPhaseChanged { .. }
+        ) {
+            if matches!(
+                &envelope.event,
+                Event::WorkerSessionStatusChanged {
+                    new_status: calm_types::worker::WorkerSessionState::Failed,
+                    ..
+                } | Event::HarnessPhaseChanged {
+                    new_phase: calm_types::harness::HarnessPhaseTag::Wedged,
+                    ..
+                }
+            ) && let Err(error) = self.progress_watchdog_once().await
+            {
+                tracing::warn!(%error, "child failure observation remains discoverable by the watchdog");
+            }
+            return;
+        }
         let _permit = match Arc::clone(&self.semaphore).acquire_owned().await {
             Ok(p) => p,
             Err(_) => {

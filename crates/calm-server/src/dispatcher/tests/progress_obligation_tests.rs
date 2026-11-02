@@ -19,6 +19,94 @@ async fn seed(repo: &crate::db::sqlite::SqlxRepo, track: &TrackId, key: &str) ->
     id
 }
 
+async fn seed_failed_child(
+    repo: &crate::db::sqlite::SqlxRepo,
+    parent: &crate::model::Track,
+) -> (String, Event) {
+    let child = repo
+        .track_create(crate::model::NewTrack {
+            area_id: parent.area_id.clone(),
+            title: "failed child".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: crate::model::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(crate::model::NewCard {
+            track_id: child.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: serde_json::json!({"planner_provider":"codex"}),
+        })
+        .await
+        .unwrap();
+    let task = seed(repo, &parent.id, "held-child-failure").await;
+    let task_id = task.clone();
+    let parent_id = parent.id.to_string();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                .bind(parent_id)
+                .bind(child.id.as_str())
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query("UPDATE cards SET role='planner' WHERE id=?1")
+                .bind(card.id.as_str())
+                .execute(&mut **tx)
+                .await?;
+            sqlx::query("UPDATE tasks SET child_track_id=?1 WHERE id=?2")
+                .bind(child.id.as_str())
+                .bind(&task_id)
+                .execute(&mut **tx)
+                .await?;
+            calm_truth::db::sqlite::task_mark_sub_track_running_tx(
+                tx,
+                &task_id,
+                crate::model::now_ms(),
+            )
+            .await?;
+            let session = crate::model::new_id();
+            calm_truth::db::sqlite::session_start_runtime_tx(
+                tx,
+                crate::session_projection_repo::WorkerSessionInit {
+                    id: session.clone(),
+                    card_id: card.id.to_string(),
+                    kind: crate::session_projection_repo::WorkerSessionKind::SharedPlanner,
+                    agent_provider: Some(crate::session_projection_repo::AgentProvider::Codex),
+                    status: calm_types::worker::WorkerSessionState::Idle,
+                    terminal_run_id: None,
+                    thread_id: None,
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: None,
+                    spawn_op_id: None,
+                    now_ms: crate::model::now_ms(),
+                },
+            )
+            .await?;
+            calm_truth::db::sqlite::session_fail_if_active_runtime_tx(tx, &session).await?;
+            Ok((
+                task,
+                Event::WorkerSessionStatusChanged {
+                    worker_session_id: session,
+                    card_id: card.id.to_string(),
+                    old_status: calm_types::worker::WorkerSessionState::Idle,
+                    new_status: calm_types::worker::WorkerSessionState::Failed,
+                },
+            ))
+        })
+    })
+    .await
+    .unwrap()
+}
+
 pub(super) async fn assert_progress_watchdog(
     inner: &Arc<Inner>,
     repo: &Arc<crate::db::sqlite::SqlxRepo>,
@@ -26,14 +114,38 @@ pub(super) async fn assert_progress_watchdog(
     track: &crate::model::Track,
 ) {
     let id = seed(repo, &track.id, "held-bootstrap").await;
+    let (failure_task, failure_event) = seed_failed_child(repo, track).await;
     let held = inner.acquire_push_lock(&track.id).await;
+    let permit = inner.semaphore.acquire().await.unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        inner.progress_watchdog_once(),
+        inner.clone().handle_envelope(BroadcastEnvelope {
+            id: 0,
+            event_version: 1,
+            actor: ActorId::Kernel,
+            scope: EventScope::Track {
+                track: track.id.clone(),
+                area: track.area_id.clone(),
+            },
+            event: failure_event,
+        }),
     )
     .await
-    .unwrap()
     .unwrap();
+    drop(permit);
+    let failure_notices = repo
+        .events_for_track(track.id.as_str(), &["track.wake_requested"], None)
+        .await
+        .unwrap();
+    let failure_key = failure_notices
+        .iter()
+        .find_map(|row| match &row.event {
+            Event::TrackWakeRequested { key, text, .. } if text.contains(&failure_task) => {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .expect("failure scan must commit while dispatch permit and parent ingress are held");
     let other = repo
         .track_create(crate::model::NewTrack {
             area_id: track.area_id.clone(),
@@ -83,6 +195,15 @@ pub(super) async fn assert_progress_watchdog(
             .iter()
             .any(|obs| matches!(obs,HarnessObservation::TrackWake{key:found,..} if found==&key))
     );
+    assert!(
+        !handle
+            .snapshot()
+            .await
+            .unwrap()
+            .pending_observations()
+            .iter()
+            .any(|obs| matches!(obs,HarnessObservation::TrackWake {key,..} if key==&failure_key))
+    );
     drop(held);
     for _ in 0..3 {
         inner.progress_watchdog_once().await.unwrap();
@@ -109,6 +230,15 @@ pub(super) async fn assert_progress_watchdog(
         Err(MutationRefused::NotFound)
     );
     let snapshot = handle.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot
+            .pending_observations()
+            .iter()
+            .filter(|obs| matches!(obs,HarnessObservation::TrackWake {key,..} if key==&failure_key))
+            .count(),
+        1,
+        "the same durable failure observation reaches the real parent ingress once after its lock becomes available"
+    );
     assert_eq!(
         snapshot
             .pending_observations()

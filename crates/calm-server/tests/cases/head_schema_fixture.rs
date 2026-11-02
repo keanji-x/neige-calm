@@ -149,6 +149,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0209_progress_obligations.sql",
     "0210_workspace_retirement.sql",
     "0211_track_plugin_access.sql",
+    "0212_session_failure_epochs.sql",
 ];
 
 #[test]
