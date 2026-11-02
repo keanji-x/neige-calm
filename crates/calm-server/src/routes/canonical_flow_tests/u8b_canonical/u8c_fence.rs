@@ -497,7 +497,7 @@ async fn u8c_fence_post_rejects_changed_workspace_after_commit() {
     let result = creating.await;
     fixture.shutdown_process(&state).await;
     assert_eq!(result.0, StatusCode::CONFLICT, "{result:?}");
-    assert!(std::path::Path::new(track.workspace.agent_cwd()).is_dir());
+    assert!(!std::path::Path::new(track.workspace.agent_cwd()).exists());
     assert!(!changed.exists());
 }
 
