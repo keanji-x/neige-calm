@@ -14,7 +14,10 @@ neither changes task status nor restarts, closes, cancels or replays child work.
 The task owner requires an open parent and child, the child's parent relation,
 `current_tasks` allocation, child's root session, matching card/session/track links,
 exactly one Planner role and the existing `PlannerBinding` provider/session contract.
-Qualification and the obligation's pending-to-notified CAS share the transaction
+Qualification reads only typed session contract and owned identity facts; it does
+not decode opaque provider snapshots, whose corruption must not hide a confirmed
+failure or suppress other children. Qualification and the obligation's
+pending-to-notified CAS share the transaction
 that persists the existing `TrackWakeRequested` event.
 
 ## Stable failure identity

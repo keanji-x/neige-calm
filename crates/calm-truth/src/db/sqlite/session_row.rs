@@ -346,7 +346,7 @@ pub fn worker_session_status_transition_allowed(
     }
 }
 
-fn worker_session_parse<T>(column: &str, value: String) -> Result<T>
+pub(super) fn worker_session_parse<T>(column: &str, value: String) -> Result<T>
 where
     T: TryFrom<String>,
     T::Error: std::fmt::Display,

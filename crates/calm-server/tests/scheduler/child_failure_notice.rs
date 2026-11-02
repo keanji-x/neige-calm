@@ -343,3 +343,27 @@ async fn child_failure_notice_uses_registered_planner_bindings_across_providers(
         AgentProvider::ALL.len()
     );
 }
+
+#[tokio::test]
+async fn child_failure_notice_does_not_decode_opaque_failed_snapshots() {
+    let boot = boot().await;
+    let (_, _, malformed) = failed_child(&boot, "malformed-snapshot").await;
+    failed_child(&boot, "healthy-failure-facts").await;
+    let db = boot.repo.sqlite_db().unwrap();
+    db.writer()
+        .execute(
+            sqlx::query(
+                "UPDATE worker_sessions SET handle_state_json='unparseable snapshot' WHERE id=?1",
+            )
+            .bind(&malformed),
+        )
+        .await
+        .unwrap();
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    scheduler.sweep_progress_obligations().await.unwrap();
+    assert_eq!(
+        event_rows(&boot, "track.wake_requested").await.len(),
+        2,
+        "failure identity and binding suffice; an unrelated opaque snapshot must not suppress parent observations"
+    );
+}

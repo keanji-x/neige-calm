@@ -342,6 +342,19 @@ fn dispatcher_filter_matches_push_kinds() {
         cwd: None,
         agent_message: None,
     })));
+    assert!(filter.matches(&env(Event::WorkerSessionStatusChanged {
+        worker_session_id: "child-planner".into(),
+        card_id: "planner-card".into(),
+        old_status: calm_types::worker::WorkerSessionState::Idle,
+        new_status: calm_types::worker::WorkerSessionState::Failed,
+    })));
+    assert!(filter.matches(&env(Event::HarnessPhaseChanged {
+        worker_session_id: "child-planner".into(),
+        card_id: "planner-card".into(),
+        track_id: track.clone(),
+        old_phase: crate::harness::HarnessPhaseTag::Idle,
+        new_phase: crate::harness::HarnessPhaseTag::Wedged,
+    })));
     assert!(filter.matches(&env(Event::TaskCompleted {
         notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "k".into(),

@@ -25,7 +25,8 @@ pub struct ChildPlannerFailure {
 /// Root tenure, exact card binding and the shared typed contract must all agree.
 async fn current_failures(connection: &mut SqliteConnection) -> Result<Vec<ChildPlannerFailure>> {
     let rows = sqlx::query(
-        "SELECT ws.*, t.id AS task_id,t.key AS task_key,t.track_id AS parent_track_id,\
+        "SELECT ws.id,ws.track_id,ws.mode,ws.provider,ws.contract,ws.failure_epoch, \
+         t.id AS task_id,t.key AS task_key,t.track_id AS parent_track_id,\
          p.area_id AS parent_area_id,c.kind AS card_kind,c.payload AS card_payload \
          FROM current_tasks t JOIN tracks p ON p.id=t.track_id AND p.closed_at IS NULL \
          JOIN tracks child ON child.id=t.child_track_id AND child.closed_at IS NULL \
@@ -40,7 +41,11 @@ async fn current_failures(connection: &mut SqliteConnection) -> Result<Vec<Child
     .await?;
     let mut targets = Vec::new();
     for row in rows {
-        let session = super::session_row::worker_session_from_row(&row)?;
+        let mode = super::session_row::worker_session_parse("mode", row.try_get("mode")?)?;
+        let provider =
+            super::session_row::worker_session_parse("provider", row.try_get("provider")?)?;
+        let contract =
+            super::session_row::worker_session_parse("contract", row.try_get("contract")?)?;
         let kind: String = row.try_get("card_kind")?;
         let payload: String = row.try_get("card_payload")?;
         let Some(binding) =
@@ -48,19 +53,20 @@ async fn current_failures(connection: &mut SqliteConnection) -> Result<Vec<Child
         else {
             continue;
         };
-        if !binding.matches_session_contract(&session) {
+        if !binding.matches_session_contract_parts(mode, provider, contract) {
             continue;
         }
         let task_id: String = row.try_get("task_id")?;
+        let worker_session_id: String = row.try_get("id")?;
         let failure_epoch: i64 = row.try_get("failure_epoch")?;
         targets.push(ChildPlannerFailure {
-            execution_id: serde_json::to_string(&(&task_id, session.id.as_str(), failure_epoch))?,
+            execution_id: serde_json::to_string(&(&task_id, &worker_session_id, failure_epoch))?,
             task_id,
             task_key: row.try_get("task_key")?,
             track_id: row.try_get("parent_track_id")?,
             area_id: row.try_get("parent_area_id")?,
-            child_track_id: session.track_id.to_string(),
-            worker_session_id: session.id.to_string(),
+            child_track_id: row.try_get("track_id")?,
+            worker_session_id,
             failure_epoch,
         });
     }
