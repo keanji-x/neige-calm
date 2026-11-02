@@ -629,9 +629,11 @@ async fn execution_changes_remembers_output_during_subscription() {
     let (_, _, executor, engine) = setup(Desired::Run, vec![]);
     let pause = Arc::new(Pause::default());
     *executor.generation_pause.lock().unwrap() = Some(pause.clone());
-    let subscribe = tokio::spawn(async move { engine.changes().await.unwrap() });
+    let subscribing_engine = engine.clone();
+    let subscribe = tokio::spawn(async move { subscribing_engine.changes().await.unwrap() });
     bounded(pause.entered.notified()).await;
     executor.changed();
     pause.resume.notify_one();
     bounded(subscribe.await.unwrap().changed()).await.unwrap();
+    drop(engine); // Keep the durable change sender alive throughout the wait.
 }
