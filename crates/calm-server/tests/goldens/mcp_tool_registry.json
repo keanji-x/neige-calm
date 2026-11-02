@@ -433,6 +433,42 @@
     "listed_for": []
   },
   {
+    "name": "neige_plugin_access",
+    "description_sha256": "bee196b0431a22b7a2d23180d9a2fee2ff103209626ebd62166b584f6bf25b01",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "status",
+            "request"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "plugin_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_preview_add",
     "description_sha256": "22a5565bbbd8e2ae30452984c7214b223dbb9f38b18a8b3dbd061ffd2dd92b7d",
     "input_schema": {
