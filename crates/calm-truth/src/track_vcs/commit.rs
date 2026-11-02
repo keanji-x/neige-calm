@@ -5,11 +5,18 @@ use crate::model::now_ms;
 use sqlx::{Sqlite, Transaction};
 
 use super::delta::{PathDelta, apply_delta_tx, paths_changed_by_event};
-use super::snapshot::snapshot_tree_at_tx;
+use super::snapshot::project_manifest_at_tx;
 use super::store::{CommitTreeMeta, commit_tree_at_tx, head_in_tx, store_tree, tree_at_in_tx};
 use super::transcripts::HookInputs;
 use super::types::{CardVisibility, has_legacy_card_lens_paths};
 use super::{CommitHash, TreeSnapshot};
+
+/// Event projection publishes content; explicit refreshes also mark a history boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CommitIntent {
+    Projection,
+    Checkpoint,
+}
 
 pub async fn commit_tree(
     tx: &mut Transaction<'_, Sqlite>,
@@ -74,6 +81,9 @@ pub async fn commit_events_in_tx(
     .await
 }
 
+/// Return the resulting content identity for projected events, reusing HEAD on equal content.
+/// `None` means the batch has no track-file projection (or deletes the track). Event receipts
+/// remain separate; a reused HEAD keeps its original event/author and ref update metadata.
 pub async fn commit_events_with_author_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
@@ -112,6 +122,7 @@ pub async fn commit_events_with_author_in_tx(
             created_at: now,
         },
         HookInputs::Live,
+        CommitIntent::Projection,
     )
     .await
     .map(Some)
@@ -123,15 +134,20 @@ pub(super) async fn commit_delta_in_tx(
     delta: PathDelta,
     meta: CommitTreeMeta<'_>,
     hooks: HookInputs<'_>,
+    intent: CommitIntent,
 ) -> Result<CommitHash> {
     let parent_hash = head_in_tx(tx, track_id).await?;
-    let tree = if let Some(parent) = parent_hash.as_deref() {
-        let mut parent_manifest = tree_at_in_tx(tx, parent)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("track-vcs: missing tree for {parent}")))?;
-        let card_visibility = CardVisibility::from_manifest(&parent_manifest);
-        if delta.full_snapshot || has_legacy_card_lens_paths(&parent_manifest) {
-            snapshot_tree_at_tx(
+    let parent_manifest =
+        match parent_hash.as_deref() {
+            Some(parent) => Some(tree_at_in_tx(tx, parent).await?.ok_or_else(|| {
+                CalmError::Internal(format!("track-vcs: missing tree for {parent}"))
+            })?),
+            None => None,
+        };
+    let manifest = if let Some(parent_manifest) = &parent_manifest {
+        let card_visibility = CardVisibility::from_manifest(parent_manifest);
+        if delta.full_snapshot || has_legacy_card_lens_paths(parent_manifest) {
+            project_manifest_at_tx(
                 tx,
                 track_id,
                 meta.manifest_schema_version,
@@ -142,26 +158,22 @@ pub(super) async fn commit_delta_in_tx(
             )
             .await?
         } else {
+            let mut projected = parent_manifest.clone();
             apply_delta_tx(
                 tx,
                 track_id,
-                &mut parent_manifest,
+                &mut projected,
                 delta,
                 &card_visibility,
                 meta.created_at,
                 hooks,
             )
             .await?;
-            store_tree(
-                tx,
-                meta.manifest_schema_version,
-                parent_manifest.entries,
-                meta.created_at,
-            )
-            .await?
+            projected.schema_version = meta.manifest_schema_version;
+            projected
         }
     } else {
-        snapshot_tree_at_tx(
+        project_manifest_at_tx(
             tx,
             track_id,
             meta.manifest_schema_version,
@@ -173,6 +185,18 @@ pub(super) async fn commit_delta_in_tx(
         .await?
     };
 
+    // Compare the complete projection, never notification cursors or event identities.
+    // Rendering above still repairs missing blobs before an existing identity is reused.
+    if intent == CommitIntent::Projection && parent_manifest.as_ref() == Some(&manifest) {
+        return Ok(parent_hash.expect("an equal parent manifest requires a HEAD"));
+    }
+    let tree = store_tree(
+        tx,
+        manifest.schema_version,
+        manifest.entries,
+        meta.created_at,
+    )
+    .await?;
     commit_tree_at_tx(
         tx,
         track_id,

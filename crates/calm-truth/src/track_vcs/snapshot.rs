@@ -21,7 +21,7 @@ use super::runs::{EventRow, project_runs_tx, track_event_from_row};
 use super::store::{CommitTreeMeta, commit_tree_at_tx, put_rendered_entry, store_tree};
 use super::transcripts::HookInputs;
 use super::types::{BlobContent, CardProjection, CardVisibility};
-use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeSnapshot};
+use super::{MANIFEST_SCHEMA_VERSION, ManifestEntry, TreeManifest, TreeSnapshot};
 
 pub async fn backfill_existing_tracks(pool: &crate::db::sqlite::SqliteDb) -> Result<usize> {
     let write_db = (pool).clone();
@@ -120,6 +120,34 @@ pub(super) async fn snapshot_tree_at_tx(
     card_visibility: &CardVisibility,
     hooks: HookInputs<'_>,
 ) -> Result<TreeSnapshot> {
+    let manifest = project_manifest_at_tx(
+        tx,
+        track_id,
+        schema_version,
+        object_created_at,
+        prefetched_track,
+        card_visibility,
+        hooks,
+    )
+    .await?;
+    store_tree(
+        tx,
+        manifest.schema_version,
+        manifest.entries,
+        object_created_at,
+    )
+    .await
+}
+
+pub(super) async fn project_manifest_at_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &TrackId,
+    schema_version: i64,
+    object_created_at: i64,
+    prefetched_track: &Option<Track>,
+    card_visibility: &CardVisibility,
+    hooks: HookInputs<'_>,
+) -> Result<TreeManifest> {
     let track = match prefetched_track {
         Some(track) => track.clone(),
         None => load_track_tx(tx, track_id).await?,
@@ -190,7 +218,10 @@ pub(super) async fn snapshot_tree_at_tx(
     }
 
     insert_run_entries(tx, &mut entries, &runs, object_created_at).await?;
-    store_tree(tx, schema_version, entries, object_created_at).await
+    Ok(TreeManifest {
+        schema_version,
+        entries,
+    })
 }
 
 pub(super) async fn insert_run_entries(
