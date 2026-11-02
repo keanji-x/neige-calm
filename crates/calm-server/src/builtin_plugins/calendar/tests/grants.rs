@@ -39,7 +39,7 @@ async fn access(fx: &Fixture, who: &ToolCallIdentity, enabled: bool) -> serde_js
     invoke(
         fx,
         who,
-        "neige_plugin_access",
+        "neige_access_ask",
         json!({"action":"request","plugin_id":"calendar","enabled":enabled}),
     )
     .await
@@ -94,7 +94,7 @@ async fn visible(fx: &Fixture, who: &ToolCallIdentity) -> Vec<String> {
     .collect()
 }
 async fn status(fx: &Fixture, who: &ToolCallIdentity) -> serde_json::Value {
-    invoke(fx, who, "neige_plugin_access", json!({"action":"status"}))
+    invoke(fx, who, "neige_access_ask", json!({"action":"status"}))
         .await
         .unwrap()["plugins"]
         .as_array()
@@ -254,7 +254,7 @@ async fn track_plugin_access_decline_can_be_asked_again_and_only_user_option_gra
         invoke(
             &fx,
             &worker,
-            "neige_plugin_access",
+            "neige_access_ask",
             json!({"action":"request","plugin_id":"calendar","enabled":true})
         )
         .await
@@ -336,14 +336,14 @@ async fn track_plugin_access_rejects_forged_target_options_and_owner_only_plugin
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         assert_eq!(
-            invoke(&fx, &who, "neige_plugin_access", args)
+            invoke(&fx, &who, "neige_access_ask", args)
                 .await
                 .unwrap_err()
                 .code,
             -32602
         );
     }
-    assert!(invoke(&fx,&who,"neige_plugin_access",json!({"action":"request","plugin_id":crate::builtin_plugins::dev::PLUGIN_ID,"enabled":true})).await.is_err());
+    assert!(invoke(&fx,&who,"neige_access_ask",json!({"action":"request","plugin_id":crate::builtin_plugins::dev::PLUGIN_ID,"enabled":true})).await.is_err());
     assert_eq!(calendar(&fx, &who).await.unwrap_err().code, -32601);
 }
 
@@ -406,7 +406,7 @@ async fn track_plugin_access_materialized_cli_connector_uses_declared_identity()
     let requested = invoke(
         &fx,
         &who,
-        "neige_plugin_access",
+        "neige_access_ask",
         json!({"action":"request","plugin_id":"grantprobe","enabled":true}),
     )
     .await
@@ -433,7 +433,7 @@ async fn track_plugin_access_materialized_cli_connector_uses_declared_identity()
     let revoke = invoke(
         &fx,
         &who,
-        "neige_plugin_access",
+        "neige_access_ask",
         json!({"action":"request","plugin_id":"grantprobe","enabled":false}),
     )
     .await

@@ -41,8 +41,8 @@ impl From<calm_truth::TruthError> for RequestOutcome {
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ToolDescriptor {
-        name: "neige_plugin_access".into(),
-        description: include_str!("../../../prompts/tools/neige_plugin_access.md").trim_end().into(),
+        name: "neige_access_ask".into(),
+        description: include_str!("../../../prompts/tools/neige_access_ask.md").trim_end().into(),
         input_schema: json!({"type":"object","additionalProperties":false,"required":["action"],"properties":{
             "action":{"enum":["status","request"]},"plugin_id":{"type":"string"},"enabled":{"type":"boolean"}
         }}),

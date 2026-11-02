@@ -11,6 +11,7 @@ use support::mcp::{
 
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
+        "neige_access_ask",
         "neige_area_ls",
         "neige_catalog_cat",
         "neige_catalog_ls",
@@ -20,7 +21,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_objective_close",
         "neige_objective_evaluate",
         "neige_objective_settle",
-        "neige_plugin_access",
         "neige_preview_add",
         "neige_preview_rm",
         "neige_report_commit",

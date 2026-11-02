@@ -18,7 +18,7 @@ Exercise real MCP discovery/calls and the authenticated HTTP answer route: denie
 
 ## Planner contract
 
-`neige_plugin_access` is Planner-only. `{"action":"status"}` distinguishes global enabled/running state from owner, standard, extra, or missing authorization. `{"action":"request","plugin_id":"calendar","enabled":true}` opens a kernel-authored question and returns `awaiting_user` with its ask ID; the Planner ends the turn. Approved repeats return `already_set` without another question. `enabled:false` asks to revoke extra access, including when the plugin is globally disabled. No caller-supplied Track, questions or options are accepted.
+`neige_access_ask` is Planner-only. `{"action":"status"}` distinguishes global enabled/running state from owner, standard, extra, or missing authorization. `{"action":"request","plugin_id":"calendar","enabled":true}` opens a kernel-authored question and returns `awaiting_user` with its ask ID; the Planner ends the turn. Approved repeats return `already_set` without another question. `enabled:false` asks to revoke extra access, including when the plugin is globally disabled. No caller-supplied Track, questions or options are accepted.
 
 The existing authenticated ask-answer route commits the decision before publishing the answer wake. No-op requests use the event writer's typed rollback channel and publish nothing. The core Planner prompt stays unchanged; the new tool's 709-byte description and 181-byte schema add a fixed 890-byte declaration cost to the existing aggregate budget.
 

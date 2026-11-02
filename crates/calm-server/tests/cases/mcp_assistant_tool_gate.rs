@@ -79,7 +79,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_catalog_ls",
     "neige_catalog_cat",
     // Extra plugin authorization requests are Planner-only.
-    "neige_plugin_access",
+    "neige_access_ask",
     // Asking the user is a planner action.
     "neige_user_ask",
     // Mail between the Tracks of an Area wakes another Planner (#2130).
