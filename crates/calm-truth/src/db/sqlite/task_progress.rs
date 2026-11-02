@@ -1,6 +1,8 @@
 //! The first progress-obligation owner: child-track dispatch-to-running handoff.
 //! Running child progress and worker liveness are deliberately separate contracts.
-use super::progress_obligation::{ProgressObligation, progress_obligation_require_tx};
+use super::progress_obligation::{
+    ProgressObligation, progress_obligation_release_tx, progress_obligation_require_tx,
+};
 use crate::error::Result;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use sqlx::{Sqlite, Transaction};
@@ -48,11 +50,14 @@ pub async fn task_reconcile_child_bootstrap_obligations_tx(
         task_require_child_bootstrap_tx(tx, &task_id).await?;
     }
     // Includes canceled, deleted and superseded attempts; none retains wake authority.
-    sqlx::query(
-        "UPDATE progress_obligations SET state='released' WHERE purpose=?1 AND state!='released' \
+    let obsolete: Vec<String> = sqlx::query_scalar(
+        "SELECT o.execution_id FROM progress_obligations o WHERE o.purpose=?1 AND o.state!='released' \
          AND NOT EXISTS(SELECT 1 FROM current_tasks t JOIN tracks p ON p.id=t.track_id \
-                        WHERE t.id=progress_obligations.execution_id AND t.spawn=?2 AND t.status='dispatched')",
-    ).bind(CHILD_BOOTSTRAP_PURPOSE).bind(TASK_CHILD_TRACK_ROUTE).execute(&mut **tx).await?;
+                        WHERE t.id=o.execution_id AND t.spawn=?2 AND t.status='dispatched')",
+    ).bind(CHILD_BOOTSTRAP_PURPOSE).bind(TASK_CHILD_TRACK_ROUTE).fetch_all(&mut **tx).await?;
+    for execution_id in obsolete {
+        progress_obligation_release_tx(tx, &execution_id, CHILD_BOOTSTRAP_PURPOSE).await?;
+    }
     Ok(())
 }
 

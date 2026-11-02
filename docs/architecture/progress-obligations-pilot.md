@@ -30,6 +30,8 @@ beside task persistence rather than inside a provider or renderer.
 The primitive stores execution ID, purpose, immutable deadline and the one-shot
 pending/notified/released state. It owns enrollment idempotency and expiry CAS;
 callers own relevance and the action. Execution IDs name concrete attempts.
+The task owner selects obsolete execution IDs and calls the shared release operation
+in the same writer transaction; lifecycle state writes stay in the primitive.
 Repeated scans cannot renew or rearm the same obligation. No callback registry,
 heartbeat renewal or new application identity configuration is introduced.
 
