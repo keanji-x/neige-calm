@@ -552,14 +552,7 @@ impl TaskGateRunAdapter {
             hook().await;
         }
         loop {
-            let watch = match execution::GateWatch::subscribe(&ctx).await {
-                Ok(watch) => watch,
-                Err(error) => {
-                    tracing::warn!(op_id=%id,%error,"gate change subscription failed; retrying");
-                    execution::GateWatch::retry().await;
-                    continue;
-                }
-            };
+            let watch = execution::GateWatch::subscribe(&ctx).await;
             let read = async {
                 #[cfg(any(test, feature = "fixtures"))]
                 if let Some(hook) = &self.hooks.observer_read {

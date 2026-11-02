@@ -198,14 +198,7 @@ impl TaskVerifyAdapter {
             hook().await;
         }
         loop {
-            let watch = match execution::GateWatch::subscribe(&ctx).await {
-                Ok(watch) => watch,
-                Err(error) => {
-                    tracing::warn!(op_id=%id,%error,"gate change subscription failed; retrying");
-                    execution::GateWatch::retry().await;
-                    continue;
-                }
-            };
+            let watch = execution::GateWatch::subscribe(&ctx).await;
             let current = match ctx.operation_repo.get_operation(&id).await {
                 Ok(Some(current)) => current,
                 Ok(None) => return,

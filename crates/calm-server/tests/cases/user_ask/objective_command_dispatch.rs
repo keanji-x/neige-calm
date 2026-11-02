@@ -159,7 +159,8 @@ async fn objective_command_waits_without_idle_claim_writes() {
     let db = w.boot.repo.sqlite_db().unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let released: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE kind='objective-check-run' AND lease_owner IS NULL AND json_type(tx_output_json,'$.data.gate_execution.release.Released')='object')").fetch_one(db.read_pool()).await.unwrap();
+            let released: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM operations WHERE kind='objective-check-run' AND lease_owner IS NULL \
+                AND json_type(tx_output_json,'$.data.gate_execution.release.Released')='object')").fetch_one(db.read_pool()).await.unwrap();
             if released { break; }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -168,7 +169,14 @@ async fn objective_command_waits_without_idle_claim_writes() {
         .execute(sqlx::query("CREATE TABLE idle_claims (op_id TEXT)"))
         .await
         .unwrap();
-    db.writer().execute(sqlx::query("CREATE TRIGGER observe_idle_claims AFTER UPDATE OF lease_owner ON operations WHEN NEW.kind='objective-check-run' AND NEW.lease_owner IS NOT NULL BEGIN INSERT INTO idle_claims VALUES (NEW.id); END")).await.unwrap();
+    db.writer()
+        .execute(sqlx::query(
+            "CREATE TRIGGER observe_idle_claims AFTER UPDATE OF lease_owner ON operations \
+            WHEN NEW.kind='objective-check-run' AND NEW.lease_owner IS NOT NULL \
+            BEGIN INSERT INTO idle_claims VALUES (NEW.id); END",
+        ))
+        .await
+        .unwrap();
     for _ in 0..3 {
         w.runtime.sweep_parked().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;

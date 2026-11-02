@@ -7,18 +7,24 @@ use std::time::Duration;
 /// Failure/claim-contention backoff, never the cadence for healthy executions.
 pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(1);
 
-pub(crate) struct GateWatch(ExecutionChanges);
+// A broken notification transport cannot hide a durable terminal operation or
+// prevent a due owner action. Surface subscription failures only when waiting.
+pub(crate) struct GateWatch(Result<ExecutionChanges>);
 impl GateWatch {
-    pub(crate) async fn subscribe(ctx: &SpawnCtx) -> Result<Self> {
-        let engine = ctx
-            .execution
-            .engine()
-            .ok_or(CalmError::ExecutionUnavailable)?;
-        tokio::time::timeout(RETRY_DELAY, engine.changes())
-            .await
-            .map_err(conflict)?
-            .map(Self)
-            .map_err(conflict)
+    pub(crate) async fn subscribe(ctx: &SpawnCtx) -> Self {
+        Self(
+            async {
+                let engine = ctx
+                    .execution
+                    .engine()
+                    .ok_or(CalmError::ExecutionUnavailable)?;
+                tokio::time::timeout(RETRY_DELAY, engine.changes())
+                    .await
+                    .map_err(conflict)?
+                    .map_err(conflict)
+            }
+            .await,
+        )
     }
 
     /// All Gate consumers share the subscribe/read/wait handshake. Adapter boot
@@ -30,7 +36,11 @@ impl GateWatch {
         timeout_secs: i64,
         force: bool,
     ) -> Result<bool> {
-        if force || recovery_ready(ctx, op, timeout_secs).await? {
+        // Boot recovery may already have persisted Stop before its observer
+        // starts. Its startup flags must never force another claim while draining.
+        if (force && record(op)?.decision == Decision::Observing)
+            || recovery_ready(ctx, op, timeout_secs).await?
+        {
             return Ok(true);
         }
         self.wait(op, timeout_secs).await?;
@@ -40,6 +50,7 @@ impl GateWatch {
     /// The persisted parked deadline remains the recovery backstop. Stopping
     /// executions wait for real drain evidence rather than spin on an old deadline.
     pub(crate) async fn wait(self, op: &Operation, timeout_secs: i64) -> Result<()> {
+        let changes = self.0?;
         let deadline = deadline(op, timeout_secs)?;
         let timer = async {
             match deadline {
@@ -53,7 +64,7 @@ impl GateWatch {
             }
         };
         tokio::select! {
-            result = self.0.changed() => result.map_err(conflict),
+            result = changes.changed() => result.map_err(conflict),
             _ = timer => Ok(()),
         }
     }
