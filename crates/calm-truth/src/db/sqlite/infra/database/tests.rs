@@ -78,3 +78,41 @@ async fn concurrent_and_cancelled_close_wait_for_the_real_memory_anchor_ack() {
     assert!(drained.is_ok());
     assert!(!db.has_memory_cache_anchor());
 }
+
+#[tokio::test]
+async fn read_snapshot_capability_excludes_shared_cache_databases() {
+    let root = tempfile::tempdir().unwrap();
+    for (url, expected) in [
+        ("sqlite::memory:".to_owned(), false),
+        (
+            format!("sqlite://{}?mode=rwc", root.path().join("wal.db").display()),
+            true,
+        ),
+        (
+            format!(
+                "sqlite://{}?mode=rwc&cache=shared",
+                root.path().join("shared.db").display()
+            ),
+            false,
+        ),
+    ] {
+        let db = SqliteDb::connect(&url).await.unwrap();
+        let snapshot = db.try_begin_read_snapshot().await.unwrap();
+        assert_eq!(snapshot.is_some(), expected, "{url}");
+        if let Some(mut tx) = snapshot {
+            let error = sqlx::query("CREATE TABLE forbidden_snapshot_write(value INTEGER)")
+                .execute(&mut *tx)
+                .await
+                .expect_err("read snapshots must enforce query_only");
+            assert_eq!(
+                error
+                    .as_database_error()
+                    .and_then(|error| error.code())
+                    .as_deref(),
+                Some("8")
+            );
+            tx.rollback().await.unwrap();
+        }
+        db.close().await;
+    }
+}

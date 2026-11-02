@@ -1,6 +1,7 @@
-//! Source-scan guard: production deferred sqlite transactions must not exist — every writing
-//! transaction begins with `begin_immediate_tx`, and a read-only deferred tx still holds R locks
-//! while parked, so it can close a shared-cache deadlock cycle (`SQLITE_LOCKED`).
+//! Source-scan guard: deferred sqlite transactions require an audited read boundary. Every writing
+//! transaction begins with `begin_immediate_tx`, and an ordinary deferred reader holds R locks
+//! while parked, so it can close a shared-cache deadlock cycle (`SQLITE_LOCKED`). The sole
+//! deferred constructor is query-only and proves private-cache WAL before beginning.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -18,9 +19,13 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
     "#[cfg(test)]\nmod runtime_read_flip_support;",
 )];
 
-/// Documented read-only deferred transactions: `(relative path, enclosing fn needle)`. Empty on
-/// purpose; "it only reads" is not an exemption unless the tx provably cannot park while holding a lock.
-const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[];
+/// Only the SQLite-owned, query-only WAL constructor: it excludes shared-cache table locks.
+/// Backend/readonly tests and the Report held-writer regression enforce this boundary. Callers
+/// use the constructor; adding a Report or another feature requires no new allowlist entry.
+const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[(
+    "calm-truth/src/db/sqlite/infra/database.rs",
+    "pub async fn try_begin_read_snapshot(",
+)];
 
 /// How far above a matched begin the allowlist needle may sit.
 const ALLOWLIST_NEEDLE_WINDOW_LINES: usize = 25;

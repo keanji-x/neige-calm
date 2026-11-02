@@ -129,6 +129,32 @@ impl SqliteDb {
         &self.inner.read
     }
 
+    /// Writer connections configure WAL. Private-cache file readers can hold a multi-table
+    /// snapshot without blocking that writer; shared-cache databases also take table locks.
+    /// Conservative for memory/temporary databases, whose anchor keeps their namespace alive.
+    fn supports_concurrent_read_snapshots(&self) -> bool {
+        if self.inner.memory_cache_anchor.is_some() {
+            return false;
+        }
+        let options = self.inner.read.connect_options();
+        let normalized = options.as_ref().clone().filename("/").to_url_lossy();
+        !normalized
+            .query_pairs()
+            .any(|(key, value)| key == "cache" && value == "shared")
+    }
+
+    /// The sole deferred production constructor. WAL private-cache readers do not take
+    /// shared-cache table locks; all other backends must compose through a serialized tx.
+    /// The read pool enforces query_only, so this transaction cannot be upgraded to a writer.
+    pub async fn try_begin_read_snapshot(
+        &self,
+    ) -> Result<Option<sqlx::Transaction<'static, sqlx::Sqlite>>> {
+        if !self.supports_concurrent_read_snapshots() {
+            return Ok(None);
+        }
+        Ok(Some(self.inner.read.begin().await?))
+    }
+
     /// The only public capability that can obtain managed writer admission.
     pub fn writer(&self) -> &super::WriteManager {
         &self.inner.writer

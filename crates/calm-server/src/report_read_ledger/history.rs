@@ -11,6 +11,8 @@ pub(crate) async fn payload_at_tx(
     report: &str,
     commit: &str,
 ) -> Result<Option<TrackReportPayload>, CalmError> {
+    #[cfg(test)]
+    probe::loaded(commit);
     let bytes = calm_truth::track_vcs::blob_at_in_tx(
         tx,
         track,
@@ -18,6 +20,10 @@ pub(crate) async fn payload_at_tx(
         &format!("cards/{report}/.payload.json"),
     )
     .await?;
+    #[cfg(test)]
+    if bytes.is_some() {
+        probe::parsed(commit);
+    }
     // Old or malformed historical payloads cannot locate knowledge, but do not undo a read.
     Ok(bytes.and_then(|bytes| serde_json::from_slice(&bytes).ok()))
 }
@@ -92,67 +98,60 @@ pub(crate) async fn locate_written_tx(
     Ok(())
 }
 
-/// Resolve only the exact stable id/revision. The commit's author is not evidence of authorship.
-pub(crate) async fn block_at_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track: &TrackId,
-    report: &str,
-    commit: &str,
+/// Resolve only the exact stable id/revision from an already loaded exact-commit payload.
+pub(super) fn block_at<'a>(
+    payload: &'a TrackReportPayload,
     id: &str,
     rev: u32,
-) -> Result<Option<ReportBlock>, CalmError> {
-    let Some(payload) = payload_at_tx(tx, track, report, commit).await? else {
-        return Ok(None);
-    };
-    let Some(blocks) = payload.blocks else {
-        return Ok(None);
-    };
-    let mut matches = blocks.into_iter().filter(|b| b.id == id);
-    let block = matches.next();
-    Ok(block.filter(|b| b.rev == rev && matches.next().is_none()))
+) -> Option<&'a ReportBlock> {
+    let blocks = payload.blocks.as_ref()?;
+    let mut matches = blocks.iter().filter(|b| b.id == id);
+    matches
+        .next()
+        .filter(|b| b.rev == rev && matches.next().is_none())
 }
 
-/// A full-read certificate can prove a new id was absent only when its historical document
-/// is located too. Partial knowledge and missing history never stand in for an empty before.
-pub(crate) async fn whole_snapshot_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    track: &TrackId,
-    report: &str,
+/// A full-read certificate can prove absence only against a complete located document.
+pub(super) fn whole_ids(
+    payload: &TrackReportPayload,
     read: &LastRead,
-) -> Result<Option<Vec<ReportBlock>>, CalmError> {
-    if !read.whole {
-        return Ok(None);
+) -> Option<std::collections::BTreeSet<String>> {
+    if !read.whole || payload.doc_rev != read.doc_rev {
+        return None;
     }
-    let commits = read
-        .blocks
-        .values()
-        .filter_map(|block| match &block.history_ref {
-            HistoryRef::Commit(commit) => Some(commit),
-            HistoryRef::Unavailable(_) => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    for commit in commits {
-        let Some(payload) = payload_at_tx(tx, track, report, commit).await? else {
-            continue;
-        };
-        if payload.doc_rev != read.doc_rev {
-            continue;
-        }
-        let Some(blocks) = payload.blocks else {
-            continue;
-        };
-        let indexed = blocks
+    let blocks = payload.blocks.as_ref()?;
+    let indexed = blocks
+        .iter()
+        .map(|block| (block.id.as_str(), block.rev))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    (indexed.len() == blocks.len()
+        && read
+            .blocks
             .iter()
-            .map(|block| (block.id.as_str(), block.rev))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        if indexed.len() == blocks.len()
-            && read
-                .blocks
-                .iter()
-                .all(|(id, known)| indexed.get(id.as_str()) == Some(&known.rev))
-        {
-            return Ok(Some(blocks));
-        }
+            .all(|(id, known)| indexed.get(id.as_str()) == Some(&known.rev)))
+    .then(|| indexed.into_keys().map(str::to_owned).collect())
+}
+
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    static LOADS: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Default::default);
+    static PARSES: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Default::default);
+    pub(super) fn loaded(commit: &str) {
+        *LOADS.lock().unwrap().entry(commit.to_owned()).or_default() += 1;
     }
-    Ok(None)
+    pub(super) fn parsed(commit: &str) {
+        *PARSES.lock().unwrap().entry(commit.to_owned()).or_default() += 1;
+    }
+    pub(crate) fn counts() -> HashMap<String, usize> {
+        LOADS.lock().unwrap().clone()
+    }
+    pub(crate) fn parses() -> HashMap<String, usize> {
+        PARSES.lock().unwrap().clone()
+    }
+    pub(crate) fn reset() {
+        LOADS.lock().unwrap().clear();
+        PARSES.lock().unwrap().clear();
+    }
 }
