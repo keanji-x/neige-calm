@@ -586,6 +586,9 @@ async fn c2b_unknown_execution_never_completes_op() {
         let pid = helper.0;
         drop(helper);
         wait_until(async || !Path::new(&format!("/proc/{pid}")).exists()).await;
+        // The old native process is now gone, but cannot publish another event.
+        // Engine must re-prove quiescence and settle without another owner claim loop.
+        wait_until(async || op(&fx, &a.task.id).await.phase.tag() == PhaseTag::Succeeded).await;
     }
     assert_eq!(
         writes, 0,

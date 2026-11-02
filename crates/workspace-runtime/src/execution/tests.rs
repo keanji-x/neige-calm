@@ -637,3 +637,66 @@ async fn execution_changes_remembers_output_during_subscription() {
     bounded(subscribe.await.unwrap().changed()).await.unwrap();
     drop(engine); // Keep the durable change sender alive throughout the wait.
 }
+
+async fn unknown_recovers_without_executor_notification(desired: Desired) {
+    let (intent, _, _, engine) = setup(
+        desired,
+        vec![
+            Ok(journal(
+                ExecutionState::Unknown {
+                    reason: "awaiting external evidence".into(),
+                },
+                OutputEnd::Open,
+            )),
+            Ok(drained()),
+        ],
+    );
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    // Inspect returns the later physical evidence; no executor Changed is sent.
+    bounded(engine.wait_settled(&intent.metadata.id))
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_running_rechecks_without_executor_notification() {
+    unknown_recovers_without_executor_notification(Desired::Run).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_stopping_rechecks_without_executor_notification() {
+    unknown_recovers_without_executor_notification(Desired::Stop).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_recheck_never_invents_settlement() {
+    let unknown = journal(
+        ExecutionState::Unknown {
+            reason: "unqualified external state".into(),
+        },
+        OutputEnd::Open,
+    );
+    let (intent, store, executor, engine) =
+        setup(Desired::Stop, vec![Ok(unknown.clone()), Ok(unknown)]);
+    let pause = Arc::new(Pause::default());
+    *executor.inspect_pause.lock().unwrap() = Some(pause.clone());
+    engine.drive(DriveTicket::committed(intent.metadata.id.clone()));
+    bounded(pause.entered.notified()).await;
+    pause.resume.notify_one();
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(250)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !store
+            .load(&intent.metadata.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_settled()
+    );
+    executor.push(Ok(drained()));
+    executor.changed();
+    bounded(engine.wait_settled(&intent.metadata.id))
+        .await
+        .unwrap();
+}
