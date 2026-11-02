@@ -77,6 +77,7 @@ pub use session_system_error_recovery::{
     session_resume_system_error_tx, session_set_failed_harness_snapshot_tx,
     session_system_error_recovery_matches, session_system_error_recovery_matches_tx,
 };
+pub mod progress_obligation;
 pub mod provider_execution;
 #[cfg(test)]
 mod provider_execution_tests;
@@ -87,6 +88,7 @@ mod task_attempt_migration_tests;
 #[cfg(test)]
 mod task_attempt_tests;
 mod task_liveness;
+pub mod task_progress;
 mod task_projection;
 mod task_regate;
 mod track;

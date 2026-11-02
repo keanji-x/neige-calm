@@ -314,6 +314,11 @@ async fn assert_historical_prefix(later: LaterObservation) {
         }
         assert_eq!(snapshot.push_watermark, b_id);
         assert_eq!(inner.push_cursor.get(&planner_card.id), b_id);
+        if matches!(later, LaterObservation::Wake) {
+            super::progress_obligation_tests::assert_progress_watchdog(
+                &inner, &repo, &handle, &track,
+            ).await;
+        }
         handle.shutdown().await.unwrap();
 
     })).await.expect("independent write operation")
