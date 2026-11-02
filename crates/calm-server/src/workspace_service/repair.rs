@@ -240,14 +240,24 @@ where
 
 /// One post-lock selection check for every resource owner and its final admission.
 pub(crate) async fn selected_track(repo: &dyn RouteRepo, selected: &Track) -> Result<Track> {
-    let current = repo
-        .track_get(selected.id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound("track".into()))?;
-    if current.area_id != selected.area_id || current.workspace != selected.workspace {
-        return Err(CalmError::Conflict("workspace selection changed".into()));
-    }
-    Ok(current)
+    let selected = selected.clone();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let current = crate::db::sqlite::track_find_tx(tx, selected.id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::NotFound("track".into()))?;
+            if current.area_id != selected.area_id || current.workspace != selected.workspace {
+                return Err(CalmError::Conflict("workspace selection changed".into()));
+            }
+            calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+                tx,
+                std::path::Path::new(current.workspace.agent_cwd()),
+            )
+            .await?;
+            Ok(current)
+        })
+    })
+    .await
 }
 
 async fn fenced_selection<E, EF, T>(

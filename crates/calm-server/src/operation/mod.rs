@@ -889,6 +889,16 @@ pub trait ProviderAdapter: Send + Sync {
         Ok(None)
     }
 
+    /// Persist the owner's declared receipt and its domain-owned bookkeeping in
+    /// one transaction. The generic lifecycle does not interpret event kinds.
+    async fn record_owner_event_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        event: OwnerEvent,
+    ) -> Result<crate::event::BroadcastEnvelope> {
+        settlement::append_owner_event_tx(tx, event).await
+    }
+
     /// Adapter declares the track whose checkout preparation must exclude clean.
     /// The driver holds its existing track guard through the occupancy commit,
     /// including boot recovery.

@@ -43,6 +43,15 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
 /// Writes expected outside the production writer, by exact normalized text: `(file, statement, why)`.
 const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     (
+        "crates/calm-truth/src/db/sqlite/historical_fixtures.rs",
+        "insert into tracks(id,area_id,title,sort,workspace_kind,workspace_path,created_at,updated_at) values(?,?,'historical',0,'attached','/tmp',1,1)",
+        "Fixed pre-0210 migration graph. The current owning writer requires retirement \
+         columns absent from that schema. It preserves the released selection and \
+         binding contract; ordinary fixtures use the production writer. New historical \
+         cases reuse this seed. Only changing this fixed SQL edits the helper and this \
+         existing registry entry; no new scan or invocation is introduced.",
+    ),
+    (
         "crates/calm-server/src/routes/canonical_flow_tests/p1_workspace_upload.rs",
         "update tracks set area_id=?,workspace_path=? where id=?",
         "Upload regressions change the persisted selection while queued or streaming, \

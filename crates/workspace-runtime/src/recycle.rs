@@ -26,6 +26,8 @@ pub const TRASH_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Why a directory was **not** recycled; every variant means it was left exactly as it was on disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecycleRefusal {
+    /// Online access to the retired directory is not filesystem-isolated.
+    CleanupDeferred,
     NotManaged,
     /// The owning area is system-owned, or could not be read (fail-closed).
     SystemArea,
@@ -51,6 +53,7 @@ pub enum RecycleRefusal {
 impl RecycleRefusal {
     pub fn tag(&self) -> &'static str {
         match self {
+            RecycleRefusal::CleanupDeferred => "cleanup-deferred",
             RecycleRefusal::NotManaged => "not-managed",
             RecycleRefusal::SystemArea => "system-area",
             RecycleRefusal::PathMissing => "path-missing",

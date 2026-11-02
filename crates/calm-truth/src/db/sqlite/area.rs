@@ -223,6 +223,8 @@ pub async fn area_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
         .fetch_all(&mut **tx)
         .await?;
     for (track_id,) in track_ids {
+        super::workspace_retirement::retire_workspace_selection_tx(tx, &track_id).await?;
+        let _ = super::workspace_retirement::retire_track_extras_tx(tx, &track_id).await?;
         sqlx::query("DELETE FROM track_vcs_refs WHERE track_id = ?1")
             .bind(&track_id)
             .execute(&mut **tx)

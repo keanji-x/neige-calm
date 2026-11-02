@@ -346,6 +346,21 @@ async fn transition(
             Box::pin(async move {
                 let mut tx = write_session.begin_immediate().await?;
                 super::repo_sqlite::require_live_claim_tx(&mut tx, op).await?;
+                if old.release == Release::Held && matches!(new.release, Release::Releasing { .. })
+                {
+                    let frozen = forge::FrozenForge::from_output(
+                        op.tx_output
+                            .as_ref()
+                            .ok_or_else(|| conflict("forge output missing"))?,
+                    )?;
+                    forge::require_provision_target_active_tx(
+                        &mut tx,
+                        &frozen.cwd_lease,
+                        frozen.event_spec.as_ref(),
+                        &frozen.context,
+                    )
+                    .await?;
+                }
                 sql::compare_exchange(&mut tx, &op.id, KEY, &encoded(old)?, &encoded(new)?).await?;
                 if let Some(id) = stop {
                     calm_truth::db::sqlite::workspace_execution::request(
@@ -439,7 +454,12 @@ pub(crate) async fn release(ctx: &SpawnCtx, op: &Operation, kind: Kind) -> Resul
     probe.release = Release::Releasing { authorized_at_ms };
     let mut releasing = old.clone();
     releasing.set(kind, probe.clone());
-    transition(ctx, op, &old, &releasing, None).await?;
+    match transition(ctx, op, &old, &releasing, None).await {
+        Err(CalmError::BadRequest(_)) => {
+            return stop(ctx, op, kind, StopReason::ReleaseRefused).await;
+        }
+        result => result?,
+    }
     match tokio::time::timeout(
         RELEASE_TIMEOUT,
         super::owned_execution::send_release(ctx, &probe.execution_id, &payload),

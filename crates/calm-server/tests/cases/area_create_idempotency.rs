@@ -653,8 +653,8 @@ async fn area_ownership_delete_rechecks_owner_at_commit_and_preserves_permanent_
         .await
         .unwrap();
     assert!(
-        !sentinel.exists(),
-        "premise: the saga recycled the workspace before the commit hook"
+        sentinel.is_file(),
+        "logical deletion preserves bytes before the ownership recheck"
     );
     (boot.repo.db())
         .writer()
@@ -687,7 +687,7 @@ async fn area_ownership_delete_rechecks_owner_at_commit_and_preserves_permanent_
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(!sentinel.exists());
+    assert!(sentinel.is_file());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members WHERE area_id=?1")
             .bind(&id)

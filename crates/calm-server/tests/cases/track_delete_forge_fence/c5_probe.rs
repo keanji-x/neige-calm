@@ -427,7 +427,7 @@ async fn c5_probe_clean_track_fence_observer_and_boot_then_retry() {
             clean(&db, &boot.state.operation_runtime, &mut history),
             race
         );
-        assert_eq!(result.unwrap(), 1);
+        assert_eq!(result.unwrap(), 0);
         retry(&boot, &id, true, observer).await;
     }
 }

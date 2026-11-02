@@ -394,23 +394,22 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
         .is_none(),
         "issuer released Track before occupancy commit"
     );
-    let arrival = Pause::arm("key-lock-waiting", &track);
-    let acquired = if delete {
-        let point = PausePoint::default();
-        calm_server::routes::tracks::install_track_delete_teardown_hook_for_test(
-            &track,
-            calm_server::routes::tracks::TrackDeleteTeardownHook {
-                entered: point.entered.clone(),
-                release: point.release.clone(),
-            },
-        );
-        Pause(point, "delete acquired Track".into())
-    } else {
-        Pause::arm("c1-clean-fenced", &track)
-    };
-    drop(clean_ready);
-    let deleting = delete.then(|| {
-        tokio::spawn({
+    let deleting = if delete {
+        let arrival = Pause::arm("key-lock-waiting", &track);
+        let acquired = if delete {
+            let point = PausePoint::default();
+            calm_server::routes::tracks::install_track_delete_teardown_hook_for_test(
+                &track,
+                calm_server::routes::tracks::TrackDeleteTeardownHook {
+                    entered: point.entered.clone(),
+                    release: point.release.clone(),
+                },
+            );
+            Pause(point, "delete acquired Track".into())
+        } else {
+            Pause::arm("c1-clean-fenced", &track)
+        };
+        let deleting = Some(tokio::spawn({
             let stack = stack.clone();
             let track = track.clone();
             async move {
@@ -418,33 +417,45 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
                     .send("DELETE", &format!("/api/tracks/{track}"), None)
                     .await
             }
-        })
-    });
-    tokio::select! {
-        entered = tokio::time::timeout(Duration::from_secs(20), arrival.0.entered.notified()) => entered.expect("lifecycle must wait on Track"),
-        _ = acquired.0.entered.notified() => panic!("lifecycle acquired Track before occupancy commit"),
-    }
-    // A try-lock observes the same registry used by clean/delete, not a second lock.
-    assert!(
-        calm_server::per_card_lock::try_lock_key(
-            stack.state.operation_runtime.track_locks_for_test(),
-            &track
-        )
-        .is_none(),
-        "Track released before occupancy commit"
-    );
-    drop(arrival);
-    drop(acquired);
-    drop(before);
-    if let Some(cleaning) = cleaning {
+        }));
+        tokio::select! {
+            entered = tokio::time::timeout(Duration::from_secs(20), arrival.0.entered.notified()) => entered.expect("lifecycle must wait on Track"),
+            _ = acquired.0.entered.notified() => panic!("lifecycle acquired Track before occupancy commit"),
+        }
+        // A try-lock observes the same registry used by clean/delete, not a second lock.
+        assert!(
+            calm_server::per_card_lock::try_lock_key(
+                stack.state.operation_runtime.track_locks_for_test(),
+                &track
+            )
+            .is_none(),
+            "Track released before occupancy commit"
+        );
+        drop(arrival);
+        drop(acquired);
+        drop(before);
+        deleting
+    } else {
+        drop(clean_ready);
+        // Maintenance must return while the issuer still holds Track. It cannot
+        // queue behind execution admission or release the issuer's guard.
         assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), cleaning)
+            tokio::time::timeout(Duration::from_secs(5), cleaning.unwrap())
                 .await
                 .unwrap()
                 .unwrap(),
             0
         );
-        assert!(cwd.join("target/ignored").exists());
+        assert!(cwd.join("target/ignored").is_file());
+        assert!(
+            calm_server::per_card_lock::try_lock_key(
+                stack.state.operation_runtime.track_locks_for_test(),
+                &track
+            )
+            .is_none()
+        );
+        drop(before);
+        release.entered().await;
         let unsettled: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM workspace_executions WHERE track_id=? AND settled_at_ms IS NULL",
         )
@@ -452,8 +463,9 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
         .fetch_one(pool.read_pool())
         .await
         .unwrap();
-        assert_eq!(unsettled, 1, "clean deferred across committed occupancy");
-    }
+        assert_eq!(unsettled, 1, "committed occupancy is retained");
+        None
+    };
     drop(release);
     if let Some(deleting) = deleting {
         let (status, body) = tokio::time::timeout(Duration::from_secs(30), deleting)

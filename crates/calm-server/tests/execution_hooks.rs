@@ -254,6 +254,23 @@ impl Fixture {
         .await;
         assert_eq!(self.desired(id).await, "retire");
     }
+    async fn workspace_retirement(&self, expected: bool) {
+        let result = sqlite::workspace_retirement::require_active_workspace_path(
+            &mut self.repo.pool().acquire().await.unwrap(),
+            &self.root,
+        )
+        .await;
+        if expected {
+            assert!(matches!(
+                result,
+                Err(calm_truth::error::CalmError::Core(
+                    calm_types::error::CoreError::BadRequest(_)
+                ))
+            ));
+        } else {
+            result.unwrap();
+        }
+    }
     async fn stop(&self, id: &ExecutionId) {
         let write_db = (self.repo.db()).clone();
         write_db
@@ -427,7 +444,8 @@ async fn track_delete_preflight_quiesce_recycle() {
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     f.retired(&id).await;
-    assert!(!f.root.exists());
+    assert!(f.root.is_dir());
+    f.workspace_retirement(true).await;
 }
 
 #[tokio::test]
@@ -776,9 +794,9 @@ async fn worktree_clean_skips_until_settled() {
                     )
                     .await
                     .unwrap(),
-                    1
+                    0
                 );
-                assert!(!worktree.join("target").exists());
+                assert!(worktree.join("target/build").is_file());
             })
         })
         .await
@@ -811,7 +829,8 @@ async fn area_delete_quiesces_typed_then_retires() {
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     f.retired(&id).await;
-    assert!(!f.root.exists());
+    assert!(f.root.is_dir());
+    f.workspace_retirement(true).await;
 }
 
 #[tokio::test]

@@ -347,7 +347,7 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
 
 /// The injection is a plain file where a directory is needed (`ENOTDIR`), not a read-only parent: CI runs as root, for whom mode bits are advisory.
 #[tokio::test]
-async fn materialize_failure_fails_the_create() {
+async fn invalid_managed_ancestor_refuses_create_before_track_commit() {
     let b = boot().await;
     std::fs::create_dir_all(&b.workspace_root).unwrap();
     std::fs::write(b.workspace_root.join(&b.area_id), "not a directory").unwrap();
@@ -372,32 +372,21 @@ async fn materialize_failure_fails_the_create() {
             .to_vec(),
     )
     .unwrap();
-    assert!(
-        !status.is_success(),
-        "materialization failed but the route returned {status}; a 2xx here is \
-         #1147 replayed one layer down. body={body}"
-    );
-    assert!(
-        body.contains("materialize workspace"),
-        "the response must carry the real error, not a generic one: {body}"
-    );
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let failure: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(failure["code"], "bad_request");
 
-    // Known state, deliberately pinned: materialization runs after the commit, so a failure leaves the track row behind; do not loosen this.
-    let orphans: Vec<(String, String)> =
+    // Resolving the allocation target precedes the commit: an invalid ancestor
+    // cannot leave an owner row or change the obstruction's bytes.
+    let refused: Vec<(String, String)> =
         sqlx::query_as("SELECT id, workspace_path FROM tracks WHERE title='doomed'")
             .fetch_all(b.repo.pool())
             .await
             .unwrap();
+    assert!(refused.is_empty());
     assert_eq!(
-        orphans.len(),
-        1,
-        "known state: the track row survives a failed materialization"
-    );
-    assert!(
-        !std::path::Path::new(&orphans[0].1).exists(),
-        "the orphan row's managed path must not exist on disk — if it does, \
-         materialization partially succeeded and this injection is not testing \
-         what it claims: {orphans:?}"
+        std::fs::read_to_string(b.workspace_root.join(&b.area_id)).unwrap(),
+        "not a directory"
     );
 
     std::fs::remove_file(b.workspace_root.join(&b.area_id)).unwrap();

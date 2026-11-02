@@ -74,8 +74,7 @@ impl BootedApplication {
             ));
 
             calm_server::reaper_on_boot();
-            // Expired trash collection stays off interactive deletion fences.
-            drop(calm_server::workspace_service::trash::spawn(&state));
+            // Unconfined workspace trash stays deferred; retention does not prove isolation.
 
             // Scheduler boot sweep. Must follow operation recovery.
             calm_server::scheduler_sweep_on_boot(&state).await;

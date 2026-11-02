@@ -926,3 +926,7 @@ fn forge_env_key_buckets_are_a_partition() {
         ]
     );
 }
+
+#[cfg(test)]
+#[path = "tests/retirement_tests.rs"]
+mod retirement_tests;

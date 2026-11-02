@@ -334,6 +334,7 @@ pub(crate) async fn forge_environment(repo: &dyn RouteRepo) -> Result<Vec<(Strin
 }
 
 mod event_policy;
+pub(crate) use event_policy::require_provision_target_active_tx;
 use event_policy::*;
 
 pub(crate) async fn read_result_file(result_path: &Path) -> Result<ForgeActionResultFile> {
@@ -441,6 +442,32 @@ fn verdict_from_exit_code(exit_code: Option<i32>) -> ProbeVerdict {
 
 #[async_trait]
 impl ProviderAdapter for ForgeActionAdapter {
+    async fn record_owner_event_tx(
+        &self,
+        tx: &mut Tx<'_>,
+        event: OwnerEvent,
+    ) -> Result<crate::event::BroadcastEnvelope> {
+        let envelope = super::settlement::append_owner_event_tx(tx, event).await?;
+        if let Event::WorktreeProvisioned { track_id, path, .. } = &envelope.event {
+            let open: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM tracks WHERE id=? AND closed_at IS NULL)",
+            )
+            .bind(track_id.as_str())
+            .fetch_one(&mut **tx)
+            .await?;
+            if !open {
+                calm_truth::db::sqlite::workspace_retirement::retire_extra_worktree_tx(
+                    tx,
+                    envelope.id,
+                    track_id.as_str(),
+                    Path::new(path),
+                )
+                .await?;
+            }
+        }
+        Ok(envelope)
+    }
+
     async fn failure_event_tx(
         &self,
         tx: &mut Tx<'_>,
@@ -475,8 +502,19 @@ impl ProviderAdapter for ForgeActionAdapter {
         input: &Value,
         op: &Operation,
     ) -> Result<TxOutput> {
-        let payload: ForgeActionPayload = serde_json::from_value(input.clone())?;
+        let mut payload: ForgeActionPayload = serde_json::from_value(input.clone())?;
         validate_payload(&payload)?;
+        if let Some(path) = provision_target(payload.event_spec.as_ref(), &payload.context)? {
+            let target = workspace::worktree::physical_path(&payload.cwd_lease.join(path))?;
+            payload.context.insert("path".into(), json!(target));
+        }
+        require_provision_target_active_tx(
+            tx,
+            &payload.cwd_lease,
+            payload.event_spec.as_ref(),
+            &payload.context,
+        )
+        .await?;
         if !operation_key_matches_payload_idem(
             op.idempotency_key.as_deref(),
             &payload.track_id,

@@ -91,7 +91,7 @@ impl Recorder {
 async fn track_delete_observation_distinguishes_operation_lock_from_writer_admission() {
     let b = boot().await;
     let area = create_area(&b, "timing").await;
-    let (track, _) = managed_track(&b, &area, "wait").await;
+    let (track, path) = managed_track(&b, &area, "wait").await;
     let operation = b.operation_runtime.lock_for_track_delete_for_test().await;
     let logs = Recorder::default();
     let app = b.app.clone();
@@ -158,7 +158,11 @@ async fn track_delete_observation_distinguishes_operation_lock_from_writer_admis
         json!({"stages": stage_totals, "transactions": transactions})
     );
     assert!(b.repo.track_get(&track).await.unwrap().is_none());
-    assert!(trash_entry_for(&b.workspace_root, &track).is_some());
+    assert!(path.is_dir());
+    assert!(trash_entry_for(&b.workspace_root, &track).is_none());
+    let retired: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_resources WHERE retirement_root=? AND retired_at_ms IS NOT NULL")
+        .bind(path.to_str().unwrap()).fetch_one(b.repo.pool()).await.unwrap();
+    assert_eq!(retired, 1);
 }
 
 #[tokio::test]
@@ -182,7 +186,7 @@ async fn track_delete_observation_keeps_owned_completion_after_request_cancellat
     tokio::time::timeout(LIMIT, hook.entered.notified())
         .await
         .unwrap();
-    assert!(!path.exists());
+    assert!(path.is_dir());
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     logs.wait("request", "interrupted").await;
@@ -195,7 +199,11 @@ async fn track_delete_observation_keeps_owned_completion_after_request_cancellat
     assert_eq!(completed["track_id"], track);
     assert!(logs.find("request", "ok").is_empty());
     assert!(b.repo.track_get(&track).await.unwrap().is_none());
-    assert!(trash_entry_for(&b.workspace_root, &track).is_some());
+    assert!(path.is_dir());
+    assert!(trash_entry_for(&b.workspace_root, &track).is_none());
+    let retired: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_resources WHERE retirement_root=? AND retired_at_ms IS NOT NULL")
+        .bind(path.to_str().unwrap()).fetch_one(b.repo.pool()).await.unwrap();
+    assert_eq!(retired, 1);
 }
 
 #[tokio::test]

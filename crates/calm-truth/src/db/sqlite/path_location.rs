@@ -32,12 +32,32 @@ impl<'a> PathLocation<'a> {
         .collect())
     }
 
+    /// Compare against an immutable reservation. Never resolve a retired path:
+    /// garbage may be inaccessible or replaced without affecting unrelated admission.
+    /// Ancestors remain usable: retirement grants no recursive access isolation.
+    pub fn overlaps_reserved(&self, root: &std::path::Path) -> bool {
+        [self.lexical, self.physical.as_path()]
+            .into_iter()
+            .any(|path| reserved_paths_overlap(path, root))
+    }
+
+    pub(super) fn resolved(&self) -> &std::path::Path {
+        &self.physical
+    }
+
     pub fn allow_missing(path: &'a std::path::Path) -> Result<Self> {
         Ok(Self {
             lexical: path,
             physical: physical_path(path)?,
         })
     }
+}
+
+/// Historical relative/empty names have no durable origin; a filesystem root
+/// cannot be an independently owned workspace allocation. None can authorize a
+/// global reservation, even though empty and filesystem roots prefix all paths.
+pub(super) fn reserved_paths_overlap(candidate: &std::path::Path, root: &std::path::Path) -> bool {
+    root.is_absolute() && root.parent().is_some() && candidate.starts_with(root)
 }
 
 /// Compare lexical and physical locations, preserving a missing tail below the nearest

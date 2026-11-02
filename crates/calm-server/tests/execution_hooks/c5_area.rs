@@ -1,5 +1,5 @@
 //! Area effects must prove the whole captured set safe before moving any directory.
-use super::c5_admission::{busy, external_worktree, typed};
+use super::c5_admission::{busy, external_worktree, retired, typed};
 use super::*;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 
@@ -49,6 +49,7 @@ fn branch_exists(track: &Track) -> bool {
 }
 async fn retained(f: &Fixture, worktree: &Track) {
     assert!(f.root.is_dir());
+    f.workspace_retirement(false).await;
     assert!(Path::new(worktree.workspace.agent_cwd()).is_dir());
     assert!(branch_exists(worktree));
     assert!(f.repo.area_get(&f.area).await.unwrap().is_some());
@@ -201,7 +202,7 @@ async fn c5_area_delete_lock_blocks_container_terminal_creation() {
     let url = format!("/api/areas/{old_area}");
     let ((status, body), ()) = tokio::join!(f.request("DELETE", &url, None), create);
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!Path::new(target.workspace.agent_cwd()).exists());
+    assert!(Path::new(target.workspace.agent_cwd()).exists());
 }
 
 #[tokio::test]
@@ -219,7 +220,7 @@ async fn c5_area_writer_recheck_restores_all_despite_foreign_occupancy() {
         tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
             .await
             .unwrap();
-        assert!(!f.root.exists());
+        assert!(f.root.is_dir());
         let id = admit(&f, "foreign-owner", f.state.workspace_root().join(&f.area)).await;
         hook.release.notify_one();
         id
@@ -248,7 +249,7 @@ async fn c5_area_commit_failure_and_panic_restore_all_with_new_occupancy() {
             tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
                 .await
                 .unwrap();
-            assert!(!f.root.exists());
+            assert!(f.root.is_dir());
             let id = admit(&f, "foreign-owner", f.root.clone()).await;
             hook.release.notify_one();
             id
@@ -307,12 +308,12 @@ async fn c5_area_committed_worktree_before_sweep_admission_is_busy() {
                 .unwrap()
                 .is_none()
         );
-        busy(&f, Path::new(target.workspace.agent_cwd())).await;
+        retired(&f, Path::new(target.workspace.agent_cwd())).await;
         p.release.notify_one();
     };
     let url = format!("/api/areas/{}", f.area);
     let ((status, body), ()) = tokio::join!(f.request("DELETE", &url, None), create);
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!Path::new(target.workspace.agent_cwd()).exists());
-    assert!(!branch_exists(&target));
+    assert!(Path::new(target.workspace.agent_cwd()).exists());
+    assert!(branch_exists(&target));
 }

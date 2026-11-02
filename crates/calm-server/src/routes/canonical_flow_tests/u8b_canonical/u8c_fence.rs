@@ -145,7 +145,7 @@ async fn u8c_fence_replay_repair_waits_for_clean() {
     }
     drop(arrival);
     drop(held);
-    assert_eq!(cleaning.await.unwrap(), 1);
+    assert_eq!(cleaning.await.unwrap(), 0);
     assert_eq!(repairing.await.0, StatusCode::CREATED);
     read(&app, &cookie, track, MARKER).await;
     fixture.shutdown_process(&state).await;
@@ -294,7 +294,7 @@ async fn retained_clean_and_delete(cold: bool) {
         "{refused:?}"
     );
     drop(held);
-    assert_eq!(cleaning.await.unwrap(), 1);
+    assert_eq!(cleaning.await.unwrap(), 0);
     let fence = crate::operation::planner_start_fence::CardStartFence::lock(
         &route.planner_recovery_locks,
         &route.repo,
@@ -356,7 +356,7 @@ async fn retained_clean_and_delete(cold: bool) {
     .await;
     fixture.shutdown_process(&state).await;
     assert!(rejected.is_err());
-    assert!(!worktree.exists());
+    assert!(worktree.is_dir());
 }
 
 #[tokio::test]
@@ -428,10 +428,10 @@ async fn u8c_fence_cancelled_post_holds_delete_through_filesystem() {
             .0,
         StatusCode::NO_CONTENT
     );
-    assert!(!std::path::Path::new(track.workspace.agent_cwd()).exists());
+    assert!(std::path::Path::new(track.workspace.agent_cwd()).is_dir());
     let branch = workspace::worktree::track_branch_for(&binding.track_id).unwrap();
     assert!(
-        !std::process::Command::new("git")
+        std::process::Command::new("git")
             .args(["show-ref", "--verify", &format!("refs/heads/{branch}")])
             .current_dir(&path)
             .output()
@@ -594,7 +594,6 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
             .await
             .unwrap();
         let admitted = HeldPause::arm("c5d-clean-before-track", track);
-        let fenced = HeldPause::arm("c1-clean-fenced", track);
         let cleaning = crate::test_seams::clean_idle_closed_track_worktrees_for_test(
             fixture.repo.db(),
             &state.operation_runtime,
@@ -606,27 +605,18 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         }
         drop(waiting);
         handoff.release();
-        drop(admitted);
-        let ((), refused) = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::join!(
-                async {
-                    tokio::select! {
-                        _ = fenced.entered() => {},
-                        result = &mut cleaning => panic!("clean must fence: {result:?}"),
-                    }
-                },
-                &mut wake,
-            )
-        })
-        .await
-        .unwrap();
+        // Keep the published registration until wake has observed it. Maintenance
+        // does not promise to win a Track lock race once released.
+        let refused = tokio::time::timeout(Duration::from_secs(10), &mut wake)
+            .await
+            .unwrap();
         assert!(
             matches!(refused, Err(crate::error::CalmError::WorkspaceBusy(_))),
             "{refused:?}"
         );
         no_activation_requests(&mut peer).await;
-        drop(fenced);
-        assert_eq!(cleaning.await.unwrap(), 1);
+        drop(admitted);
+        assert_eq!(cleaning.await.unwrap(), 0);
     } else {
         let delete_waiting = HeldPause::arm("key-lock-waiting", track);
         let uri = format!("/api/tracks/{track}");
@@ -654,7 +644,7 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         .await
         .unwrap();
         assert_eq!(after, before);
-        assert!(!worktree.exists());
+        assert!(worktree.is_dir());
         assert!(state.harness.get(&worker).is_none());
     }
     fixture.shutdown_process(&state).await;

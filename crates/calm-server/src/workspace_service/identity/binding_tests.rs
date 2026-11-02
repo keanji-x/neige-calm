@@ -282,15 +282,8 @@ async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) 
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
-                workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
-                    registration.sweeps(vec![sweep]),
-                    crate::workspace_service::reclaim::ServerReclaimPorts {
-                        runtime,
-                        db: repo.db().clone(),
-                    },
-                    crate::workspace_service::ports::observe,
-                )
-                .await;
+                drop(registration.sweeps(vec![sweep]));
+                drop(runtime);
             })
         })
         .await
@@ -298,7 +291,7 @@ async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) 
 }
 
 #[tokio::test]
-async fn workspace_identity_owned_create_delete_create_keeps_history_without_reserving_inode() {
+async fn workspace_identity_owned_create_delete_create_keeps_retired_selection_history() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
@@ -321,7 +314,7 @@ async fn workspace_identity_owned_create_delete_create_keeps_history_without_res
         .unwrap();
     let before = binding(&repo, &old).await;
     delete_through_sweep(&repo, &old).await;
-    assert!(!Path::new(old.workspace.worktree.as_deref().unwrap()).exists());
+    assert!(Path::new(old.workspace.worktree.as_deref().unwrap()).is_dir());
     let fresh = track(
         &repo,
         &source,

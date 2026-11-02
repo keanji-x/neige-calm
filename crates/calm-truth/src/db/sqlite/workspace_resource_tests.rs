@@ -355,8 +355,8 @@ async fn workspace_resource_ddl_accepts_only_complete_observation_shapes() {
                             "INSERT INTO workspace_resources
                     (id,source_track_id,root_path,ownership,observation_version,created_at_ms,
                      observed_root,observed_cwd,directory_device,directory_inode,
-                     git_common_dir,physical_owner_track_id)
-                    VALUES (?1,'source','/row',?2,?3,1,?4,?5,?6,?7,?8,?9)",
+                     git_common_dir,physical_owner_track_id,location_root)
+                    VALUES (?1,'source','/row',?2,?3,1,?4,?5,?6,?7,?8,?9,'/row')",
                         )
                         .bind(&id)
                         .bind(if owned { "owned" } else { "borrowed" })
@@ -412,12 +412,14 @@ async fn workspace_resource_migration_fills_gap_after_released_area_ownership() 
         7,
     )
     .await;
-    // This is the released main history: 0167 exists, while this branch's 0166 does not.
+    // Freeze the released area-ownership prefix: 0167 exists without 0166.
+    // Later migrations may depend on the workspace tables and are not part of
+    // this historical database; production boot applies them after filling the gap.
     let released = sqlx::migrate::Migrator {
         migrations: Cow::Owned(
             crate::MIGRATOR
                 .iter()
-                .filter(|migration| migration.version != 166)
+                .filter(|migration| migration.version <= 167 && migration.version != 166)
                 .cloned()
                 .collect(),
         ),
@@ -485,3 +487,6 @@ async fn workspace_resource_migration_fills_gap_after_released_area_ownership() 
     assert_eq!(snapshot.state, super::DirectoryObservation::Pending);
     assert_eq!(snapshot.selection_version, 1);
 }
+
+#[cfg(test)]
+mod retirement_tests;

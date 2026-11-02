@@ -230,6 +230,7 @@ async fn c5_track_positive_proof_after_quiesce_precedes_move() {
         let url = format!("/api/tracks/{}", f.track);
         let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        f.workspace_retirement(false).await;
         assert!(f.root.is_dir());
         assert!(
             !f.state.workspace_root().join(".trash").exists(),
@@ -255,7 +256,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
             tokio::time::timeout(Duration::from_secs(10), hook.entered.notified())
                 .await
                 .unwrap();
-            assert!(!f.root.exists());
+            assert!(f.root.is_dir());
             let mut intent = crate::support::execution::occupancy_intent(f.root.clone());
             intent.metadata.track = exec::TrackId("foreign-owner".into());
             let id = intent.metadata.id.clone();
@@ -277,6 +278,7 @@ async fn c5_track_writer_rechecks_foreign_location() {
         let url = format!("/api/tracks/{}", f.track);
         let ((status, body), id) = tokio::join!(f.request("DELETE", &url, None), insert);
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        f.workspace_retirement(false).await;
         assert!(f.root.is_dir());
         assert!(f.repo.track_get(&f.track).await.unwrap().is_some());
         assert_eq!(f.desired(&id).await, "run");
@@ -358,22 +360,25 @@ async fn c5_trash_repoint_attached_owner_does_not_pin_retired_directory() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let trash_root = f.state.workspace_root().join(".trash");
-    let trash = std::fs::read_dir(&trash_root)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let expired = trash_root.join(format!("{}-1", f.track));
-    std::fs::rename(trash, &expired).unwrap();
+    assert!(f.root.is_dir());
+    assert!(!f.state.workspace_root().join(".trash").exists());
     calm_server::workspace_service::trash::collect_once(
         f.state.workspace_root().to_path_buf(),
         f.state.operation_runtime.clone(),
         f.repo.db().clone(),
     )
     .await;
-    assert!(!expired.exists());
+    let result = calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+        &mut f.repo.pool().acquire().await.unwrap(),
+        &f.root,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(calm_truth::error::CalmError::Core(
+            calm_types::error::CoreError::BadRequest(_)
+        ))
+    ));
     assert!(f.repo.track_get(&f.track).await.unwrap().is_some());
     assert!(target.is_dir());
 }

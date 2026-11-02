@@ -55,6 +55,34 @@ pub enum WorkspaceOwnership {
     TrackWorktree,
 }
 
+impl WorkspaceOwnership {
+    pub(super) fn for_workspace(workspace: &TrackWorkspace) -> Self {
+        if workspace.worktree.is_some() {
+            Self::TrackWorktree
+        } else if workspace.kind == TrackWorkspaceKind::Managed {
+            Self::Managed
+        } else {
+            Self::Borrowed
+        }
+    }
+}
+
+/// Empty borrowed selections are the existing unselected Track metadata state.
+/// They have no physical location. Execution admission always requires a path
+/// through `require_active_workspace_path` and never uses this metadata exception.
+pub(super) async fn active_selection_location<'a>(
+    conn: &mut SqliteConnection,
+    root: &'a str,
+    ownership: WorkspaceOwnership,
+) -> Result<Option<super::path_location::PathLocation<'a>>> {
+    if root.is_empty() && ownership == WorkspaceOwnership::Borrowed {
+        return Ok(None);
+    }
+    super::workspace_retirement::active_workspace_location(conn, std::path::Path::new(root))
+        .await
+        .map(Some)
+}
+
 #[derive(sqlx::FromRow)]
 struct ObservationRow {
     workspace_id: String,
@@ -84,17 +112,28 @@ pub async fn workspace_observation_snapshot(
          JOIN tracks t ON t.id=b.track_id WHERE b.track_id=?1 \
          AND r.source_track_id=t.id AND r.root_path=b.selected_path AND r.ownership=b.ownership \
          AND b.selected_path=coalesce(t.workspace_worktree_path,t.workspace_path) \
-         AND b.ownership=CASE WHEN t.workspace_worktree_path IS NOT NULL OR t.workspace_kind='managed' \
+         AND r.retired_at_ms IS NULL AND b.ownership=CASE WHEN t.workspace_worktree_path IS NOT NULL OR t.workspace_kind='managed' \
              THEN 'owned' ELSE 'borrowed' END",
     )
     .bind(track_id)
-    .fetch_optional(conn)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| {
         CalmError::Conflict(format!(
             "WorkspaceRecoveryRequired: track {track_id} has no workspace selection"
         ))
     })?;
+    let ownership = match row.ownership.as_str() {
+        "borrowed" => WorkspaceOwnership::Borrowed,
+        "managed" => WorkspaceOwnership::Managed,
+        "track_worktree" => WorkspaceOwnership::TrackWorktree,
+        _ => {
+            return Err(CalmError::Internal(
+                "invalid persisted workspace ownership".into(),
+            ));
+        }
+    };
+    active_selection_location(conn, &row.selected_path, ownership).await?;
     let state = match row {
         ObservationRow {
             observation_version: 0,
@@ -138,16 +177,7 @@ pub async fn workspace_observation_snapshot(
         selection_version: row.selection_version,
         selected_path: row.selected_path,
         state,
-        ownership: match row.ownership.as_str() {
-            "borrowed" => WorkspaceOwnership::Borrowed,
-            "managed" => WorkspaceOwnership::Managed,
-            "track_worktree" => WorkspaceOwnership::TrackWorktree,
-            _ => {
-                return Err(CalmError::Internal(
-                    "invalid persisted workspace ownership".into(),
-                ));
-            }
-        },
+        ownership,
     })
 }
 
@@ -229,11 +259,18 @@ pub(super) async fn workspace_bind_selection_tx(
     workspace: &TrackWorkspace,
 ) -> Result<()> {
     let root = workspace.worktree.as_deref().unwrap_or(&workspace.path);
-    let ownership = if workspace.worktree.is_some() || workspace.kind == TrackWorkspaceKind::Managed
-    {
-        "owned"
-    } else {
-        "borrowed"
+    let selection_ownership = WorkspaceOwnership::for_workspace(workspace);
+    let selected_location = active_selection_location(tx, root, selection_ownership).await?;
+    let location_root = match &selected_location {
+        Some(location) => location
+            .resolved()
+            .to_str()
+            .ok_or_else(|| CalmError::BadRequest("workspace root is not UTF-8"))?,
+        None => "", // Unselected borrowed metadata, never an execution location.
+    };
+    let ownership = match selection_ownership {
+        WorkspaceOwnership::Borrowed => "borrowed",
+        WorkspaceOwnership::Managed | WorkspaceOwnership::TrackWorktree => "owned",
     };
     let unchanged = sqlx::query(
         "UPDATE track_workspace_bindings SET frozen_at_ms=?4 \
@@ -251,8 +288,9 @@ pub(super) async fn workspace_bind_selection_tx(
     let id = new_id();
     sqlx::query(
         "INSERT INTO workspace_resources \
-         (id,source_track_id,root_path,ownership,observation_version,created_at_ms) VALUES (?1,?2,?3,?4,0,?5)",
+         (id,source_track_id,root_path,ownership,observation_version,created_at_ms,location_root) VALUES (?1,?2,?3,?4,0,?5,?6)",
     ).bind(&id).bind(track_id).bind(root).bind(ownership).bind(now_ms())
+        .bind(location_root)
         .execute(&mut **tx).await?;
     sqlx::query(
         "INSERT INTO track_workspace_bindings \

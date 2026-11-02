@@ -128,6 +128,27 @@
 # this existing baseline; ordinary test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# #3484 historical Track-write registration adds one long SQL literal (201 -> 202).
+# The existing exact-write registry records the fixed pre-0210 Track INSERT and
+# why it cannot use the current writer. Ordinary new historical cases reuse the
+# seed; only changing that fixed SQL edits its helper, existing registry entry
+# and baseline. There is no new check, scan, exclusion or CI invocation.
+# #3484 historical-upgrade fixtures add four long SQL literals (197 -> 201):
+# historical_fixtures.rs fixes the pre-0210 Track, resource, binding and Card
+# INSERT contracts. Migration tests cannot use the current retirement writer on
+# an old schema. These are SQL fixtures, not agent-facing prose. Only changes to
+# those fixture contracts edit that helper and regenerate this existing baseline;
+# ordinary new tests need no inventory. The once-per-lint scan and its existing
+# selftest are unchanged; no rule, exclusion or additional invocation is added.
+# #3484 bounded SQL exception: long_literal/crates/**/*.rs 196 -> 197.
+# Six new matches are SQL: one retirement UPDATE, one guarded receipt SELECT,
+# two legacy-operation fixtures in gitforge_reclaim_admission.rs, and two parked
+# fixtures in workspace_resource_tests/retirement_tests.rs. Removing the old reclaim owner and
+# receipt triggers removes five matches (two owner queries and three triggers).
+# This net one match adds no agent instructions, scan or exclusion. Ordinary
+# query/fixture changes edit their owning source and this existing baseline;
+# CI retains one normal scan and one selftest, without a file/test inventory.
+
 # Child Track handback adds five long_literal matches, all SQL test fixtures:
 # the parent assignment INSERT and event rollback trigger in child_track_handback.rs,
 # and workspace lease, delivery and candidate INSERTs in support/child_track.rs.

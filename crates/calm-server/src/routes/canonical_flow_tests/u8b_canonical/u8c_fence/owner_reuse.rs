@@ -38,7 +38,7 @@ fn clean_task(
 }
 
 #[tokio::test]
-async fn u8c_fence_clean_queued_cancel_and_rejected_candidate_release_owner() {
+async fn u8c_fence_clean_busy_track_returns_without_waiting_or_releasing_owner() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let path = repo(&fixture);
@@ -46,59 +46,24 @@ async fn u8c_fence_clean_queued_cancel_and_rejected_candidate_release_owner() {
     let runtime = &state.operation_runtime;
     let targets = &runtime.location_admission().unwrap().teardown_targets;
     let held = lock_key(runtime.track_delete_locks(), track.id.as_str()).await;
-    for cancel in [true, false] {
-        let arrival = HeldPause::arm("key-lock-waiting", track.id.as_str());
-        let cleaning = clean_task(&fixture, &state);
-        arrival.entered().await;
-        assert_eq!(
-            targets.snapshot_with_owners(),
-            vec![(track.id.to_string(), track.workspace.agent_cwd().into())]
-        );
-        // This is the production Live admission consumer, before it can wait on Track.
-        let live = crate::workspace_service::retained_worktree(
-            fixture.repo.clone(),
-            runtime.track_delete_locks(),
-            &track,
-            crate::workspace_service::RetainedAdmission::Live(targets.clone()),
-            crate::workspace_service::RetainedPreparation::Locator,
-            || async { Ok(()) },
-        );
-        assert!(matches!(
-            tokio::time::timeout(Duration::from_secs(5), live)
-                .await
-                .unwrap(),
-            Err(crate::error::CalmError::WorkspaceBusy(_))
-        ));
-        if cancel {
-            cleaning.abort();
-            assert!(cleaning.await.unwrap_err().is_cancelled());
-            assert!(targets.snapshot().is_empty());
-            // Cancellation must also release drive, without releasing someone else's Track.
-            drop(
-                tokio::time::timeout(Duration::from_secs(5), runtime.lock_for_track_delete())
-                    .await
-                    .unwrap(),
-            );
-            assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_none());
-        } else {
-            (fixture.repo.db())
-                .writer()
-                .execute(
-                    sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?")
-                        .bind(track.id.as_str()),
-                )
-                .await
-                .unwrap();
-            drop(arrival);
-            drop(held);
-            assert_eq!(cleaning.await.unwrap().unwrap(), 0);
-            assert!(targets.snapshot().is_empty());
-            assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_some());
-            fixture.shutdown_process(&state).await;
-            return;
-        }
-        drop(arrival);
-    }
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), clean_task(&fixture, &state))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert!(targets.snapshot().is_empty());
+    assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_none());
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), runtime.lock_for_track_delete())
+            .await
+            .unwrap(),
+    );
+    drop(held);
+    assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_some());
+    fixture.shutdown_process(&state).await;
 }
 
 #[tokio::test]
@@ -176,7 +141,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
                 assert!(targets.snapshot().is_empty());
                 assert!(admission.try_fence(&mut conn, cwd, None).await.is_ok());
                 drop(held);
-                assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 1);
+                assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 0);
                 assert!(targets.snapshot().is_empty());
                 let mut tx = write_session.begin_immediate().await.unwrap();
                 fence.recheck(&mut tx).await.unwrap();
@@ -189,7 +154,7 @@ async fn u8c_fence_clean_duplicate_cancel_preserves_location_owner_union() {
 }
 
 #[tokio::test]
-async fn u8c_fence_clean_cancelled_filesystem_keeps_owner_until_completion() {
+async fn u8c_fence_clean_does_not_wait_for_git_metadata() {
     let fixture = Fixture::new().await;
     let (state, app, cookie) = fixture.application().await;
     let path = repo(&fixture);
@@ -211,21 +176,8 @@ async fn u8c_fence_clean_cancelled_filesystem_keeps_owner_until_completion() {
         _ = metadata.entered() => {},
         result = &mut holder => panic!("metadata holder returned before locking: {result:?}"),
     }
-    let contended = HeldPause::arm("track-metadata-contended", path.to_str().unwrap());
-    let mut cleaning = clean_task(&fixture, &state);
-    tokio::select! {
-        _ = contended.entered() => {},
-        result = &mut cleaning => panic!("clean returned before filesystem contention: {result:?}"),
-    }
-    cleaning.abort();
-    assert!(cleaning.await.unwrap_err().is_cancelled());
-    let runtime = &state.operation_runtime;
-    let targets = &runtime.location_admission().unwrap().teardown_targets;
-    assert_eq!(
-        targets.snapshot_with_owners(),
-        vec![(track.id.to_string(), track.workspace.agent_cwd().into())]
-    );
-    assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_none());
+    // No physical cleanup is admitted, so the metadata holder cannot block
+    // maintenance, and completing maintenance must not release that holder.
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), clean_task(&fixture, &state))
             .await
@@ -234,19 +186,14 @@ async fn u8c_fence_clean_cancelled_filesystem_keeps_owner_until_completion() {
             .unwrap(),
         0
     );
-    drop(contended);
+    assert!(!holder.is_finished());
+    let runtime = &state.operation_runtime;
+    let targets = &runtime.location_admission().unwrap().teardown_targets;
+    assert!(targets.snapshot().is_empty());
+    assert!(try_lock_key(runtime.track_delete_locks(), track.id.as_str()).is_some());
+    assert!(ignored.is_file());
     drop(metadata);
     assert_eq!(holder.await.unwrap().0, StatusCode::CREATED);
-    // Await the actual Track fence, which the owned clean task retains through Git completion.
-    let guard = tokio::time::timeout(
-        Duration::from_secs(10),
-        lock_key(runtime.track_delete_locks(), track.id.as_str()),
-    )
-    .await
-    .unwrap();
-    assert!(!ignored.exists());
-    assert!(targets.snapshot().is_empty());
-    drop(guard);
     fixture.shutdown_process(&state).await;
 }
 
@@ -295,8 +242,8 @@ async fn u8c_fence_clean_filesystem_error_releases_owner_for_later_pass() {
         .is_some()
     );
     std::fs::write(&index, original).unwrap();
-    assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 1);
-    assert!(!ignored.exists());
+    assert_eq!(clean_task(&fixture, &state).await.unwrap().unwrap(), 0);
+    assert!(ignored.is_file());
     assert!(targets.snapshot().is_empty());
     fixture.shutdown_process(&state).await;
 }

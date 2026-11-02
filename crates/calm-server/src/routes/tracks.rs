@@ -1,6 +1,6 @@
 //! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD.
 use calm_types::track_wire::TrackWire;
-use workspace_runtime::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_for_tracks};
+use workspace_runtime::sweep::WorkspaceTrackSweep;
 
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
@@ -140,7 +140,6 @@ struct TrackDeletePlan {
 }
 
 struct PreparedTrackDeletion {
-    reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts,
     observation: DeletionObservation,
     track: Track,
     area_kind: Option<AreaKind>,
@@ -2116,7 +2115,6 @@ async fn repoint_track_workspace(
     })
     .await?;
 
-    let workspace_root = s.workspace_root.clone();
     let track_id = track.id.to_string();
     let area_id = track.area_id.as_str().to_string();
 
@@ -2356,6 +2354,10 @@ async fn repoint_track_workspace(
                     &TrackWorkspacePlan::AttachedFromCwd,
                 )
                 .await?;
+                calm_truth::db::sqlite::workspace_retirement::retire_workspace_selection_tx(
+                    tx, &track_id,
+                )
+                .await?;
                 crate::db::sqlite::track_workspace_write_tx(tx, &track_id, &workspace).await?;
                 let track = track_get_tx(tx, &TrackId::from(track_id)).await?;
                 let events = vec![(
@@ -2385,43 +2387,8 @@ async fn repoint_track_workspace(
     #[cfg(feature = "fixtures")]
     crate::test_seams::pause_point("c5-repoint-committed", &track_id).await;
 
-    let decision = workspace_recycle::recycle_track_workspace(
-        &workspace_root,
-        area.as_ref().map(|c| c.kind),
-        &track_id,
-        // The OLD workspace value, read inside the fence transaction. The row
-        // now says `attached`, so re-reading it here would make guard 1 refuse
-        // and leave the directory behind forever.
-        &fence.old_workspace,
-        crate::model::now_ms(),
-    );
-    match decision {
-        // Never materialized, or already reclaimed. Nothing to move.
-        Ok(workspace_recycle::RecycleDecision::Refused(
-            workspace_recycle::RecycleRefusal::PathMissing,
-        ))
-        | Ok(workspace_recycle::RecycleDecision::Trashed { .. }) => {}
-        // The row has already moved, so this is a leak, not a failure of the re-point. Loud,
-        // and not a 500.
-        Ok(workspace_recycle::RecycleDecision::Refused(refusal)) => {
-            tracing::error!(
-                track_id,
-                path = %fence.old_workspace.path,
-                reason = refusal.tag(),
-                "workspace repoint: the track now points at the user's repository, but its old \
-                 managed directory could not be reclaimed and is leaked on disk"
-            );
-        }
-        Err(error) => {
-            tracing::error!(
-                track_id,
-                path = %fence.old_workspace.path,
-                error = %error,
-                "workspace repoint: the track now points at the user's repository, but moving \
-                 its old managed directory to the trash failed; it is leaked on disk"
-            );
-        }
-    }
+    // The old owned selection retired atomically with the new binding. Its
+    // directory remains reserved; online physical cleanup is deferred.
 
     // `force_new_thread` is the only mechanism that re-reads `cwd`: a resumed codex thread
     // keeps the cwd it was minted with.
@@ -3046,14 +3013,11 @@ fn recycle_track_workspace_for_delete(
     area_kind: Option<AreaKind>,
     observation: &DeletionObservation,
 ) -> Result<workspace_recycle::RecycleDecision> {
+    let _ = (s, track, area_kind);
     let decision = observation.observe_sync(Stage::WorkspaceRecycle, || {
-        workspace_recycle::recycle_track_workspace(
-            &s.workspace_root,
-            area_kind,
-            track.id.as_str(),
-            &track.workspace,
-            crate::model::now_ms(),
-        )
+        Ok::<_, CalmError>(workspace_recycle::RecycleDecision::Refused(
+            workspace_recycle::RecycleRefusal::CleanupDeferred,
+        ))
     })?;
     Ok(decision)
 }
@@ -3252,12 +3216,7 @@ impl RecycledTrackDeletion {
         // authoritative.
         let mut worktrees = prepared.observation.stage(Stage::WorktreeSweep);
         crate::workspace_service::sweep::before_sweep(&sweeps).await;
-        sweep_workspace_worktrees_for_tracks(
-            registration.sweeps(sweeps),
-            prepared.reclaim_ports.clone(),
-            crate::workspace_service::ports::observe,
-        )
-        .await;
+        drop(registration.sweeps(sweeps));
         worktrees.finish("finished_best_effort");
         post_commit.finish("ok");
         Ok(())
@@ -3450,7 +3409,6 @@ pub(crate) async fn delete_track(
         )));
     }
 
-    crate::workspace_service::reclaim::protect_delete(&mut *pool.read_pool().acquire().await?, &track.workspace).await?;
 
     // Experience-only preflight: the in-transaction guard in `track_delete_tx` is the
     // correctness boundary; a child created after this read makes the final delete return
@@ -3472,7 +3430,6 @@ pub(crate) async fn delete_track(
     observation.observe(Stage::Reprojection, preflight_track_deletion_reprojection(&pool, &track_id)).await?;
 
     let prepared = PreparedTrackDeletion {
-        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {runtime: s.operation_runtime.clone(), db: pool.clone()},
         observation: observation.clone(),
         plan: observation.observe(Stage::Snapshot, snapshot_track_deletion(&s, &track)).await?,
         codex_backends: cs.codex_backends.clone(),

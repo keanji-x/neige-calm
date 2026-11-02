@@ -51,6 +51,8 @@ impl LocationAdmission {
         conn: &mut sqlx::SqliteConnection,
         cwd: &Path,
     ) -> Result<BTreeSet<Owner>> {
+        calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(conn, cwd)
+            .await?;
         let location = self.location(cwd)?;
         let mut owners = BTreeSet::new();
         let managed_locations = if paths_overlap(&location, &self.managed_root, false)? {
@@ -73,7 +75,7 @@ impl LocationAdmission {
                 }
             }
         }
-        for owned in calm_truth::db::sqlite::owned_workspace_locations(conn)
+        for owned in calm_truth::db::sqlite::execution_workspace_locations(conn)
             .await?
             .into_iter()
             .chain(
@@ -85,6 +87,7 @@ impl LocationAdmission {
                             track_id,
                             path,
                             removing: false,
+                            retired: false,
                         },
                     ),
             )

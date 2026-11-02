@@ -1,5 +1,4 @@
 //! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
-use workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks;
 
 use crate::actor::Actor;
 use crate::auth::Principal;
@@ -355,7 +354,6 @@ pub(crate) async fn update_area(
 }
 
 struct PreparedAreaDeletion {
-    reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts,
     id: String,
     area_kind: Option<AreaKind>,
     tracks: Vec<Track>,
@@ -575,14 +573,21 @@ impl QuiescedAreaDeletion {
         let now = crate::model::now_ms();
         let recycled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             proof?;
-            workspace_recycle::recycle_area_workspaces(
-                &route.workspace_root,
-                &prepared.id,
-                prepared.area_kind,
-                &targets,
-                now,
-            )
-            .map_err(CalmError::from)
+            let _ = (&route.workspace_root, &prepared.id, prepared.area_kind, now);
+            Ok::<_, CalmError>(workspace_recycle::AreaRecycleReport {
+                decisions: targets
+                    .iter()
+                    .map(|target| {
+                        (
+                            target.track_id.to_owned(),
+                            workspace_recycle::RecycleDecision::Refused(
+                                workspace_recycle::RecycleRefusal::CleanupDeferred,
+                            ),
+                        )
+                    })
+                    .collect(),
+                area_dir_removed: false,
+            })
         }));
         drop(targets);
         match recycled {
@@ -703,7 +708,7 @@ async fn finish_area_deletion(
 
 impl RecycledAreaDeletion {
     async fn commit(
-        mut self,
+        self,
         route: &RouteState,
         registration: workspace_runtime::sweep::TeardownRegistration,
     ) -> Result<()> {
@@ -771,21 +776,12 @@ impl RecycledAreaDeletion {
             route.mcp_context.preview.release_track(&track_id);
             route.write.forget_track(&track_id);
         }
-        workspace_recycle::finalize_area_recycle(
-            &route.workspace_root,
-            &area_id,
-            &mut self.recycle_report,
-        );
+
         // Membership is committed and recycling finalized; the registry owns the
         // remaining worktree effects, including creates in a recreated area.
         drop(self.quiesced.prepared._area_guard);
         crate::workspace_service::sweep::before_sweep(&sweeps).await;
-        sweep_workspace_worktrees_for_tracks(
-            registration.sweeps(sweeps),
-            self.quiesced.prepared.reclaim_ports.clone(),
-            crate::workspace_service::ports::observe,
-        )
-        .await;
+        drop(registration.sweeps(sweeps));
         Ok(())
     }
 }
@@ -950,14 +946,6 @@ pub(crate) async fn delete_area(
         )));
     }
 
-    for track in &tracks {
-        crate::workspace_service::reclaim::protect_delete(
-            &mut *pool.read_pool().acquire().await?,
-            &track.workspace,
-        )
-        .await?;
-    }
-
     // Even an empty Area may have an execution rooted at its container.
     // Managed member directories are covered by that container target.
     let location_targets = std::iter::once(s.workspace_root.join(&id))
@@ -970,10 +958,6 @@ pub(crate) async fn delete_area(
         }))
         .collect();
     let prepared = PreparedAreaDeletion {
-        reclaim_ports: crate::workspace_service::reclaim::ServerReclaimPorts {
-            runtime: s.operation_runtime.clone(),
-            db: pool.clone(),
-        },
         id,
         area_kind,
         tracks,

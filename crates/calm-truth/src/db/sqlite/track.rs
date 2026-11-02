@@ -115,10 +115,24 @@ pub async fn admit_attached_workspace_tx(
         )?);
     }
     let live = super::owned_workspace_locations(tx).await?;
+    for retired in live.iter().filter(|location| location.retired) {
+        if candidates
+            .iter()
+            .any(|candidate| candidate.overlaps_reserved(&retired.path))
+        {
+            return Err(CalmError::BadRequest(
+                "attached workspace overlaps a retired resource",
+            ));
+        }
+    }
     for root in owned_roots
         .iter()
         .cloned()
-        .chain(live.into_iter().map(|location| location.path))
+        .chain(
+            live.into_iter()
+                .filter(|location| !location.retired)
+                .map(|location| location.path),
+        )
         .chain(teardown_roots.iter().cloned())
     {
         for candidate in &candidates {
@@ -339,6 +353,7 @@ pub async fn track_update_tx(
             ));
         }
         if closed {
+            let _ = super::workspace_retirement::retire_track_extras_tx(tx, w.id.as_str()).await?;
             w.closed_at.get_or_insert_with(now_ms);
         } else if w.closed_at.is_some() {
             track_require_reopenable_tx(tx, &w).await?;
@@ -422,6 +437,11 @@ pub async fn track_delete_tx(
     track_area_cache: &TrackAreaCache,
 ) -> Result<()> {
     track_require_leaf_tx(tx, id).await?;
+    if track_find_tx(tx, id).await?.is_none() {
+        return Err(CalmError::NotFound(format!("track {id}")));
+    }
+    super::workspace_retirement::retire_workspace_selection_tx(tx, id).await?;
+    let _ = super::workspace_retirement::retire_track_extras_tx(tx, id).await?;
     track_delete_leaf_tx(tx, id, track_area_cache).await
 }
 

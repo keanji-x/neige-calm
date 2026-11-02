@@ -234,6 +234,12 @@
 # Later contract references edit their owning source/test and this same baseline.
 # CI keeps one normal scan and one selftest invocation; no new check is added.
 
+# #3484 bounded wire-contract exception: spec/crates 526 -> 531 is five
+# references to the existing event_spec field (pre-effect target validation,
+# prepare/release admission and its invalid-target fixture). No new vocabulary,
+# scan, exclusion or caller list is added. Later wire references edit their
+# owning code/test and this baseline; CI retains one scan and one selftest.
+
 set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1

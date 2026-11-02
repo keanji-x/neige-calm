@@ -152,8 +152,8 @@ async fn c1_fence_reopen_waits_for_clean() {
     assert_eq!(closed, Some(123));
     drop(arrival);
     drop(pause);
-    assert_eq!(cleaning.await.unwrap().0, 1);
-    assert!(!path.join("target/ignored").exists());
+    assert_eq!(cleaning.await.unwrap().0, 0);
+    assert!(path.join("target/ignored").exists());
     assert!(reopening.await.0.is_success());
 }
 async fn preparation(kind: &str, boot: bool) {
@@ -236,7 +236,7 @@ async fn preparation(kind: &str, boot: bool) {
     .unwrap();
     drop(drive);
     drop(pause);
-    assert_eq!(cleaning.await.unwrap().0, 1);
+    assert_eq!(cleaning.await.unwrap().0, 0);
     // No HTTP waiter and no forced recovery claim: the Busy owner must wake drive.
     tokio::time::timeout(Duration::from_secs(5), async {
         while phase(&b, &op).await == "pending" {
@@ -357,8 +357,8 @@ async fn c3_forge_action_after_clean_check_waits_for_clean() {
     assert!(!released.exists(), "no go-token release during clean");
     assert!(path.join("target/ignored").exists());
     drop(pause);
-    assert_eq!(cleaning.await.unwrap().0, 1);
-    assert!(!path.join("target/ignored").exists());
+    assert_eq!(cleaning.await.unwrap().0, 0);
+    assert!(path.join("target/ignored").exists());
     tokio::time::timeout(Duration::from_secs(10), async {
         while phase(&b, &op).await != "succeeded" {
             tokio::time::sleep(Duration::from_millis(10)).await;

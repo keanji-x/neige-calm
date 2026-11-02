@@ -101,7 +101,7 @@ async fn metadata_root_linked_create_serializes_independent_states() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn metadata_create_delete_serializes_and_survives_request_cancellation() {
+async fn metadata_cancelled_create_keeps_ownership_while_delete_retires_without_git() {
     let first = Arc::new(boot().await);
     let second = Arc::new(boot().await);
     let up = upstream(first.tmp.path());
@@ -118,32 +118,36 @@ async fn metadata_create_delete_serializes_and_survives_request_cancellation() {
     holder.entered().await;
     create.abort();
     let _ = create.await;
-    let before = Pause::arm("track-metadata-before", &up.clone);
-    let contended = Pause::arm("track-metadata-contended", &up.clone);
-    let entered = Pause::arm("track-metadata-entered", &up.clone);
-    let deletion = {
-        let b = second.clone();
-        let id = deleting_id.clone();
-        tokio::spawn(async move { b.delete_track(&id).await })
+    let (status, body) =
+        tokio::time::timeout(Duration::from_secs(10), second.delete_track(&deleting_id))
+            .await
+            .expect("logical retirement must not wait on Git metadata");
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(second.repo.track_get(&deleting_id).await.unwrap().is_none());
+    let worktree = expected_worktree(&up.clone, &deleting_id);
+    assert!(worktree.is_dir());
+    assert!(git_ref_exists(
+        &up.clone,
+        &format!("refs/heads/neige/track-{deleting_id}")
+    ));
+    let retired: i64 = sqlx::query_scalar("SELECT count(*) FROM workspace_resources WHERE retirement_root=? AND retired_at_ms IS NOT NULL")
+        .bind(worktree.to_str().unwrap()).fetch_one(second.repo.pool()).await.unwrap();
+    assert_eq!(retired, 1);
+    // The cancelled create still owns its materialization. A retry must wait on
+    // that same operation rather than duplicate it or steal its metadata guard.
+    let retry = {
+        let b = first.clone();
+        let root = up.clone.clone();
+        tokio::spawn(async move { b.create_at(&root, Some("metadata-cancel"), None).await })
     };
-    before.entered().await;
-    before.release();
-    contended.contended_before(&entered).await;
+    tokio::task::yield_now().await;
+    assert!(!retry.is_finished());
     holder.release();
-    contended.release();
-    entered.entered().await;
-    // The owned postcommit task must survive cancellation of the delete request too.
-    deletion.abort();
-    let _ = deletion.await;
-    entered.release();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while git_ref_exists(&up.clone, &format!("refs/heads/neige/track-{deleting_id}")) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!expected_worktree(&up.clone, &deleting_id).exists());
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), retry)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.is_success(), "{body}");
     let (status, retry) = first
         .create_at(&up.clone, Some("metadata-cancel"), None)
         .await;

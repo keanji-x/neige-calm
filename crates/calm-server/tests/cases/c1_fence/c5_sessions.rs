@@ -146,8 +146,8 @@ async fn c5_session_stale_running_settled_execution_allows_clean() {
     let (_, execution) = session(&b, &track, &path, None, true).await;
     settle(&b, &execution).await;
     let (count, _) = clean(b.clone()).await.unwrap();
-    assert_eq!(count, 1);
-    assert!(!path.join("target/ignored").exists());
+    assert_eq!(count, 0);
+    assert!(path.join("target/ignored").exists());
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn c5_session_no_silent_miss_exited_unsettled_without_renderer_defers() {
         assert!(history.is_empty());
         assert!(path.join("target/ignored").is_file());
         settle(&b, &execution).await;
-        assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+        assert_eq!(clean(b.clone()).await.unwrap().0, 0);
     }
 }
 
@@ -190,8 +190,8 @@ async fn planner_stale_clean(provider: AgentProvider) {
             )
             .await
             .unwrap();
-        assert_eq!(clean(b.clone()).await.unwrap().0, 1, "{provider:?} {state}");
-        assert!(!path.join("target/ignored").exists());
+        assert_eq!(clean(b.clone()).await.unwrap().0, 0, "{provider:?} {state}");
+        assert!(path.join("target/ignored").exists());
     }
 }
 
@@ -232,7 +232,7 @@ async fn c5d2_acp_stale_settled_defers() {
                 )
                 .await
                 .unwrap();
-            assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+            assert_eq!(clean(b.clone()).await.unwrap().0, 0);
         }
     }
 }
@@ -291,14 +291,7 @@ async fn c5d2_planner_failed_upgrade_sweep_with_history_defers() {
             .unwrap();
         let (_, execution) = session(&b, &track, &path, Some(provider.clone()), true).await;
         settle(&b, &execution).await;
-        assert_eq!(
-            clean(b.clone()).await.unwrap().0,
-            if provider == AgentProvider::Claude {
-                1
-            } else {
-                0
-            }
-        );
+        assert_eq!(clean(b.clone()).await.unwrap().0, 0);
     }
 }
 
@@ -375,7 +368,7 @@ async fn c5d2_no_history_planner_codex_and_legacy_defer() {
             .execute(sqlx::query("UPDATE worker_sessions SET state='exited' WHERE id=?").bind(&id))
             .await
             .unwrap();
-        assert_eq!(clean(b.clone()).await.unwrap().0, 1);
+        assert_eq!(clean(b.clone()).await.unwrap().0, 0);
     }
 }
 
@@ -389,8 +382,8 @@ async fn c5d2_delimited_session_own_history_cleans() {
         let (_, execution) =
             session_with_id(&b, &track, &path, Some(AgentProvider::Claude), true, id).await;
         settle(&b, &execution).await;
-        assert_eq!(clean(b.clone()).await.unwrap().0, 1, "{id}");
-        assert!(!path.join("target/ignored").exists());
+        assert_eq!(clean(b.clone()).await.unwrap().0, 0, "{id}");
+        assert!(path.join("target/ignored").exists());
     }
 }
 
@@ -436,7 +429,7 @@ async fn c5d2_one_weak_settlement_among_drained_history_defers() {
     .unwrap();
     // Settlements are immutable: use independent histories for weak, unknown,
     // and all-Drained proof rather than upgrading an existing settlement.
-    for (proof, expected) in [(interrupted, 0), ("{}".into(), 0), (drained, 1)] {
+    for proof in [interrupted, "{}".into(), drained] {
         let (b, track, path) = fixture().await;
         calm_server::test_seams::boot_planner_upgrade_for_test(&b.state)
             .await
@@ -454,10 +447,8 @@ async fn c5d2_one_weak_settlement_among_drained_history_defers() {
         )
             .bind(&other).bind(&other).bind(proof).bind(&execution)).await.unwrap();
         let (count, history) = clean(b.clone()).await.unwrap();
-        assert_eq!(count, expected);
-        if expected == 0 {
-            assert!(history.is_empty());
-        }
-        assert_eq!(path.join("target/ignored").is_file(), expected == 0);
+        assert_eq!(count, 0);
+        assert!(history.is_empty());
+        assert!(path.join("target/ignored").is_file());
     }
 }
