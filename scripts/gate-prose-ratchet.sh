@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# P1b-S bounded SQL exception: long_literal/crates/**/*.rs 181 -> 191.
+# All ten occurrences are in conversation_upgrade/schema_fact_tests.rs:
+# 1. metadata's six-column _sqlx_migrations DDL.
+# 2-4. checkpoint's parent tables, four legacy tables, and launch-table DDL.
+# 5. The independent six-field migration SQL oracle.
+# 6. The contradictory backend DDL plus unknown-table preservation fixture.
+# 7. The independent malformed-version rowid oracle.
+# 8-10. Identity UPDATE, missing-column, and duplicate/null-row fixtures.
+# These preserve SQL/raw-cell contracts, not agent-facing prose. A query/fixture
+# change edits its owning test and regenerates this baseline; ordinary new
+# tables/tests need no inventory entry. The existing scan runs once per CI lint
+# workflow plus its existing separate selftest; no rule or invocation is added.
 # U12b bounded SQL exception: long_literal/crates/**/*.rs 179 -> 181.
 # Two real-schema fixtures, not agent-facing prose:
 # 1. system_assistant_tests/watcher.rs: observed worker task INSERT.
