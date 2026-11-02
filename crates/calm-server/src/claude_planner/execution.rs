@@ -202,6 +202,12 @@ impl ProviderExecutionOwner for Owner {
                         end.slot.settled.send_replace(true);
                         end.qualified
                             .store(qualified, std::sync::atomic::Ordering::Release);
+                        #[cfg(feature = "fixtures")]
+                        crate::test_seams::pause_point(
+                            "claude-completed-before-claim-clear",
+                            session,
+                        )
+                        .await;
                         return Ok(());
                     }
                     Some(KnownEnd::ClaudeRefused) => {

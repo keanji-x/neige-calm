@@ -7,6 +7,7 @@ mod identity_launch;
 mod identity_recovery;
 mod loop_fixture;
 mod recovery;
+mod recovery_progress;
 mod retry;
 mod settled;
 use super::super::dispatch_fixture::fail_terminal_outcome;
