@@ -1,8 +1,9 @@
 //! Terminal task policy over the shared op-owned Pipe lifecycle. Legacy rows never enter here.
 use super::*;
 use crate::operation::{ParkedOutcome, ParkedRecovery, RecoveryMode, owned_execution as owned};
+use owned::observation::{ExecutionWatch, execution_ready};
 use owned::{Decision, Release, StopReason, pipe};
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use workspace_runtime::execution::*;
 
 pub(crate) const KEY: &str = "terminal_worker_execution";
@@ -370,32 +371,68 @@ impl TerminalWorkerAdapter {
         )
         .await
     }
+    /// Domain actions stay here; shared observation provides execution facts only.
+    pub(super) async fn pipe_recovery_ready(&self, op: &Operation, ctx: &SpawnCtx) -> Result<bool> {
+        let record = pipe::record(CONFIG, op)?;
+        if record.decision == Decision::Observing
+            && matches!(record.release, Release::Held | Release::Releasing { .. })
+        {
+            return Ok(true);
+        }
+        execution_ready(ctx, &record.execution_id).await
+    }
+
     async fn observe_pipe(self, ctx: SpawnCtx, id: String) {
         loop {
-            match ctx.operation_repo.get_operation(&id).await {
-                Ok(Some(op))
-                    if matches!(
-                        op.phase.tag(),
-                        PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
-                    ) =>
-                {
-                    return;
-                }
+            let watch = ExecutionWatch::subscribe(&ctx).await;
+            let current = match ctx.operation_repo.get_operation(&id).await {
+                Ok(Some(op)) => op,
                 Ok(None) => return,
-                _ => {}
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"terminal worker observation read failed");
+                    ExecutionWatch::retry().await;
+                    continue;
+                }
+            };
+            if matches!(
+                current.phase.tag(),
+                PhaseTag::Succeeded | PhaseTag::Failed | PhaseTag::Stuck
+            ) {
+                return;
             }
-            if let Ok(Some(op)) = ctx.operation_repo.claim_parked(&id).await
-                && let Err(error) = super::super::owned_parked::reconcile(
-                    &self,
-                    &op,
-                    RecoveryMode::PreDeadlineProbe,
-                    &ctx,
-                )
-                .await
-            {
-                tracing::warn!(op_id=%id,%error,"terminal worker retained for retry");
+            match self.pipe_recovery_ready(&current, &ctx).await {
+                Ok(false) => {
+                    // Terminal workers have no run timeout (their durable parked
+                    // deadline is i64::MAX). Stop/drain completion is execution proof.
+                    if let Err(error) = watch.wait(None).await {
+                        tracing::warn!(op_id=%id,%error,"terminal worker observation wait failed");
+                        ExecutionWatch::retry().await;
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(op_id=%id,%error,"terminal worker execution read failed");
+                    ExecutionWatch::retry().await;
+                    continue;
+                }
+                Ok(true) => {}
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            match ctx.operation_repo.claim_parked(&id).await {
+                Ok(Some(op)) => {
+                    if let Err(error) = super::super::owned_parked::reconcile(
+                        &self,
+                        &op,
+                        RecoveryMode::PreDeadlineProbe,
+                        &ctx,
+                    )
+                    .await
+                    {
+                        tracing::warn!(op_id=%id,%error,"terminal worker retained for retry");
+                        ExecutionWatch::retry().await;
+                    }
+                }
+                _ => ExecutionWatch::retry().await,
+            }
         }
     }
     pub(super) async fn compensate_pipe(&self, op: &Operation, ctx: &SpawnCtx) -> Result<()> {

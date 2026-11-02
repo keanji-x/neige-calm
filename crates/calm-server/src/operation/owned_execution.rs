@@ -1,4 +1,5 @@
 //! Owner-neutral execution transport and lifecycle mechanisms.
+pub(crate) mod observation;
 pub(crate) mod pipe;
 use super::{Operation, SpawnCtx};
 use crate::error::{CalmError, Result};

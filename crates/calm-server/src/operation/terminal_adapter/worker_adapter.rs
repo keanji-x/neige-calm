@@ -67,6 +67,12 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         Some(pipe_worker::KEY)
     }
 
+    async fn owned_parked_recovery_eligible(&self, op: &Operation, ctx: &SpawnCtx) -> bool {
+        // Legacy/invalid records and unavailable transports remain discoverable
+        // by authoritative recovery; its existing lease backoff records errors.
+        self.pipe_recovery_ready(op, ctx).await.unwrap_or(true)
+    }
+
     async fn recover_owned_parked(
         &self,
         op: &Operation,

@@ -2,29 +2,12 @@
 //! Only claimed recovery authorizes release, stop, sampling, or completion.
 use super::*;
 use crate::model::now_ms;
-use std::time::Duration;
+use crate::operation::owned_execution::observation::{ExecutionWatch, execution_ready};
 
-/// Failure/claim-contention backoff, never the cadence for healthy executions.
-pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(1);
-
-// A broken notification transport cannot hide a durable terminal operation or
-// prevent a due owner action. Surface subscription failures only when waiting.
-pub(crate) struct GateWatch(Result<ExecutionChanges>);
+pub(crate) struct GateWatch(ExecutionWatch);
 impl GateWatch {
     pub(crate) async fn subscribe(ctx: &SpawnCtx) -> Self {
-        Self(
-            async {
-                let engine = ctx
-                    .execution
-                    .engine()
-                    .ok_or(CalmError::ExecutionUnavailable)?;
-                tokio::time::timeout(RETRY_DELAY, engine.changes())
-                    .await
-                    .map_err(conflict)?
-                    .map_err(conflict)
-            }
-            .await,
-        )
+        Self(ExecutionWatch::subscribe(ctx).await)
     }
 
     /// All Gate consumers share the subscribe/read/wait handshake. Adapter boot
@@ -50,27 +33,11 @@ impl GateWatch {
     /// The persisted parked deadline remains the recovery backstop. Stopping
     /// executions wait for real drain evidence rather than spin on an old deadline.
     pub(crate) async fn wait(self, op: &Operation, timeout_secs: i64) -> Result<()> {
-        let changes = self.0?;
-        let deadline = deadline(op, timeout_secs)?;
-        let timer = async {
-            match deadline {
-                Some(at) => {
-                    tokio::time::sleep(Duration::from_millis(
-                        at.saturating_sub(now_ms()).max(0) as u64
-                    ))
-                    .await
-                }
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::select! {
-            result = changes.changed() => result.map_err(conflict),
-            _ = timer => Ok(()),
-        }
+        self.0.wait(deadline(op, timeout_secs)?).await
     }
 
     pub(crate) async fn retry() {
-        tokio::time::sleep(RETRY_DELAY).await;
+        ExecutionWatch::retry().await;
     }
 }
 
@@ -105,38 +72,5 @@ pub(crate) async fn recovery_ready(
     if deadline(op, timeout_secs)?.is_some_and(|at| now_ms() >= at) {
         return Ok(true);
     }
-    let engine = ctx
-        .execution
-        .engine()
-        .ok_or(CalmError::ExecutionUnavailable)?;
-    let row = engine
-        .store()
-        .load(&record.execution_id)
-        .await
-        .map_err(conflict)?
-        .ok_or_else(|| conflict("owned execution disappeared"))?;
-    if row.is_settled() {
-        return Ok(true);
-    }
-    // A committed Stop is already driven by Engine; only the first leader-exit
-    // observation needs the owner to request descendant drain.
-    if matches!(
-        row,
-        Stored::Active {
-            desired: Desired::Stop | Desired::Retire,
-            ..
-        }
-    ) {
-        return Ok(false);
-    }
-    Ok(matches!(
-        engine
-            .output(&record.execution_id, None)
-            .await
-            .map_err(conflict)?,
-        ExecutionReply::Observation {
-            state: ExecutionState::Exited { .. },
-            ..
-        }
-    ))
+    execution_ready(ctx, &record.execution_id).await
 }
