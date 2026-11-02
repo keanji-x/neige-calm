@@ -124,7 +124,7 @@ pub struct SchemaFacts<'a> {
 }
 
 // One index over the already complete ledger: no SQL, source re-traversal or hash.
-struct References<'a> {
+pub(super) struct References<'a> {
     encoding: &'a SourceRef,
     schema: Vec<&'a SourceRef>,
     relations: HashMap<&'a str, &'a SourceRef>,
@@ -132,7 +132,7 @@ struct References<'a> {
     cells: HashMap<(&'a str, &'a [RawCell], &'a str), &'a SourceRef>,
 }
 impl<'a> References<'a> {
-    fn new(s: &'a CompleteSourceFacts<'_>) -> Result<Self, FactCoverageError> {
+    pub(super) fn new(s: &'a CompleteSourceFacts<'_>) -> Result<Self, FactCoverageError> {
         let mut encoding = None;
         let mut out = Self {
             encoding: &s
@@ -171,7 +171,7 @@ impl<'a> References<'a> {
         out.encoding = encoding.ok_or(FactCoverageError::InconsistentSource)?;
         Ok(out)
     }
-    fn table(&self, name: &'static str) -> TableEvidence {
+    pub(super) fn table(&self, name: &'static str) -> TableEvidence {
         match self.relations.get(name) {
             Some(source) => TableEvidence::Present((*source).clone()),
             None => TableEvidence::Absent {
@@ -181,7 +181,11 @@ impl<'a> References<'a> {
             },
         }
     }
-    fn row(&self, r: &RawRelation, row: &RawRow) -> Result<SourceRef, FactCoverageError> {
+    pub(super) fn row(
+        &self,
+        r: &RawRelation,
+        row: &RawRow,
+    ) -> Result<SourceRef, FactCoverageError> {
         self.rows
             .get(&(r.name.as_str(), row.key.as_slice()))
             .map(|s| (*s).clone())
