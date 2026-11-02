@@ -8,6 +8,7 @@ mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;
 mod git_delivery;
 mod planner_compaction;
+mod progress_obligation;
 mod running_worker;
 mod worker_failure;
 mod worker_liveness;
@@ -1411,6 +1412,12 @@ impl Scheduler {
                     if rows == 0 {
                         return Err(race_lost_err());
                     }
+                    calm_truth::db::sqlite::progress_obligation::progress_obligation_release_tx(
+                        tx,
+                        &task_id,
+                        calm_truth::db::sqlite::task_progress::CHILD_BOOTSTRAP_PURPOSE,
+                    )
+                    .await?;
                     let mut events = Vec::new();
                     if let Some(child_id) = child_id {
                         let child_track_id = TrackId::from(child_id);
@@ -1626,6 +1633,9 @@ impl Scheduler {
     /// Shared sweep body: runs the reconcile arms inline and returns the set of tracks
     /// holding `pending` rows for the caller to dispatch.
     async fn sweep_reconcile(self: &Arc<Self>, during_boot: bool) -> BTreeSet<String> {
+        if let Err(error) = self.sweep_progress_obligations().await {
+            tracing::warn!(%error, "progress-obligation sweep failed; independent watchdog will retry");
+        }
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade() {

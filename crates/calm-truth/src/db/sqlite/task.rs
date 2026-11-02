@@ -107,16 +107,27 @@ pub async fn task_mark_sub_track_running_tx(
     id: &str,
     now: i64,
 ) -> Result<u64> {
-    Ok(sqlx::query(
-        "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1 \
+    let changed = sqlx::query(
+        "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1, \
+         status_detail=CASE WHEN status_detail=?4 THEN NULL ELSE status_detail END \
          WHERE id=?2 AND status='dispatched' AND spawn=?3 AND child_track_id IS NOT NULL",
     )
     .bind(now)
     .bind(id)
     .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
+    .bind(super::task_progress::CHILD_BOOTSTRAP_OVERDUE)
     .execute(&mut **tx)
     .await?
-    .rows_affected())
+    .rows_affected();
+    if changed != 0 {
+        super::progress_obligation::progress_obligation_release_tx(
+            tx,
+            id,
+            super::task_progress::CHILD_BOOTSTRAP_PURPOSE,
+        )
+        .await?;
+    }
+    Ok(changed)
 }
 
 /// A compact task has no worker or deadline. Called only by its guarded session snapshot owner.
@@ -261,6 +272,7 @@ pub async fn task_claim_pending_tx(
         .execute(&mut **tx)
         .await?;
     if res.rows_affected() != 0 {
+        super::task_progress::task_require_child_bootstrap_tx(tx, id).await?;
         sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
             .bind(id)
             .execute(&mut **tx)

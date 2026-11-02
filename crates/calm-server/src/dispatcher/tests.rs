@@ -4626,3 +4626,5 @@ async fn declared_task_notification_never_reads_mutable_task_facts() {
         assert_eq!(is_deferred_self_report(&repo, &event).await, deferred);
     }
 }
+
+mod progress_obligation_tests;

@@ -465,6 +465,8 @@ pub struct Dispatcher {
     /// Slow periodic reconcile sweep (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
     #[allow(dead_code)]
     reconcile_handle: JoinHandle<()>,
+    #[allow(dead_code)]
+    progress_watchdog_handle: JoinHandle<()>,
     /// `None` when `NEIGE_REAPER_DISABLED` is set.
     #[allow(dead_code)]
     reaper_handle: Option<JoinHandle<()>>,
@@ -590,6 +592,11 @@ impl Dispatcher {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn abort_event_listener_for_test(&self) {
         self.handle.abort();
+    }
+
+    #[cfg(any(test, feature = "fixtures"))]
+    pub async fn progress_tick_for_test(&self) -> crate::error::Result<()> {
+        self.inner.progress_watchdog_once().await
     }
 
     #[cfg(any(test, feature = "fixtures"))]
@@ -969,6 +976,8 @@ impl Dispatcher {
             }
         });
 
+        let progress_watchdog_handle = inner.spawn_progress_watchdog();
+
         // Slow reconcile tick; correctness never depends on it, it restores liveness after a lost envelope.
         let tick_inner = Arc::clone(&inner);
         let reconcile_handle = tokio::spawn(async move {
@@ -1034,6 +1043,7 @@ impl Dispatcher {
             context_monitor,
             provider_registry,
             reconcile_handle,
+            progress_watchdog_handle,
             reaper_handle,
             #[cfg(all(test, feature = "fixtures"))]
             reaper_cycle_key,
@@ -1294,17 +1304,22 @@ impl Inner {
             .await;
     }
 
-    /// Per-track push lock so same-track replay and live pushes serialize around `(get → compare → bump)`.
-    async fn acquire_push_lock(self: &Arc<Self>, track_id: &TrackId) -> PushLockGuard {
-        // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the shard
-        // guard must drop at this statement's `;` before we `.await` below.
-        let lock = self
-            .push_locks
+    fn push_mutex_for_track(&self, track_id: &TrackId) -> Arc<tokio::sync::Mutex<()>> {
+        self.push_locks
             .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        let guard = lock.lock_owned().await;
+            .clone()
+    }
+
+    /// Per-Track push locking is shared by live delivery and the deadline retry.
+    async fn acquire_push_lock(self: &Arc<Self>, track_id: &TrackId) -> PushLockGuard {
+        let guard = self.push_mutex_for_track(track_id).lock_owned().await;
         PushLockGuard::new(track_id.clone(), guard)
+    }
+
+    fn try_acquire_push_lock(&self, track_id: &TrackId) -> Option<PushLockGuard> {
+        let guard = self.push_mutex_for_track(track_id).try_lock_owned().ok()?;
+        Some(PushLockGuard::new(track_id.clone(), guard))
     }
 
     async fn observe_harness_under_lock(
@@ -1858,6 +1873,7 @@ mod ask_answered;
 pub(crate) mod canonical_inputs;
 mod git_delivery_settled;
 pub(crate) mod planner_admission;
+mod progress_obligation;
 mod task_completed;
 
 #[cfg(test)]

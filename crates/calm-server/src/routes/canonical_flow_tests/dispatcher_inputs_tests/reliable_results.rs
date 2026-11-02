@@ -214,3 +214,113 @@ async fn preownership_notification_write_failure_recovers_on_periodic_reconcile(
         "the retried result must reach the actual Planner"
     );
 }
+
+#[tokio::test]
+async fn child_bootstrap_obligation_retries_lost_wake_through_canonical_acceptance_once() {
+    let mut flow = Flow::running().await;
+    flow.state.dispatcher.abort_event_listener_for_test();
+    let task_id = format!("{}:overdue-child", flow.track);
+    let id = task_id.clone();
+    let track = flow.track.clone();
+    crate::db::write_in_tx_typed(flow.fixture.repo.as_ref(),move |tx|Box::pin(async move {
+        sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,spawn,created_at_ms,updated_at_ms) \
+                     VALUES(?1,?2,'overdue-child','codex','handoff','{}','pending',?3,1,1)")
+            .bind(&id).bind(&track).bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
+            .execute(&mut **tx).await?;
+        calm_truth::db::sqlite::task_claim_pending_tx(tx,&id,1,&[],false).await?;
+        Ok(())
+    })).await.unwrap();
+    // Persist the actual deadline event without a bus listener, before its retry tick.
+    flow.state
+        .scheduler_for_test()
+        .sweep_progress_obligations()
+        .await
+        .unwrap();
+    let key = format!("{task_id}:child-track-bootstrap");
+    let row = flow
+        .fixture
+        .repo
+        .events_for_track(&flow.track, &["track.wake_requested"], None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| matches!(&row.event,Event::TrackWakeRequested{key:found,..} if found==&key))
+        .unwrap();
+    let event_id = row.id;
+    let Event::TrackWakeRequested { text, .. } = row.event else {
+        unreachable!()
+    };
+    for _ in 0..3 {
+        flow.state
+            .dispatcher
+            .progress_tick_for_test()
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if flow
+                .fixture
+                .carrier(&flow.track)
+                .await
+                .2
+                .canonical_inputs
+                .pending
+                .iter()
+                .any(|pending| pending.envelope_id() == Some(event_id))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        flow.fixture
+            .carrier(&flow.track)
+            .await
+            .2
+            .canonical_inputs
+            .pending
+            .iter()
+            .filter(|pending| pending.envelope_id() == Some(event_id))
+            .count(),
+        1
+    );
+    flow.end(TURN).await;
+    let call = flow
+        .next()
+        .await
+        .expect("the original Planner receives the durable deadline notice");
+    assert_eq!(
+        call["params"]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|input| input["text"].as_str())
+            .map(|input| input.matches(text.trim_end()).count())
+            .sum::<usize>(),
+        1
+    );
+    flow.accept(&call, "bootstrap-notice-turn").await;
+    flow.end("bootstrap-notice-turn").await;
+    flow.fixture
+        .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)
+        .await;
+    flow.state
+        .dispatcher
+        .progress_tick_for_test()
+        .await
+        .unwrap();
+    assert!(
+        flow.fixture
+            .carrier(&flow.track)
+            .await
+            .2
+            .canonical_inputs
+            .pending
+            .is_empty()
+    );
+    flow.close().await;
+}

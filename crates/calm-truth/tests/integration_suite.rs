@@ -59,3 +59,6 @@ mod planner_provider_card_key_migration;
 
 #[path = "planner_harness_marker_migration.rs"]
 mod planner_harness_marker_migration;
+
+#[path = "progress_obligation.rs"]
+mod progress_obligation;

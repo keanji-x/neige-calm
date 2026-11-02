@@ -11,6 +11,8 @@ mod child_track_continue;
 mod child_track_handback;
 #[path = "scheduler/compact.rs"]
 mod compact;
+#[path = "scheduler/progress_obligation_tests.rs"]
+mod progress_obligation_tests;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
