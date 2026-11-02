@@ -1,5 +1,5 @@
 //! Turn-boundary hook preparation is external; only exact witnesses and publication take the writer.
-use super::commit::commit_delta_in_tx;
+use super::commit::{CommitIntent, commit_delta_in_tx};
 use super::delta::{PathDelta, add_card_event_paths};
 use super::snapshot::{
     cards_for_track, cards_for_track_tx, content_markdown, conversation_markdown,
@@ -227,6 +227,7 @@ pub async fn snapshot_transcripts_for_cards_in_track(
                             created_at: now_ms(),
                         },
                         HookInputs::Prepared(&prepared),
+                        CommitIntent::Checkpoint,
                     )
                     .await?;
                     tx.commit().await?;

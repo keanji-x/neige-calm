@@ -899,7 +899,8 @@ impl RepoEventWrite for SqlxRepo {
 }
 
 /// Authorize the complete batch, append it, then create at most one history commit per track.
-/// The returned map contains only commits actually created by this call, never an existing HEAD.
+/// The returned map contains each projected track's resulting history identity: a new commit
+/// or the existing HEAD when its complete content is unchanged. Unprojected tracks are absent.
 /// The caller owns SQL commit/rollback and must broadcast only after a successful SQL commit.
 #[allow(deprecated)] // Shared legacy write-chain glue; preserve the wrappers' cache contract.
 pub async fn append_actor_events_in_tx(
