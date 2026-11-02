@@ -179,9 +179,10 @@ pub async fn track_workspace_read_tx(
         frozen_at,
         worktree,
     };
-    super::workspace_retirement::require_active_workspace_path(
+    super::workspace_resource::active_selection_location(
         tx,
-        std::path::Path::new(workspace.agent_cwd()),
+        workspace.agent_cwd(),
+        super::workspace_resource::WorkspaceOwnership::for_workspace(&workspace),
     )
     .await?;
     Ok(workspace)

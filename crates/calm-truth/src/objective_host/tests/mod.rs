@@ -41,6 +41,11 @@ async fn fixture_with_capability(url: &str, enabled: bool) -> SqlxRepo {
     }
     let write_db = (repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
+        let mut tx = write_session.begin_immediate().await.unwrap();
+        for track in ["t", "other"] {
+            crate::db::sqlite::track_workspace_write_tx(&mut tx, track, &crate::model::TrackWorkspace::default()).await.unwrap();
+        }
+        tx.commit().await.unwrap();
         if enabled {
             let mut tx = write_session.begin_immediate().await.unwrap();
             for track in ["t", "other"] {

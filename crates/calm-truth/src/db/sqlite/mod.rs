@@ -110,6 +110,8 @@ pub use workspace_resource::{
     DirectoryObservation, ObservedDirectory, WorkspaceObservation, WorkspaceOwnership,
     workspace_observation_snapshot, workspace_observe_tx,
 };
+#[cfg(test)]
+mod historical_fixtures;
 mod transcript_turn_input;
 #[cfg(test)]
 mod workspace_resource_tests;

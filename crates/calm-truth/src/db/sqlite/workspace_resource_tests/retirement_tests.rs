@@ -586,3 +586,34 @@ async fn retirement_child_reservation_allows_parent_but_refuses_reuse_and_descen
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn retirement_unselected_borrowed_metadata_does_not_admit_empty_execution() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let track = create(&repo, "", TrackWorkspacePlan::AttachedFromCwd).await;
+    repo.db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let selected =
+                    crate::db::sqlite::track_workspace_read_tx(&mut tx, track.id.as_str())
+                        .await
+                        .unwrap();
+                assert_eq!(selected, track.workspace);
+                let observed =
+                    crate::db::sqlite::workspace_observation_snapshot(&mut tx, track.id.as_str())
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    observed.state,
+                    crate::db::sqlite::DirectoryObservation::Pending
+                );
+                assert!(observed.selected_path.is_empty());
+                retired(require_active_workspace_path(&mut tx, Path::new("")).await);
+                tx.rollback().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+}

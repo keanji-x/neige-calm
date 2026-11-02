@@ -406,26 +406,22 @@ async fn a_pristine_track_is_pointed_at_the_users_repository() {
         "the server must not have touched the user's repository"
     );
 
-    // The OLD managed directory is in the trash — moved, not deleted.
-    let trashed = trash_entries(&b.workspace_root);
-    assert_eq!(trashed.len(), 1, "expected exactly one trash entry");
-    assert!(
-        trashed[0]
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(&track),
-        "trash entry {trashed:?} should be named after the track"
-    );
+    // Repoint retires the old allocation without moving its bytes.
+    assert!(trash_entries(&b.workspace_root).is_empty());
     assert_eq!(
-        std::fs::read_to_string(trashed[0].join(".git").join("fixture-witness")).unwrap(),
-        "old\n",
-        "the old workspace must be MOVED, not deleted"
+        std::fs::read_to_string(managed_path.join(".git/fixture-witness")).unwrap(),
+        "old\n"
     );
-    assert!(
-        !managed_path.exists(),
-        "the old managed directory must be gone from its original path"
-    );
+    assert!(matches!(
+        calm_truth::db::sqlite::require_active_workspace_path(
+            &mut b.repo.pool().acquire().await.unwrap(),
+            &managed_path
+        )
+        .await,
+        Err(calm_truth::error::CalmError::Core(
+            calm_types::error::CoreError::BadRequest(_)
+        ))
+    ));
 
     let claims: Vec<(String, String)> = sqlx::query_as("SELECT path, area_id FROM area_folders")
         .fetch_all(b.repo.pool())
@@ -1620,7 +1616,7 @@ async fn workspace_repoint_keeps_unrelated_expired_trash_for_maintenance() {
         stale.is_dir(),
         "workspace repoint collected unrelated trash"
     );
-    assert!(!old_path.exists());
+    assert!(old_path.is_dir());
     assert!(diff(&before, &fingerprint(&target)).is_empty());
     assert_eq!(workspace_row(&b, &track).await.0, "attached");
 }

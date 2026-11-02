@@ -44,6 +44,9 @@ cleanup capabilities. Future destructive maintenance still needs independent
 ownership, quiescence and isolation proof. Never infer it from a timestamp,
 missing directory, failed wait or successful stop request.
 
+An unselected borrowed Track retains its existing empty-path metadata state.
+That state has no physical location and cannot admit an empty execution root.
+
 A retired recorded root cannot be assigned again or selected as an execution root.
 Its descendants are also refused. An ancestor repository remains available: the
 retirement record does not grant recursive access isolation or authorize cleanup.

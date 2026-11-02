@@ -59,7 +59,7 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
     let (repo, select, before, constraints_before) = write_db.writer().with_writer(|write_session| Box::pin(async move {
         for state in ["sending", "unknown", "completed", "released"] {
                 let mut tx = write_session.begin_immediate().await.unwrap();
-                let card = super::runtime_read_flip_support::create_card_in_tx(&repo, &mut tx, state, "codex", serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode"})).await;
+                let (_, _, card) = super::historical_fixtures::card_before_retirement(&mut tx, "codex", crate::model::CardRole::Worker, serde_json::json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"opencode"})).await;
                 let mut init = crate::session_projection_repo::WorkerSessionInit::shared_planner(
                     state.into(),
                     card,

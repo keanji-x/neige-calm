@@ -488,5 +488,5 @@ async fn workspace_resource_migration_fills_gap_after_released_area_ownership() 
     assert_eq!(snapshot.selection_version, 1);
 }
 
-#[path = "workspace_retirement_tests.rs"]
-mod retirement;
+#[cfg(test)]
+mod retirement_tests;

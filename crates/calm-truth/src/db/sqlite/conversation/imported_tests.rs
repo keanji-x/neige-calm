@@ -358,8 +358,9 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
             track_area_cache: super::super::TrackAreaCache::new(),
             database_id: std::sync::Arc::new("u2".into()),
         };
-        let (_, card) = super::tests::fixture_card(&repo).await;
-        let (_, historical) = super::tests::fixture_card(&repo).await;
+        let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
+        let (_, historical) =
+            crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
         raw(
             &repo,
             &historical,

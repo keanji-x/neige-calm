@@ -16,6 +16,19 @@ async fn setup() -> SqlxRepo {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     (repo.db()).writer().execute(sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES('area','a','#000',0,'user',0,0)")).await.unwrap();
     (repo.db()).writer().execute(sqlx::query("INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at,require_task_gates) VALUES('w','area','w',0,0,0,0)")).await.unwrap();
+    repo.db()
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async {
+                let mut tx = session.begin_immediate().await.unwrap();
+                track_workspace_write_tx(&mut tx, "w", &crate::model::TrackWorkspace::default())
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
     repo
 }
 

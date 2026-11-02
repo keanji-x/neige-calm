@@ -1306,15 +1306,15 @@ async fn fu4_teardown_releases_once_after_merge_and_close() {
         "track delete cascades released workspace lease rows after persisting workspace.released"
     );
     assert!(
-        !git_ref_exists(
+        git_ref_exists(
             &fx.track_cwd,
             &format!("refs/heads/neige/track-{}", fx.track_id),
         ),
-        "track teardown must remove the track branch"
+        "logical teardown retains the track branch"
     );
     assert!(
-        !fx.lease_abs.exists(),
-        "track teardown must remove the track worktree the worker ran in"
+        fx.lease_abs.is_dir(),
+        "logical teardown retains the worktree the worker ran in"
     );
 
     let release_count = event_rows(&fx.repo, "workspace.released").await.len();

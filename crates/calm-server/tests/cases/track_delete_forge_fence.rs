@@ -379,10 +379,10 @@ async fn assert_closed_worktree_clean_refuses_forge(kind: &str) {
         clean(&db, &boot.state.operation_runtime, &mut history)
             .await
             .unwrap(),
-        1
+        0
     );
-    assert!(!ignored.exists());
-    assert!(history.contains(&(track, 123)));
+    assert!(ignored.is_file());
+    assert!(history.is_empty());
 }
 
 #[tokio::test]

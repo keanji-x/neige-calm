@@ -159,7 +159,7 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     }
     .unwrap();
     let repo = repo_on(db);
-    let (_, card) = super::super::tests::fixture_card(&repo).await;
+    let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
     // successor: every member and deferred edge of the rebuilt graph holds a row.
     let s = seed_repo(repo, card, false).await;

@@ -93,7 +93,7 @@ async fn populated_upgrade(empty_presentations: bool) {
         track_area_cache: super::super::super::TrackAreaCache::new(),
         database_id: Arc::new("upgrade-test".into()),
     };
-    let (_, card) = super::super::tests::fixture_card(&repo).await;
+    let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
     let s = seed_repo(repo, card, true).await;
     // Include native backing rows/presentations as well as Human and System.
     use crate::db::{RepoOutOfDomain, TranscriptReceiptItem};

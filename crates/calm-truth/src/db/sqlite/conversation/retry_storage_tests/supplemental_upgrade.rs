@@ -27,7 +27,7 @@ async fn pending_controls_migration_preserves_retries_claims_and_imported_presen
     }
     .unwrap();
     let repo = repo_on(db);
-    let (_, card) = super::super::tests::fixture_card(&repo).await;
+    let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
     let s = seed_repo(repo, card, false).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {

@@ -3111,7 +3111,8 @@ async fn track_and_area_delete_after_a_failed_delivery() {
         )
         .await;
         candidate_of(settled_result(&fx.wait_settled(&other_task.id).await).0);
-        assert_eq!(candidate_refs(&lease.git_common_dir, fx.track()).len(), 1);
+        let refs_before = candidate_refs(&lease.git_common_dir, fx.track());
+        assert_eq!(refs_before.len(), 1);
         for table in ["task_git_deliveries", "task_candidates"] {
             assert!(fx.table_count(table).await > 0, "{table}");
         }
@@ -3146,14 +3147,14 @@ async fn track_and_area_delete_after_a_failed_delivery() {
         );
         assert_eq!(
             candidate_refs(&lease.git_common_dir, fx.track()),
-            Vec::<String>::new(),
-            "{path}: the candidate ref prefix is empty"
+            refs_before,
+            "{path}: logical deletion must retain candidate references"
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn candidate_refs_are_deleted_with_the_track() {
+async fn candidate_refs_are_retained_after_logical_track_deletion() {
     let fx = fixture_with(linked_worktree_track).await;
     let worker = fx.codex_worker();
     let lease = fx.kernel_lease(&worker.card_id).await;
@@ -3189,9 +3190,9 @@ async fn candidate_refs_are_deleted_with_the_track() {
     assert_eq!(status, axum::http::StatusCode::NO_CONTENT, "{body}");
     assert_eq!(
         candidate_refs(&main_git, fx.track()),
-        Vec::<String>::new(),
-        "for-each-ref is empty"
+        vec![candidate.ref_name.clone()],
+        "physical reference cleanup is deferred"
     );
-    assert_eq!(ref_target(&main_git, &candidate.ref_name), None);
+    assert!(ref_target(&main_git, &candidate.ref_name).is_some());
     assert_eq!(fx.table_count("task_candidates").await, 0);
 }

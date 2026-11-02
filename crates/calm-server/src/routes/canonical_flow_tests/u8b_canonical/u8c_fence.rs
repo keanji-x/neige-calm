@@ -428,10 +428,10 @@ async fn u8c_fence_cancelled_post_holds_delete_through_filesystem() {
             .0,
         StatusCode::NO_CONTENT
     );
-    assert!(!std::path::Path::new(track.workspace.agent_cwd()).exists());
+    assert!(std::path::Path::new(track.workspace.agent_cwd()).is_dir());
     let branch = workspace::worktree::track_branch_for(&binding.track_id).unwrap();
     assert!(
-        !std::process::Command::new("git")
+        std::process::Command::new("git")
             .args(["show-ref", "--verify", &format!("refs/heads/{branch}")])
             .current_dir(&path)
             .output()
@@ -497,7 +497,7 @@ async fn u8c_fence_post_rejects_changed_workspace_after_commit() {
     let result = creating.await;
     fixture.shutdown_process(&state).await;
     assert_eq!(result.0, StatusCode::CONFLICT, "{result:?}");
-    assert!(!std::path::Path::new(track.workspace.agent_cwd()).exists());
+    assert!(std::path::Path::new(track.workspace.agent_cwd()).is_dir());
     assert!(!changed.exists());
 }
 
