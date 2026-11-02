@@ -128,6 +128,15 @@
 # this existing baseline; ordinary test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# #3484 bounded SQL exception: long_literal/crates/**/*.rs 196 -> 197.
+# Six new matches are SQL: one retirement UPDATE, one guarded receipt SELECT,
+# two legacy-operation fixtures in gitforge_reclaim_admission.rs, and two parked
+# fixtures in workspace_retirement_tests.rs. Removing the old reclaim owner and
+# receipt triggers removes five matches (two owner queries and three triggers).
+# This net one match adds no agent instructions, scan or exclusion. Ordinary
+# query/fixture changes edit their owning source and this existing baseline;
+# CI retains one normal scan and one selftest, without a file/test inventory.
+
 # Child Track handback adds five long_literal matches, all SQL test fixtures:
 # the parent assignment INSERT and event rollback trigger in child_track_handback.rs,
 # and workspace lease, delivery and candidate INSERTs in support/child_track.rs.

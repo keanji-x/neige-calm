@@ -384,3 +384,112 @@ async fn retirement_unadmitted_missing_receipt_path_does_not_gate_unrelated_exec
 async fn retirement_unadmitted_invalid_receipt_json_does_not_gate_unrelated_execution() {
     unadmitted_target(Some("json")).await;
 }
+
+#[tokio::test]
+async fn retirement_close_ignores_unreadable_extra_receipts() {
+    logical_write_with_unreadable_receipt("close").await;
+}
+
+#[tokio::test]
+async fn retirement_track_delete_ignores_unreadable_extra_receipts() {
+    logical_write_with_unreadable_receipt("track").await;
+}
+
+#[tokio::test]
+async fn retirement_area_delete_ignores_unreadable_extra_receipts() {
+    logical_write_with_unreadable_receipt("area").await;
+}
+
+async fn logical_write_with_unreadable_receipt(operation: &str) {
+    use crate::db::{RepoSyncDomainRaw, sqlite::append_decision_event_in_tx};
+    use crate::{
+        event::{Event, EventScope},
+        ids::ActorId,
+        model::TrackPatch,
+    };
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let root = tempfile::tempdir().unwrap();
+    for missing_path in [true, false] {
+        let track = create(
+            &repo,
+            "",
+            TrackWorkspacePlan::ManagedUnder(root.path().into()),
+        )
+        .await;
+        let owner = track.clone();
+        repo.db()
+            .writer()
+            .with_writer(|session| {
+                Box::pin(async move {
+                    let mut tx = session.begin_immediate().await.unwrap();
+                    let id = append_decision_event_in_tx(
+                        &mut tx,
+                        &ActorId::KernelDispatcher,
+                        &EventScope::Card {
+                            card: "card".into(),
+                            track: owner.id.clone(),
+                            area: owner.area_id,
+                        },
+                        None,
+                        &Event::WorktreeProvisioned {
+                            track_id: owner.id,
+                            card_id: "card".into(),
+                            path: "/unlocated-extra".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let payload = if missing_path { "{}" } else { "invalid-json" };
+                    sqlx::query("UPDATE events SET payload=? WHERE id=?")
+                        .bind(payload)
+                        .bind(id)
+                        .execute(&mut **tx)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .unwrap();
+        match operation {
+            "close" => {
+                repo.track_update(
+                    track.id.as_str(),
+                    TrackPatch {
+                        closed: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                repo.track_update(
+                    track.id.as_str(),
+                    TrackPatch {
+                        closed: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                require_active_workspace_path(
+                    &mut repo.pool().acquire().await.unwrap(),
+                    Path::new(track.workspace.agent_cwd()),
+                )
+                .await
+                .unwrap();
+            }
+            "track" => repo.track_delete(track.id.as_str()).await.unwrap(),
+            "area" => repo.area_delete(track.area_id.as_str()).await.unwrap(),
+            _ => unreachable!(),
+        }
+        if operation != "close" {
+            retired(
+                require_active_workspace_path(
+                    &mut repo.pool().acquire().await.unwrap(),
+                    Path::new(track.workspace.agent_cwd()),
+                )
+                .await,
+            );
+        }
+    }
+}
