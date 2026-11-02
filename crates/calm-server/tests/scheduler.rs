@@ -1,10 +1,10 @@
 //! Kernel scheduler integration coverage: an in-memory `SqlxRepo` + `EventBus`, a real `OperationRuntime`
 //! with stub worker adapters, and a `Scheduler` built like the dispatcher construction site builds it.
 
-#[path = "scheduler/child_failure_notice.rs"]
-mod child_failure_notice;
 #[path = "scheduler/c2b.rs"]
 mod c2b;
+#[path = "scheduler/child_failure_notice.rs"]
+mod child_failure_notice;
 #[path = "scheduler/child_track_config.rs"]
 mod child_track_config;
 #[path = "scheduler/child_track_continue.rs"]
