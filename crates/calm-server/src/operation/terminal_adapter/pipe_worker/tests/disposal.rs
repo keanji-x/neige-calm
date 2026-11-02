@@ -1,4 +1,5 @@
 use super::*;
+mod batch_recovery;
 use crate::db::RepoSyncDomainRaw;
 use axum::{
     body::Body,

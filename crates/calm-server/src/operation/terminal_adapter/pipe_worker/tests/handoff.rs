@@ -3,10 +3,6 @@
 use super::*;
 use crate::scheduler::{PostClaimDriveTestHook, Scheduler};
 
-/// Waits, bounded, for a `go` file in its checkout so the test controls when it exits.
-const WAIT_FOR_GO: &str =
-    "i=0; until [ -e go ] || [ \"$i\" -ge 600 ]; do sleep 0.05; i=$((i+1)); done; test -e go";
-
 #[tokio::test]
 async fn w_terminal_worker_deferred_prepare_hands_off_running() {
     let first_root = tempfile::tempdir().unwrap();

@@ -1800,15 +1800,15 @@ impl Scheduler {
         if during_boot {
             let scheduler = Arc::clone(self);
             tokio::spawn(async move {
-                scheduler.resume_dispatched(task).await;
+                scheduler.resume_dispatched(task, true).await;
             });
         } else {
-            self.resume_dispatched(task).await;
+            self.resume_dispatched(task, false).await;
         }
     }
 
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()` + guarded writes.
-    async fn resume_dispatched(self: &Arc<Self>, task: Task) {
+    async fn resume_dispatched(self: &Arc<Self>, task: Task, during_boot: bool) {
         if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
             tracing::debug!(
                 task_id = %task.id,
@@ -1833,10 +1833,22 @@ impl Scheduler {
                 return;
             }
         };
-        // Recovery must not queue behind capacity while scanning other tasks.
+        // Only boot's already detached owner may wait for capacity. Inline
+        // steady scans return immediately so later tasks are still reconciled.
         let _permit = match Arc::clone(&self.semaphore).try_acquire_owned() {
             Ok(p) => p,
-            Err(_) => return,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                #[cfg(feature = "fixtures")]
+                crate::test_seams::pause_point("scheduler-resume-capacity-busy", &task.id).await;
+                if !during_boot {
+                    return;
+                }
+                match Arc::clone(&self.semaphore).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                }
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => return,
         };
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("compact-sweep-before-drive", &task.id).await;

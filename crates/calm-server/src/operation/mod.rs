@@ -1180,14 +1180,26 @@ pub trait OperationRepo: Send + Sync {
     async fn release_pending_for_retry(&self, id: &str) -> Result<()> {
         let db = self.sqlite_db();
         let write_db = (db).clone();
-        write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin_immediate().await?;
-            sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=?1 AND phase='pending' AND (lease_owner IS NULL OR lease_until_ms < ?2)")
-                .bind(id).bind(now_ms()).execute(&mut **tx).await?;
-            tx.commit().await?;
-            Ok(())
-
-    })).await.map_err(calm_truth::TruthError::from)?
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    sqlx::query(
+                        "UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL \
+                        WHERE id=?1 AND phase='pending' \
+                        AND (lease_owner IS NULL OR lease_until_ms < ?2)",
+                    )
+                    .bind(id)
+                    .bind(now_ms())
+                    .execute(&mut **tx)
+                    .await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     /// The same drive phase/lease predicate restricted to one existing operation.
