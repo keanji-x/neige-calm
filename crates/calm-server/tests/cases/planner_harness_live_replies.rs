@@ -339,44 +339,6 @@ async fn a_completed_turn_discards_a_reply_it_abandoned() {
     boot.harness.shutdown().await.unwrap();
 }
 
-/// The fake daemon's fan-out holds 16 frames; the test's synchronous burst overflows it before the
-/// run loop runs again, so the run loop's next receive is `Lagged`.
-#[tokio::test]
-async fn lagged_input_blocks_the_turn_and_no_partial_is_stored_even_when_interrupted() {
-    let boot = boot().await;
-    turn_started(&boot);
-    reply_started(&boot, TURN, "reply-1");
-    delta(&boot, TURN, "reply-1", "Hel");
-    wait_live(&boot, live_turn(&[("reply-1", "Hel")])).await;
-
-    for _ in 0..40 {
-        delta(&boot, TURN, "reply-1", "x");
-    }
-    command_started(&boot, "barrier");
-    wait_rows(&boot, 2).await;
-    assert_eq!(live(&boot).await, live_turn(&[]));
-    reply_started(&boot, TURN, "reply-2");
-    delta(&boot, TURN, "reply-2", "after the loss");
-    command_started(&boot, "barrier-2");
-    wait_rows(&boot, 3).await;
-    assert_eq!(live(&boot).await, live_turn(&[]));
-
-    interrupt(&boot).await;
-    let rows = wait_rows(&boot, 5).await;
-    wait_live(&boot, no_live_turn()).await;
-    assert_eq!(
-        shape(&rows),
-        [
-            "item/started",
-            "item/started",
-            "item/started",
-            "item/started",
-            "turn/completed"
-        ]
-    );
-    boot.harness.shutdown().await.unwrap();
-}
-
 /// Every snapshot write updates `worker_sessions.handle_state_json`; a trigger counts them.
 #[tokio::test]
 async fn a_delta_writes_no_row_no_event_and_no_snapshot() {
@@ -420,7 +382,7 @@ async fn a_delta_writes_no_row_no_event_and_no_snapshot() {
 
     let mut text = String::new();
     for batch in 0..3 {
-        // Below the fan-out's capacity, so nothing lags.
+        // Each synchronous fixture batch fits the handoff; the loop drains between batches.
         for piece in 0..10 {
             let piece = format!("{batch}{piece} ");
             delta(&boot, TURN, "reply-1", &piece);

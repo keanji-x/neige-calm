@@ -25,3 +25,8 @@ subscription through the real WebSocket path and verify an RPC response remains
 readable; verify ordering, receiver cancellation/drop, and the existing source
 replacement fence. Mutation verification skips a full subscriber instead of waiting, and must make
 the bounded-handoff no-loss test fail.
+
+Codex harness subscriptions no longer report `Lagged`. The old Codex-only
+broadcast-overflow integration test is superseded by the real-transport held-writer
+regression. The generic lost-input unit contract remains for other providers'
+broadcast streams, including suppression of partial replies after input loss.
