@@ -268,7 +268,7 @@ impl SharedCodexAppServer {
             }
             self.native_turns
                 .insert(thread_id.to_owned(), turn_id.clone());
-            let _ = self.notifications.send(Notification::TurnStarted {
+            self.emit_notification_for_test(Notification::TurnStarted {
                 thread_id: thread_id.to_owned(),
                 turn: serde_json::json!({"id":turn_id,"input_len":items.len()}),
             });
