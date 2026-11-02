@@ -236,6 +236,12 @@ impl OperationRuntime {
             .expect("operation wait hook mutex") = Some(hook);
     }
 
+    /// Subscribe before reading the durable result; notifications are only wake
+    /// hints and a lagged receiver must reload its own operation.
+    pub fn subscribe_completions(&self) -> broadcast::Receiver<OperationResult> {
+        self.completion.subscribe()
+    }
+
     pub fn publish_completion(&self, result: OperationResult) {
         self.completion.complete(result);
     }
