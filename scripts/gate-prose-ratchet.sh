@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# CARRIER-core fixtures add five long SQL/field-path literals (191 -> 196):
+# classification_tests TABLES, archived/orphan SQL and absent-frame DDL;
+# core_matrix_tests two provider-neighbor UPDATEs. OBS presence paths are deferred.
+# These are offline evidence fixtures, not agent-facing prose. Fixture changes
+# regenerate this baseline; ordinary additions need no inventory. The existing
+# once-per-lint scan and separate selftest are unchanged; no new check is added.
 # P1b-S bounded SQL exception: long_literal/crates/**/*.rs 181 -> 191.
 # All ten occurrences are in conversation_upgrade/schema_fact_tests.rs:
 # 1. metadata's six-column _sqlx_migrations DDL.

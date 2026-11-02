@@ -176,3 +176,27 @@ pub use schema_facts::{
 };
 #[cfg(test)]
 mod schema_fact_tests;
+
+mod classify;
+mod legacy;
+mod nested;
+mod root;
+pub use classify::{
+    CompleteFactAudit, FactReason, FieldFact, FrameFacts, Interpretation, Presence, WorkerFacts,
+    WorkerKey, classify_facts,
+};
+#[cfg(test)]
+mod classification_tests;
+#[cfg(test)]
+mod legacy_tests;
+
+#[cfg(test)]
+mod core_matrix_tests;
+#[cfg(test)]
+mod node_oracle;
+
+#[cfg(test)]
+mod carrier_contract_tests;
+
+#[cfg(test)]
+mod root_tests;
