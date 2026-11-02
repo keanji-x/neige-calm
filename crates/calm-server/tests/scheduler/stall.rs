@@ -409,6 +409,19 @@ async fn stalled_running_terminal_requires_a_decision_without_fabricating_exit()
 async fn stall_followup_refuses_retired_planner_session() {
     let (boot, _runtime, _scheduler, task) = stalled_fixture(TaskStatus::Pending).await;
     let wake = event_rows(&boot, "track.wake_requested").await.remove(0);
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::session_supersede_active_tx(
+                tx,
+                &"planner-session".to_string(),
+                now_ms(),
+            )
+            .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
     crate::support::planner::start_session(
         boot.repo.as_ref(),
         boot.planner_card_id.as_str(),
