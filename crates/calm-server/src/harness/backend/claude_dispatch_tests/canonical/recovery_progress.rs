@@ -12,7 +12,7 @@ async fn canonical_claude_reopened_completion_wakes_recovery_after_early_event()
 }
 
 async fn completion_progress(reopened: bool) {
-    let mut fx = Fixture::new("no-input-replay").await;
+    let mut fx = Fixture::new("exit").await;
     if reopened {
         let (backend, session) = recovery::reopen_session(&fx, fx.owner.repo.clone()).await;
         fx.backend = backend;
@@ -21,10 +21,12 @@ async fn completion_progress(reopened: bool) {
     let completion = c5d::Pause::arm("claude-completed-before-claim-clear", &fx.owner.worker);
     fx.dispatch().await.unwrap();
     completion.entered().await;
+    assert_eq!(fx.frame().await["phase"], "turn_running");
     // Start after TurnCompleted was broadcast: the loop cannot use that early
     // event. It must first hold END on the retained claim, then use the join hint.
     let registry = crate::harness::HarnessRegistry::new();
     let harness = fx.start_loop_in(registry.clone()).await;
+    assert_eq!(fx.frame().await["phase"], "turn_running");
     let tick = c5d::Pause::arm("canonical-tick-returned", &fx.owner.card);
     harness.request_progress();
     tick.entered().await;
@@ -43,13 +45,21 @@ async fn completion_progress(reopened: bool) {
             .unwrap()
             .is_none()
     );
+    // Pin the scheduler's waiting path and its completed probe calculation.
+    // The source is already installed; there is no pending admission handoff.
+    let waiting = c5d::Pause::arm("canonical-result-wait", &fx.owner.card);
+    let probe = c5d::Pause::arm("canonical-recovery-probe-ready", &fx.owner.card);
+    drop(drained);
+    waiting.entered().await;
+    drop(waiting);
+    probe.entered().await;
     drop(completion);
     assert!(
         tokio::time::timeout(Duration::from_secs(10), fx.session.wait_driver_for_test())
             .await
             .expect("original driver must finish after releasing completion")
     );
-    drop(drained);
+    drop(probe);
     // This deadline is strictly below the scheduler's 25–30 second fallback.
     let completed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
