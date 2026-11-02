@@ -345,6 +345,7 @@ async fn unadmitted_target(damage: Option<&'static str>) {
         if let Some(path) = match damage {
             Some("empty") => Some(""),
             Some("relative") => Some(".."),
+            Some("root") => Some("/"),
             _ => None,
         } {
             sqlx::query("UPDATE events SET payload=json_set(payload,'$.path',?) WHERE id=?")
@@ -357,15 +358,15 @@ async fn unadmitted_target(damage: Option<&'static str>) {
             std::path::PathBuf::from("../independent-retirement-test")
         } else { root.path().join("unrelated") };
         require_active_workspace_path(&mut tx, &unrelated).await.unwrap();
-        if matches!(damage, Some("empty" | "relative")) {
-            let path = if damage == Some("empty") { "" } else { ".." };
+        if matches!(damage, Some("empty" | "relative" | "root")) {
+            let path = match damage {Some("empty") => "", Some("root") => "/", _ => ".."};
             assert!(retire_extra_worktree_tx(&mut tx, event, "owner", Path::new(path)).await.unwrap());
             require_active_workspace_path(&mut tx, &unrelated).await.unwrap();
             let rows = retired_workspaces(&mut tx).await.unwrap();
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].cleanup_reason, "unknown_location");
         }
-        if !matches!(damage, Some("path" | "json" | "empty" | "relative")) {
+        if !matches!(damage, Some("path" | "json" | "empty" | "relative" | "root")) {
             retired(require_active_workspace_path(&mut tx, &root.path().join("extra")).await);
         }
         tx.rollback().await.unwrap();
@@ -521,4 +522,9 @@ async fn retirement_unlocated_empty_path_cannot_reserve_all_execution_roots() {
 #[tokio::test]
 async fn retirement_unlocated_relative_path_cannot_reserve_unrelated_execution_roots() {
     unadmitted_target(Some("relative")).await;
+}
+
+#[tokio::test]
+async fn retirement_filesystem_root_cannot_reserve_all_execution_roots() {
+    unadmitted_target(Some("root")).await;
 }

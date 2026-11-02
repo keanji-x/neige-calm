@@ -104,9 +104,10 @@ no historical physical identity is invented, and none of these records authorize
 physical cleanup. Fresh bindings save a resolved location and fresh Forge targets
 are resolved before execution; retirement never probes garbage to reconstruct
 lost historical identity. Empty and relative historical names have no
-reliable origin: they remain in diagnostic inventory but cannot serve as global
-path reservations. An empty name must never become a prefix blocking every
-unrelated execution. Resolved locations captured by fresh bindings remain
+reliable origin. A filesystem root cannot describe an independently owned
+workspace allocation. These records remain in diagnostic inventory but cannot
+serve as global path reservations: neither an empty name nor `/` may become a
+prefix blocking every unrelated execution. Resolved locations captured by fresh bindings remain
 reserved, including when the caller originally used a relative name.
 
 The admission inventory performs metadata comparisons proportional to retained

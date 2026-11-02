@@ -52,14 +52,16 @@ impl<'a> PathLocation<'a> {
     }
 }
 
-/// Historical relative/empty names have no durable origin. An empty Path is a
-/// prefix of every candidate, but cannot become a global fence or a primary root.
+/// Historical relative/empty names have no durable origin; a filesystem root
+/// cannot be an independently owned workspace allocation. None can authorize a
+/// global reservation, even though empty and filesystem roots prefix all paths.
 pub(super) fn reserved_paths_overlap(
     candidate: &std::path::Path,
     root: &std::path::Path,
     containing: bool,
 ) -> bool {
     root.is_absolute()
+        && root.parent().is_some()
         && (candidate.starts_with(root) || (containing && root.starts_with(candidate)))
 }
 
