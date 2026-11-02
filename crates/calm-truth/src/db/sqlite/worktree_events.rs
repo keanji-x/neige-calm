@@ -40,7 +40,35 @@ pub(super) async fn current_provision(
     conn: &mut SqliteConnection,
     id: i64,
 ) -> Result<Option<ProvisionLocation>> {
-    Ok(unmatched(conn, Scope::Event(id)).await?.into_iter().next())
+    // Historical event payloads have no JSON-validity constraint. Decode this
+    // boundary separately so a provably unadmitted cleanup cannot turn corrupt
+    // evidence into a global launch dependency. Database query failures propagate.
+    #[derive(sqlx::FromRow)]
+    struct StoredLocation {
+        event_id: i64,
+        track_id: Option<String>,
+        path: Option<String>,
+    }
+    let row: Option<StoredLocation> = unmatched(conn, Scope::Event(id)).await?.into_iter().next();
+    match row {
+        Some(StoredLocation {
+            event_id,
+            track_id: Some(track_id),
+            path: Some(path),
+        }) => Ok(Some(ProvisionLocation {
+            event_id,
+            track_id,
+            path,
+        })),
+        Some(_) => {
+            tracing::warn!(
+                event_id = id,
+                "provision location unreadable; unadmitted cleanup deferred"
+            );
+            Ok(None)
+        }
+        None => Ok(None),
+    }
 }
 
 enum Scope<'a> {
@@ -54,8 +82,9 @@ where
     T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
 {
     let mut query = sqlx::QueryBuilder::new(
-        "SELECT e.id AS event_id,e.scope_track AS track_id,json_extract(e.payload,'$.card_id') AS card_id, \
-         e.scope_area AS area_id,json_extract(e.payload,'$.path') AS path FROM events e WHERE e.kind='worktree.provisioned'",
+        "SELECT e.id AS event_id,e.scope_track AS track_id,CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.card_id') END AS card_id, \
+         e.scope_area AS area_id,CASE WHEN json_valid(e.payload) THEN CASE WHEN json_type(e.payload,'$.path')='text' \
+         THEN json_extract(e.payload,'$.path') END END AS path FROM events e WHERE e.kind='worktree.provisioned'",
     );
     match scope {
         Scope::All => {}
@@ -68,7 +97,8 @@ where
     }
     query.push(" AND NOT EXISTS (SELECT 1 FROM events later WHERE later.id>e.id \
         AND later.scope_track=e.scope_track AND later.kind IN ('worktree.provisioned','worktree.removed') \
-        AND json_extract(later.payload,'$.path')=json_extract(e.payload,'$.path')) ORDER BY e.id");
+        AND CASE WHEN json_valid(later.payload) THEN json_extract(later.payload,'$.path') END \
+        =CASE WHEN json_valid(e.payload) THEN json_extract(e.payload,'$.path') END) ORDER BY e.id");
     Ok(query.build_query_as().fetch_all(conn).await?)
 }
 

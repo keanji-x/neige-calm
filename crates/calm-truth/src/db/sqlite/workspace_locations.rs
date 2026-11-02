@@ -208,7 +208,7 @@ pub(super) async fn deferred_reclaim_locations(
             }
         };
         if let Some(claim) =
-            super::worktree_events::current_provision(conn, target.provision_id).await?
+            super::workspace_retirement::extra_retirement_claim(conn, target.provision_id).await?
         {
             if claim.track_id != target.track_id
                 || PathBuf::from(&claim.path) != target.request.path

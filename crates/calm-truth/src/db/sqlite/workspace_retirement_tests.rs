@@ -262,8 +262,9 @@ async fn retirement_extra_at_primary_or_ancestor_keeps_primary_available() {
             Box::pin(async move {
                 let mut tx = session.begin_immediate().await.unwrap();
                 let primary = Path::new(track.workspace.agent_cwd());
+                let mut receipts = Vec::new();
                 for path in [primary, primary.parent().unwrap()] {
-                    append_decision_event_in_tx(
+                    let id = append_decision_event_in_tx(
                         &mut tx,
                         &ActorId::KernelDispatcher,
                         &EventScope::Card {
@@ -280,6 +281,7 @@ async fn retirement_extra_at_primary_or_ancestor_keeps_primary_available() {
                     )
                     .await
                     .unwrap();
+                    receipts.push((id, path));
                 }
                 retire_track_extras_tx(&mut tx, track.id.as_str())
                     .await
@@ -288,6 +290,17 @@ async fn retirement_extra_at_primary_or_ancestor_keeps_primary_available() {
                     .await
                     .unwrap();
                 assert!(retired_workspaces(&mut tx).await.unwrap().is_empty());
+                // Old preflight could leave protected primary claims parked with
+                // no admitted execution. Upgrade inventory must agree with the
+                // new registration policy, including the ancestor case.
+                for (id, path) in receipts {
+                    let operation = format!("legacy:{id}");
+                    let payload = serde_json::json!({"target": {"track_id": track.id,
+                        "provision_id": id, "request": {"path": path}}});
+                    sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms,parked_at_ms,parked_deadline_ms) VALUES (?1,?1,'workspace-reclaim','hash','track','{}',?2,'{\"data\":{\"workspace_reclaim\":{\"execution_id\":null}}}','parked',1,1,1,2)")
+                        .bind(operation).bind(payload.to_string()).execute(&mut **tx).await.unwrap();
+                }
+                require_active_workspace_path(&mut tx, primary).await.unwrap();
                 tx.rollback().await.unwrap();
             })
         })
@@ -297,15 +310,15 @@ async fn retirement_extra_at_primary_or_ancestor_keeps_primary_available() {
 
 #[tokio::test]
 async fn retirement_corrupt_unadmitted_target_does_not_gate_unrelated_execution() {
-    unadmitted_target(false).await;
+    unadmitted_target(None).await;
 }
 
 #[tokio::test]
 async fn retirement_unadmitted_receipt_does_not_require_card_metadata() {
-    unadmitted_target(true).await;
+    unadmitted_target(Some("card")).await;
 }
 
-async fn unadmitted_target(corrupt_card: bool) {
+async fn unadmitted_target(damage: Option<&'static str>) {
     use crate::db::sqlite::append_decision_event_in_tx;
     use crate::{
         event::{Event, EventScope},
@@ -318,15 +331,24 @@ async fn unadmitted_target(corrupt_card: bool) {
         let event = append_decision_event_in_tx(&mut tx, &ActorId::KernelDispatcher,
             &EventScope::Card {card: "card".into(),track: "owner".into(),area: "area".into()}, None,
             &Event::WorktreeProvisioned {track_id: "owner".into(),card_id: "card".into(),path: root.path().join("extra").to_str().unwrap().into()}).await.unwrap();
-        if corrupt_card {
+        if damage == Some("card") {
             sqlx::query("UPDATE events SET payload=json_remove(payload,'$.card_id') WHERE id=?")
                 .bind(event).execute(&mut **tx).await.unwrap();
         }
+        if damage == Some("path") {
+            sqlx::query("UPDATE events SET payload=json_remove(payload,'$.path') WHERE id=?")
+                .bind(event).execute(&mut **tx).await.unwrap();
+        } else if damage == Some("json") {
+            sqlx::query("UPDATE events SET payload='unreadable' WHERE id=?")
+                .bind(event).execute(&mut **tx).await.unwrap();
+        }
         let payload = serde_json::json!({"target":{"track_id":"incorrect-owner","provision_id":event,"request":{"path":"/incorrect/path"}}});
-        sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('corrupt','corrupt','workspace-reclaim','hash','track','{}',?,'{\"data\":{\"workspace_reclaim\":{\"execution_id\":null}}}','parked',1,1)")
+        sqlx::query("INSERT INTO operations(id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms,parked_at_ms,parked_deadline_ms) VALUES ('corrupt','corrupt','workspace-reclaim','hash','track','{}',?,'{\"data\":{\"workspace_reclaim\":{\"execution_id\":null}}}','parked',1,1,1,2)")
             .bind(payload.to_string()).execute(&mut **tx).await.unwrap();
         require_active_workspace_path(&mut tx, &root.path().join("unrelated")).await.unwrap();
-        retired(require_active_workspace_path(&mut tx, &root.path().join("extra")).await);
+        if !matches!(damage, Some("path" | "json")) {
+            retired(require_active_workspace_path(&mut tx, &root.path().join("extra")).await);
+        }
         tx.rollback().await.unwrap();
     })).await.unwrap();
 }
@@ -351,4 +373,14 @@ async fn retirement_repository_area_delete_preserves_reservation() {
         )
         .await,
     );
+}
+
+#[tokio::test]
+async fn retirement_unadmitted_missing_receipt_path_does_not_gate_unrelated_execution() {
+    unadmitted_target(Some("path")).await;
+}
+
+#[tokio::test]
+async fn retirement_unadmitted_invalid_receipt_json_does_not_gate_unrelated_execution() {
+    unadmitted_target(Some("json")).await;
 }

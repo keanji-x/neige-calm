@@ -89,6 +89,36 @@ pub async fn retire_workspace_selection_tx(
     Ok(())
 }
 
+/// The one eligibility projection for both new retirement and unadmitted legacy
+/// inventory. Already admitted destructive effects retain their separate fences.
+pub(super) async fn extra_retirement_claim(
+    conn: &mut SqliteConnection,
+    provision: i64,
+) -> Result<Option<super::worktree_events::ProvisionLocation>> {
+    let Some(claim) = super::worktree_events::current_provision(conn, provision).await? else {
+        return Ok(None);
+    };
+    // An extra receipt must not retire the primary retained for reopen, nor
+    // reserve an ancestor containing it. Compare recorded locations only; close
+    // must not depend on the health of the old directory.
+    let primary: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT b.selected_path,r.location_root,r.observed_root FROM track_workspace_bindings b \
+         JOIN workspace_resources r ON r.id=b.workspace_id WHERE b.track_id=?",
+    )
+    .bind(&claim.track_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((selected, location, observed)) = primary
+        && [Some(selected), Some(location), observed]
+            .into_iter()
+            .flatten()
+            .any(|primary| Path::new(&primary).starts_with(&claim.path))
+    {
+        return Ok(None);
+    }
+    Ok(Some(claim))
+}
+
 /// Extra worktree identity comes from Neige's provision receipt, never a path lookup.
 /// Repeated close/delete/recovery registration converges on the same reservation.
 pub async fn retire_extra_worktree_tx(
@@ -97,29 +127,11 @@ pub async fn retire_extra_worktree_tx(
     track: &str,
     path: &Path,
 ) -> Result<bool> {
-    let Some(current) = super::worktree_events::current_provision(tx, provision).await? else {
+    let Some(current) = extra_retirement_claim(tx, provision).await? else {
         return Ok(false);
     };
     if current.track_id != track || Path::new(&current.path) != path {
         return Err(CalmError::Conflict("workspace provision identity changed"));
-    }
-    // An extra receipt must not retire the primary retained for reopen, nor
-    // reserve an ancestor containing it. Compare recorded locations only; close
-    // must not depend on the health of the old directory.
-    let primary: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT b.selected_path,r.location_root,r.observed_root FROM track_workspace_bindings b \
-         JOIN workspace_resources r ON r.id=b.workspace_id WHERE b.track_id=?",
-    )
-    .bind(track)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if let Some((selected, location, observed)) = primary
-        && [Some(selected), Some(location), observed]
-            .into_iter()
-            .flatten()
-            .any(|primary| Path::new(&primary).starts_with(path))
-    {
-        return Ok(false);
     }
     let key = format!("provision:{provision}");
     let stored: Option<(String, String)> = sqlx::query_as(
