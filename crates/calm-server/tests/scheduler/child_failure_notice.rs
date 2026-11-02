@@ -220,7 +220,7 @@ async fn child_failure_notice_superseded_attempt_cannot_mint_for_successor() {
         actor: ActorId::Kernel,
         constraint: calm_types::task_recovery::TaskRecoveryConstraint::V1 {
             spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
-            declared_by: "spec".into(),
+            declared_by: calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR.into(),
             refs: vec![TaskContextRef {
                 track_id: boot.track_id.clone(),
                 block_id: "root".into(),

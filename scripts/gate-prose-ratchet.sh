@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# A1 bounded SQL exception: long_literal/crates/**/*.rs 202 -> 206.
+# Four real-schema test fixtures, not agent-facing prose:
+# 1-2. scheduler/child_failure_notice.rs: recovery-allocation INSERT and the
+#      reject_dormant_notice trigger that forces event persistence rollback.
+# 3-4. sqlite/session_failure_epoch_tests.rs: legacy and already-Failed session
+#      INSERTs across the real released-schema upgrade and current insert path.
+# Query changes edit the owning fixture and regenerate this existing baseline;
+# ordinary new tests need no inventory entry. The existing scan runs once per
+# CI lint workflow plus its separate selftest; no rule or invocation is added.
 # CARRIER-core fixtures add five long SQL/field-path literals (191 -> 196):
 # classification_tests TABLES, archived/orphan SQL and absent-frame DDL;
 # core_matrix_tests two provider-neighbor UPDATEs. OBS presence paths are deferred.

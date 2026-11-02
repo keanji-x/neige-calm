@@ -1,7 +1,7 @@
 //! Lost live notification and duplicate catch-up must reach the actual provider once.
 use super::*;
 use crate::event::Event;
-use calm_truth::db::RepoEventWrite as _;
+use calm_truth::db::{RepoEventWrite as _, RepoRead as _};
 
 #[tokio::test]
 async fn forge_failure_result_reconciles_without_broadcast_and_is_accepted_once() {
