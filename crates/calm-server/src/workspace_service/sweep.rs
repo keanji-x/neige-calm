@@ -7,11 +7,13 @@ use workspace_runtime::sweep::WorkspaceTrackSweep;
 pub(crate) async fn workspace_track_sweep_for_track_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
-    deleting: &[String],
+    _deleting: &[String],
 ) -> Result<Option<WorkspaceTrackSweep>> {
     let Some(track) = calm_truth::db::sqlite::track_find_tx(tx, track_id).await? else {
         return Ok(None);
     };
+    calm_truth::db::sqlite::workspace_retirement::retire_workspace_selection_tx(tx, track_id)
+        .await?;
     let git_common_dirs = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT git_common_dir FROM workspace_leases \
          WHERE track_id = ?1 AND git_common_dir IS NOT NULL ORDER BY git_common_dir",
@@ -22,13 +24,20 @@ pub(crate) async fn workspace_track_sweep_for_track_tx(
     .into_iter()
     .map(PathBuf::from)
     .collect();
-    let extra_worktrees = super::reclaim::snapshot(tx, track_id, deleting).await?;
+    let extra_worktrees =
+        calm_truth::db::sqlite::workspace_retirement::retire_track_extras_tx(tx, track_id).await?;
     Ok(Some(WorkspaceTrackSweep {
         track_id: track_id.to_string(),
         workspace: track.workspace,
         git_common_dirs,
         extra_worktrees,
-        removed_refs: super::reclaim::removed_refs(track_id)?,
+        removed_refs: crate::git_candidate::refs::teardown_ref_prefixes(track_id)
+            .into_iter()
+            .chain(std::iter::once(format!(
+                "refs/heads/{}",
+                workspace::worktree::track_branch_for(track_id)?
+            )))
+            .collect(),
     }))
 }
 

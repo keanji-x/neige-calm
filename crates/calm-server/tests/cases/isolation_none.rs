@@ -138,24 +138,9 @@ async fn isolation_none_historical_lease_cleans_only_owned_refs() {
                 .success()
         );
     }
-    let mut before = fingerprint(&source);
-    before.retain(|path, _| {
-        !owned
-            .iter()
-            .any(|name| path == &PathBuf::from(".git").join(name))
-    });
+    let before = fingerprint(&source);
     assert_eq!(delete_track(&b, &track).await.0, StatusCode::NO_CONTENT);
-    let after = fingerprint(&source);
-    // Git removes empty ref parent directories as well as the refs themselves.
-    before.retain(|path, bytes| {
-        bytes.is_some()
-            || after.contains_key(path)
-            || !owned
-                .iter()
-                .any(|name| PathBuf::from(".git").join(name).starts_with(path))
-    });
-    assert_eq!(after, before);
-    assert!(!source.join(".claude/worktrees").exists());
+    assert_eq!(fingerprint(&source), before);
 }
 
 fn none_body(area: &str, cwd: &Path) -> Value {
@@ -172,7 +157,10 @@ async fn assert_none_refused(b: &Boot, area: &str, cwd: &Path) {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{}: {body}", cwd.display());
-    assert!(body.contains("Neige-owned location"), "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["code"],
+        "bad_request"
+    );
 }
 
 #[tokio::test]
@@ -396,13 +384,10 @@ async fn teardown_window(area_delete: bool) {
     let (status, body) = deletion.await.unwrap();
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     assert!(b.teardown_targets.snapshot().is_empty());
-    assert!(!path.exists());
-    user_repo(&path);
-    std::fs::create_dir(path.join("sub")).unwrap();
+    assert!(path.exists());
     for cwd in [&path, &path.join("sub")] {
         let target_area = if area_delete { &other } else { &area };
-        let track = create_track(&b, none_body(target_area, cwd)).await;
-        assert_eq!(track["workspace"]["isolation"], "none");
+        assert_none_refused(&b, target_area, cwd).await;
     }
 }
 

@@ -145,7 +145,7 @@ async fn u8c_fence_replay_repair_waits_for_clean() {
     }
     drop(arrival);
     drop(held);
-    assert_eq!(cleaning.await.unwrap(), 1);
+    assert_eq!(cleaning.await.unwrap(), 0);
     assert_eq!(repairing.await.0, StatusCode::CREATED);
     read(&app, &cookie, track, MARKER).await;
     fixture.shutdown_process(&state).await;
@@ -294,7 +294,7 @@ async fn retained_clean_and_delete(cold: bool) {
         "{refused:?}"
     );
     drop(held);
-    assert_eq!(cleaning.await.unwrap(), 1);
+    assert_eq!(cleaning.await.unwrap(), 0);
     let fence = crate::operation::planner_start_fence::CardStartFence::lock(
         &route.planner_recovery_locks,
         &route.repo,
@@ -626,7 +626,7 @@ async fn retained_handoff_race(mode: u8, cold: bool) {
         );
         no_activation_requests(&mut peer).await;
         drop(fenced);
-        assert_eq!(cleaning.await.unwrap(), 1);
+        assert_eq!(cleaning.await.unwrap(), 0);
     } else {
         let delete_waiting = HeldPause::arm("key-lock-waiting", track);
         let uri = format!("/api/tracks/{track}");

@@ -8,6 +8,7 @@ pub struct OwnedWorkspaceLocation {
     pub path: PathBuf,
     /// A track lock cannot stand in for durable settlement after a lost wait or restart.
     pub removing: bool,
+    pub retired: bool,
 }
 
 /// The durable part of the shared owned/teardown target set. Callers append their live
@@ -17,6 +18,21 @@ pub struct OwnedWorkspaceLocation {
 pub async fn owned_workspace_locations(
     conn: &mut sqlx::SqliteConnection,
 ) -> Result<Vec<OwnedWorkspaceLocation>> {
+    inventory(conn, true).await
+}
+
+/// Execution has already checked retirement through the path reservation owner.
+/// This inventory retains only live lifecycle owners and old physical effects.
+pub async fn execution_workspace_locations(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<OwnedWorkspaceLocation>> {
+    inventory(conn, false).await
+}
+
+async fn inventory(
+    conn: &mut sqlx::SqliteConnection,
+    include_retired: bool,
+) -> Result<Vec<OwnedWorkspaceLocation>> {
     let mut locations = super::track_worktree_locations(conn)
         .await?
         .into_iter()
@@ -24,8 +40,30 @@ pub async fn owned_workspace_locations(
             track_id,
             path,
             removing: false,
+            retired: false,
         })
         .collect::<Vec<_>>();
+    if include_retired {
+        locations.extend(
+            super::workspace_retirement::retired_location_roots(conn)
+                .await?
+                .into_iter()
+                .map(|(track_id, path)| OwnedWorkspaceLocation {
+                    track_id,
+                    path,
+                    removing: false,
+                    retired: true,
+                }),
+        );
+        locations.extend(deferred_reclaim_locations(conn).await?.into_iter().map(
+            |(track_id, path)| OwnedWorkspaceLocation {
+                track_id,
+                path,
+                removing: false,
+                retired: true,
+            },
+        ));
+    }
     #[derive(serde::Deserialize)]
     struct Request {
         path: PathBuf,
@@ -97,7 +135,6 @@ pub async fn owned_workspace_locations(
                     .ok_or_else(|| CalmError::Conflict("missing reclaim output"))?,
             )?;
             let Some(execution_id) = output.data.workspace_reclaim.execution_id else {
-                // Before admission, the live teardown registration owns this location.
                 return Ok(None);
             };
             let intent = intent.ok_or_else(|| {
@@ -119,6 +156,7 @@ pub async fn owned_workspace_locations(
                 track_id: payload.target.track_id,
                 path: payload.target.request.path,
                 removing: true,
+                retired: false,
             }))
         })()
         .map_err(|error| {
@@ -129,6 +167,60 @@ pub async fn owned_workspace_locations(
         locations.extend(location);
     }
     Ok(locations)
+}
+
+/// Only known unadmitted effects become retirement reservations. Already admitted
+/// corruption remains the legacy owner's concern; it must not newly gate independent workers.
+pub(super) async fn deferred_reclaim_locations(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(String, PathBuf)>> {
+    #[derive(serde::Deserialize)]
+    struct Request {
+        path: PathBuf,
+    }
+    #[derive(serde::Deserialize)]
+    struct Target {
+        track_id: String,
+        provision_id: i64,
+        request: Request,
+    }
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        target: Target,
+    }
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id,payload_json FROM operations WHERE kind='workspace-reclaim' AND phase='parked' AND \
+         CASE WHEN json_valid(tx_output_json) THEN json_type(tx_output_json,'$.data.workspace_reclaim.execution_id') END='null'",
+    ).fetch_all(&mut *conn).await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut roots = Vec::new();
+    for (id, row) in rows {
+        let target = match serde_json::from_str::<Payload>(&row) {
+            Ok(payload) => payload.target,
+            Err(error) => {
+                // Explicit null proves this record admitted no destructive effect.
+                // Its owner reports the malformed target during recovery; it must
+                // not create a new global dependency for independent execution.
+                tracing::warn!(operation_id=%id,%error,"unadmitted reclaim target unreadable; cleanup deferred");
+                continue;
+            }
+        };
+        if let Some(claim) =
+            super::worktree_events::current_provision(conn, target.provision_id).await?
+        {
+            if claim.track_id != target.track_id
+                || PathBuf::from(&claim.path) != target.request.path
+            {
+                tracing::warn!(operation_id=%id,"unadmitted reclaim target mismatches receipt; cleanup deferred");
+            }
+            // No destructive execution exists. Reserve the authoritative receipt,
+            // never the corrupt frozen target, without gating unrelated execution.
+            roots.push((claim.track_id, claim.path.into()));
+        }
+    }
+    Ok(roots)
 }
 
 #[cfg(test)]

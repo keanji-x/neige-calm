@@ -1,5 +1,5 @@
 //! Recycling a track workspace through the real `DELETE /api/tracks/{id}` and `DELETE /api/areas/{id}` routes.
-//! These tests really delete and assert on bytes on disk.
+//! Logical deletion retains owned bytes and durable reservations; runtime rollback remains covered.
 
 #![cfg(unix)]
 
@@ -423,6 +423,20 @@ fn head(path: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+async fn assert_retired_path(b: &Boot, path: &Path) {
+    let result = calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+        &mut b.repo.pool().acquire().await.unwrap(),
+        path,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(calm_truth::error::CalmError::Core(
+            calm_types::error::CoreError::BadRequest(_)
+        ))
+    ));
+}
+
 fn trash_entries(workspace_root: &Path) -> Vec<PathBuf> {
     let trash = workspace_root.join(".trash");
     let Ok(entries) = std::fs::read_dir(&trash) else {
@@ -442,37 +456,16 @@ fn trash_entry_for(workspace_root: &Path, track_id: &str) -> Option<PathBuf> {
 }
 
 #[tokio::test]
-async fn deleting_a_managed_track_moves_its_workspace_into_the_trash() {
+async fn retirement_managed_delete_preserves_bytes_and_reserves_original_path() {
     let b = boot().await;
     let area_id = create_area(&b, "Atlas").await;
-    let (track_id, path) = managed_track(&b, &area_id, "research").await;
-    std::fs::write(path.join("worker-output.txt"), b"generated").unwrap();
+    let (track_id, path) = managed_track(&b, &area_id, "owned").await;
     let before = fingerprint(&path);
-
     let (status, body) = delete_track(&b, &track_id).await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
-
-    assert!(
-        !path.exists(),
-        "the managed workspace is still at its old path"
-    );
-    let trashed = trash_entry_for(&b.workspace_root, &track_id).unwrap_or_else(|| {
-        panic!(
-            "nothing in the trash: {:?}",
-            trash_entries(&b.workspace_root)
-        )
-    });
-    // Moved, not deleted: every byte is still readable under `.trash`. This is
-    // what makes a future guard bug a leak rather than data loss.
-    assert!(
-        diff(&before, &fingerprint(&trashed)).is_empty(),
-        "the trashed copy is not identical to what was recycled"
-    );
-    assert_eq!(
-        std::fs::read(trashed.join("worker-output.txt")).unwrap(),
-        b"generated"
-    );
-    // The `<root>/<area_id>/` layer stays: it is reclaimed by area deletion, not track deletion.
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(diff(&before, &fingerprint(&path)).is_empty());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_none());
+    assert_retired_path(&b, &path).await;
     assert!(b.workspace_root.join(&area_id).is_dir());
 }
 
@@ -651,8 +644,8 @@ async fn the_same_track_in_a_user_area_deletes_normally() {
         StatusCode::NO_CONTENT,
         "the 403 is not about system ownership after all: body={body}"
     );
-    assert!(!path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
+    assert!(path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_none());
 }
 
 /// Parent `attached` ⇒ the child shares the parent's path; guard 1 alone carries this.
@@ -701,10 +694,10 @@ async fn deleting_a_child_of_a_managed_parent_leaves_the_parent_repository() {
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
     assert!(
-        !child_path.exists(),
-        "the child's own workspace was not recycled"
+        child_path.exists(),
+        "the child's retired workspace must be retained"
     );
-    assert!(trash_entry_for(&b.workspace_root, &child_id).is_some());
+    assert!(trash_entry_for(&b.workspace_root, &child_id).is_none());
     let changes = diff(&parent_before, &fingerprint(&parent_path));
     assert!(
         changes.is_empty(),
@@ -757,8 +750,8 @@ async fn deleting_a_leaf_from_a_frozen_tree_commits_after_recycling_its_workspac
     let (status, body) = delete_track(&b, &victim_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
     assert!(b.repo.track_get(&victim_id).await.unwrap().is_none());
-    assert!(!victim_path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_some());
+    assert!(victim_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_none());
     assert_eq!(
         b.tracks
             .area_of(&calm_server::ids::TrackId::from(victim_id.clone())),
@@ -866,8 +859,8 @@ async fn concurrent_deletes_cannot_resurrect_the_winners_workspace_or_cache_entr
     assert_eq!(first_status, StatusCode::NO_CONTENT, "body={first_body}");
     assert_eq!(second_status, StatusCode::NOT_FOUND, "body={second_body}");
     assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
-    assert!(!path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
+    assert!(path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_none());
     assert_eq!(
         b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
         None
@@ -893,7 +886,7 @@ async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
             async move { request(app, "DELETE", &format!("/api/tracks/{id}"), None).await },
         );
     hook.entered.notified().await;
-    assert!(!path.exists(), "the workspace must already be recycled");
+    assert!(path.exists(), "retirement must not move the workspace");
 
     request_task.abort();
     assert!(request_task.await.unwrap_err().is_cancelled());
@@ -909,8 +902,8 @@ async fn canceling_the_request_after_recycle_still_converges_the_delete_saga() {
     })
     .await
     .expect("the detached delete saga must finish after request cancellation");
-    assert!(!path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &track_id).is_some());
+    assert!(path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &track_id).is_none());
     assert_eq!(
         b.tracks.area_of(&calm_server::ids::TrackId::from(track_id)),
         None
@@ -1010,7 +1003,7 @@ async fn planner_reset_cannot_install_a_harness_behind_track_deletion() {
         .unwrap();
     assert!(!reset_status.is_success());
     assert!(b.repo.track_get(&track_id).await.unwrap().is_none());
-    assert!(!path.exists());
+    assert!(path.exists());
     assert_eq!(
         b.harness.len_active(),
         0,
@@ -1209,7 +1202,10 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
         .await
     });
     hook.entered.notified().await;
-    assert!(!victim_path.exists(), "victim must already be recycled");
+    assert!(
+        victim_path.exists(),
+        "retirement leaves victim bytes in place"
+    );
 
     let corrupted = (b.repo.db())
         .writer()
@@ -1246,8 +1242,8 @@ async fn area_delete_waits_for_track_delete_compensation_to_finish() {
     let (area_status, area_body) = area_delete.await.unwrap();
     assert_eq!(area_status, StatusCode::NO_CONTENT, "body={area_body}");
     assert!(b.repo.track_get(&victim_id).await.unwrap().is_none());
-    assert!(!victim_path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_some());
+    assert!(victim_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &victim_id).is_none());
     assert_eq!(
         b.tracks
             .area_of(&calm_server::ids::TrackId::from(victim_id)),
@@ -1274,7 +1270,7 @@ async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga(
         request(app, "DELETE", &format!("/api/areas/{delete_id}"), None).await
     });
     hook.entered.notified().await;
-    assert!(!path.exists(), "workspace must already be recycled");
+    assert!(path.exists(), "retirement leaves workspace bytes in place");
 
     request_task.abort();
     assert!(request_task.await.unwrap_err().is_cancelled());
@@ -1286,7 +1282,7 @@ async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga(
             let area_is_gone = b.repo.area_get(&area_id).await.unwrap().is_none();
             let track_is_gone = b.repo.track_get(track_id.as_str()).await.unwrap().is_none();
             let cache_is_clear = b.tracks.area_of(&track_id).is_none();
-            if area_is_gone && track_is_gone && cache_is_clear && !path.exists() {
+            if area_is_gone && track_is_gone && cache_is_clear && path.exists() {
                 break;
             }
             tokio::task::yield_now().await;
@@ -1304,7 +1300,7 @@ async fn canceling_the_request_after_area_recycle_still_finishes_the_owned_saga(
         );
     }
     assert!(b.repo.track_get(track_id.as_str()).await.unwrap().is_none());
-    assert!(!path.exists());
+    assert!(path.exists());
     assert_eq!(b.tracks.area_of(&track_id), None);
 }
 
@@ -1414,79 +1410,37 @@ async fn area_commit_failure_restores_every_recycled_workspace() {
 }
 
 #[tokio::test]
-async fn failed_area_workspace_restore_keeps_the_surviving_thread_sealed() {
+async fn retirement_failed_area_commit_preserves_workspace_and_unseals_owner() {
     let b = boot().await;
-    let area_id = create_area(&b, "Atlas").await;
-    let (track_id, path) = managed_track(&b, &area_id, "restore blocked").await;
-    let (worker_session_id, thread_id): (String, String) = sqlx::query_as(
-        "SELECT id,thread_id FROM worker_sessions WHERE track_id=?1 AND thread_id IS NOT NULL LIMIT 1",
+    let area = create_area(&b, "rollback").await;
+    let (track, path) = managed_track(&b, &area, "retained").await;
+    let thread: String = sqlx::query_scalar(
+        "SELECT thread_id FROM worker_sessions WHERE track_id=? AND thread_id IS NOT NULL LIMIT 1",
     )
-    .bind(&track_id)
+    .bind(&track)
     .fetch_one(b.repo.pool())
     .await
     .unwrap();
+    let before = fingerprint(&path);
+    let active = b.harness.len_active();
     let hook = calm_server::routes::areas::AreaDeleteCommitHook {
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
         fail_after_release: true,
         panic_after_release: false,
     };
-    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area_id, hook.clone());
-    let app = b.app.clone();
-    let delete_id = area_id.clone();
-    let deletion = tokio::spawn(async move {
-        request(app, "DELETE", &format!("/api/areas/{delete_id}"), None).await
-    });
-    hook.entered.notified().await;
-    assert!(!path.exists());
-    std::fs::create_dir_all(&path).unwrap();
-    std::fs::write(path.join("occupied"), b"not the restored workspace").unwrap();
+    calm_server::routes::areas::install_area_delete_commit_hook_for_test(&area, hook.clone());
     hook.release.notify_one();
-
-    let (status, body) = deletion.await.unwrap();
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body}");
-    assert!(b.repo.area_get(&area_id).await.unwrap().is_some());
-    assert!(b.repo.track_get(&track_id).await.unwrap().is_some());
-    assert!(
-        b.shared_codex.thread_seals().is_sealed(&thread_id),
-        "a surviving runtime must not resume against an unrestored workspace"
-    );
-    assert_eq!(
-        b.harness.len_active(),
-        0,
-        "unsafe sealed runtime must not be recovered"
-    );
-    // Process restart loses the in-memory seal; the managed ownership marker is the durable quarantine.
-    let runtime = b
-        .repo
-        .session_projection_by_id(&worker_session_id)
+    let (status, body) = delete_area(&b, &area).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(b.repo.track_get(&track).await.unwrap().is_some());
+    assert!(diff(&before, &fingerprint(&path)).is_empty());
+    assert!(!b.shared_codex.thread_seals().is_sealed(&thread));
+    assert_eq!(b.harness.len_active(), active);
+    let mut conn = b.repo.pool().acquire().await.unwrap();
+    calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(&mut conn, &path)
         .await
-        .unwrap()
         .unwrap();
-    let reboot_registry = calm_server::harness::HarnessRegistry::new();
-    let repo: Arc<dyn Repo> = b.repo.clone();
-    let reboot_daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let claude_wiring =
-        calm_server::harness::wiring::PlannerWiring::unconfigured_for_test(repo.clone());
-    let outcome = calm_server::harness::spawn_recovered_harness(
-        repo,
-        EventBus::new(),
-        b.roles.clone(),
-        b.tracks.clone(),
-        reboot_daemon.clone(),
-        reboot_daemon.thread_seals().clone(),
-        &claude_wiring,
-        &reboot_registry,
-        &calm_server::harness::new_track_delete_locks(),
-        runtime,
-        calm_server::harness::ClaimMode::Replace,
-    )
-    .await
-    .unwrap();
-    assert!(
-        outcome.installed().is_none(),
-        "boot recovery ignored the durable managed-workspace quarantine"
-    );
 }
 
 #[tokio::test]
@@ -1614,10 +1568,10 @@ async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_one
     let (status, body) = delete_area(&b, &area_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
-    assert!(!first_path.exists());
-    assert!(!second_path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &first_id).is_some());
-    assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
+    assert!(first_path.exists());
+    assert!(second_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &first_id).is_none());
+    assert!(trash_entry_for(&b.workspace_root, &second_id).is_none());
     assert!(
         trash_entry_for(&b.workspace_root, &attached_id).is_none(),
         "the attached track's directory was recycled"
@@ -1628,14 +1582,13 @@ async fn deleting_a_area_recycles_its_managed_workspaces_and_spares_attached_one
         "the user's repository changed: {changes:?}"
     );
     assert!(
-        !repo
-            .join(".claude/worktrees")
+        repo.join(".claude/worktrees")
             .join(format!("track-{attached_id}"))
             .exists(),
-        "area delete removes the attached track's worktree"
+        "area delete retains the attached track's worktree"
     );
     assert!(
-        !b.workspace_root.join(&area_id).exists(),
+        b.workspace_root.join(&area_id).exists(),
         "the area directory survived: {:?}",
         std::fs::read_dir(b.workspace_root.join(&area_id))
             .map(|d| d.map(|e| e.unwrap().path()).collect::<Vec<_>>())
@@ -1655,8 +1608,8 @@ async fn a_area_directory_with_an_unrecyclable_track_survives() {
     let (status, body) = delete_area(&b, &area_id).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
 
-    assert!(!good_path.exists());
-    assert!(trash_entry_for(&b.workspace_root, &good_id).is_some());
+    assert!(good_path.exists());
+    assert!(trash_entry_for(&b.workspace_root, &good_id).is_none());
     assert!(diff(&bad_before, &fingerprint(&bad_path)).is_empty());
     assert!(b.workspace_root.join(&area_id).is_dir());
 }
@@ -1664,34 +1617,21 @@ async fn a_area_directory_with_an_unrecyclable_track_survives() {
 #[tokio::test]
 async fn deleting_a_track_keeps_unrelated_expired_trash_for_maintenance() {
     let b = boot().await;
-    let area_id = create_area(&b, "Atlas").await;
-    let (first_id, _) = managed_track(&b, &area_id, "one").await;
-    let (second_id, _) = managed_track(&b, &area_id, "two").await;
-
-    let (status, _) = delete_track(&b, &first_id).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let fresh = trash_entry_for(&b.workspace_root, &first_id).unwrap();
-
-    // Plant an entry stamped well outside the retention window. Its name is the
-    // only thing that dates it — the GC deliberately does not read mtime.
+    let area = create_area(&b, "retention").await;
+    let (track, path) = managed_track(&b, &area, "retired").await;
     let stale_stamp =
         calm_server::model::now_ms() - workspace_runtime::recycle::TRASH_RETENTION_MS - 1;
     let stale = b
         .workspace_root
         .join(".trash")
-        .join(format!("track-ancient-{stale_stamp}"));
+        .join(format!("old-{stale_stamp}"));
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("payload"), b"old").unwrap();
-
-    let (status, _) = delete_track(&b, &second_id).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    assert!(
-        stale.exists(),
-        "deleting one track synchronously collected unrelated expired trash; its work belongs to maintenance"
-    );
-    assert!(fresh.exists(), "a fresh trash entry was swept early");
-    assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
+    let (status, body) = delete_track(&b, &track).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(stale.exists());
+    assert!(path.exists());
+    assert_retired_path(&b, &path).await;
 }
 
 /// A surviving harness is a live run loop whose cwd follows the inode: it keeps writing into the directory after it is renamed into `.trash`.
@@ -1711,7 +1651,7 @@ async fn deleting_a_track_takes_its_live_harness_out_of_the_registry() {
          deleted; its run loop keeps writing into the directory that just moved \
          to the trash"
     );
-    assert!(!path.exists(), "the workspace should have been recycled");
+    assert!(path.exists(), "logical deletion retains the workspace");
 }
 
 #[path = "isolation_none.rs"]

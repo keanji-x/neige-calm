@@ -1,5 +1,4 @@
-//! Postcommit teardown policy.
-use crate::track_worktree::{self, ObservePoint};
+//! Scoped ownership while logical retirement commits. Physical cleanup is deferred.
 use calm_types::model::{TrackWorkspace, WorkspaceIsolation};
 use std::path::PathBuf;
 
@@ -52,7 +51,7 @@ impl TeardownRegistration {
         let mut paths: Vec<PathBuf> = sweep
             .extra_worktrees
             .iter()
-            .map(|target| target.request.path.clone())
+            .cloned()
             .filter(|path| path.is_absolute())
             .collect();
         if sweep.workspace.isolation() == WorkspaceIsolation::Worktree {
@@ -83,8 +82,8 @@ impl TeardownRegistration {
 
     pub fn sweeps(self, sweeps: Vec<WorkspaceTrackSweep>) -> RegisteredSweeps {
         RegisteredSweeps {
-            sweeps,
-            registration: self,
+            _sweeps: sweeps,
+            _registration: self,
         }
     }
 }
@@ -109,12 +108,8 @@ impl Drop for Registration {
 
 /// A sweep requires a registration acquired before its delete commits.
 pub struct RegisteredSweeps {
-    sweeps: Vec<WorkspaceTrackSweep>,
-    registration: TeardownRegistration,
-}
-
-pub trait CandidateRefs: crate::reclaim::ReclaimReceipts + Clone + Send + Sync + 'static {
-    fn delete_for_track(&self, track_id: &str, git_common_dirs: &[PathBuf]);
+    _sweeps: Vec<WorkspaceTrackSweep>,
+    _registration: TeardownRegistration,
 }
 
 /// What a track teardown removes after its commit (D10): the track worktree and its branch
@@ -125,72 +120,8 @@ pub struct WorkspaceTrackSweep {
     /// Workspace decoded from the track row inside the deletion transaction.
     pub workspace: TrackWorkspace,
     pub git_common_dirs: Vec<PathBuf>,
-    pub extra_worktrees: Vec<crate::reclaim::ExtraWorktree>,
+    pub extra_worktrees: Vec<PathBuf>,
     pub removed_refs: Vec<String>,
-}
-
-/// The post-commit half of a track or area teardown, best effort: the track worktree, then the
-/// candidate refs, addressed by the lease rows' common dirs (not by the track cwd, which may be a
-/// moved linked worktree). Never fails the caller: the track rows are already gone.
-pub async fn sweep_workspace_worktrees_for_tracks<P: CandidateRefs>(
-    sweeps: RegisteredSweeps,
-    ports: P,
-    observe: ObservePoint,
-) {
-    if let Err(error) = tokio::spawn(async move {
-        let RegisteredSweeps {
-            sweeps,
-            registration,
-        } = sweeps;
-        // A ref removed by any member of this area sweep cannot protect another member's HEAD.
-        let excluded: Vec<String> = sweeps.iter().flat_map(|s| s.removed_refs.clone()).collect();
-        for mut sweep in sweeps {
-            for target in &mut sweep.extra_worktrees {
-                target.request.excluded_refs.extend(excluded.clone());
-            }
-
-            if let Err(error) = crate::reclaim::reclaim_extra_worktrees(
-                sweep.extra_worktrees.clone(),
-                &ports,
-                observe,
-            )
-            .await
-            {
-                tracing::warn!(%error, "extra worktree sweep failed");
-            }
-            let ports = ports.clone();
-            if let Err(error) = tokio::task::spawn_blocking(move || {
-                sweep_workspace_worktrees_blocking(vec![sweep], ports, observe)
-            })
-            .await
-            {
-                tracing::warn!(%error, "track teardown Git sweep task failed");
-            }
-        }
-        drop(registration);
-    })
-    .await
-    {
-        tracing::warn!(%error, "track teardown Git sweep task failed");
-    }
-}
-
-fn sweep_workspace_worktrees_blocking<P: CandidateRefs>(
-    sweeps: Vec<WorkspaceTrackSweep>,
-    ports: P,
-    observe: ObservePoint,
-) {
-    for sweep in sweeps {
-        match sweep.workspace.isolation() {
-            WorkspaceIsolation::Managed => {}
-            WorkspaceIsolation::Worktree => {
-                track_worktree::remove_track_worktree(&sweep.track_id, &sweep.workspace, observe)
-            }
-            // Guarantee G: only historical Neige-owned refs below may be removed.
-            WorkspaceIsolation::None => {}
-        }
-        ports.delete_for_track(&sweep.track_id, &sweep.git_common_dirs);
-    }
 }
 
 #[cfg(test)]

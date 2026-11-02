@@ -529,3 +529,57 @@ async fn c4_consumer_inventory_real_store_unclassified_rows_and_scan_cost() {
 
     })).await.expect("independent write operation")
 }
+
+#[tokio::test]
+async fn retirement_execution_admission_checks_relative_cwd_and_run_request() {
+    let (store, db) = fixture().await;
+    let root = tempfile::tempdir().unwrap();
+    let retired = root.path().join("retired");
+    let engine = Engine::new(
+        store,
+        test_support::ScriptedExecutor::new(Default::default(), []),
+    );
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let mut first = test_support::intent(root.path().into());
+                first.metadata.source.cwd =
+                    workspace::identity::WorkspaceCwd::try_from("retired".to_owned()).unwrap();
+                let id = first.metadata.id.clone();
+                let _held = engine.admit(&mut tx, first).await.unwrap();
+                let provision = calm_truth::db::sqlite::append_decision_event_in_tx(
+                    &mut tx,
+                    &crate::ids::ActorId::KernelDispatcher,
+                    &crate::event::EventScope::Card {
+                        card: "card".into(),
+                        track: "owner".into(),
+                        area: "area".into(),
+                    },
+                    None,
+                    &crate::event::Event::WorktreeProvisioned {
+                        track_id: "owner".into(),
+                        card_id: "card".into(),
+                        path: retired.to_str().unwrap().into(),
+                    },
+                )
+                .await
+                .unwrap();
+                calm_truth::db::sqlite::workspace_retirement::retire_extra_worktree_tx(
+                    &mut tx, provision, "owner", &retired,
+                )
+                .await
+                .unwrap();
+                assert!(engine.request(&mut tx, &id, Desired::Run).await.is_err());
+                let mut next = test_support::intent(root.path().into());
+                next.metadata.source.cwd =
+                    workspace::identity::WorkspaceCwd::try_from("retired".to_owned()).unwrap();
+                assert!(engine.admit(&mut tx, next).await.is_err());
+                let unrelated = test_support::intent(root.path().into());
+                assert!(engine.admit(&mut tx, unrelated).await.is_ok());
+                tx.rollback().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+}

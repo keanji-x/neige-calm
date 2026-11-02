@@ -1,5 +1,11 @@
 # #1830 S1 — the Planner runs in a kernel-made track worktree
 
+> Current cleanup policy: [workspace retirement](../workspace-retirement.md)
+> supersedes this historical design's automatic worktree/ref deletion and
+> ignored-file cleaning. Unconfined resources are retained and reserved; logical
+> deletion does not wait for their physical removal. The original acceptance
+> history below records the earlier implementation.
+
 **Owner rules.** (1) Simple first, pain points only: the fewest mechanisms that cover the
 observed symptoms; anything hypothetical is a one-line KNOWN GAP. (2) Compatibility means the
 4140 database only. (3) S1–S3 land before anything is deployed to 4140; no intermediate

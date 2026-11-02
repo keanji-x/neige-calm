@@ -684,13 +684,16 @@ async fn track_delete_removes_the_track_worktree_and_branch() {
 
     let (status, body) = b.delete_track(&track_id).await;
     assert!(status.is_success(), "{status} {body}");
-    assert!(!worktree.exists(), "the worktree directory is gone");
+    assert!(worktree.exists(), "the worktree directory is gone");
     let listed = git_stdout(&up.clone, ["worktree", "list", "--porcelain"]);
     assert!(
-        !listed.contains(&format!("track-{track_id}")),
+        listed.contains(&format!("track-{track_id}")),
         "no registration survives: {listed}"
     );
-    assert!(!git_ref_exists(&up.clone, &branch), "the branch is gone");
+    assert!(
+        git_ref_exists(&up.clone, &branch),
+        "the retired branch is retained"
+    );
     assert_eq!(head(&up.clone), clone_head);
     assert_eq!(porcelain(&up.clone), clone_status);
 }
@@ -825,8 +828,11 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
         )
         .await
         .unwrap();
-    assert_eq!(clean(db, &b.state.operation_runtime).await.unwrap(), 1);
-    assert!(!worktree.join("target").exists(), "build output is gone");
+    assert_eq!(clean(db, &b.state.operation_runtime).await.unwrap(), 0);
+    assert!(
+        worktree.join("target").exists(),
+        "unconfined build output is retained"
+    );
     assert!(worktree.join(".gitignore").is_file(), "tracked files stay");
     assert!(
         worktree.join("untracked.txt").is_file(),

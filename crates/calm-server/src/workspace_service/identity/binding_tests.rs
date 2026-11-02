@@ -282,15 +282,8 @@ async fn delete_through_sweep(repo: &std::sync::Arc<SqlxRepo>, current: &Track) 
                     .await
                     .unwrap();
                 tx.commit().await.unwrap();
-                workspace_runtime::sweep::sweep_workspace_worktrees_for_tracks(
-                    registration.sweeps(vec![sweep]),
-                    crate::workspace_service::reclaim::ServerReclaimPorts {
-                        runtime,
-                        db: repo.db().clone(),
-                    },
-                    crate::workspace_service::ports::observe,
-                )
-                .await;
+                drop(registration.sweeps(vec![sweep]));
+                drop(runtime);
             })
         })
         .await

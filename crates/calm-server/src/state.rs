@@ -1850,10 +1850,7 @@ impl AppState {
             crate::track_vcs::spawn_track_history_pruner(pool.clone());
             workspace_runtime::worktree_clean::spawn(
                 crate::workspace_service::ports::ServerClosedWorktreeFacts {
-                    receipts: crate::workspace_service::reclaim::ServerReclaimPorts {
-                        runtime: state.operation_runtime.clone(),
-                        db: pool.clone(),
-                    },
+                    db: pool.clone(),
                     runtime: state.operation_runtime.clone(),
                 },
                 crate::workspace_service::ports::observe,

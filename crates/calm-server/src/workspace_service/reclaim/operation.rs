@@ -1,13 +1,21 @@
 //! Workspace-owned reclaim invocation and receipt recovery on the existing parked lifecycle.
-use super::*;
 use crate::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
     ParkedOutcome, ParkedRecovery, PhaseTag, ProviderAdapter, RecoveryMode, SpawnCtx, SpawnOutcome,
-    Tx, TxOutput, owned_execution, owned_parked,
+    Tx, TxOutput, owned_execution,
+};
+use crate::{
+    error::{CalmError, Result},
+    event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION},
+    ids::ActorId,
+};
+use calm_truth::db::sqlite::{
+    append_decision_event_in_tx, worktree_events::unmatched_provisioned_worktrees,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use workspace_runtime::{execution::*, track_worktree::ObservePoint};
+use workspace_runtime::execution::*;
+use workspace_runtime::reclaim::ExtraWorktree;
 
 pub(crate) const KIND: &str = "workspace-reclaim";
 pub(crate) const KEY: &str = "workspace_reclaim";
@@ -45,66 +53,10 @@ fn conflict(e: impl std::fmt::Debug) -> CalmError {
     CalmError::Conflict(format!("{e:?}"))
 }
 
-/// Freeze completion authority before the deleting transaction loses its live owner rows.
-/// A close and a deletion have distinct authorization; neither can rewrite an admitted effect.
-pub(super) async fn register(
-    tx: &mut Tx<'_>,
-    target: &ExtraWorktree,
-    delete_authorized: bool,
-) -> Result<()> {
-    let frozen = Frozen {
-        target: target.clone(),
-        delete_authorized,
-    };
-    let payload = serde_json::to_value(frozen)?;
-    let mut output = TxOutput::new("track", Some(target.track_id.clone()), Value::Null);
-    output.data = json!({KEY: Record { execution_id: None }});
-    // No reclaim timeout may turn an unknown filesystem effect into completion. The existing
-    // parked lifecycle requires a deadline; its open endpoint keeps this resource owned.
-    sqlx::query("INSERT INTO operations (id,operation_key,kind,idempotency_key,payload_hash,target_type,target_id,target_json,payload_json,phase,tx_output_json,parked_at_ms,parked_deadline_ms,created_at_ms,updated_at_ms) VALUES (?,?,?, ?,?,'track',?,'{}',?,'parked',?,?,?, ?,?) ON CONFLICT(id) DO NOTHING")
-        .bind(&target.operation_id).bind(&target.operation_id).bind(KIND).bind(&target.operation_id)
-        .bind(crate::routes::idempotency_key::stable_payload_hash(&payload)?)
-        .bind(&target.track_id).bind(serde_json::to_string(&payload)?)
-        .bind(serde_json::to_string(&output)?).bind(crate::model::now_ms()).bind(i64::MAX)
-        .bind(crate::model::now_ms()).bind(crate::model::now_ms()).execute(&mut **tx).await?;
-    Ok(())
-}
-
-/// Initial invocation already owns close/delete's track fence. Recovery acquires its own.
-pub(super) async fn run(
-    ctx: &SpawnCtx,
-    target: &ExtraWorktree,
-    observe: ObservePoint,
-) -> Result<()> {
-    if let Some(op) = ctx
-        .operation_repo
-        .claim_parked(&target.operation_id)
-        .await?
-    {
-        owned_parked::reconcile(
-            &Adapter {
-                fenced: true,
-                observe,
-            },
-            &op,
-            RecoveryMode::PreDeadlineProbe,
-            ctx,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-pub(crate) struct Adapter {
-    fenced: bool,
-    observe: ObservePoint,
-}
+pub(crate) struct Adapter;
 impl Adapter {
     pub(crate) fn new() -> Self {
-        Self {
-            fenced: false,
-            observe: crate::workspace_service::ports::observe,
-        }
+        Self
     }
 }
 
@@ -148,85 +100,38 @@ impl ProviderAdapter for Adapter {
         ctx: &SpawnCtx,
     ) -> Result<ParkedRecovery> {
         let frozen = frozen(op)?;
-        let mut execution = record(op)?.execution_id;
-        if execution.is_none() {
-            let _track = if self.fenced {
-                None
+        let Some(id) = record(op)?.execution_id else {
+            let db = ctx.operation_repo.sqlite_db();
+            let current = db.writer().with_writer(|write_session| Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await?;
+                crate::operation::require_live_claim_tx(&mut tx, op).await?;
+                let current = calm_truth::db::sqlite::workspace_retirement::retire_extra_worktree_tx(
+                    &mut tx, frozen.target.provision_id, &frozen.target.track_id,
+                    &frozen.target.request.path,
+                ).await?;
+                sqlx::query("UPDATE operations SET last_error='cleanup deferred: isolation_unavailable' WHERE id=?")
+                    .bind(&op.id).execute(&mut **tx).await?;
+                tx.commit().await?;
+                Ok::<_, CalmError>(current)
+            })).await??;
+            return Ok(if current {
+                ParkedRecovery::LeaveParked
             } else {
-                let Some(guard) = crate::per_card_lock::try_lock_key(
-                    &ctx.track_delete_locks,
-                    &frozen.target.track_id,
-                ) else {
-                    return Ok(ParkedRecovery::LeaveParked);
-                };
-                Some(guard)
-            };
-            let _reservation = ctx.reclaim_admission.clone().write_owned().await;
-            let admission = ctx.location_admission.as_ref().ok_or_else(|| {
-                CalmError::Internal("location admission is not configured".into())
-            })?;
-            // Publish ownership before proving occupancy. Admission rechecks this same
-            // registry in its writer, including after the track row has been deleted.
-            let registration = admission.teardown_targets.registration();
-            if frozen.target.request.path.is_absolute() {
-                registration
-                    .register_location(&frozen.target.track_id, frozen.target.request.path.clone());
-            }
-            let location = match admission
-                .try_fence(
-                    &mut *ctx.operation_repo.sqlite_db().read_pool().acquire().await?,
-                    &frozen.target.request.repo,
-                    Some(&frozen.target.track_id),
-                )
-                .await
-            {
-                Ok(fence) => fence,
-                Err(CalmError::WorkspaceBusy(_)) => return Ok(ParkedRecovery::LeaveParked),
-                Err(error) => return Err(error),
-            };
-            let Some(request) = refresh(&ctx.operation_repo.sqlite_db(), &frozen.target).await?
-            else {
-                return Ok(ParkedRecovery::Complete(Box::new((
+                ParkedRecovery::Complete(Box::new((
                     ParkedOutcome::Succeeded {
                         result: json!({"removed":false}),
                     },
                     None,
-                ))));
-            };
-            if !frozen.delete_authorized
-                && !crate::workspace_service::ports::closed_idle_reclaim_safe(
-                    ctx,
-                    &frozen.target.track_id,
-                    None,
-                )
-                .await?
-            {
-                return Ok(ParkedRecovery::LeaveParked);
-            }
-            let prepared = tokio::task::spawn_blocking({
-                let observe = self.observe;
-                move || workspace::reclaim::prepare(&request, observe)
-            })
-            .await
-            .map_err(conflict)??;
-            let workspace::reclaim::Preparation::Ready(prepared) = prepared else {
-                return Ok(ParkedRecovery::LeaveParked);
-            };
-            let Some(id) = admit(ctx, op, &frozen.target, &prepared.command, &location).await?
-            else {
-                return Ok(ParkedRecovery::LeaveParked);
-            };
-            // Live guards cover the command and wait. If the wait fails, the shared owned
-            // location inventory retains the committed target until durable settlement,
-            // including in a fresh runtime with no registration or track lock.
-            wait(ctx, op, &id).await?;
-            drop(prepared);
-            execution = Some(id);
-        }
-        let id = execution.expect("admitted execution");
+                )))
+            });
+        };
         ctx.execution.drive([id.clone()]);
         owned_execution::drain_exited(ctx, op, &id).await?;
-        if successful(ctx, &id).await? {
+        if owned_execution::settlement(ctx, &id)
+            .await?
+            .as_ref()
+            .is_some_and(is_success)
+        {
             Ok(ParkedRecovery::Complete(Box::new((
                 ParkedOutcome::Succeeded {
                     result: json!({"removed":true}),
@@ -297,97 +202,6 @@ impl ProviderAdapter for Adapter {
     }
 }
 
-async fn admit(
-    ctx: &SpawnCtx,
-    op: &Operation,
-    target: &ExtraWorktree,
-    command: &std::process::Command,
-    location: &crate::operation::location_admission::LocationFence,
-) -> Result<Option<ExecutionId>> {
-    let engine = owned_execution::engine(ctx)?;
-    let id = ExecutionId::fresh()?;
-    let utf8 = |s: &std::ffi::OsStr| {
-        s.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| conflict("reclaim command is not UTF-8"))
-    };
-    let intent = ExecutionIntent {
-        metadata: ExecutionMetadata {
-            consumer: CONSUMER.into(),
-            id: id.clone(),
-            alias: ProcessAlias(format!("reclaim:{}", op.id)),
-            owner: OperationRef(op.id.clone()),
-            track: TrackId(target.track_id.clone()),
-            source: PrivateSource {
-                root: target.request.repo.clone(),
-                cwd: workspace::identity::WorkspaceCwd::root(),
-                registration: ObjectRegistrationId::fresh()?,
-                nonce: TransferNonce::fresh()?,
-                directory: ExternalDirectoryId::fresh()?,
-                incarnation: ExternalDirectoryIncarnationId::fresh()?,
-                authority: ExecutionAuthority {
-                    grant_id: ExecutionGrantId::fresh()?,
-                    authorization_binding: AuthorizationBindingId::fresh()?,
-                    authorization_version: 1,
-                },
-            },
-            program: ExecutionSpecification {
-                ambient_environment: calm_session::control::execution::AmbientEnvironment::None,
-                // The executor requires an absolute program. Preserve Command's PATH lookup
-                // through an explicit shell exec; every argument remains positional data.
-                program: "/bin/sh".into(),
-                args: [
-                    "-c".to_owned(),
-                    "exec \"$@\"".to_owned(),
-                    "reclaim".to_owned(),
-                ]
-                .into_iter()
-                .chain(std::iter::once(utf8(command.get_program())?))
-                .chain(command.get_args().map(utf8).collect::<Result<Vec<_>>>()?)
-                .collect(),
-                environment: command
-                    .get_envs()
-                    .filter_map(|(k, v)| v.map(|v| (k, v)))
-                    .map(|(k, v)| Ok((utf8(k)?, utf8(v)?)))
-                    .collect::<Result<_>>()?,
-                io_mode: calm_session::control::IoMode::Pipe,
-                replay_bytes: 8192,
-            },
-            specification: SpecificationId::fresh()?,
-            ticket_id: LaunchTicketId::fresh()?,
-        },
-        secrets: ExecutionSecrets {
-            ticket: CapabilityToken::fresh()?,
-            tokens: ExecutionControlTokens::fresh()?,
-        },
-    };
-    let db = ctx.operation_repo.sqlite_db();
-    let write_db = (db).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate().await?;
-        crate::operation::require_live_claim_tx(&mut tx, op).await?;
-        location.recheck(&mut tx).await?;
-        let occupants = calm_truth::db::sqlite::workspace_execution::location_occupancy(
-            &mut tx,
-            calm_truth::db::sqlite::workspace_execution::Scope::Track(&target.track_id),
-            std::slice::from_ref(&target.request.path),
-        )
-        .await?;
-        if !occupants.is_empty() {
-            return Ok(None);
-        }
-        let ticket = engine.admit(&mut tx, intent).await.map_err(conflict)?;
-        let updated = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.workspace_reclaim',json(?)) WHERE id=? AND json_extract(tx_output_json,'$.data.workspace_reclaim.execution_id') IS NULL")
-            .bind(serde_json::to_string(&Record { execution_id: Some(id.clone()) })?).bind(&op.id).execute(&mut **tx).await?;
-        if updated.rows_affected() != 1 {
-            return Err(conflict("reclaim already admitted"));
-        }
-        tx.commit().await?;
-        engine.drive(ticket.committed());
-        Ok(Some(id))
-
-    })).await.map_err(calm_truth::TruthError::from)?
-}
 fn is_success(s: &Settlement) -> bool {
     matches!(
         s,
@@ -397,48 +211,6 @@ fn is_success(s: &Settlement) -> bool {
         )
     )
 }
-async fn successful(ctx: &SpawnCtx, id: &ExecutionId) -> Result<bool> {
-    Ok(owned_execution::settlement(ctx, id)
-        .await?
-        .as_ref()
-        .is_some_and(is_success))
-}
-async fn wait(ctx: &SpawnCtx, op: &Operation, id: &ExecutionId) -> Result<()> {
-    let result = tokio::time::timeout(QUIESCE_DEADLINE, async {
-        loop {
-            if owned_execution::settlement(ctx, id).await?.is_some() {
-                return Ok::<_, CalmError>(());
-            }
-            owned_execution::drain_exited(ctx, op, id).await?;
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .map_err(conflict)
-    .and_then(|result| result);
-    if result.is_err() {
-        let db = ctx.operation_repo.sqlite_db();
-        db.writer()
-            .with_writer(|write_session| {
-                Box::pin(async move {
-                    let mut tx = write_session.begin_immediate().await?;
-                    crate::operation::require_live_claim_tx(&mut tx, op).await?;
-                    calm_truth::db::sqlite::workspace_execution::request(
-                        &mut tx,
-                        id.as_str(),
-                        "stop",
-                    )
-                    .await?;
-                    tx.commit().await?;
-                    Ok::<_, CalmError>(())
-                })
-            })
-            .await??;
-        ctx.execution.drive([id.clone()]);
-    }
-    result
-}
-
 async fn removed_tx(tx: &mut Tx<'_>, target: &ExtraWorktree) -> Result<Vec<BroadcastEnvelope>> {
     // Conditional and idempotent: a newer provision owns its own lifecycle.
     if !unmatched_provisioned_worktrees(tx)
@@ -473,7 +245,7 @@ async fn removed_tx(tx: &mut Tx<'_>, target: &ExtraWorktree) -> Result<Vec<Broad
 pub(crate) async fn terminal_admission_tx(tx: &mut Tx<'_>, track: &str) -> Result<()> {
     // Implicit-cwd Terminals can cd anywhere. Preserve their global reservation,
     // using the same durable targets as explicit-cwd and attached admission.
-    if calm_truth::db::sqlite::owned_workspace_locations(tx)
+    if calm_truth::db::sqlite::execution_workspace_locations(tx)
         .await?
         .iter()
         .any(|location| location.removing)

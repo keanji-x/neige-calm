@@ -32,6 +32,18 @@ impl<'a> PathLocation<'a> {
         .collect())
     }
 
+    /// Compare against an immutable reservation. Never resolve a retired path:
+    /// garbage may be inaccessible or replaced without affecting unrelated admission.
+    pub fn overlaps_reserved(&self, root: &std::path::Path, containing: bool) -> bool {
+        [self.lexical, self.physical.as_path()]
+            .into_iter()
+            .any(|path| path.starts_with(root) || (containing && root.starts_with(path)))
+    }
+
+    pub(super) fn resolved(&self) -> &std::path::Path {
+        &self.physical
+    }
+
     pub fn allow_missing(path: &'a std::path::Path) -> Result<Self> {
         Ok(Self {
             lexical: path,

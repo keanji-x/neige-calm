@@ -89,6 +89,16 @@ impl Store for SqliteExecutionStore {
         intent: &ExecutionIntent,
     ) -> Result<(), StoreError> {
         self.projection(&intent.metadata.consumer)?;
+        calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+            tx,
+            &intent
+                .metadata
+                .source
+                .root
+                .join(intent.metadata.source.cwd.as_str()),
+        )
+        .await
+        .map_err(error)?;
         sql::insert(
             tx,
             intent.metadata.id.as_str(),
@@ -106,6 +116,17 @@ impl Store for SqliteExecutionStore {
         id: &ExecutionId,
         desired: Desired,
     ) -> Result<(), StoreError> {
+        if desired == Desired::Run {
+            let metadata: ExecutionMetadata =
+                serde_json::from_str(&sql::intent_tx(tx, id.as_str()).await.map_err(error)?)
+                    .map_err(error)?;
+            calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+                tx,
+                &metadata.source.root.join(metadata.source.cwd.as_str()),
+            )
+            .await
+            .map_err(error)?;
+        }
         let desired = match desired {
             Desired::Run => "run",
             Desired::Stop => "stop",

@@ -237,7 +237,13 @@ pub(crate) async fn terminal_cwd_or_track_workspace(
     requested: Option<String>,
 ) -> Result<String> {
     let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track_id).await?;
-    Ok(target::decode(track_id, &workspace, requested)?.into_cwd())
+    let cwd = target::decode(track_id, &workspace, requested)?.into_cwd();
+    calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+        tx,
+        std::path::Path::new(&cwd),
+    )
+    .await?;
+    Ok(cwd)
 }
 
 #[async_trait]

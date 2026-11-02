@@ -173,12 +173,18 @@ pub async fn track_workspace_read_tx(
     .await?;
     let (kind, path, frozen_at, worktree) =
         row.ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    Ok(TrackWorkspace {
+    let workspace = TrackWorkspace {
         kind: TrackWorkspaceKind::try_from(kind).map_err(CalmError::Internal)?,
         path,
         frozen_at,
         worktree,
-    })
+    };
+    super::workspace_retirement::require_active_workspace_path(
+        tx,
+        std::path::Path::new(workspace.agent_cwd()),
+    )
+    .await?;
+    Ok(workspace)
 }
 
 /// Close the latch: `kind` and `path` become permanent. Idempotent and

@@ -164,7 +164,7 @@ pub(super) async fn append_result_event_tx(
         }
     };
     match event {
-        Some(event) => append_owner_event_tx(tx, event).await.map(Some),
+        Some(event) => adapter.record_owner_event_tx(tx, event).await.map(Some),
         None => Ok(None),
     }
 }

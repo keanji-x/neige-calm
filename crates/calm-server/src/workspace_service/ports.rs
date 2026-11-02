@@ -1,5 +1,4 @@
 //! Server adapters for workspace-runtime policy.
-use crate::db::sqlite::{CheckoutOccupancy, checkout_occupancy};
 use crate::error::{CalmError, Result};
 use crate::operation::workspace_lease::upstream::{
     LeaseStart, choose_lease_start, diverged_refusal, head_upstream, set_branch_upstream,
@@ -69,41 +68,42 @@ pub(crate) fn observe(point: &str, repo_root: &Path) {
 
 #[derive(Clone)]
 pub(crate) struct ServerClosedWorktreeFacts {
-    pub(crate) receipts: super::reclaim::ServerReclaimPorts,
+    pub(crate) db: calm_truth::db::sqlite::SqliteDb,
     pub(crate) runtime: std::sync::Arc<crate::operation::OperationRuntime>,
 }
 
 #[async_trait]
 impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
+    type Error = CalmError;
+
     async fn kernel_clean_safe(
         &self,
         workspace: &calm_types::model::TrackWorkspace,
     ) -> Result<bool> {
-        match super::reclaim::protect_delete(
-            &mut *self.receipts.db.read_pool().acquire().await?,
-            workspace,
-        )
-        .await
-        {
-            Ok(()) => Ok(true),
-            Err(CalmError::Conflict(_)) => Ok(false),
-            Err(error) => Err(error),
-        }
+        let _ = workspace;
+        Ok(false)
     }
 
-    async fn extra_worktrees(
-        &self,
-        track: &str,
-    ) -> Result<Vec<workspace_runtime::reclaim::ExtraWorktree>> {
-        let write_db = (self.receipts.db).clone();
-        write_db
+    async fn retire_extra_worktrees(&self, track: &str, closed_at: i64) -> Result<()> {
+        self.db
             .writer()
-            .with_writer(|write_session| {
+            .with_writer(|session| {
                 Box::pin(async move {
-                    let mut tx = write_session.begin_immediate().await?;
-                    let targets = super::reclaim::snapshot(&mut tx, track, &[]).await?;
+                    let mut tx = session.begin_immediate().await?;
+                    let current: Option<Option<i64>> =
+                        sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id=?")
+                            .bind(track)
+                            .fetch_optional(&mut **tx)
+                            .await?;
+                    if current == Some(Some(closed_at)) {
+                        let _ =
+                            calm_truth::db::sqlite::workspace_retirement::retire_track_extras_tx(
+                                &mut tx, track,
+                            )
+                            .await?;
+                    }
                     tx.commit().await?;
-                    Ok(targets)
+                    Ok::<_, CalmError>(())
                 })
             })
             .await
@@ -116,30 +116,26 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
             .reclaim_context()
             .planner_clean_evidence()
             .await?;
-        Ok(calm_truth::db::sqlite::closed_worktree_candidates(
-            self.receipts.db.read_pool(),
-            evidence,
+        Ok(
+            calm_truth::db::sqlite::closed_worktree_candidates(self.db.read_pool(), evidence)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    let track = crate::model::Track::from(row);
+                    ClosedWorktree {
+                        track_id: track.id.to_string(),
+                        workspace: track.workspace,
+                        closed_at: track.closed_at.expect("closed candidate"),
+                    }
+                })
+                .collect(),
         )
-        .await?
-        .into_iter()
-        .map(|row| {
-            let track = crate::model::Track::from(row);
-            ClosedWorktree {
-                track_id: track.id.to_string(),
-                workspace: track.workspace,
-                closed_at: track.closed_at.expect("closed candidate"),
-            }
-        })
-        .collect())
     }
 
     async fn fence(&self, track: &str, closed_at: i64) -> Result<Option<Box<dyn Send>>> {
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c1-clean-sampled", track).await;
-        let drive = self.runtime.lock_for_track_delete().await;
         let targets = &self.runtime.location_admission()?.teardown_targets;
-        // Drive serializes registration, including duplicate clean passes. Use
-        // the row's typed location, exactly as SQL location admission does.
         if targets
             .snapshot_with_owners()
             .iter()
@@ -147,92 +143,38 @@ impl ClosedWorktreeFacts for ServerClosedWorktreeFacts {
         {
             return Ok(None);
         }
-        let evidence = self
-            .runtime
-            .reclaim_context()
-            .planner_clean_evidence()
-            .await?;
-        let Some(candidate) = calm_truth::db::sqlite::closed_worktree_candidate(
-            self.receipts.db.read_pool(),
-            track,
-            evidence,
-        )
-        .await?
-        else {
+        let sampled: Option<(Option<i64>, Option<String>)> =
+            sqlx::query_as("SELECT closed_at,workspace_worktree_path FROM tracks WHERE id=?")
+                .bind(track)
+                .fetch_optional(self.db.read_pool())
+                .await?;
+        let Some((Some(at), path)) = sampled else {
             return Ok(None);
         };
-        let candidate = crate::model::Track::from(candidate);
-        let clean = targets.registration();
-        if candidate.workspace.isolation() == calm_types::model::WorkspaceIsolation::Worktree {
-            clean.register_location(track, candidate.workspace.agent_cwd().into());
+        if at != closed_at {
+            return Ok(None);
+        }
+        let registration = targets.registration();
+        if let Some(path) = path {
+            registration.register_location(track, path.into());
         }
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c5d-clean-before-track", track).await;
-        let guard = crate::per_card_lock::lock_key(self.runtime.track_delete_locks(), track).await;
-        // Drop the metadata before releasing Track on every post-lock exit.
-        let fence = (clean, guard);
-        if !closed_idle_reclaim_safe(self.runtime.reclaim_context(), track, Some(closed_at)).await?
-        {
+        let Some(guard) =
+            crate::per_card_lock::try_lock_key(self.runtime.track_delete_locks(), track)
+        else {
+            return Ok(None);
+        };
+        let current: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id=?")
+                .bind(track)
+                .fetch_optional(self.db.read_pool())
+                .await?;
+        if current != Some(Some(closed_at)) {
             return Ok(None);
         }
-        drop(drive);
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("c1-clean-fenced", track).await;
-        Ok(Some(Box::new(fence)))
-    }
-}
-
-/// Sample only while the caller owns the track lifecycle fence. Recovery and the close tick
-/// share the same eligibility policy; neither a parked row nor a closed flag is authority alone.
-pub(super) async fn closed_idle_reclaim_safe(
-    ctx: &crate::operation::SpawnCtx,
-    track: &str,
-    expected_close: Option<i64>,
-) -> Result<bool> {
-    let db = ctx.operation_repo.sqlite_db();
-    let evidence = ctx.planner_clean_evidence().await?;
-    let candidate =
-        calm_truth::db::sqlite::closed_worktree_candidate(db.read_pool(), track, evidence).await?;
-    let Some(candidate) = candidate else {
-        return Ok(false);
-    };
-    let candidate = crate::model::Track::from(candidate);
-    let targets =
-        crate::operation::terminal_disposal::workspace_effect_targets(&candidate.workspace);
-    let occupied = match calm_truth::db::sqlite::workspace_execution::location_occupancy(
-        &mut *db.read_pool().acquire().await?,
-        calm_truth::db::sqlite::workspace_execution::Scope::Track(track),
-        &targets,
-    )
-    .await
-    {
-        Ok(ids) => !ids.is_empty(),
-        Err(error) => {
-            tracing::warn!(%error, track, "clean deferred: location occupancy unknown");
-            true
-        }
-    };
-    Ok(
-        expected_close.is_none_or(|expected| candidate.closed_at == Some(expected))
-            && !crate::operation::workspace_lease::any_track_has_unmigrated_forge_action(
-                db.read_pool(),
-                &[track],
-            )
-            .await?
-            && checkout_occupancy(&mut *db.read_pool().acquire().await?, track, "").await?
-                == CheckoutOccupancy::Free
-            && !occupied,
-    )
-}
-
-#[async_trait]
-impl workspace_runtime::reclaim::ReclaimReceipts for ServerClosedWorktreeFacts {
-    type Error = CalmError;
-    async fn reclaim(
-        &self,
-        target: &workspace_runtime::reclaim::ExtraWorktree,
-        observe: workspace_runtime::track_worktree::ObservePoint,
-    ) -> Result<()> {
-        self.receipts.reclaim(target, observe).await
+        Ok(Some(Box::new((registration, guard))))
     }
 }

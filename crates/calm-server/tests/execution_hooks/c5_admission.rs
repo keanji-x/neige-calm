@@ -31,6 +31,16 @@ pub(super) async fn busy(f: &Fixture, cwd: &Path) {
     );
     assert_eq!(count(f).await, before);
 }
+pub(super) async fn retired(f: &Fixture, cwd: &Path) {
+    let before = count(f).await;
+    let (status, body) = terminal_execution_create::create(f, cwd.to_str().unwrap(), "true").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["code"],
+        "bad_request"
+    );
+    assert_eq!(count(f).await, before);
+}
 async fn succeeds(f: &Fixture, cwd: &Path) {
     let (status, body) = terminal_execution_create::create(f, cwd.to_str().unwrap(), "true").await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -180,11 +190,11 @@ async fn c5_admission_deleted_worktree_before_sweep_is_busy() {
     }
     assert!(f.repo.track_get(other.id.as_str()).await.unwrap().is_none());
     assert!(cwd.is_dir());
-    busy(&f, &cwd).await;
+    retired(&f, &cwd).await;
     release.notify_one();
     let (status, body) = deleting.await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!cwd.exists());
+    assert!(cwd.exists());
     let output = std::process::Command::new("git")
         .args([
             "show-ref",
@@ -197,7 +207,7 @@ async fn c5_admission_deleted_worktree_before_sweep_is_busy() {
         .current_dir(&other.workspace.path)
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert!(output.status.success());
 }
 
 #[tokio::test]
@@ -233,11 +243,11 @@ async fn c5_admission_repoint_committed_old_managed_is_busy() {
             .path,
         target.to_str().unwrap()
     );
-    busy(&f, &f.root).await;
+    retired(&f, &f.root).await;
     p.release.notify_one();
     let (status, body) = patch.await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(!f.root.exists());
+    assert!(f.root.exists());
 }
 
 #[tokio::test]

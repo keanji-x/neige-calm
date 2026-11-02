@@ -275,6 +275,7 @@ pub(super) fn validate_payload(payload: &ForgeActionPayload) -> Result<()> {
             ));
         }
     }
+    provision_target(payload.event_spec.as_ref(), &payload.context)?;
     Ok(())
 }
 
@@ -382,4 +383,41 @@ pub(super) fn build_forge_event(
         result.insert("stdout".into(), Value::String(stdout.to_owned()));
     }
     Ok((Some(event), Value::Object(result)))
+}
+
+/// An allocation target is declared before an effect; output cannot introduce
+/// a different workspace after admission. This is a workspace event protocol.
+pub(super) fn provision_target<'a>(
+    spec: Option<&ForgeEventSpec>,
+    context: &'a Map<String, Value>,
+) -> Result<Option<&'a str>> {
+    let Some(spec) = spec.filter(|spec| spec.event_kind == "worktree.provisioned") else {
+        return Ok(None);
+    };
+    if spec.fields.contains_key("path") {
+        return Err(CalmError::BadRequest(
+            "worktree provisioning must declare path in context before execution".into(),
+        ));
+    }
+    context
+        .get("path")
+        .and_then(Value::as_str)
+        .map(Some)
+        .ok_or_else(|| CalmError::BadRequest("worktree provisioning needs a declared path".into()))
+}
+
+pub(crate) async fn require_provision_target_active_tx(
+    tx: &mut Tx<'_>,
+    cwd: &Path,
+    spec: Option<&ForgeEventSpec>,
+    context: &Map<String, Value>,
+) -> Result<()> {
+    if let Some(path) = provision_target(spec, context)? {
+        calm_truth::db::sqlite::workspace_retirement::require_active_workspace_path(
+            tx,
+            &cwd.join(path),
+        )
+        .await?;
+    }
+    Ok(())
 }

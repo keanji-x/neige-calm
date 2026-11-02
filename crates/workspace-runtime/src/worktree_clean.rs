@@ -19,14 +19,12 @@ pub struct ClosedWorktree {
 }
 
 #[async_trait]
-pub trait ClosedWorktreeFacts:
-    crate::reclaim::ReclaimReceipts + Clone + Send + Sync + 'static
-{
+pub trait ClosedWorktreeFacts: Clone + Send + Sync + 'static {
+    type Error: std::fmt::Display + Send;
     async fn kernel_clean_safe(&self, workspace: &TrackWorkspace) -> Result<bool, Self::Error>;
-    async fn extra_worktrees(
-        &self,
-        track: &str,
-    ) -> Result<Vec<crate::reclaim::ExtraWorktree>, Self::Error>;
+    /// Register retirement only after rechecking this exact close in the owner
+    /// transaction. This method performs no external filesystem or process work.
+    async fn retire_extra_worktrees(&self, track: &str, closed_at: i64) -> Result<(), Self::Error>;
 
     async fn closed_idle_worktrees(&self) -> Result<Vec<ClosedWorktree>, Self::Error>;
     /// Claim the existing lifecycle fence and recheck the sampled close and occupancy.
@@ -80,17 +78,16 @@ where
         let Some(track) = facts.fence(&key.0, key.1).await? else {
             continue;
         };
-        let targets = facts.extra_worktrees(&key.0).await?;
+        facts.retire_extra_worktrees(&key.0, key.1).await?;
         let clean_kernel =
             facts.kernel_clean_safe(&row.workspace).await? && !cleaned.contains(&key);
-        let facts = facts.clone();
-        // Keep the lifecycle fence through I/O and receipts even if the tick's await is cancelled.
+        if !clean_kernel {
+            drop(track);
+            continue;
+        }
+        // Eligible physical cleaning retains its lifecycle owner through cancellation.
         let result = tokio::spawn(async move {
             let _track = track;
-            crate::reclaim::reclaim_extra_worktrees(targets, &facts, observe).await?;
-            if !clean_kernel {
-                return Ok(false);
-            }
             let worktree = match (row.workspace.kind, row.workspace.worktree) {
                 (TrackWorkspaceKind::Attached, Some(path)) => path,
                 _ => return Ok(false),

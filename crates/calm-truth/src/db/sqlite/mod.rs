@@ -101,8 +101,11 @@ mod track_tree;
 mod track_workspace;
 pub mod workspace_execution;
 mod workspace_locations;
-pub use workspace_locations::{OwnedWorkspaceLocation, owned_workspace_locations};
+pub use workspace_locations::{
+    OwnedWorkspaceLocation, execution_workspace_locations, owned_workspace_locations,
+};
 mod workspace_resource;
+pub mod workspace_retirement;
 pub use workspace_resource::{
     DirectoryObservation, ObservedDirectory, WorkspaceObservation, WorkspaceOwnership,
     workspace_observation_snapshot, workspace_observe_tx,

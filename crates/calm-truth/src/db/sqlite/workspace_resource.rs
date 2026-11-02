@@ -84,17 +84,22 @@ pub async fn workspace_observation_snapshot(
          JOIN tracks t ON t.id=b.track_id WHERE b.track_id=?1 \
          AND r.source_track_id=t.id AND r.root_path=b.selected_path AND r.ownership=b.ownership \
          AND b.selected_path=coalesce(t.workspace_worktree_path,t.workspace_path) \
-         AND b.ownership=CASE WHEN t.workspace_worktree_path IS NOT NULL OR t.workspace_kind='managed' \
+         AND r.retired_at_ms IS NULL AND b.ownership=CASE WHEN t.workspace_worktree_path IS NOT NULL OR t.workspace_kind='managed' \
              THEN 'owned' ELSE 'borrowed' END",
     )
     .bind(track_id)
-    .fetch_optional(conn)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| {
         CalmError::Conflict(format!(
             "WorkspaceRecoveryRequired: track {track_id} has no workspace selection"
         ))
     })?;
+    super::workspace_retirement::require_active_workspace_path(
+        conn,
+        std::path::Path::new(&row.selected_path),
+    )
+    .await?;
     let state = match row {
         ObservationRow {
             observation_version: 0,
@@ -229,6 +234,13 @@ pub(super) async fn workspace_bind_selection_tx(
     workspace: &TrackWorkspace,
 ) -> Result<()> {
     let root = workspace.worktree.as_deref().unwrap_or(&workspace.path);
+    let selected_location =
+        super::workspace_retirement::active_workspace_location(tx, std::path::Path::new(root))
+            .await?;
+    let location_root = selected_location
+        .resolved()
+        .to_str()
+        .ok_or_else(|| CalmError::BadRequest("workspace root is not UTF-8"))?;
     let ownership = if workspace.worktree.is_some() || workspace.kind == TrackWorkspaceKind::Managed
     {
         "owned"
@@ -251,8 +263,9 @@ pub(super) async fn workspace_bind_selection_tx(
     let id = new_id();
     sqlx::query(
         "INSERT INTO workspace_resources \
-         (id,source_track_id,root_path,ownership,observation_version,created_at_ms) VALUES (?1,?2,?3,?4,0,?5)",
+         (id,source_track_id,root_path,ownership,observation_version,created_at_ms,location_root) VALUES (?1,?2,?3,?4,0,?5,?6)",
     ).bind(&id).bind(track_id).bind(root).bind(ownership).bind(now_ms())
+        .bind(location_root)
         .execute(&mut **tx).await?;
     sqlx::query(
         "INSERT INTO track_workspace_bindings \

@@ -1,5 +1,5 @@
 //! Area effects must prove the whole captured set safe before moving any directory.
-use super::c5_admission::{busy, external_worktree, typed};
+use super::c5_admission::{busy, external_worktree, retired, typed};
 use super::*;
 use calm_server::test_seams::{PausePoint, install_pause_for_test};
 
@@ -201,7 +201,7 @@ async fn c5_area_delete_lock_blocks_container_terminal_creation() {
     let url = format!("/api/areas/{old_area}");
     let ((status, body), ()) = tokio::join!(f.request("DELETE", &url, None), create);
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!Path::new(target.workspace.agent_cwd()).exists());
+    assert!(Path::new(target.workspace.agent_cwd()).exists());
 }
 
 #[tokio::test]
@@ -307,12 +307,12 @@ async fn c5_area_committed_worktree_before_sweep_admission_is_busy() {
                 .unwrap()
                 .is_none()
         );
-        busy(&f, Path::new(target.workspace.agent_cwd())).await;
+        retired(&f, Path::new(target.workspace.agent_cwd())).await;
         p.release.notify_one();
     };
     let url = format!("/api/areas/{}", f.area);
     let ((status, body), ()) = tokio::join!(f.request("DELETE", &url, None), create);
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!Path::new(target.workspace.agent_cwd()).exists());
-    assert!(!branch_exists(&target));
+    assert!(Path::new(target.workspace.agent_cwd()).exists());
+    assert!(branch_exists(&target));
 }
