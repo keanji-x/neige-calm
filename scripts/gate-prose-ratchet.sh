@@ -128,6 +128,11 @@
 # this existing baseline; ordinary test additions need no inventory edit.
 # The existing 120-character shape and single CI scan remain unchanged.
 
+# #3484 historical Track-write registration adds one long SQL literal (201 -> 202).
+# The existing exact-write registry records the fixed pre-0210 Track INSERT and
+# why it cannot use the current writer. Ordinary new historical cases reuse the
+# seed; only changing that fixed SQL edits its helper, existing registry entry
+# and baseline. There is no new check, scan, exclusion or CI invocation.
 # #3484 historical-upgrade fixtures add four long SQL literals (197 -> 201):
 # historical_fixtures.rs fixes the pre-0210 Track, resource, binding and Card
 # INSERT contracts. Migration tests cannot use the current retirement writer on
