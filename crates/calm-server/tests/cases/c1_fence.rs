@@ -211,6 +211,16 @@ async fn preparation(kind: &str, boot: bool) {
         .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?").bind(&track))
         .await
         .unwrap();
+    if calm_server::model::TaskKind::from_worker_operation_kind(kind).is_some() {
+        // The closed snapshot was already checked under the fence. A worker
+        // must re-admit against an open Track once that fence is released.
+        b.repo
+            .db()
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(&track))
+            .await
+            .unwrap();
+    }
     let op = pending(&b, kind, payload).await;
     if boot {
         b.state
@@ -255,15 +265,15 @@ async fn preparation(kind: &str, boot: bool) {
     .await
     .expect("Busy operation must retry promptly after clean releases");
     assert_ne!(phase(&b, &op).await, "stuck");
-    let output: Option<String> =
-        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?")
+    let (output, error): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT tx_output_json,last_error FROM operations WHERE id=?")
             .bind(&op)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    let output: Value = serde_json::from_str(
-        &output.expect("retry must commit preparation, not merely fail Pending"),
-    )
+    let output: Value = serde_json::from_str(&output.unwrap_or_else(|| {
+        panic!("retry must commit preparation, not merely fail Pending: {error:?}")
+    }))
     .unwrap();
     if kind == "terminal-worker" {
         assert!(
