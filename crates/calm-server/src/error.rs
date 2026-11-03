@@ -54,6 +54,9 @@ pub enum CalmError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("conflict: {0}")]
+    AttachedRepoDiverged(String),
+
     /// 409 — SELECT-inside-tx idempotency sentinel: a worker card with the same `idempotency_key`
     /// already exists. Never escapes the dispatcher closure.
     #[error("dispatch idempotency collision: {0}")]
@@ -219,6 +222,7 @@ impl CalmError {
             CalmError::NotFound(_) => "not_found",
             CalmError::PathNotFound(_) => "path_not_found",
             CalmError::Conflict(_) => "conflict",
+            CalmError::AttachedRepoDiverged(_) => "attached_repo_diverged",
             CalmError::WorkspaceBusy(_) => "workspace_busy",
             CalmError::OperationBlocked(_) => "workspace_busy",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
@@ -266,6 +270,7 @@ impl CalmError {
         match self {
             CalmError::NotFound(_) | CalmError::PathNotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
+            | CalmError::AttachedRepoDiverged(_)
             | CalmError::WorkspaceBusy(_)
             | CalmError::OperationBlocked(_)
             | CalmError::IdempotencyCollision(_)
@@ -322,6 +327,7 @@ impl CalmError {
             | CalmError::NotFound(m)
             | CalmError::PathNotFound(m)
             | CalmError::Conflict(m)
+            | CalmError::AttachedRepoDiverged(m)
             | CalmError::IdempotencyCollision(m)
             | CalmError::IdempotencyKeyExhausted(m)
             | CalmError::IdempotencyKeyInvalid(m)

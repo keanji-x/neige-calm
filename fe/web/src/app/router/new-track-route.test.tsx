@@ -515,6 +515,23 @@ describe('New track model selection', () => {
 });
 
 describe('Track creation drafts survive navigation', () => {
+  it('explains an attached repository divergence and retries the same request', async () => {
+    const { sent } = harness({ templates: [], trackCreateSequence: [{
+      status: 409, statusText: 'Conflict',
+      body: { code: 'attached_repo_diverged', error: 'The repository needs attention.' },
+    }] });
+    await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
+    await findComposer();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Keep this message');
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await screen.findByText(/Git branch has diverged/);
+    await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
+    await waitFor(() => expect(createdTrackRequests(sent)).toHaveLength(2));
+    const [first, retry] = createdTrackRequests(sent);
+    expect(retry?.body).toEqual(first?.body);
+    expect(retry?.headers).toEqual(first?.headers);
+  });
+
   it.each(['offline', 'rate-limit', 'folder-conflict'] as const)('keeps an earlier unconfirmed request after a later %s rejection', async (rejection) => {
     const { sent } = harness({ templates: [], loseFirstCreateAck: true,
       otherAreaDefaults: { default_template_id: null, default_cwd: '/srv/app' },

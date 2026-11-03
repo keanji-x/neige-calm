@@ -527,11 +527,8 @@ async fn a_diverged_checkout_fails_the_create_and_makes_no_worktree() {
     run_git(&up.clone, ["commit", "-q", "-m", "unpushed work"]);
 
     let (status, body) = b.create_at(&up.clone, Some("idem-diverged"), None).await;
-    assert!(!status.is_success(), "{status} {body}");
-    assert!(
-        body.to_string().contains("attached-repo-diverged"),
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "attached_repo_diverged", "{body}");
     let track_id = b.only_track_id().await;
     let worktree = expected_worktree(&up.clone, &track_id);
     assert!(!worktree.exists());

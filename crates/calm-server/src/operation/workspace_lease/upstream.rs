@@ -456,7 +456,7 @@ pub(crate) fn diverged_refusal(
     };
     // The checkout path goes last: `status_detail` keeps 480 characters of
     // the reason, and the path is the one fact the Planner already has.
-    CalmError::Conflict(format!(
+    CalmError::AttachedRepoDiverged(format!(
         "refused: {ATTACHED_REPO_DIVERGED}: HEAD {head} ({unpushed} unpushed) and upstream {} \
          at {} (per {seen}) diverged: {ahead} ahead, {behind} behind. Not retryable: a human must \
          {fetch_first}rebase the unpushed commits onto the upstream and push, or reset to it; \

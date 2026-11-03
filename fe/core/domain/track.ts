@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { agentProviderSchema, askActionSchema, askQuestionSchema, cardSchema, overlaySchema, trackWorkspaceSchema } from '../api/schemas.js';
 import type { AgentProvider, WorkspaceIsolation } from '../api/generated/wire.js';
-import type { ApiOperation } from '../api/types.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   activityStateOf, type ActivityItem, type ActivityState, type AttentionKind, type CardActivity,
 } from './activity.js';
@@ -622,6 +622,13 @@ export const TRACK_CREATE_FAILURES: FailureTable<TrackCreateFailure> = Object.fr
 export const TRACK_CREATE_TEXT: WriteText = Object.freeze({
   refused: 'The track was not created.', unknown: 'The track creation is unconfirmed. Try again to check the same track.',
 });
+
+/** The server identifies this post-commit conflict with a stable code. Keep the original create for retry. */
+export function trackCreateWorkspaceError(failure: ApiFailure | null): string | null {
+  if (failure?.kind !== 'http' || failure.status !== 409 || failure.code !== 'attached_repo_diverged') return null;
+  return 'The attached repository’s Git branch has diverged from its upstream. The Track was saved, '
+    + 'but its working directory could not be created. Reconcile the branch and try again here.';
+}
 
 export function updateTrackOperation(trackId: string, body: TrackPatchBody): ApiOperation<TrackWire> {
   return { method: 'PATCH', path: `/api/tracks/${encodeURIComponent(trackId)}`, body, responseSchema: trackWireSchema };
