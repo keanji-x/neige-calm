@@ -10,6 +10,7 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, supervisorSnapshotOperation, type ReportChange } from '../../../../core/domain/daily-planner.ts';
 import { DEPLOYMENT_OWNER_USER_ID } from '../../../../core/api/auth.ts';
+import { SupervisorDashboard } from '../../features/today/supervisor-dashboard.tsx';
 import { useCurrentUser } from '../auth/current-user.tsx';
 import { useGo } from './navigation.ts';
 import { TodayCalendarTasks } from './calendar.tsx';
@@ -48,30 +49,18 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
 function DailySupervisor({ transport, unauthorized }: Readonly<{ transport: ApiTransportPort; unauthorized: UnauthorizedChannel }>) {
   const user = useCurrentUser();
   const isOwner = user?.userId === DEPLOYMENT_OWNER_USER_ID;
-  const [open, setOpen] = useState(false);
   const snapshot = useQuery({
     queryKey: ['daily-supervisor', user?.userId],
     queryFn: () => runOperation(transport, supervisorSnapshotOperation(), unauthorized),
-    enabled: open && isOwner,
-    refetchInterval: open ? 30_000 : false,
+    enabled: isOwner,
+    refetchInterval: isOwner ? 30_000 : false,
   });
   if (!isOwner) return null;
 
-  const data = snapshot.isError ? undefined : snapshot.data;
-  return <ReportDetails title="Daily Supervisor" layout="appendix" onToggle={setOpen}>
-    {open && snapshot.isPending && <p role="status">正在读取实例状态…</p>}
-    {snapshot.isError && <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />}
-    {data !== undefined && <dl>
-      <dt>运行版本</dt><dd>{data.kernel_version} · {data.build_sha ?? '提交未知'}</dd>
-      <dt>调度器启动扫描</dt><dd>{data.scheduler_boot_sweep_completed ? '已完成' : '尚未完成'}</dd>
-      <dt>DB 只读探针</dt><dd>{data.database_probe_ms === null ? '未知' : `${data.database_probe_ms.toFixed(1)} ms`}</dd>
-      <dt>已退役的工作区</dt><dd>{data.retired_workspaces?.count ?? '未知'}</dd>
-      {data.retired_workspaces?.oldest_retired_at_ms != null && <>
-        <dt>最早退役时间</dt><dd>{new Date(data.retired_workspaces.oldest_retired_at_ms).toLocaleString()}</dd>
-      </>}
-      <dt>观测时间</dt><dd>{new Date(data.observed_at_ms).toLocaleString()}</dd>
-    </dl>}
-  </ReportDetails>;
+  return <SupervisorDashboard snapshot={snapshot.isError ? undefined : snapshot.data}
+    status={snapshot.isError
+      ? <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />
+      : snapshot.isPending && <p role="status">正在读取实例状态…</p>} />;
 }
 
 function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{

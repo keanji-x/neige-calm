@@ -58,6 +58,8 @@ const supervisorSnapshotSchema = z.object({
   retired_workspaces: z.object({ count: z.number(), oldest_retired_at_ms: z.number().nullable() }).nullable(),
 });
 
-export function supervisorSnapshotOperation(): ApiOperation<z.infer<typeof supervisorSnapshotSchema>> {
+export type SupervisorSnapshot = z.infer<typeof supervisorSnapshotSchema>;
+
+export function supervisorSnapshotOperation(): ApiOperation<SupervisorSnapshot> {
   return { method: 'GET', path: '/api/today/supervisor', responseSchema: supervisorSnapshotSchema };
 }

@@ -370,9 +370,10 @@ it('shows observed DB latency and deferred workspaces to the owner', async () =>
   });
   const supervisor = page.getByText('Daily Supervisor', { exact: true });
   await expect.element(supervisor).toBeVisible();
-  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(false);
-  await supervisor.click();
-  await expect.element(page.getByText('1.2.3 · abc123')).toBeVisible();
+  await expect.element(page.getByText('abc123', { exact: true })).toBeVisible();
+  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(true);
+  await expect.element(page.getByRole('heading', { name: '需要处理' })).toBeVisible();
+  await expect.element(page.getByText('异常巡检暂不可用')).toBeVisible();
   await expect.element(page.getByText('3.5 ms')).toBeVisible();
   await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
   await expect.element(page.getByText('最早退役时间')).toBeVisible();
@@ -399,6 +400,6 @@ it('can inspect scheduler recovery before the daily Track exists', async () => {
     },
   });
   await expect.element(page.getByText('Preparing today’s Track…')).toBeVisible();
-  await page.getByText('Daily Supervisor', { exact: true }).click();
+  await expect.element(page.getByRole('region', { name: 'Daily Supervisor' })).toBeVisible();
   await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
 });
