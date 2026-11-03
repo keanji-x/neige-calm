@@ -19,6 +19,21 @@ use super::{
 
 mod child_fds;
 
+/// Only preparation and std's exec handshake may mint this proof. Errors after a
+/// successful spawn remain unclassified even if a cleanup Drop attempted to reap.
+#[derive(Debug)]
+pub(super) struct NoChild(anyhow::Error);
+impl std::fmt::Display for NoChild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+impl std::error::Error for NoChild {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
 pub(super) struct Process {
     pub ready: std::sync::atomic::AtomicBool,
     pub started: std::sync::atomic::AtomicBool,
@@ -165,87 +180,103 @@ fn spawn_with_pin(
     output_log: Arc<super::output::OutputLog>,
     pin: impl FnOnce(u32) -> anyhow::Result<File>,
 ) -> anyhow::Result<(Arc<Process>, NativeProcessIdentity, File)> {
-    let (configuration, config_writer) = pipe()?;
-    let (reports, report_writer) = pipe()?;
-    let nonce = context.nonce.clone();
-    let encoded = serde_json::to_vec(&HelperPlan::Execution {
-        context,
-        specification: specification.clone(),
-        environment: crate::child_environment::launch_environment(specification)?,
-    })?;
-    anyhow::ensure!(
-        encoded.len() <= 1024 * 1024,
-        "execution specification too large"
-    );
-    let mut command = helper_command(helper, &configuration, &report_writer, &[]);
-    let (input, output, pty) = match specification.io_mode {
-        IoMode::Pipe => {
-            let (input_read, input_write) = pipe()?;
-            let (output_read, output_write) = pipe()?;
-            command
-                .stdin(Stdio::from(input_read))
-                .stdout(Stdio::from(output_write.try_clone()?))
-                .stderr(Stdio::from(output_write));
-            (input_write, output_read, None)
-        }
-        IoMode::Pty { cols, rows } => {
-            let mut master = -1;
-            let mut slave = -1;
-            let size = libc::winsize {
-                ws_row: rows,
-                ws_col: cols,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            };
-            // SAFETY: output pointers are valid and the initial winsize is initialized.
+    let (child, input, output, pty, nonce, config_writer, encoded, is_pty, reports) =
+        (|| -> anyhow::Result<_> {
+            let (configuration, config_writer) = pipe()?;
+            let (reports, report_writer) = pipe()?;
+            let nonce = context.nonce.clone();
+            let encoded = serde_json::to_vec(&HelperPlan::Execution {
+                context,
+                specification: specification.clone(),
+                environment: crate::child_environment::launch_environment(specification)?,
+            })?;
             anyhow::ensure!(
-                unsafe {
-                    libc::openpty(
-                        &mut master,
-                        &mut slave,
-                        std::ptr::null_mut(),
-                        std::ptr::null(),
-                        &size,
-                    )
-                } == 0,
-                "allocate execution PTY: {}",
-                std::io::Error::last_os_error()
+                encoded.len() <= 1024 * 1024,
+                "execution specification too large"
             );
-            // SAFETY: successful openpty returned two owned descriptors.
-            let (master, slave) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
-            cloexec(master.as_raw_fd(), true)?;
-            cloexec(slave.as_raw_fd(), true)?;
-            command
-                .stdin(Stdio::from(slave.try_clone()?))
-                .stdout(Stdio::from(slave.try_clone()?))
-                .stderr(Stdio::from(slave));
-            (
-                master.try_clone()?,
-                master.try_clone()?,
-                Some(Mutex::new(master)),
-            )
-        }
-    };
-    let directory_fd = cwd.as_raw_fd();
-    let is_pty = matches!(specification.io_mode, IoMode::Pty { .. });
-    // SAFETY: pre_exec uses only async-signal-safe libc operations on owned descriptors.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::fchdir(directory_fd) != 0 {
-                return Err(std::io::Error::last_os_error());
+            let mut command = helper_command(helper, &configuration, &report_writer, &[]);
+            let (input, output, pty) = match specification.io_mode {
+                IoMode::Pipe => {
+                    let (input_read, input_write) = pipe()?;
+                    let (output_read, output_write) = pipe()?;
+                    command
+                        .stdin(Stdio::from(input_read))
+                        .stdout(Stdio::from(output_write.try_clone()?))
+                        .stderr(Stdio::from(output_write));
+                    (input_write, output_read, None)
+                }
+                IoMode::Pty { cols, rows } => {
+                    let mut master = -1;
+                    let mut slave = -1;
+                    let size = libc::winsize {
+                        ws_row: rows,
+                        ws_col: cols,
+                        ws_xpixel: 0,
+                        ws_ypixel: 0,
+                    };
+                    // SAFETY: output pointers are valid and the initial winsize is initialized.
+                    anyhow::ensure!(
+                        unsafe {
+                            libc::openpty(
+                                &mut master,
+                                &mut slave,
+                                std::ptr::null_mut(),
+                                std::ptr::null(),
+                                &size,
+                            )
+                        } == 0,
+                        "allocate execution PTY: {}",
+                        std::io::Error::last_os_error()
+                    );
+                    // SAFETY: successful openpty returned two owned descriptors.
+                    let (master, slave) =
+                        unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
+                    cloexec(master.as_raw_fd(), true)?;
+                    cloexec(slave.as_raw_fd(), true)?;
+                    command
+                        .stdin(Stdio::from(slave.try_clone()?))
+                        .stdout(Stdio::from(slave.try_clone()?))
+                        .stderr(Stdio::from(slave));
+                    (
+                        master.try_clone()?,
+                        master.try_clone()?,
+                        Some(Mutex::new(master)),
+                    )
+                }
+            };
+            let directory_fd = cwd.as_raw_fd();
+            let is_pty = matches!(specification.io_mode, IoMode::Pty { .. });
+            // SAFETY: pre_exec uses only async-signal-safe libc operations on owned descriptors.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fchdir(directory_fd) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if is_pty && libc::ioctl(0, libc::TIOCSCTTY, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
             }
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if is_pty && libc::ioctl(0, libc::TIOCSCTTY, 0) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = OwnedChild::new(command.spawn()?);
-    drop(configuration);
-    drop(report_writer);
+            let child = OwnedChild::new(command.spawn()?);
+            drop(configuration);
+            drop(report_writer);
+            Ok((
+                child,
+                input,
+                output,
+                pty,
+                nonce,
+                config_writer,
+                encoded,
+                is_pty,
+                reports,
+            ))
+        })()
+        .map_err(NoChild)?;
     let pid = child.id();
     let pidfd = pin(pid)?;
     let identity = NativeProcessIdentity::LinuxHelper(workspace::execution::LinuxProcessIdentity {
@@ -294,7 +325,8 @@ pub(super) fn helper_command(
         .stderr(Stdio::null());
     let mut allowed = vec![configuration.as_raw_fd(), reports.as_raw_fd()];
     allowed.extend_from_slice(inherited);
-    // SAFETY: executed after fork, only fcntl/close_range on the exact owned bootstrap FDs.
+    // SAFETY: descriptor isolation allocates nothing after fork; explicit reopening
+    // touches only the owned allowlist descriptors.
     unsafe {
         command.pre_exec(move || {
             mark_child_descriptors_cloexec()?;
@@ -413,7 +445,11 @@ mod tests {
             spawned = Some(pid);
             Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
         });
-        assert!(result.is_err());
+        let error = result.err().expect("post-spawn pinning must fail");
+        assert!(
+            !error.is::<NoChild>(),
+            "a successful spawn cannot prove that no child existed"
+        );
         let pid = spawned.expect("fault must occur after a successful real spawn");
         let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
         // A non-consuming exact query establishes collection, rather than merely a stop request.

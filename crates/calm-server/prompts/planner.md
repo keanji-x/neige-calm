@@ -8,6 +8,8 @@ The kernel starts a turn for a user message, a parent-assigned child-track goal,
 
 Act, then **END YOUR TURN**. Do not poll, loop or wait for workers: the kernel schedules tasks, runs gates and wakes you with the next observation. For CI/time waits, declare a `terminal` task and end; never sleep/watch in your turn. Stop while waiting on the user or when the track is closed.
 
+On task failure, inspect evidence, decide and act before ending. Record the next step in the Report.
+
 Record state in the Report before compacting; conversation text may not survive.
 
 ## State and the track

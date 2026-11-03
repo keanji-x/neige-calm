@@ -172,6 +172,16 @@ impl Executor {
         let (process, native, reports) = match result {
             Ok(spawned) => spawned,
             Err(error) => {
+                #[cfg(target_os = "linux")]
+                if error.is::<process::NoChild>() {
+                    record.phase = Phase::NoChild {
+                        slot_version: Some(version),
+                        reason: format!("helper did not start: {error}"),
+                    };
+                    record = self.latch(record)?;
+                    self.persist(record.clone())?;
+                    return Ok(reply(&record));
+                }
                 record.phase = Phase::Unknown {
                     slot_version: version,
                     receipt: None,
@@ -376,5 +386,55 @@ mod tests {
             }
         ));
         assert!(executor.processes.lock().unwrap().is_empty());
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn failed_helper_exec_settles_no_child_and_survives_restart() {
+        use crate::execution::protocol_tests::{assert_released, consume, prepare, private};
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let helper = temp.path().join("invalid-helper");
+        std::fs::write(
+            &helper,
+            format!("#!{}\n", temp.path().join("missing-interpreter").display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = ExecutorConfig {
+            journal_directory: temp.path().join("journal"),
+            helper_program: helper,
+            kernel_client_secret: CapabilityToken::fresh().unwrap(),
+        };
+        let executor = Executor::open(config.clone()).unwrap();
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let (mut request, held) = private(&executor, &source);
+        request.specification.program = "/bin/sh".into();
+        request.specification.args = vec!["-c".into(), "touch payload-ran".into()];
+        prepare(&executor, &request, &held).await;
+        for _ in 0..2 {
+            assert!(matches!(
+                executor.launch(consume(&request)).await.unwrap(),
+                ExecutionReply::Receipt {
+                    receipt: None,
+                    state: ExecutionState::NoChild { .. }
+                }
+            ));
+        }
+        assert!(!source.join("payload-ran").exists());
+        assert_released(&executor);
+        let row = executor.record(&request.identity.execution_id).unwrap();
+        assert!(row.durably_settled());
+        assert_eq!(row.output_end, OutputEnd::Complete { final_cursor: 0 });
+        drop(executor);
+        let restored = Executor::open(config).unwrap();
+        assert!(matches!(
+            restored.launch(consume(&request)).await.unwrap(),
+            ExecutionReply::Receipt {
+                receipt: None,
+                state: ExecutionState::NoChild { .. }
+            }
+        ));
+        assert!(!source.join("payload-ran").exists());
     }
 }
