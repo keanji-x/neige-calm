@@ -4,6 +4,7 @@ use super::*;
 #[tokio::test]
 async fn child_track_config_invalid_provider_fails_parent_task_readably() {
     let boot = boot().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     let mut task = plan_task(
         &boot.track_id,
         "invalid-child-provider",
@@ -60,5 +61,12 @@ pub(super) async fn boot_git_parent() -> (Boot, tempfile::TempDir) {
         );
     }
     let boot = boot_at_workspace(dir.path().to_str().unwrap()).await;
+    (boot, dir)
+}
+
+/// Legal creation requires an explicitly granted, open parent.
+pub(super) async fn boot_git_admin_parent() -> (Boot, tempfile::TempDir) {
+    let (boot, dir) = boot_git_parent().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     (boot, dir)
 }

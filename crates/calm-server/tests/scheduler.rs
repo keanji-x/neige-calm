@@ -15,6 +15,8 @@ mod child_track_handback;
 mod compact;
 #[path = "scheduler/progress_obligation_tests.rs"]
 mod progress_obligation_tests;
+#[path = "scheduler/subtrack_admin.rs"]
+mod subtrack_admin;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;
@@ -8722,7 +8724,7 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
 /// and historical operation result, and re-driving the task reuses its original bootstrap.
 #[tokio::test]
 async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
-    let (boot, attached_dir) = child_track_config::boot_git_parent().await;
+    let (boot, attached_dir) = child_track_config::boot_git_admin_parent().await;
     let attached_path = attached_dir.path().to_str().unwrap();
     let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
@@ -8861,7 +8863,7 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
 
 #[tokio::test]
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
-    let (boot, attached_dir) = child_track_config::boot_git_parent().await;
+    let (boot, attached_dir) = child_track_config::boot_git_admin_parent().await;
     let attached_path = attached_dir.path().to_str().unwrap();
     let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
@@ -8989,7 +8991,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     assert_ne!(child_cwd, attached_path);
 
     // Crash while bootstrap is blocked after its prepare transaction; recover with a new runtime.
-    let (crash_boot, _crash_parent_repo) = child_track_config::boot_git_parent().await;
+    let (crash_boot, _crash_parent_repo) = child_track_config::boot_git_admin_parent().await;
     let mut crash_task = plan_task(
         &crash_boot.track_id,
         "bootstrap-crash",
@@ -9123,7 +9125,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         ("bootstrap", "failed", "child-track-bootstrap-failed"),
         ("bootstrap", "stuck", "child-track-bootstrap-stuck"),
     ] {
-        let (boot, _parent_repo) = child_track_config::boot_git_parent().await;
+        let (boot, _parent_repo) = child_track_config::boot_git_admin_parent().await;
         let mut task = plan_task(
             &boot.track_id,
             &format!("{stage}-{phase}"),
@@ -9258,6 +9260,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
 #[tokio::test]
 async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread() {
     let boot = boot().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     let mut task = plan_task(&boot.track_id, "frozen-route", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     let task_id = task.id.clone();
@@ -9323,6 +9326,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
 #[tokio::test]
 async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_edit() {
     let boot = boot().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     let report = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
         doc_rev: 1,
@@ -9392,6 +9396,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
 #[tokio::test]
 async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let boot = boot().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     let task = plan_task(&boot.track_id, "tx-reread", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
@@ -9433,7 +9438,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
 
 #[tokio::test]
 async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
-    let (boot, _parent_repo) = child_track_config::boot_git_parent().await;
+    let (boot, _parent_repo) = child_track_config::boot_git_admin_parent().await;
     insert_announced_report_payload(
         &boot,
         "stale-child-report",
@@ -9553,6 +9558,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
 #[tokio::test]
 async fn acceptance_9_depth_exhaustion_fails_parent_without_in_track_fallback() {
     let boot = boot().await;
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), true).await;
     let mut task = plan_task(&boot.track_id, "depth-fail", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;

@@ -98,6 +98,16 @@ async fn child_flow(window: Window) {
     }
     let parent = post(&app, &cookie, "/api/tracks", "child-parent", parent_body).await;
     let parent_id = parent["id"].as_str().unwrap();
+    let grant_parent = parent_id.to_owned();
+    crate::db::write_in_tx_typed(fixture.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let parent = crate::db::sqlite::track_get_tx(tx, &grant_parent.into()).await?;
+            crate::area_admin::set_tx(tx, &parent, true).await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
     (fixture.repo.db())
         .writer()
         .execute(

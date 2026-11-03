@@ -405,6 +405,9 @@ async fn parent_with_plan(
                 )
                 .await
                 .unwrap();
+                let parent = crate::area_admin::set_tx(&mut tx, &parent, true)
+                    .await
+                    .unwrap();
                 tx.commit().await.unwrap();
                 ensure_planner_card(repo, parent.id.as_str()).await;
                 parent
@@ -553,7 +556,7 @@ async fn stored_planner(repo: &SqlxRepo, child: &str) -> Value {
 }
 
 #[tokio::test]
-async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
+async fn subtrack_admin_committed_child_retry_keeps_frozen_parent_head_and_selection() {
     use crate::operation::{OperationKey, OperationOutcome, OperationReceipt};
     for (parent_worktree, declared) in [(false, false), (true, false), (true, true)] {
         let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -630,6 +633,16 @@ async fn child_track_config_retry_keeps_frozen_parent_head_and_selection() {
             panic!("worktree failure must retain a retryable child")
         };
         let child = output.data["child_track_id"].as_str().unwrap().to_owned();
+        let revoke = parent.clone();
+        crate::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                let parent = crate::db::sqlite::track_get_tx(tx, &revoke.into()).await?;
+                crate::area_admin::set_tx(tx, &parent, false).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
         assert_eq!(output.data["parent_head"], frozen_head);
         assert!(output.data["workspace_error"].is_string());
         let worktree = output.data["cwd"].as_str().unwrap().to_owned();

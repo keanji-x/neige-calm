@@ -692,6 +692,7 @@ pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> Strin
     };
     use calm_server::operation::{Operation, Phase, ProviderAdapter};
 
+    crate::support::child_track::set_admin(b.repo.as_ref(), parent_track_id, true).await;
     let task_id = format!("{parent_track_id}:child");
     let now = calm_server::model::now_ms();
     (b.repo.db())

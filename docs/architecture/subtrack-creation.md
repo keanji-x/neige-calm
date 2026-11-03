@@ -1,5 +1,43 @@
 # Subtrack creation and route vocabulary
 
+## Live creation authority (#3509)
+
+Review tier: L2, because creating a subtrack crosses an authority boundary.
+
+A `spawn: "sub-track"` declaration may allocate a new child only while its parent
+Track is an open Area Admin. The child operation calls
+`area_admin::require_admin_tx` in the actual creation write transaction, after
+the stale-context fence and the `child_track.continue` branch, before any child
+Track, Card, or workspace is allocated. This shares the authority predicate with
+independent `track_add` admission. Storage errors propagate; an authority refusal
+is the existing permanent `Forbidden("not_admin")` operation failure. The
+Scheduler settles the parent task and notifies its Planner, without retrying the
+refused allocation or creating child resources.
+
+Authority is live storage state, never a `FrozenParent` preparation fact. A
+queued declaration, Pending operation recovered before creation, or preparation
+snapshot cannot preserve a grant revoked before the creation transaction. A
+same-key operation replay retains its terminal refusal. Once creation has
+committed, recovery and workspace/bootstrap retries consume the committed child
+and its frozen configuration without requiring a new grant. Revocation does not
+delete or invalidate existing children.
+
+`child_track.continue` assigns new work to an eligible retained child under its
+existing binding and lifecycle checks; it allocates no Track and requires no new
+Admin grant. Its stale-context fence still applies. Creation still enforces the
+same Area, tree inventory and member budgets, depth, workspace ownership, and
+idempotency contracts.
+
+Admin authority is never inherited by the child. Subtracks are ineligible for an
+Admin grant under the existing eligibility rule, so a newly created child cannot
+create a nested child. Historical nested trees remain readable and retain their
+budget/depth safeguards; synthetic historical fixtures test those mechanisms
+without claiming nested creation is currently authorized. Legal creation tests
+grant the specific parent explicitly, without making general boot fixtures
+Admin by default.
+
+## Route vocabulary migration
+
 Review tier: L2, because the route spelling changes persisted task/report data.
 
 Both features are useful only as distinct ownership contracts: a subtrack executes a
