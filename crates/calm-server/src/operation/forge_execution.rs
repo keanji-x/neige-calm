@@ -397,6 +397,36 @@ pub(crate) async fn stop(
     transition(ctx, op, &old, &new, Some(&id)).await
 }
 
+fn release_deadline(probe: &Probe) -> Option<i64> {
+    match probe.release {
+        Release::Releasing { authorized_at_ms } => {
+            Some(authorized_at_ms.saturating_add(RELEASE_TIMEOUT.as_millis() as i64))
+        }
+        _ => None,
+    }
+}
+
+fn probe_deadline(kind: Kind, probe: &Probe) -> Option<i64> {
+    match (kind, &probe.release) {
+        (
+            Kind::Verdict | Kind::Output,
+            Release::Releasing { authorized_at_ms } | Release::Released { authorized_at_ms },
+        ) => Some(authorized_at_ms.saturating_add(PROBE_TIMEOUT_MS)),
+        _ => None,
+    }
+}
+
+/// Timers the live observer can act on; the action deadline belongs to the sweep.
+pub(crate) fn observer_deadline(kind: Kind, probe: &Probe) -> Option<i64> {
+    if probe.decision != Decision::Observing {
+        return None;
+    }
+    release_deadline(probe)
+        .into_iter()
+        .chain(probe_deadline(kind, probe))
+        .min()
+}
+
 /// Only past-deadline recovery owns the action timer; probe and release timers are shared.
 pub(crate) fn stop_reason(
     op: &Operation,
@@ -409,9 +439,7 @@ pub(crate) fn stop_reason(
         return None;
     }
     let now = now_ms();
-    if let Release::Releasing { authorized_at_ms } = probe.release
-        && (settled || now >= authorized_at_ms.saturating_add(RELEASE_TIMEOUT.as_millis() as i64))
-    {
+    if release_deadline(probe).is_some_and(|at| settled || now >= at) {
         return Some(StopReason::ReleaseRefused);
     }
     let expired = match kind {
@@ -419,14 +447,9 @@ pub(crate) fn stop_reason(
             matches!(mode, RecoveryMode::PastDeadline)
                 && op.parked_deadline_ms.is_some_and(|deadline| now > deadline)
         }
-        _ => {
-            matches!(probe.release,Release::Releasing {authorized_at_ms}|Release::Released {authorized_at_ms} if now>=authorized_at_ms.saturating_add(PROBE_TIMEOUT_MS))
-        }
+        _ => probe_deadline(kind, probe).is_some_and(|at| now >= at),
     };
-    if !settled && expired {
-        return Some(StopReason::Timeout);
-    }
-    None
+    (!settled && expired).then_some(StopReason::Timeout)
 }
 
 /// Only a post-park observer sends bytes. Unavailable before authorization leaves Held.
