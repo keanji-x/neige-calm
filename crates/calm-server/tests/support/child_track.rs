@@ -2,6 +2,20 @@
 use calm_server::db::Repo;
 use serde_json::{Value, json};
 
+/// Explicit authority for child-creation fixtures; ordinary boot fixtures stay unprivileged.
+pub async fn set_admin(repo: &dyn calm_server::db::RepoEventWrite, track_id: &str, admin: bool) {
+    let track_id = track_id.to_owned();
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let track = calm_truth::db::sqlite::track_get_tx(tx, &track_id.into()).await?;
+            calm_server::area_admin::set_tx(tx, &track, admin).await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
 pub async fn seed_candidates(repo: &dyn Repo, track_id: &str, card_id: &str) -> Value {
     let db = repo.sqlite_db().unwrap();
     let mut latest = Value::Null;

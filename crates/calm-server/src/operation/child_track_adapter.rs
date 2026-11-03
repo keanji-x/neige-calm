@@ -128,6 +128,15 @@ impl ChildTrackAdapter {
             }
         }
 
+        // Creation needs live authority even when external preparation froze the parent.
+        match crate::area_admin::require_admin_tx(tx, &payload.parent_track_id).await {
+            Ok(()) => {}
+            Err(crate::area_admin::RequireAdminError::NotAdmin) => {
+                return Err(CalmError::Forbidden("not_admin".into()));
+            }
+            Err(crate::area_admin::RequireAdminError::Storage(error)) => return Err(error),
+        }
+
         let (root_id, parent_depth) = root_and_depth(tx, &payload.parent_track_id).await?;
         if parent_depth >= MAX_TRACK_TREE_DEPTH {
             return Err(CalmError::Conflict("sub-track-depth-exceeded".into()));
@@ -589,11 +598,11 @@ mod provider_tests;
 mod tests {
     use super::*;
     use crate::card_role_cache::CardRoleCache;
-    use crate::db::RepoOutOfDomain;
     use crate::db::sqlite::card_create_with_id_tx;
     use crate::db::sqlite::{
         SqlxRepo, area_create_tx, area_delete_tx, task_claim_pending_tx, track_update_tx,
     };
+    use crate::db::{RepoOutOfDomain, RepoRead};
     use crate::event::EventBus;
     use crate::forge_trust::trusted_forge_plugin;
     use crate::mcp_server::registry::AppContext;
@@ -652,10 +661,7 @@ mod tests {
             .path()
     }
 
-    pub(super) async fn seed_parent(
-        repo: &SqlxRepo,
-        non_default_lifecycle_metadata: bool,
-    ) -> String {
+    pub(super) async fn seed_parent(repo: &SqlxRepo, pinned: bool) -> String {
         let write_db = (repo.db()).clone();
         write_db
             .writer()
@@ -693,9 +699,12 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                    if non_default_lifecycle_metadata {
-                        // Only this acceptance needs negative inheritance sentinels; other tests keep an open parent.
-                        sqlx::query("UPDATE tracks SET pinned_at=102,closed_at=103 WHERE id=?1")
+                    crate::area_admin::set_tx(&mut tx, &track, true)
+                        .await
+                        .unwrap();
+                    if pinned {
+                        // Creation requires an open parent; only pinning is an inheritance sentinel.
+                        sqlx::query("UPDATE tracks SET pinned_at=102 WHERE id=?1")
                             .bind(track.id.as_str())
                             .execute(&mut **tx)
                             .await
@@ -995,6 +1004,7 @@ mod tests {
                                 )
                                 .await
                                 .unwrap();
+                                crate::area_admin::set_tx(&mut tx, &parent, true).await.unwrap();
                                 tx.commit().await.unwrap();
                                 assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Managed);
                                 // The parent was minted through the DB writer directly, so materialize it here the way the route would.
@@ -1129,6 +1139,7 @@ mod tests {
                                 )
                                 .await
                                 .unwrap();
+                                crate::area_admin::set_tx(&mut tx, &parent, true).await.unwrap();
                                 tx.commit().await.unwrap();
                                 workspace_runtime::selection::materialize_workspace(
                                     &parent.workspace,
@@ -1309,6 +1320,7 @@ mod tests {
                                 )
                                 .await
                                 .unwrap();
+                                crate::area_admin::set_tx(&mut tx, &parent, true).await.unwrap();
                                 tx.commit().await.unwrap();
                                 assert_eq!(parent.workspace.kind, TrackWorkspaceKind::Attached);
 
@@ -1517,7 +1529,7 @@ mod tests {
             );
             assert_eq!(inherited.3, None, "template_input must not inherit");
             assert_eq!(inherited.4, None, "purpose must not inherit");
-            assert_eq!(inherited.5, None, "closed_at must not inherit");
+            assert_eq!(inherited.5, None, "new child must be open");
             assert_eq!(inherited.6, None, "pinned_at must not inherit");
 
             // Child of Only(X) must not become All; pin the gate reading plugin_scope.
@@ -1545,80 +1557,67 @@ mod tests {
     })).await.expect("independent write operation")
     }
 
+    /// A historical nested tree is storage-valid without Admin on descendants.
+    /// Exercise the real bounded ancestor reader; current creation rejects nested
+    /// delegation at the live Admin fence, before reaching its separate depth guard.
     #[tokio::test]
-    async fn acceptance_6_real_adapter_writes_direct_parent_and_enforces_depth_three() {
+    async fn acceptance_6_child_track_historical_tree_retains_bounded_depth_lookup() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let root = seed_parent(&repo, false).await;
-        let mut direct_parent = root.clone();
-        let write_db = (repo.db()).clone();
+        let area = repo.track_get(&root).await.unwrap().unwrap().area_id;
+        let write_db = repo.db().clone();
         write_db
             .writer()
-            .with_writer(|write_session| {
+            .with_writer(|session| {
                 Box::pin(async move {
-                    for level in 1..=3 {
-                        let task = seed_task(&repo, &direct_parent, false).await;
-                        let input = serde_json::to_value(payload(&task)).unwrap();
-                        let adapter = ChildTrackAdapter::new(
-                            std::sync::Arc::new(
-                                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
-                                    .unwrap(),
-                            ),
-                            repo.card_role_cache().clone(),
-                            repo.track_area_cache().clone(),
-                            test_workspace_root(),
-                            std::path::PathBuf::from("/unused-objective-checkouts"),
-                            workspace_runtime::sweep::TeardownTargets::default(),
-                        );
-                        let mut tx = write_session.begin_immediate().await.unwrap();
-                        let output = adapter
-                            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+                    let mut parent = root.clone();
+                    let mut tx = session.begin_immediate().await.unwrap();
+                    for depth in 1..=MAX_TRACK_TREE_DEPTH * 3 {
+                        let historical = track_create_tx(
+                            &mut tx,
+                            NewTrack {
+                                area_id: area.clone(),
+                                title: format!("historical depth {depth}"),
+                                sort: None,
+                                cwd: test_parent_path().to_str().unwrap().into(),
+                                template_id: None,
+                                plugin_scope: None,
+                                template_input: None,
+                                attach_folder: false,
+                                theme: RequestTheme::default_dark(),
+                            },
+                            None,
+                            &TrackWorkspacePlan::AttachedFromCwd,
+                            None,
+                            repo.track_area_cache(),
+                        )
+                        .await
+                        .unwrap();
+                        // Historical edge only: this is deliberately not a current create operation.
+                        sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                            .bind(&parent)
+                            .bind(historical.id.as_str())
+                            .execute(&mut **tx)
                             .await
                             .unwrap();
-                        tx.commit().await.unwrap();
-                        let child = output.data["child_track_id"].as_str().unwrap().to_string();
-                        let stored_parent: String =
-                            sqlx::query_scalar("SELECT parent_track_id FROM tracks WHERE id=?1")
-                                .bind(&child)
-                                .fetch_one(repo.pool())
-                                .await
-                                .unwrap();
-                        assert_eq!(
-                            stored_parent, direct_parent,
-                            "level {level} must point to its direct parent"
-                        );
-                        direct_parent = child;
+                        parent = historical.id.to_string();
+                        if depth <= MAX_TRACK_TREE_DEPTH {
+                            assert_eq!(
+                                root_and_depth(&mut tx, &parent).await.unwrap(),
+                                (root.clone(), depth)
+                            );
+                        }
                     }
-                    let cross_area_edges: i64 = sqlx::query_scalar(
-                        "SELECT count(*) FROM tracks child JOIN tracks parent \
-             ON parent.id=child.parent_track_id WHERE child.area_id<>parent.area_id",
-                    )
-                    .fetch_one(repo.pool())
-                    .await
-                    .unwrap();
-                    assert_eq!(cross_area_edges, 0, "real adapter must inherit parent area");
-                    let task = seed_task(&repo, &direct_parent, false).await;
-                    let input = serde_json::to_value(payload(&task)).unwrap();
-                    let adapter = ChildTrackAdapter::new(
-                        std::sync::Arc::new(
-                            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
-                                .unwrap(),
-                        ),
-                        repo.card_role_cache().clone(),
-                        repo.track_area_cache().clone(),
-                        test_workspace_root(),
-                        std::path::PathBuf::from("/unused-objective-checkouts"),
-                        workspace_runtime::sweep::TeardownTargets::default(),
-                    );
-                    let mut tx = write_session.begin_immediate().await.unwrap();
-                    let error = adapter
-                        .prepare_tx(&mut tx, &input, &operation(input.clone()))
-                        .await
-                        .unwrap_err();
-                    assert!(error.to_string().contains("sub-track-depth-exceeded"));
+                    // The bounded reader may look past the admission depth, but must
+                    // terminate on an overdeep historical chain instead of walking forever.
+                    let error = root_and_depth(&mut tx, &parent).await.unwrap_err();
+                    assert!(matches!(error, CalmError::Conflict(ref code)
+                        if code == "sub-track-depth-exceeded"));
+                    tx.rollback().await.unwrap();
                 })
             })
             .await
-            .expect("independent write operation")
+            .expect("independent write operation");
     }
 
     #[tokio::test]
@@ -1719,7 +1718,8 @@ mod tests {
                     (repo.db())
                         .writer()
                         .execute(
-                            sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
+                            // A synthetic cycle must not carry the root-only Admin grant.
+                            sqlx::query("UPDATE tracks SET admin_granted_at=NULL,parent_track_id=?1 WHERE id=?2")
                                 .bind(&b)
                                 .bind(&a),
                         )
@@ -1947,7 +1947,9 @@ mod tests {
         let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
         let first_child_tasks = project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
         claim_for_child(&repo, &first_child_tasks[0]).await;
-        let second_child = create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
+        // Only the Admin root can allocate new children; the first child's in-flight work
+        // still exercises whole-tree reprojection when this second sibling shrinks its share.
+        let second_child = create_child_from_task(&repo, &root, &root_tasks[1]).await;
         project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
         let mut conn = repo.pool().acquire().await.unwrap();
         let total_eight = track_tree_planner_inventory(&mut conn, &root)

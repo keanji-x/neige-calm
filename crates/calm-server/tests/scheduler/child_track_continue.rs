@@ -2,8 +2,8 @@
 use super::*;
 
 #[tokio::test]
-async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attempt() {
-    let (boot, _repository) = child_track_config::boot_git_parent().await;
+async fn subtrack_admin_revoked_parent_can_continue_child_and_rejects_stale_attempt() {
+    let (boot, _repository) = child_track_config::boot_git_admin_parent().await;
     let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter(&boot)]);
     let mut first = plan_task(&boot.track_id, "first-round", TaskKind::Codex, &[]);
     first.spawn = "sub-track".into();
@@ -28,6 +28,7 @@ async fn child_track_continue_reuses_child_and_resumes_claim_rejects_stale_attem
         other => panic!("{other:?}"),
     };
     let child = created["child_track_id"].as_str().unwrap().to_owned();
+    crate::support::child_track::set_admin(boot.repo.as_ref(), boot.track_id.as_str(), false).await;
     let planner = created["planner_card_id"].as_str().unwrap().to_owned();
     let db = boot.repo.sqlite_db().unwrap();
     let worker = created["canonical_worker"].as_str().unwrap();
