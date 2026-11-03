@@ -191,6 +191,17 @@ async fn gate_log_path_returns_403_over_http() {
     );
 }
 
+#[tokio::test]
+async fn planner_run_summary_returns_403_over_http() {
+    let boot = boot().await;
+    let app = app(&boot);
+    let cookie = login(&app).await;
+    let path = format!("runs/{}:t/summary.json", boot.track_id.as_str());
+    let (status, body) =
+        get_json(&app, cat_uri(boot.track_id.as_str(), &path), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
 /// The tool's `neige_track_ls` rows with their RFC 3339 times read back as REST's unix ms, and a
 /// `null` `updated_at` dropped as REST omits it.
 fn rest_rows(entries: &Value) -> Value {

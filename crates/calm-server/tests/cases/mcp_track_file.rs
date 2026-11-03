@@ -2664,6 +2664,21 @@ async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
     assert_eq!(summary["gate"]["passed"], false);
     assert_eq!(summary["gate"]["failing_step"], "tests");
     assert_eq!(summary["gate"]["log"], format!("runs/{id}/gates/2.log"));
+    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+    std::fs::write(
+        boot.gate_logs_dir.join(format!("{id}-g2.log")),
+        "gate evidence",
+    )
+    .unwrap();
+    let log = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({"path": summary["gate"]["log"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(log["content"], "gate evidence");
     assert!(summary["planner_verdict"].is_null());
     assert!(!out.to_string().contains("expand for full output"));
 }

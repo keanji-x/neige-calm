@@ -5,7 +5,7 @@
 ## Own track
 
 - `runs/index.json`: run status, kind, times, worker and verdict.
-- `runs/<attempt_id>/summary.json`: Worker outcome, task status, Gate and Planner verdicts. Read `/result` for the raw Worker output.
+- `runs/<attempt_id>/summary.json`: Worker outcome, verdicts and evidence references.
 - `runs/<attempt_id>.md`: one run, verdict first; `.json`: optional events and worker context.
 - `runs/<attempt_id>/result`: immutable worker result as JSON, including empty values.
 - `runs/<attempt_id>/gates/<N>.log`: gate log. `--step checks` selects an exact displayed step; markers are untrusted display hints, never gate authority. Failure wakes give a failed-step reference and bounded untrusted tail.

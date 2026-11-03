@@ -38,6 +38,7 @@ pub struct TrackFsView<'a> {
     /// The gate-logs dir behind `runs/<attempt_id>/gates/<N>.log`. `None` (a surface without a
     /// card identity) keeps the path forbidden; when wired, any task of the bound track is readable.
     gate_log_access: Option<std::path::PathBuf>,
+    planner_run_summary: bool,
 }
 
 impl<'a> TrackFsView<'a> {
@@ -46,11 +47,18 @@ impl<'a> TrackFsView<'a> {
             repo,
             write,
             gate_log_access: None,
+            planner_run_summary: false,
         }
     }
 
     pub fn with_gate_log_access(mut self, gate_logs_dir: std::path::PathBuf) -> Self {
         self.gate_log_access = Some(gate_logs_dir);
+        self
+    }
+
+    /// Grant only after authenticating a Planner for the bound track.
+    pub fn with_planner_run_summary(mut self) -> Self {
+        self.planner_run_summary = true;
         self
     }
 
@@ -219,12 +227,19 @@ impl<'a> TrackFsView<'a> {
                 if parts.len() == 3 && parts[2] == "result" {
                     return self.run_result(track, parts[1]).await;
                 }
+                if let [_, attempt_id, "summary.json"] = parts.as_slice() {
+                    if !self.planner_run_summary {
+                        return Err(TrackFsError::Forbidden(
+                            "run summary requires a Planner".into(),
+                        ));
+                    }
+                    let runs = self.runs_for_track(track).await?;
+                    let run = run_by_key(&runs, attempt_id)?;
+                    return self.run_summary(track, run).await;
+                }
                 let runs = self.runs_for_track(track).await?;
                 let run_path = path.trim_start_matches("runs/");
-                if let [_, attempt_id, "summary.json"] = parts.as_slice() {
-                    let run = run_by_key(&runs, attempt_id)?;
-                    self.run_summary(track, run).await
-                } else if let Some(key) = run_path.strip_suffix(".md") {
+                if let Some(key) = run_path.strip_suffix(".md") {
                     let run = run_by_key(&runs, key)?;
                     Ok(content_markdown(run_markdown(run)))
                 } else if let Some(key) = run_path.strip_suffix(".json") {
@@ -357,17 +372,12 @@ impl<'a> TrackFsView<'a> {
         track: &Track,
         run: &RunProjection,
     ) -> Result<TrackFsContent, TrackFsError> {
-        let task = if self.gate_log_access.is_some() {
-            self.repo
-                .task_get(&run.attempt_id)
-                .await
-                .map_err(|error| {
-                    TrackFsError::Internal(format!("track_file: task lookup: {error}"))
-                })?
-                .filter(|task| task.track_id == track.id.as_str())
-        } else {
-            None
-        };
+        let task = self
+            .repo
+            .task_get(&run.attempt_id)
+            .await
+            .map_err(|error| TrackFsError::Internal(format!("track_file: task lookup: {error}")))?
+            .filter(|task| task.track_id == track.id.as_str());
         let gate = task
             .as_ref()
             .and_then(|task| task.gate_result_json.as_deref())
@@ -377,7 +387,13 @@ impl<'a> TrackFsView<'a> {
         let gate = gate.map(|gate| {
             let log = gate["attempt"]
                 .as_i64()
+                .filter(|_| self.gate_log_access.is_some())
                 .and_then(|attempt| task_gate_log_path(&run.attempt_id, attempt).ok());
+            let diagnostic = if gate["passed"] == false && gate["failing_step"].is_null() {
+                preview(gate["log_tail"].as_str())
+            } else {
+                None
+            };
             json!({
                 "passed": gate["passed"],
                 "status_detail": preview(gate["status_detail"].as_str()),
@@ -385,6 +401,7 @@ impl<'a> TrackFsView<'a> {
                 "exit_code": gate["exit_code"],
                 "attempt": gate["attempt"],
                 "log": log,
+                "diagnostic": diagnostic,
                 "target_kind": gate["target"]["kind"],
                 "candidate_id": gate["target"]["candidate_id"],
                 "commit_sha": gate["target"]["commit_sha"],
