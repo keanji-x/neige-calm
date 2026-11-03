@@ -11,6 +11,7 @@ use crate::{
     state::DaemonClient,
     terminal_renderer::TerminalRendererRegistry,
 };
+use std::time::Duration;
 
 struct Harness {
     db: Arc<SqlxRepo>,
@@ -557,3 +558,5 @@ mod disposal;
 mod preparation;
 
 mod handoff;
+
+mod observation;
