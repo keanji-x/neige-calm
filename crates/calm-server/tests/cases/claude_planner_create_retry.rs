@@ -44,6 +44,22 @@ fn create_body(area_id: &str, first_message: Option<&str>) -> Value {
 }
 
 impl Stack {
+    /// Allocate the original failed start through its released owner.
+    async fn released_create(&self, key: &str, body: Value) -> (StatusCode, Value) {
+        use axum::response::IntoResponse;
+        use http_body_util::BodyExt;
+
+        match crate::support::planner::historical_track(&self.state, body, Some(key)).await {
+            Ok(track) => (StatusCode::CREATED, track),
+            Err(error) => {
+                let response = error.into_response();
+                let status = response.status();
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                (status, serde_json::from_slice(&bytes).unwrap())
+            }
+        }
+    }
+
     /// `POST /api/tracks` under `key`, as the person.
     async fn keyed_create(&self, key: &str, body: Value) -> (StatusCode, Value) {
         use axum::body::Body;
@@ -155,7 +171,7 @@ async fn a_keyed_retry_after_the_creates_own_claude_spawn_failure_starts_and_del
             &area,
             OPERATION_DEDUP_MISSED,
             &create_operation_key(&area, "claude-keyed"),
-            stack.keyed_create("claude-keyed", create_body(&area, Some(SENTENCE))),
+            stack.released_create("claude-keyed", create_body(&area, Some(SENTENCE))),
         )
         .await;
     assert!(first.is_server_error(), "premise: the spawn failed: {body}");
@@ -189,7 +205,7 @@ async fn a_message_less_retry_after_the_creates_own_claude_spawn_failure_starts_
             &area,
             TRACK_CREATE_BEFORE_PLANNER_START,
             &area,
-            stack.keyed_create("claude-message-less", create_body(&area, None)),
+            stack.released_create("claude-message-less", create_body(&area, None)),
         )
         .await;
     assert_eq!(

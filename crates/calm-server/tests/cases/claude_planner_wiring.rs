@@ -198,10 +198,10 @@ async fn a_claude_track_runs_through_the_real_routes() {
     assert!(root.instructions_files().is_empty());
 }
 
-/// Without `--claude-planner-config`: a Claude create is refused naming the flag, and a recovered
-/// Claude harness keeps its queue and tells the reader why nothing is sent; nothing is spawned.
+/// Without `--claude-planner-config`, an empty Claude Track can be allocated. A recovered
+/// historical Claude harness keeps its queue and reports why it cannot send.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn without_the_flag_create_is_refused_and_a_recovered_harness_refuses() {
+async fn without_the_flag_empty_create_succeeds_and_a_recovered_harness_refuses() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack.create_claude_track().await;
@@ -223,18 +223,14 @@ async fn without_the_flag_create_is_refused_and_a_recovered_harness_refuses() {
             Some(json!({
                 "planner_provider": "claude",
                 "area_id": area,
-                "title": "refused",
+                "title": "Dormant Claude",
                 "template_id": "small-change",
                 "attach_folder": true,
                 "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
             })),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(
-        body.to_string().contains("--claude-planner-config"),
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let harness = stack.harness(&runtime.id);
     let (status, _) = stack.post_input(&card_id, "hello?").await;

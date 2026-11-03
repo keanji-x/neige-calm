@@ -241,7 +241,7 @@ async fn g1_historical_empty_receipts_replay_original_ids_and_format() {
 }
 
 #[tokio::test]
-async fn g1_excluded_shapes_do_not_gain_canonical_storage() {
+async fn g1_invalid_creation_shapes_leave_no_tracks() {
     let b = boot_without_daemon().await;
     for extra in [
         json!({"isolation":"none"}),
@@ -258,31 +258,18 @@ async fn g1_excluded_shapes_do_not_gain_canonical_storage() {
         assert!(status.is_client_error(), "{extra}: {status} {error}");
     }
     assert_eq!(b.track_count().await, 0);
-    let mut named = body(&b, "codex", true);
-    named["template_id"] = json!("investigation");
-    let (status, track) = b.post_create(None, named).await;
-    assert_eq!(status, StatusCode::CREATED, "{track}");
-    assert_eq!(b.count("SELECT COUNT(*) FROM worker_sessions").await, 0);
-    // Admin attachment without cwd remains excluded by the creation owner;
-    // a managed empty Claude admin track now supports canonical storage.
-    let mut admin = body(&b, "claude", true);
-    admin["admin"] = json!(true);
-    let (status, error) = b.post_create(Some("g1-admin"), admin).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
-    assert_eq!(error["code"], "bad_request");
-    assert_eq!(b.track_count().await, 1);
-    assert_eq!(
-        b.count("SELECT COUNT(*) FROM worker_sessions").await,
-        0,
-        "excluded admin attachment retains its historical no-daemon path"
-    );
 }
 
 #[tokio::test]
 async fn g1_local_admin_managed_empty_tracks_use_canonical_storage() {
-    for provider in ["claude", "grok"] {
+    for (provider, attach) in [
+        ("claude", false),
+        ("claude", true),
+        ("grok", false),
+        ("grok", true),
+    ] {
         let b = boot_without_daemon().await;
-        let mut request = body(&b, provider, false);
+        let mut request = body(&b, provider, attach);
         request["admin"] = json!(true);
         let (status, track) = b.post_create(Some("g1-admin-managed"), request).await;
         assert_eq!(status, StatusCode::CREATED, "{provider}: {track}");

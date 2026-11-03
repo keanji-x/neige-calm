@@ -883,6 +883,39 @@ pub(crate) async fn create_track(
                 .into_response());
         }
     };
+    create_historical_track(s, source, actor, headers, codex, historical).await
+}
+
+#[cfg(test)]
+pub(super) async fn create_historical_track_with_source_for_test(
+    state: &AppState,
+    source: crate::auth::HumanInputSource,
+    headers: HeaderMap,
+    request: CreateTrackRequest,
+) -> Result<Response> {
+    use axum::extract::FromRef;
+    create_historical_track(
+        RouteState::from_ref(state),
+        Some(source),
+        Actor::server_send(),
+        headers,
+        CodexShellState::from_ref(state),
+        create::KeyedPlan::Mint(request),
+    )
+    .await
+}
+
+async fn create_historical_track(
+    s: RouteState,
+    source: Option<crate::auth::HumanInputSource>,
+    actor: Actor,
+    headers: HeaderMap,
+    codex: CodexShellState,
+    historical: create::KeyedPlan<
+        CreateTrackRequest,
+        (crate::db::sqlite::TrackCreateBinding, CreateTrackRequest),
+    >,
+) -> Result<Response> {
     let request = match &historical {
         create::KeyedPlan::Mint(request) | create::KeyedPlan::Resume((_, request)) => request,
     };

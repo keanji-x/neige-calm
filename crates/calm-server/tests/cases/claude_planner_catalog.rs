@@ -207,9 +207,21 @@ async fn the_boot_check_fetches_the_list() {
     await_boot_check(&root, &stack).await;
     assert_eq!(count(&root, "init-calls"), 1);
     assert_eq!(claude_models(&stack).await["source"], "live");
-    let (_track, _card) = stack
-        .create_claude_track_with(json!({"model": "claude-fable-5-1[1m]"}))
+    let (status, body) = stack
+        .send(
+            "POST",
+            "/api/tracks",
+            Some(json!({
+                "area_id": stack.area().await,
+                "planner_provider": "claude",
+                "template_id": "small-change",
+                "attach_folder": true,
+                "model": "claude-fable-5-1[1m]",
+                "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+            })),
+        )
         .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
         count(&root, "init-calls"),
         1,
