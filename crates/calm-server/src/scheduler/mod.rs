@@ -791,6 +791,8 @@ impl Scheduler {
         dirty: Arc<AtomicBool>,
         guard: tokio::sync::OwnedMutexGuard<()>,
     ) {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("scheduler-before-admission", track_id.as_str()).await;
         let mut drives = Vec::new();
         while dirty.swap(false, Ordering::SeqCst) {
             match self.schedule_pass(&track_id).await {

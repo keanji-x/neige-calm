@@ -85,10 +85,12 @@ async fn blocked_operation_does_not_hold_admission_or_track_lock() {
 }
 
 #[tokio::test]
-async fn sweep_pokes_coalesce_while_admission_is_exhausted() {
+async fn repeated_pokes_coalesce_before_admission() {
     let boot = Arc::new(boot().await);
+    let task = plan_task(&boot.track_id, "coalesced-start", TaskKind::Codex, &[]);
+    seed_projected_task(&boot, task).await;
     let scheduling_boot = Arc::clone(&boot);
-    // Fixture observers stay on the parent runtime; count scheduling work alone.
+    // Seed/fixture actors stay on the parent. No database work runs in the measured window.
     tokio::task::spawn_blocking(move || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -96,11 +98,9 @@ async fn sweep_pokes_coalesce_while_admission_is_exhausted() {
             .expect("isolated scheduling runtime")
             .block_on(async move {
                 let boot = scheduling_boot;
-                let task = plan_task(&boot.track_id, "coalesced-start", TaskKind::Codex, &[]);
-                seed_projected_task(&boot, task).await;
                 let capacity = Arc::new(tokio::sync::Semaphore::new(1));
                 let permit = capacity.clone().acquire_owned().await.unwrap();
-                let (runtime, scheduler) = build_scheduler_with_semaphore(
+                let (_runtime, scheduler) = build_scheduler_with_semaphore(
                     &boot,
                     vec![Arc::new(CardSpawnAdapter {
                         kind: "codex-worker",
@@ -108,27 +108,30 @@ async fn sweep_pokes_coalesce_while_admission_is_exhausted() {
                     })],
                     capacity,
                 );
-                let drive = runtime.lock_for_track_delete_for_test().await;
+                let pause = calm_server::test_seams::PausePoint::default();
+                calm_server::test_seams::install_pause_for_test(
+                    "scheduler-before-admission",
+                    boot.track_id.as_str(),
+                    pause.clone(),
+                );
+                scheduler.poke(boot.track_id.clone());
+                tokio::time::timeout(Duration::from_secs(5), pause.entered.notified())
+                    .await
+                    .expect("the real scheduling owner holds admission");
                 let metrics = tokio::runtime::Handle::current().metrics();
-                scheduler.sweep_all().await;
-                tokio::task::yield_now().await;
-                // Compare equal traffic cohorts: fixed startup/SQLite work is not a leak.
-                let mut peaks = [0_usize; 2];
-                for peak in &mut peaks {
-                    for _ in 0..32 {
-                        scheduler.sweep_all().await;
-                        tokio::task::yield_now().await;
-                        *peak = (*peak).max(metrics.num_alive_tasks());
-                    }
+                let initial = metrics.num_alive_tasks();
+                let mut peak = initial;
+                for _ in 0..64 {
+                    scheduler.poke(boot.track_id.clone());
+                    tokio::task::yield_now().await;
+                    peak = peak.max(metrics.num_alive_tasks());
                 }
-                let [first_peak, second_peak] = peaks;
-                // Release before asserting so a red run drains its waiting work too.
-                drop(drive);
+                pause.release.notify_one();
                 drop(permit);
                 wait_status(&boot, "coalesced-start", TaskStatus::Running).await;
                 assert!(
-                    second_peak <= first_peak + 1,
-                    "repeated recovery must keep background work bounded: first={first_peak}, second={second_peak}"
+                    peak <= initial + 1,
+                    "repeated triggers must keep scheduling work bounded: initial={initial}, peak={peak}"
                 );
                 assert_eq!(operation_count(&boot, "codex-worker").await, 1);
             });
