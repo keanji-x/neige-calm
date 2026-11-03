@@ -1108,7 +1108,7 @@ fn gate_result_maps_to_hard_fire_observation_with_plan_key() {
     let text = obs.to_turn_text();
     assert!(text.contains("Task impl-parser gate FAILED at step test (exit 101)"));
     assert!(text.contains("runs/track-1:impl-parser/gates/2.log"));
-    assert!(text.contains("runs/track-1:impl-parser.md"));
+    assert!(text.contains("runs/track-1:impl-parser/summary.json"));
 }
 
 /// #1727 S4 slice 4: a `task.gate_result` whose `target` is a refused, discarded or no-candidate
