@@ -2609,6 +2609,11 @@ async fn seed_gated_task_in(
 
 #[tokio::test]
 async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
+    check_run_summary_gate_failure(Some("tests")).await;
+    check_run_summary_gate_failure(None).await;
+}
+
+async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
     let boot = boot().await;
     let id = seed_gated_task(&boot, "gated-summary", 2).await;
     request_codex(&boot, &id).await;
@@ -2618,8 +2623,8 @@ async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             let result = json!({
-                "passed": false, "failing_step": "tests", "exit_code": 1,
-                "attempt": 2, "log_tail": "expand for full output",
+                "passed": false, "failing_step": failing_step, "exit_code": 1,
+                "attempt": 2, "log_tail": "gate failed before evidence was available ".repeat(40),
                 "status_detail": "test suite failed",
             });
             assert_eq!(
@@ -2662,25 +2667,41 @@ async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
     assert_eq!(summary["worker"]["status"], "completed");
     assert_eq!(summary["task"]["status"], "failed");
     assert_eq!(summary["gate"]["passed"], false);
-    assert_eq!(summary["gate"]["failing_step"], "tests");
+    assert_eq!(summary["gate"]["failing_step"], json!(failing_step));
     assert_eq!(summary["gate"]["log"], format!("runs/{id}/gates/2.log"));
-    std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
-    std::fs::write(
-        boot.gate_logs_dir.join(format!("{id}-g2.log")),
-        "gate evidence",
-    )
-    .unwrap();
-    let log = call_tool(
+    if failing_step.is_some() {
+        std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+        std::fs::write(
+            boot.gate_logs_dir.join(format!("{id}-g2.log")),
+            "gate evidence",
+        )
+        .unwrap();
+        let log = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path": summary["gate"]["log"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(log["content"], "gate evidence");
+        assert!(summary["gate"]["diagnostic"].is_null());
+    } else {
+        let diagnostic = summary["gate"]["diagnostic"].as_str().unwrap();
+        assert!(diagnostic.starts_with("gate failed before evidence was available"));
+        assert!(diagnostic.ends_with('…'));
+        assert_eq!(diagnostic.chars().count(), 513);
+    }
+    let result = call_tool(
         &boot,
         TOOL_TRACK_CAT,
         planner_identity(&boot),
-        json!({"path": summary["gate"]["log"]}),
+        json!({"path": summary["worker"]["result_ref"]}),
     )
     .await
     .unwrap();
-    assert_eq!(log["content"], "gate evidence");
+    assert_eq!(content_json(&result)["summary"], "implementation finished");
     assert!(summary["planner_verdict"].is_null());
-    assert!(!out.to_string().contains("expand for full output"));
 }
 
 #[tokio::test]
