@@ -61,7 +61,6 @@ pub use repo_sqlite::complete_parked_for_test;
 pub(crate) use repo_sqlite::{TxCommittedAdvance, advance_to_tx_committed_tx};
 pub(crate) use repo_sqlite::{
     checkpoint_app_server_interact_tx, complete_parked_tx, require_live_claim_tx,
-    require_original_operation_tx,
 };
 use repo_sqlite::{fetch_claimed_parked, operation_from_row};
 pub use tx_only::TxOnlyAdapter;

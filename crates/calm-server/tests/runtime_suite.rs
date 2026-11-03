@@ -1,8 +1,6 @@
 #![recursion_limit = "256"]
 // Preserve each former target's helper-local test identities in the inventory.
 #![allow(clippy::duplicate_mod)]
-// The combined production async paths exceed rustc's default layout query depth.
-#![recursion_limit = "256"]
 
 // Each module retains its former test-target namespace and helper tests.
 use planner_card_suite::{common, support};
