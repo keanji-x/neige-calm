@@ -67,6 +67,8 @@ mod acp_cleanup_migration_tests;
 mod acp_submission_tests;
 #[cfg(test)]
 mod session_conversation_tests;
+#[cfg(test)]
+mod session_failure_epoch_tests;
 mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
@@ -87,6 +89,7 @@ mod task_attempt;
 mod task_attempt_migration_tests;
 #[cfg(test)]
 mod task_attempt_tests;
+pub mod task_child_failure;
 mod task_liveness;
 pub mod task_progress;
 mod task_projection;

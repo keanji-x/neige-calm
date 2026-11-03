@@ -25,10 +25,20 @@ impl PlannerBinding {
     /// The row's declared contract must agree with the card's binding. Current
     /// card/track identity and active ownership are checked by the caller.
     pub fn matches_session_contract(&self, session: &calm_types::worker::WorkerSession) -> bool {
+        self.matches_session_contract_parts(session.mode, session.provider, session.contract)
+    }
+
+    /// Compare only contract facts; observational consumers need not decode opaque snapshots.
+    pub(crate) fn matches_session_contract_parts(
+        &self,
+        mode: calm_types::worker::SessionMode,
+        provider: calm_types::worker::WorkerProviderKind,
+        contract: calm_types::worker::WorkerContract,
+    ) -> bool {
         use calm_types::worker::{SessionMode, WorkerProviderKind};
-        session.mode == SessionMode::Resumable
-            && session.contract == self.contract()
-            && WorkerProviderKind::from(&self.provider) == session.provider
+        mode == SessionMode::Resumable
+            && contract == self.contract()
+            && WorkerProviderKind::from(&self.provider) == provider
     }
 
     pub fn conversation_shape(

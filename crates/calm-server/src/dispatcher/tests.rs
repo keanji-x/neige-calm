@@ -342,6 +342,19 @@ fn dispatcher_filter_matches_push_kinds() {
         cwd: None,
         agent_message: None,
     })));
+    assert!(filter.matches(&env(Event::WorkerSessionStatusChanged {
+        worker_session_id: "child-planner".into(),
+        card_id: "planner-card".into(),
+        old_status: calm_types::worker::WorkerSessionState::Idle,
+        new_status: calm_types::worker::WorkerSessionState::Failed,
+    })));
+    assert!(filter.matches(&env(Event::HarnessPhaseChanged {
+        worker_session_id: "child-planner".into(),
+        card_id: "planner-card".into(),
+        track_id: track.clone(),
+        old_phase: crate::harness::HarnessPhaseTag::Idle,
+        new_phase: crate::harness::HarnessPhaseTag::Wedged,
+    })));
     assert!(filter.matches(&env(Event::TaskCompleted {
         notification: calm_types::event::PlannerNotification::Notify,
         idempotency_key: "k".into(),
@@ -535,7 +548,7 @@ fn dispatcher_filter_matches_push_kinds() {
 /// Subscription == push-capable kinds ∪ scheduler kinds, disjoint; every subscribed kind lands
 /// in a real `handle_envelope` arm and every warn-arm kind is unsubscribed.
 #[tokio::test]
-async fn dispatcher_subscription_is_push_kinds_plus_scheduler_kinds() {
+async fn dispatcher_subscription_invariant_is_push_kinds_plus_scheduler_kinds() {
     use std::collections::{BTreeMap, BTreeSet};
     let table = planner_push_wiring_table().await;
     let all = all_event_kind_tags();

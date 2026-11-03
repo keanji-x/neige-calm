@@ -1,6 +1,10 @@
-//! Child-bootstrap policy over the shared durable obligation primitive.
+//! Child reporting policies over the shared durable obligation primitive.
 use super::*;
 use crate::db::sqlite::progress_obligation::progress_obligations_due_tx;
+use crate::db::sqlite::task_child_failure::{
+    CHILD_PLANNER_FAILURE_PURPOSE, task_claim_child_failure_notices_tx,
+    task_reconcile_child_failure_obligations_tx,
+};
 use crate::db::sqlite::task_progress::{
     CHILD_BOOTSTRAP_PURPOSE, task_claim_child_bootstrap_notice_tx,
     task_reconcile_child_bootstrap_obligations_tx,
@@ -16,6 +20,7 @@ impl Scheduler {
         crate::db::write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 task_reconcile_child_bootstrap_obligations_tx(tx).await?;
+                task_reconcile_child_failure_obligations_tx(tx).await?;
                 Ok(())
             })
         })
@@ -58,6 +63,33 @@ impl Scheduler {
                             },
                         ));
                     }
+                    for target in task_claim_child_failure_notices_tx(tx, now).await? {
+                        let track = TrackId::from(target.track_id);
+                        events.push((
+                            ActorId::KernelDispatcher,
+                            EventScope::Track {
+                                track: track.clone(),
+                                area: target.area_id.into(),
+                            },
+                            Event::TrackWakeRequested {
+                                track_id: track,
+                                source: "progress-obligation".into(),
+                                key: format!(
+                                    "{}:{}",
+                                    target.execution_id, CHILD_PLANNER_FAILURE_PURPOSE
+                                ),
+                                text: format!(
+                                    include_str!("../../prompts/child-planner-failed.md"),
+                                    observed_at_ms = now,
+                                    task_key = target.task_key,
+                                    attempt_id = target.task_id,
+                                    child_track_id = target.child_track_id,
+                                    worker_session_id = target.worker_session_id,
+                                    failure_epoch = target.failure_epoch,
+                                ),
+                            },
+                        ));
+                    }
                     if events.is_empty() {
                         return Err(race_lost_err());
                     }
@@ -75,11 +107,17 @@ impl Scheduler {
 
     pub(crate) async fn pending_progress_notices(
         &self,
-    ) -> Result<Vec<crate::db::sqlite::task_progress::ChildBootstrapNotice>> {
+    ) -> Result<Vec<crate::db::sqlite::task_progress::ParentProgressNotice>> {
         let db = self
             .repo
             .sqlite_db()
             .ok_or_else(|| CalmError::Internal("progress obligations require SQLite".into()))?;
-        Ok(crate::db::sqlite::task_progress::task_pending_child_bootstrap_notices(&db).await?)
+        let mut notices =
+            crate::db::sqlite::task_progress::task_pending_child_bootstrap_notices(&db).await?;
+        notices.extend(
+            crate::db::sqlite::task_child_failure::task_pending_child_failure_notices(&db).await?,
+        );
+        notices.sort_unstable_by_key(|notice| notice.event_id);
+        Ok(notices)
     }
 }

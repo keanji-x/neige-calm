@@ -64,14 +64,14 @@ pub async fn task_reconcile_child_bootstrap_obligations_tx(
 /// A committed notice is retried through the existing Planner ingress while its
 /// execution remains in this owner's scope. No new events are minted on retry.
 #[derive(sqlx::FromRow)]
-pub struct ChildBootstrapNotice {
+pub struct ParentProgressNotice {
     pub track_id: String,
     pub event_id: i64,
 }
 
 pub async fn task_pending_child_bootstrap_notices(
     db: &super::SqliteDb,
-) -> Result<Vec<ChildBootstrapNotice>> {
+) -> Result<Vec<ParentProgressNotice>> {
     Ok(sqlx::query_as(
         "SELECT t.track_id,e.id AS event_id FROM progress_obligations o \
          JOIN current_tasks t ON t.id=o.execution_id \

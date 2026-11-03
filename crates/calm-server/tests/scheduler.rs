@@ -3,6 +3,8 @@
 
 #[path = "scheduler/c2b.rs"]
 mod c2b;
+#[path = "scheduler/child_failure_notice.rs"]
+mod child_failure_notice;
 #[path = "scheduler/child_track_config.rs"]
 mod child_track_config;
 #[path = "scheduler/child_track_continue.rs"]
