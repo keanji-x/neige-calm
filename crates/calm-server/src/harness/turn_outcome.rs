@@ -10,19 +10,19 @@ pub(crate) enum Confirmation {
     Unconfirmed,
 }
 
-/// Native error messages can echo accepted input or malformed request frames.
-/// Canonical execution stores a fixed diagnostic, not those transport payloads.
+/// Native errors can echo accepted input or malformed request frames.
 pub(crate) fn canonical_diagnostic(turn: &mut Value) {
-    if let Some(object) = turn.as_object_mut()
-        && object.get("error").is_some_and(|error| !error.is_null())
-    {
-        object.insert(
-            "error".into(),
-            serde_json::json!({
-                "message": "The provider ended this execution with an error."
-            }),
-        );
+    if let Some(error) = turn.get_mut("error").filter(|error| !error.is_null()) {
+        *error = safe_diagnostic(None);
     }
+}
+
+pub(crate) fn safe_diagnostic(diagnostic: Option<(&'static str, &'static str)>) -> Value {
+    let (code, message) = diagnostic.unwrap_or((
+        "provider_error",
+        "The provider ended this execution with an error.",
+    ));
+    serde_json::json!({ "code": code, "message": message })
 }
 
 // Keep the full terminal identity and confirmation explicit at this authority boundary.

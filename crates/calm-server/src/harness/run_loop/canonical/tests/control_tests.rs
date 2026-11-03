@@ -655,7 +655,7 @@ async fn canonical_qualified_end_records_closed_facts_without_private_native_ext
         "turn/completed",
         json!({
             "id":turn,"status":"failed",
-            "error":{"message":"canonical scheduler human body"},
+            "error":{"codexErrorInfo":"serverOverloaded","message":"canonical scheduler human body"},
             "privateEcho":"canonical scheduler human body",
             "items":[{"text":"canonical scheduler human body"}]
         }),
@@ -671,10 +671,7 @@ async fn canonical_qualified_end_records_closed_facts_without_private_native_ext
     let value: Value = serde_json::from_str(&outcome).unwrap();
     assert_eq!(value["id"], turn);
     assert_eq!(value["status"], "failed");
-    assert_eq!(
-        value["error"]["message"],
-        "The provider ended this execution with an error."
-    );
+    assert_eq!(value["error"]["code"], "model_overloaded");
     peer.close(None).await.unwrap();
     fx.harness.shutdown().await.unwrap();
 }
