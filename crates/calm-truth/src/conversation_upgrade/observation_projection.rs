@@ -82,7 +82,7 @@ pub(super) fn observation(
                 if discriminator(f, &p, "version")
                     .is_some_and(|tag| !matches!(tag, "legacy" | "knowledge"))
                 {
-                    f.block(&format!("{p}/version"), FactReason::Malformed)?;
+                    f.block(&discriminator_path(f, &p, "version"), FactReason::Malformed)?;
                 }
             }
             "author" => f.check::<EditAuthor>(&p)?,
@@ -168,20 +168,27 @@ pub(super) fn observation(
     });
     Ok(())
 }
-fn discriminator<'a>(f: &FrameView<'a>, path: &str, name: &str) -> Option<&'a str> {
-    f.value_at(path)?.get(name)?.as_str()
+fn discriminator_path(f: &FrameView<'_>, path: &str, name: &str) -> String {
+    format!(
+        "{path}/{}",
+        if f.value_at(path).is_some_and(Value::is_array) {
+            "0"
+        } else {
+            name
+        }
+    )
 }
-// Internally tagged owners accept objects; this does not turn rejected sequences
-// into an invented enum layout. Ordinary public structs below also accept arrays.
+fn discriminator<'a>(f: &FrameView<'a>, path: &str, name: &str) -> Option<&'a str> {
+    f.value_at(&discriminator_path(f, path, name))?.as_str()
+}
+// Public tagged owners accept tag-first sequences as well as objects.
+// Capture their declaration coordinates through the shared structure traversal.
 fn tagged(
     f: &mut FrameView<'_>,
     path: &str,
     tag: &str,
     fields: &str,
 ) -> Result<Vec<(String, String)>, FactCoverageError> {
-    if !f.value_at(path).is_some_and(Value::is_object) {
-        return Ok(Vec::new());
-    }
     let declaration = format!("{tag} {fields}");
     let mut rest = vec![];
     for (name, leaf) in f.structure(path, &declaration, "")? {
@@ -199,7 +206,7 @@ fn unknown_variant(
     tag: &str,
 ) -> Result<&'static str, FactCoverageError> {
     if discriminator(f, p, tag).is_some() {
-        f.block(&format!("{p}/{tag}"), FactReason::Malformed)?;
+        f.block(&discriminator_path(f, p, tag), FactReason::Malformed)?;
     }
     Ok("")
 }
@@ -359,7 +366,11 @@ pub(super) fn released(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
         format!("{root}/pending")
     };
     for slot in f.slots(&pending) {
-        if discriminator(f, &slot, "kind") == Some("system") {
+        // This entry point only traverses object carriers. Sequence carrier
+        // adaptation stays deferred; nested tagged values have their own layout.
+        if f.value_at(&slot).is_some_and(Value::is_object)
+            && discriminator(f, &slot, "kind") == Some("system")
+        {
             observation(f, &format!("{slot}/observation"), true)?;
         }
     }

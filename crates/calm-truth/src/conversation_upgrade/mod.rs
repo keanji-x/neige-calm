@@ -206,3 +206,6 @@ mod root_tests;
 mod observation_matrix_tests;
 #[cfg(test)]
 mod observation_tests;
+
+#[cfg(test)]
+mod obs_tagged_original_tests;
