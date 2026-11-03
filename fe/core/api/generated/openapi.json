@@ -19911,7 +19911,8 @@
       "RetiredWorkspaceSummary": {
         "type": "object",
         "required": [
-          "count"
+          "count",
+          "oldest_retired_at_ms"
         ],
         "properties": {
           "count": {
@@ -20431,7 +20432,10 @@
         "required": [
           "observed_at_ms",
           "kernel_version",
-          "scheduler_boot_sweep_completed"
+          "build_sha",
+          "database_probe_ms",
+          "scheduler_boot_sweep_completed",
+          "retired_workspaces"
         ],
         "properties": {
           "build_sha": {

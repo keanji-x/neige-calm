@@ -85,15 +85,19 @@ pub(crate) async fn report_edits(
 pub(crate) struct SupervisorSnapshot {
     observed_at_ms: i64,
     kernel_version: String,
+    #[schema(required = true)]
     build_sha: Option<String>,
+    #[schema(required = true)]
     database_probe_ms: Option<f64>,
     scheduler_boot_sweep_completed: bool,
+    #[schema(required = true)]
     retired_workspaces: Option<RetiredWorkspaceSummary>,
 }
 
 #[derive(Serialize, ToSchema)]
 struct RetiredWorkspaceSummary {
     count: i64,
+    #[schema(required = true)]
     oldest_retired_at_ms: Option<i64>,
 }
 
