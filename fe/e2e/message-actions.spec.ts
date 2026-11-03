@@ -1,6 +1,6 @@
-import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
+import { historicalConversationPage, historicalConversationRun } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
-import { createArea, createHistoricalTrack, createTrack } from './helpers/seed.js';
+import { createArea, createTrack } from './helpers/seed.js';
 
 test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
@@ -54,7 +54,7 @@ test('copies Markdown and explicitly regenerates while preserving a separate dra
 test('edits the latest message in the composer and replaces it on Send, in one keyed request', async ({ page, request }) => {
   const area = await createArea(request, `Message edit ${Date.now()}`);
   try {
-    const track = await createHistoricalTrack(request, area.id);
+    const track = await createTrack(request, area.id);
     const imageId = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png';
     let removed = false;
     const rewinds: unknown[] = [];
@@ -68,6 +68,11 @@ test('edits the latest message in the composer and replaces it on Send, in one k
       { presentation: 'user', text: 'User says:\nOriginal prompt',
       origin: { observation: 'user_message', event_id: null, queue_entry: null },
       attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
+    await page.route((url) => /^\/api\/cards\/[^/]+\/planner\/run$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json() as Record<string, unknown>;
+      await route.fulfill({ response, json: historicalConversationRun(body, 'idle', true) });
+    });
     await page.route((url) => /^\/api\/cards\/[^/]+\/harness\/items$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
       const response = await route.fetch();
       const cardId = new URL(route.request().url()).pathname.split('/')[3];

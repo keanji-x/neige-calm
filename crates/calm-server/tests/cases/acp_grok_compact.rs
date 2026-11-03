@@ -6,9 +6,7 @@ pub(super) async fn boot_grok(root: &Root) -> Stack {
 }
 pub(super) async fn create_grok(stack: &Stack) -> (String, String) {
     stack
-        .create_claude_track_with(
-            json!({"planner_provider":"grok", "template_id":null, "attach_folder":false}),
-        )
+        .create_canonical_track_with(json!({"planner_provider":"grok"}))
         .await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

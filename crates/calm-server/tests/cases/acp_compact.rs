@@ -1,10 +1,9 @@
 use super::*;
 
 async fn create(stack: &Stack) -> (String, String) {
-    // Clear the legacy stack helper's historical selectors for canonical OpenCode creation.
     stack
-        .create_claude_track_with(json!({
-            "planner_provider":"opencode", "template_id":null, "attach_folder":false
+        .create_canonical_track_with(json!({
+            "planner_provider":"opencode"
         }))
         .await
 }
@@ -522,8 +521,8 @@ async fn c5_area_acp_all_members_revoke_before_generic_stop() {
         .unwrap()
         .area_id;
     let (_, second) = stack
-        .create_claude_track_with(json!({
-            "area_id":area,"planner_provider":"opencode","template_id":null,"attach_folder":false
+        .create_canonical_track_with(json!({
+            "area_id":area,"planner_provider":"opencode"
         }))
         .await;
     std::fs::write(root.path().join("scenario"), "hold").unwrap();

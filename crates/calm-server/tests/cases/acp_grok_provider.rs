@@ -15,7 +15,7 @@ pub(super) async fn boot_grok(root: &Root) -> Stack {
 }
 pub(super) async fn create_grok(stack: &Stack) -> (String, String) {
     stack
-        .create_claude_track_with(json!({"planner_provider":"grok","title":"Managed Grok"}))
+        .create_historical_track_with(json!({"planner_provider":"grok","title":"Managed Grok"}))
         .await
 }
 fn lines(root: &Root, file: &str) -> Vec<Value> {

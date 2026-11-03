@@ -49,10 +49,12 @@ async fn acp_catalog_before_creation_never_prompts_or_grants_mcp() {
     assert_eq!(again, catalog, "repeated reads share the cached discovery");
     assert_eq!(requests(&root, "session/new").len(), 1);
     let (_, card) = stack
-        .create_claude_track_with(json!({"planner_provider":"opencode","model":"fixture/model-b"}))
+        .create_canonical_track_with(
+            json!({"planner_provider":"opencode","model":"fixture/model-b"}),
+        )
         .await;
     assert_eq!(
-        turn(&stack, &card, "selected before creation", 1).await["status"],
+        super::acp_compact::turn(&stack, &card, "selected before creation", 1).await["status"],
         "completed"
     );
     assert_eq!(

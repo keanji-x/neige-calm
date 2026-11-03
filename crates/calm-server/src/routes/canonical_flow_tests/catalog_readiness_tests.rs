@@ -1,4 +1,4 @@
-//! Historical readiness ordering through the authenticated HTTP creation entry.
+//! Canonical readiness independence through the authenticated HTTP creation entry.
 use super::*;
 
 async fn providers(app: &axum::Router, cookie: &str, query: &str) -> Value {
@@ -27,10 +27,9 @@ fn claude_status(body: &Value) -> &str {
         .unwrap()
 }
 
-/// A historical mint uses the readiness sampled before waiting for the area;
-/// a later refresh cannot change that admission decision in either direction.
+/// Dormant creation stays available when readiness changes while the request waits for the area.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn historical_creation_samples_readiness_before_the_area_lock() {
+async fn canonical_creation_does_not_gate_on_readiness_across_the_area_lock() {
     use crate::test_seams::{PausePoint, install_pause_for_test};
     use std::sync::Arc;
     use tokio::sync::Notify;
@@ -88,9 +87,8 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
             release: Arc::new(Notify::new()),
         };
         install_pause_for_test("key-lock-waiting", &area, pause.clone());
-        // Named attachment without cwd retains the historical Managed entry.
         let body = json!({"planner_provider":"claude", "area_id":area,
-            "title":"sampled historical mint", "template_id":"small-change",
+            "title":"dormant named track", "template_id":"small-change",
             "attach_folder":true,
             "theme":{"fg":[216,219,226],"bg":[15,20,24]}});
         let create = status(&app, &cookie, "/api/tracks", "sampled-readiness", body);
@@ -120,25 +118,16 @@ async fn historical_creation_samples_readiness_before_the_area_lock() {
             );
             pause.release.notify_one();
             drop(guard);
-            let status = create.await;
-            assert_eq!(
-                status,
-                if initially_ready {
-                    StatusCode::CREATED
-                } else {
-                    StatusCode::BAD_REQUEST
-                },
-                "readiness admission"
-            );
+            assert_eq!(create.await, StatusCode::CREATED);
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks WHERE area_id=?1")
                 .bind(&area)
                 .fetch_one(fixture.repo.pool())
                 .await
                 .unwrap();
-            assert_eq!(count, i64::from(initially_ready));
+            assert_eq!(count, 1);
         })
         .await
-        .expect("historical creation settles after releasing its area lock");
+        .expect("canonical creation settles after releasing its area lock");
         fixture.shutdown_process(&state).await;
     }
 }

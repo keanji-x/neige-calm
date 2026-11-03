@@ -99,7 +99,7 @@ async fn boot_as_with_creation_mode(
 }
 async fn create(stack: &Stack) -> (String, String) {
     stack
-        .create_claude_track_with(json!({"planner_provider":"opencode","title":"Managed ACP"}))
+        .create_historical_track_with(json!({"planner_provider":"opencode","title":"Managed ACP"}))
         .await
 }
 async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Value {

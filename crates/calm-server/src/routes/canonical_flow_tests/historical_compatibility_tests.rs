@@ -645,7 +645,7 @@ async fn historical_daily_start_rechecks_its_real_source_after_the_start_wait() 
 #[tokio::test]
 async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensation() {
     let fixture = Fixture::new().await;
-    let (state, app, cookie) = fixture.application_with_historical_native(true).await;
+    let (state, app, cookie, auth) = fixture.application_with_auth(true).await;
     let daily_track: String = sqlx::query_scalar(
         "SELECT track_id FROM managed_track_identities WHERE owner='daily-planner'",
     )
@@ -656,22 +656,31 @@ async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensa
     assert!(daily_empty.canonical_inputs.pending.is_empty());
     assert!(daily_empty.canonical_inputs.active.is_none());
     assert!(daily_empty.canonical_inputs.attempts.is_empty());
-    // Named attach-without-cwd remains an explicit historical HTTP shape.
-    // Preserve this source-revocation test through that real ingress after G4.
     let area = post(&app, &cookie, "/api/areas/system", "system", json!({})).await;
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
+    headers.insert("idempotency-key", "revoked-native-start".parse().unwrap());
+    let (status_code, source) = crate::auth::authenticated_source(auth, headers.clone()).await;
+    assert_eq!(status_code, StatusCode::OK);
+    let source = source.unwrap();
     let gate = state
         .shared_codex_appserver
         .lock_thread_start_serial_for_test()
         .await;
-    let request_app = app.clone();
-    let request_cookie = cookie.clone();
-    let request_area = area["id"].clone();
+    let request_state = state.clone();
+    let request = serde_json::from_value(json!({
+        "area_id":area["id"],"planner_provider":"codex","template_id":"small-change","title":"",
+        "attach_folder":true,
+        "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Retain the kernel's original cleanup"
+    })).unwrap();
     let creating = tokio::spawn(async move {
-        status(&request_app, &request_cookie, "/api/tracks", "revoked-native-start", json!({
-            "area_id":request_area,"planner_provider":"codex","template_id":"small-change","title":"",
-            "attach_folder":true,
-            "theme":{"fg":[255,255,255],"bg":[0,0,0]},"first_message":"Retain the kernel's original cleanup"
-        })).await
+        crate::routes::tracks::create_historical_track_with_source_for_test(
+            &request_state,
+            source,
+            headers,
+            request,
+        )
+        .await
     });
     let (track, card): (String, String) = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -700,13 +709,13 @@ async fn historical_source_revocation_blocks_start_but_preserves_kernel_compensa
         StatusCode::OK
     );
     drop(gate);
-    assert_eq!(
+    assert!(matches!(
         tokio::time::timeout(Duration::from_secs(5), creating)
             .await
             .unwrap()
             .unwrap(),
-        StatusCode::UNAUTHORIZED
-    );
+        Err(crate::error::CalmError::Unauthorized)
+    ));
     let (active, threaded): (i64, i64) = sqlx::query_as(
         "SELECT
          (SELECT count(*) FROM worker_sessions WHERE track_id=?1 AND card_id=?2

@@ -3922,33 +3922,63 @@ async fn create_model_defaults_preserve_legacy_fingerprint_and_null_replay() {
 }
 
 #[tokio::test]
-async fn create_model_selection_refuses_agent_before_mint() {
+async fn named_canonical_model_selection_requires_a_verified_human_session() {
     let b = boot_without_daemon().await;
-    for field in ["model", "reasoning_effort"] {
-        let mut body = json!({"planner_provider": "codex", "area_id": b.area_id, "theme": {"fg": [255,255,255], "bg": [0,0,0]}});
-        // This pins the historical declared-actor guard. Canonical creation
-        // authenticates HumanInputSource rather than trusting an actor header.
-        body["template_id"] = json!("investigation");
-        body["attach_folder"] = json!(true);
+    for (previous_count, field) in ["model", "reasoning_effort"].into_iter().enumerate() {
+        let mut body = json!({
+            "planner_provider": "codex", "area_id": b.area_id,
+            "template_id": "investigation", "attach_folder": true,
+            "theme": {"fg": [255,255,255], "bg": [0,0,0]}
+        });
         body[field] = json!("high");
-        let response = b
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("content-type", "application/json")
+                .header("x-calm-actor", "ai:codex")
+        };
+        let denied = b
             .app
             .clone()
             .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/tracks")
-                    .header("content-type", "application/json")
-                    .header("x-calm-actor", "ai:codex")
+                request()
+                    .header(
+                        "cookie",
+                        format!("{}=invalid", calm_server::auth::SESSION_COOKIE),
+                    )
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{field}");
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED, "{field}");
+        assert_eq!(b.track_count().await, previous_count as i64);
+
+        // The authenticated router supplies the real login cookie.
+        let accepted = b
+            .app
+            .clone()
+            .oneshot(request().body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::CREATED, "{field}");
+        let track: Value =
+            serde_json::from_slice(&accepted.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let cards = b
+            .repo
+            .cards_by_track(track["id"].as_str().unwrap())
+            .await
+            .unwrap();
+        assert!(
+            cards
+                .iter()
+                .any(|card| card.payload[field] == json!("high")),
+            "{field}"
+        );
     }
-    assert_eq!(b.track_count().await, 0);
-    assert_eq!(b.card_count().await, 0);
+    assert_eq!(b.track_count().await, 2);
 }
 
 #[path = "track_create_first_message_keyed.rs"]

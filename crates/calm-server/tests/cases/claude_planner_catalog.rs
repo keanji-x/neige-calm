@@ -207,9 +207,21 @@ async fn the_boot_check_fetches_the_list() {
     await_boot_check(&root, &stack).await;
     assert_eq!(count(&root, "init-calls"), 1);
     assert_eq!(claude_models(&stack).await["source"], "live");
-    let (_track, _card) = stack
-        .create_claude_track_with(json!({"model": "claude-fable-5-1[1m]"}))
+    let (status, body) = stack
+        .send(
+            "POST",
+            "/api/tracks",
+            Some(json!({
+                "area_id": stack.area().await,
+                "planner_provider": "claude",
+                "template_id": "small-change",
+                "attach_folder": true,
+                "model": "claude-fable-5-1[1m]",
+                "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+            })),
+        )
         .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
         count(&root, "init-calls"),
         1,
@@ -264,7 +276,7 @@ async fn with_no_list_a_put_is_refused_and_a_turn_still_runs() {
     let root = root_with_catalog("ok");
     let stack = Stack::boot(&root).await;
     let (_track, card_id) = stack
-        .create_claude_track_with(json!({"model": "sonnet", "reasoning_effort": "high"}))
+        .create_historical_track_with(json!({"model": "sonnet", "reasoning_effort": "high"}))
         .await;
     std::fs::write(root.fake_dir().join("catalog"), "empty").expect("break the CLI");
     let claude = claude_entry(&stack, "?refresh=true").await;

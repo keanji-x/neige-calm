@@ -184,20 +184,15 @@ fn canonical_creation_supported(request: &CreateRequestShape) -> bool {
     // process-free: native session/new waits for the first prompt, so an empty
     // conversation is valid. Native threads likewise wait for first input; named
     // creation retains its frozen context in the same empty carrier.
-    let named = request.template_id.is_some()
-        || request.recipe_id.is_some()
-        || request.template_input.is_some()
-        || request.fork_report_from.is_some();
-    let supported = PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
+    // Storage follows the binding's declared retained-input contract. Source,
+    // admin and borrowed-resource admission remain with preparation/allocation.
+    // Attachment without cwd selects Managed preparation and borrows nothing,
+    // including named sources and admin requests.
+    PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
         profile: crate::harness::profile::HarnessProfile::Planner,
         provider: request.planner_provider.clone(),
     })
-    .is_ok();
-    // Storage follows the binding's declared retained-input contract. Source,
-    // admin and borrowed-resource admission remain with preparation/allocation.
-    // Blank attachment without cwd selects Managed preparation and borrows nothing;
-    // named/admin attachment without cwd retains its original admission owner.
-    supported && (!request.attach_folder || request.cwd.is_some() || (!named && !request.admin))
+    .is_ok()
 }
 
 impl CreateRequestShape {

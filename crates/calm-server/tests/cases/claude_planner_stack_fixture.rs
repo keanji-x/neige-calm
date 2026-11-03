@@ -436,10 +436,9 @@ impl Stack {
         )
     }
 
-    /// `POST /api/tracks` with a Claude Planner on a managed workspace; returns the track and its
-    /// Planner card.
+    /// A historical Claude Planner on a managed workspace; returns the track and its Planner card.
     pub async fn create_claude_track(&self) -> (String, String) {
-        self.create_claude_track_with(json!({})).await
+        self.create_historical_track_with(json!({})).await
     }
 
     /// A fresh area for a create body.
@@ -459,26 +458,38 @@ impl Stack {
             .to_string()
     }
 
-    /// [`Self::create_claude_track`] with `extra` merged into the create body.
-    pub async fn create_claude_track_with(&self, extra: Value) -> (String, String) {
+    async fn track_request(&self, extra: Value) -> Value {
         let mut request = json!({
             "planner_provider": "claude",
             "area_id": self.area().await,
             "title": "claude planner",
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
         });
-        // These legacy lifecycle consumers assert eager historical startup,
-        // queue replay and native outcomes. With cwd omitted, attach_folder
-        // explicitly selects historical creation while preserving Managed isolation.
-        if extra.get("cwd").is_none() {
-            request["template_id"] = json!("small-change");
-            request["attach_folder"] = json!(true);
-        }
         for (key, value) in extra.as_object().expect("extra is an object") {
             request[key] = value.clone();
         }
+        request
+    }
+
+    pub async fn create_historical_track_with(&self, extra: Value) -> (String, String) {
+        let mut request = self.track_request(extra).await;
+        if request.get("template_id").is_none() {
+            request["template_id"] = json!("small-change");
+        }
+        let body = crate::support::planner::historical_track(&self.state, request, None)
+            .await
+            .expect("released Planner fixture");
+        self.created_track_planner(body).await
+    }
+
+    pub async fn create_canonical_track_with(&self, extra: Value) -> (String, String) {
+        let request = self.track_request(extra).await;
         let (status, body) = self.send("POST", "/api/tracks", Some(request)).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
+        self.created_track_planner(body).await
+    }
+
+    async fn created_track_planner(&self, body: Value) -> (String, String) {
         let track_id = body["id"].as_str().expect("track id").to_string();
         let card = self
             .repo()
