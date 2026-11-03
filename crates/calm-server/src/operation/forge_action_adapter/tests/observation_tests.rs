@@ -32,7 +32,7 @@ async fn quiet_forge_verdict_does_not_claim_for_settled_action() {
     assert_quiet_execution(&fx, &id).await;
 }
 
-async fn assert_quiet_execution(fx: &ForgeRuntimeFixture, id: &str) {
+async fn assert_quiet_execution(fx: &ForgeRuntimeFixture, id: &crate::operation::OperationId) {
     let db = fx.repo.db();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {

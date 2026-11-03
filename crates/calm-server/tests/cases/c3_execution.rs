@@ -815,7 +815,7 @@ async fn c3_boot_releasing_probe_is_refused_not_resent() {
     c3_all_retired(&boot, &id).await;
 }
 #[tokio::test]
-async fn c3_boot_released_retries_only_close_then_reattaches() {
+async fn c3_boot_reattaches_released_execution_without_replay() {
     assert_boot_live_reattach_completes_from_result_files_without_probe()
         .await
         .unwrap();
