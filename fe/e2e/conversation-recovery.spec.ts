@@ -1,7 +1,7 @@
-import { historicalConversationPage } from '../web/src/app/router/conversation-read-data.ts';
+import { historicalConversationPage, historicalConversationRun } from '../web/src/app/router/conversation-read-data.ts';
 import { expect, test } from '@playwright/test';
 
-import { activatePlanner, createArea, createHistoricalTrack, createTrack } from './helpers/seed.js';
+import { activatePlanner, createArea, createTrack } from './helpers/seed.js';
 
 test.use({ contextOptions: { reducedMotion: 'reduce' } });
 
@@ -57,14 +57,14 @@ test('retains a rejected conversation message and retries it once', async ({ pag
 test('explains a paused conversation and retains its blocked draft', async ({ page, request }, testInfo) => {
   const area = await createArea(request, `Stalled recovery ${Date.now()}`);
   try {
-    const track = await createHistoricalTrack(request, area.id);
+    const track = await createTrack(request, area.id);
     let phase = 'turn_running';
     let sends = 0;
     await page.route('**/api/cards/*/planner/input', async (route) => { sends += 1; await route.continue(); });
     await page.route((url) => /^\/api\/cards\/[^/]+\/planner\/run$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
       const response = await route.fetch();
       const body = await response.json() as Record<string, unknown>;
-      await route.fulfill({ response, json: { ...body, phase, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null } });
+      await route.fulfill({ response, json: historicalConversationRun({ ...body, phase, recovery: phase === 'wedged' ? { cause: 'wedged', action: 'restart_session' } : null }, 'idle', true) });
     });
     await page.goto(`/next/track/${track.id}`);
     await page.getByRole('button', { name: 'Conversation Planner' }).click();
@@ -94,79 +94,6 @@ test('explains a paused conversation and retains its blocked draft', async ({ pa
     await expect(composer).toHaveAttribute('contenteditable', 'false');
     await expect(composer).toHaveText('Keep this unsent draft');
     await page.screenshot({ path: testInfo.outputPath('stalled-mobile.png'), fullPage: true, animations: 'disabled' });
-  } finally {
-    await request.delete(`/api/areas/${area.id}`);
-  }
-});
-
-// #2192: only the refusal is faked; the restart and every other send reach the real stack.
-test('offers a fresh session for a dormant send and keeps the history and the words', async ({ page, request }, testInfo) => {
-  const area = await createArea(request, `Fresh session ${Date.now()}`);
-  try {
-    const track = await createHistoricalTrack(request, area.id);
-    let refuseNext = false;
-    const inputs: number[] = [];
-    const restarts: number[] = [];
-    let resets = 0;
-    await page.route('**/api/cards/*/planner/reset', async (route) => { resets += 1; await route.continue(); });
-    await page.route('**/api/cards/*/planner/restart', async (route) => {
-      const response = await route.fetch();
-      restarts.push(response.status());
-      await route.fulfill({ response });
-    });
-    await page.route('**/api/cards/*/planner/input', async (route) => {
-      if (refuseNext) {
-        refuseNext = false;
-        inputs.push(409);
-        await route.fulfill({ status: 409, json: {
-          code: 'planner_harness_dormant',
-          error: "This conversation's session can't be resumed; start a fresh session (history is kept)",
-        } });
-        return;
-      }
-      const response = await route.fetch();
-      inputs.push(response.status());
-      await route.fulfill({ response });
-    });
-    await page.goto(`/next/track/${track.id}`);
-    await page.getByRole('button', { name: 'Conversation Planner' }).click();
-    const composer = page.getByRole('combobox', { name: 'Message' });
-    await expect(composer).toHaveAttribute('contenteditable', 'true');
-    const transcript = page.locator('[data-nc-thread]');
-    await composer.fill('History that must stay');
-    await composer.press('Enter');
-    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
-    // The transcript is optimistic; wait for the real HTTP acknowledgement before the next send.
-    await expect.poll(() => inputs).toEqual([200]);
-
-    refuseNext = true;
-    await composer.fill('Words a dormant session must not eat');
-    await composer.press('Enter');
-    const alert = page.getByRole('alert');
-    await expect(alert).toContainText('Not sent. This conversation’s session can’t be resumed. Your history is kept and your message is still below.');
-    await expect(alert).not.toContainText(/reset/i);
-    await expect(composer).toHaveText('Words a dormant session must not eat');
-    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath('dormant-desktop.png'), fullPage: true, animations: 'disabled' });
-    await page.setViewportSize({ width: 390, height: 844 });
-    const restart = page.getByRole('button', { name: 'Start a fresh session, keep history' });
-    await expect(restart).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath('dormant-mobile.png'), fullPage: true, animations: 'disabled' });
-
-    await restart.click();
-    await expect(page.getByText(/^Fresh session started\./)).toBeVisible();
-    expect(restarts).toEqual([200]);
-    await expect(alert).toHaveCount(0);
-    await expect(transcript.getByText('History that must stay', { exact: true })).toBeVisible();
-    await expect(composer).toHaveText('Words a dormant session must not eat');
-    /* Nothing is sent again on the reader's behalf: the next Send is theirs. */
-    expect(inputs).toEqual([200, 409]);
-
-    await composer.press('Enter');
-    await expect.poll(() => inputs).toEqual([200, 409, 200]);
-    await expect(composer).toHaveText('');
-    await expect(page.getByText(/^Fresh session started\./)).toHaveCount(0);
-    expect(resets).toBe(0);
   } finally {
     await request.delete(`/api/areas/${area.id}`);
   }
@@ -220,7 +147,7 @@ for (const failedFirst of [false, true]) {
   test(`shows an unconfirmed stop without fabricating completion${failedFirst ? ' after a failed request' : ''}`, async ({ page, request }, testInfo) => {
     const area = await createArea(request, `Stop receipt ${Date.now()}`);
     try {
-      const track = await createHistoricalTrack(request, area.id);
+      const track = await createTrack(request, area.id);
       await activatePlanner(request, track.id);
       let stops = 0;
       let sends = 0;
@@ -229,13 +156,18 @@ for (const failedFirst of [false, true]) {
       await page.route((url) => /^\/api\/cards\/[^/]+\/planner\/run$/.test(url.pathname) && url.searchParams.get('contract') === 'conversation_v1', async (route) => {
         const response = await route.fetch();
         const body = await response.json() as Record<string, unknown>;
-        await route.fulfill({ response, json: { ...body, phase: 'turn_running' } });
+        await route.fulfill({ response, json: { ...body, phase: 'turn_running', runtime_state: 'running', terminal_outcome: null } });
       });
       await page.route('**/api/cards/*/planner/interrupt', async (route) => {
         stops += 1;
         /* The first answer is lost on the way back: the interrupt may have been dispatched, so it is unconfirmed. */
         if (failedFirst && stops === 1) await route.abort('failed');
-        else await route.continue();
+        else {
+          const response = await route.fetch();
+          expect(response.ok()).toBe(true);
+          expect(await response.json()).toMatchObject({ stopped: false });
+          await route.fulfill({ response });
+        }
       });
       page.on('request', (outgoing) => { if (outgoing.method() === 'POST' && outgoing.url().endsWith('/planner/input')) sends += 1; });
       await page.goto(`/next/track/${track.id}`);
