@@ -214,7 +214,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro, supervisor) => <TrackRouteBody reportHeader={supervisor} reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -1080,7 +1080,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportEmpty, panelContent, mobileReportIntro, prepareReport,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportHeader, reportEmpty, panelContent, mobileReportIntro, prepareReport,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1094,6 +1094,7 @@ function TrackRouteBody({
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
   reportEvidence?: ReactNode;
+  reportHeader?: ReactNode;
   panelContent?: ReactNode;
   mobileReportIntro?: ReactNode;
   prepareReport: ReportPreparationPort;
@@ -1563,7 +1564,7 @@ function TrackRouteBody({
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
-      report={<TrackReportRegion
+      report={<>{reportHeader}<TrackReportRegion
         presentation={reportPresentation}
         trackId={track.id}
         activityAt={track.activityAt}
@@ -1591,7 +1592,7 @@ function TrackRouteBody({
         linkPreview={linkPreview}
         outlineEmpty={reportEmpty}
         empty={reportEmpty ?? <ReportEmpty />}
-      >{reportEvidence}</TrackReportRegion>}
+      >{reportEvidence}</TrackReportRegion></>}
       backlinks={backlinks !== undefined && (backlinks.backlinks.length > 0 || backlinks.truncated || backlinks.skipped_sources > 0)
         ? (
           <ReportBacklinks inline

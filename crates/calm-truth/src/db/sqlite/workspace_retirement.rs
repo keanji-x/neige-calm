@@ -32,6 +32,15 @@ pub async fn retired_workspaces(conn: &mut SqliteConnection) -> Result<Vec<Retir
     .await?)
 }
 
+/// Count deferred workspace reservations without loading their paths.
+pub async fn retirement_summary(conn: &mut SqliteConnection) -> Result<(i64, Option<i64>)> {
+    Ok(sqlx::query_as(
+        "SELECT count(*),min(retired_at_ms) FROM workspace_resources WHERE retired_at_ms IS NOT NULL",
+    )
+    .fetch_one(conn)
+    .await?)
+}
+
 /// Reject using a retired root or its descendants. Different cwd/Track values
 /// are not an access sandbox; this prevents supported resource reassignment only.
 pub async fn require_active_workspace_path(conn: &mut SqliteConnection, path: &Path) -> Result<()> {

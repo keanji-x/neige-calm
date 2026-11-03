@@ -8,7 +8,8 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
-import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, supervisorSnapshotOperation, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { useCurrentRole, useCurrentUser } from '../auth/current-user.tsx';
 import { useGo } from './navigation.ts';
 import { TodayCalendarTasks } from './calendar.tsx';
 import { ReportDetails } from '../../features/report/document/details.tsx';
@@ -21,7 +22,7 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode, supervisor: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
@@ -37,7 +38,37 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
     <DailyReportChanges key={date} isToday={selectedDate === undefined} date={shiftDailyDate(date, -1)}
       transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
     <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
-    <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>);
+    <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>,
+    selectedDate === undefined && <DailySupervisor transport={transport} unauthorized={unauthorized} />);
+}
+
+function DailySupervisor({ transport, unauthorized }: Readonly<{ transport: ApiTransportPort; unauthorized: UnauthorizedChannel }>) {
+  const user = useCurrentUser();
+  const role = useCurrentRole();
+  const [open, setOpen] = useState(false);
+  const snapshot = useQuery({
+    queryKey: ['daily-supervisor', user?.userId],
+    queryFn: () => runOperation(transport, supervisorSnapshotOperation(), unauthorized),
+    enabled: open && role === 'owner',
+    refetchInterval: open ? 30_000 : false,
+  });
+  if (role !== 'owner') return null;
+
+  const data = snapshot.isError ? undefined : snapshot.data;
+  return <ReportDetails title="Daily Supervisor" layout="appendix" onToggle={setOpen}>
+    {open && snapshot.isPending && <p role="status">正在读取实例状态…</p>}
+    {snapshot.isError && <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />}
+    {data !== undefined && <dl>
+      <dt>运行版本</dt><dd>{data.kernel_version} · {data.build_sha ?? '提交未知'}</dd>
+      <dt>调度器启动扫描</dt><dd>{data.scheduler_boot_sweep_completed ? '已完成' : '尚未完成'}</dd>
+      <dt>DB 只读探针</dt><dd>{data.database_probe_ms === null ? '未知' : `${data.database_probe_ms.toFixed(1)} ms`}</dd>
+      <dt>已退役的工作区</dt><dd>{data.retired_workspaces?.count ?? '未知'}</dd>
+      {data.retired_workspaces?.oldest_retired_at_ms != null && <>
+        <dt>最早退役时间</dt><dd>{new Date(data.retired_workspaces.oldest_retired_at_ms).toLocaleString()}</dd>
+      </>}
+      <dt>观测时间</dt><dd>{new Date(data.observed_at_ms).toLocaleString()}</dd>
+    </dl>}
+  </ReportDetails>;
 }
 
 function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{

@@ -357,3 +357,23 @@ it('uses the shared daily empty report for the heading-only skeleton', async () 
   await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
   expect(page.getByRole('button', { name: '开始对话', exact: true }).elements()).toHaveLength(0);
 });
+
+it('shows observed DB latency and deferred workspaces to the owner', async () => {
+  const { requests } = renderDailyFixture({
+    identity: { userId: 'owner', displayName: 'Owner', role: 'owner', sessionId: 'supervisor' },
+    reply: request => request.path === '/api/today/supervisor' ? {
+      status: 200, statusText: 'OK', body: {
+        observed_at_ms: 1, kernel_version: '1.2.3', build_sha: 'abc123',
+        database_probe_ms: 3.5, scheduler_boot_sweep_completed: false, retired_workspaces: { count: 2, oldest_retired_at_ms: 1 },
+      },
+    } : undefined,
+  });
+  const supervisor = page.getByText('Daily Supervisor', { exact: true });
+  await expect.element(supervisor).toBeVisible();
+  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(false);
+  await supervisor.click();
+  await expect.element(page.getByText('1.2.3 · abc123')).toBeVisible();
+  await expect.element(page.getByText('3.5 ms')).toBeVisible();
+  await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
+  await expect.element(page.getByText('最早退役时间')).toBeVisible();
+});

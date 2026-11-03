@@ -144,3 +144,50 @@ async fn u9_canonical_managed_first_input_once() {
     }
     fixture.shutdown_process(&state).await;
 }
+
+#[tokio::test]
+async fn supervisor_snapshot_requires_deployment_owner() {
+    use crate::auth::{SessionAuthority, SessionIdentity};
+
+    let fixture = Fixture::new().await;
+    let (state, app, owner_cookie, auth) = fixture.application_with_auth(false).await;
+    let member_session = auth.sessions.create(
+        SessionIdentity {
+            user_id: "member".into(),
+            display_name: "Member".into(),
+            role: "member".into(),
+        },
+        SessionAuthority::PasswordLogin,
+    );
+
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (
+            Some(format!("{}={member_session}", crate::auth::SESSION_COOKIE)),
+            StatusCode::FORBIDDEN,
+        ),
+        (Some(owner_cookie), StatusCode::OK),
+    ] {
+        let mut request = Request::get("/api/today/supervisor");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body["scheduler_boot_sweep_completed"],
+                state.dispatcher.scheduler().boot_sweep_completed()
+            );
+            assert!(body["database_probe_ms"].as_f64().unwrap() >= 0.0);
+            assert_eq!(body["retired_workspaces"]["count"], 0);
+            assert!(body["retired_workspaces"]["oldest_retired_at_ms"].is_null());
+        }
+    }
+}

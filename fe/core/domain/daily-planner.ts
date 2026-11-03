@@ -48,3 +48,16 @@ export function isDailyDate(date: string): boolean {
   const parsed = new Date(`${date}T12:00:00Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }
+
+const supervisorSnapshotSchema = z.object({
+  observed_at_ms: z.number(),
+  kernel_version: z.string(),
+  build_sha: z.string().nullable(),
+  database_probe_ms: z.number().nullable(),
+  scheduler_boot_sweep_completed: z.boolean(),
+  retired_workspaces: z.object({ count: z.number(), oldest_retired_at_ms: z.number().nullable() }).nullable(),
+});
+
+export function supervisorSnapshotOperation(): ApiOperation<z.infer<typeof supervisorSnapshotSchema>> {
+  return { method: 'GET', path: '/api/today/supervisor', responseSchema: supervisorSnapshotSchema };
+}
