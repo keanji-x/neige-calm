@@ -20433,8 +20433,11 @@
           "observed_at_ms",
           "kernel_version",
           "build_sha",
-          "database_probe_ms",
+          "database_writes",
+          "write_bucket_ms",
+          "write_bucket_count",
           "scheduler_boot_sweep_completed",
+          "settled_worker_cleanup_candidates",
           "retired_workspaces"
         ],
         "properties": {
@@ -20444,12 +20447,14 @@
               "null"
             ]
           },
-          "database_probe_ms": {
+          "database_writes": {
             "type": [
-              "number",
+              "array",
               "null"
             ],
-            "format": "double"
+            "items": {
+              "$ref": "#/components/schemas/WriteObservationBucket"
+            }
           },
           "kernel_version": {
             "type": "string"
@@ -20470,6 +20475,21 @@
           },
           "scheduler_boot_sweep_completed": {
             "type": "boolean"
+          },
+          "settled_worker_cleanup_candidates": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "write_bucket_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "write_bucket_ms": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -22757,6 +22777,41 @@
           "worktree",
           "none"
         ]
+      },
+      "WriteObservationBucket": {
+        "type": "object",
+        "required": [
+          "started_at_ms",
+          "transactions",
+          "failures",
+          "retries",
+          "mean_wait_ms"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mean_wait_ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "started_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "transactions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       }
     },
     "securitySchemes": {

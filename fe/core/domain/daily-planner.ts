@@ -53,7 +53,16 @@ const supervisorSnapshotSchema = z.object({
   observed_at_ms: z.number(),
   kernel_version: z.string(),
   build_sha: z.string().nullable(),
-  database_probe_ms: z.number().nullable(),
+  settled_worker_cleanup_candidates: z.number().int().nonnegative().nullable(),
+  write_bucket_ms: z.number().int().positive(),
+  write_bucket_count: z.number().int().positive().max(120),
+  database_writes: z.array(z.object({
+    started_at_ms: z.number(),
+    transactions: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    retries: z.number().int().nonnegative(),
+    mean_wait_ms: z.number().nonnegative(),
+  })).nullable(),
   scheduler_boot_sweep_completed: z.boolean(),
   retired_workspaces: z.object({ count: z.number(), oldest_retired_at_ms: z.number().nullable() }).nullable(),
 });

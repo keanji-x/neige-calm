@@ -651,6 +651,7 @@ pub mod workspace_repoint;
 pub mod workspace_service;
 pub use calm_types::track_fs_dto;
 pub mod daily_planner;
+mod supervisor_read;
 pub(crate) mod managed_track;
 pub mod report_backlinks;
 pub mod report_read_ledger;

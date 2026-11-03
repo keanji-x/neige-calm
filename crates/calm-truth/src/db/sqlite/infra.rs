@@ -20,6 +20,9 @@ pub use writer::{
     NestedWrite, WriteConnection, WriteManager, WriteSession, WriteTx, inherit_write_scope,
 };
 
+mod write_observations;
+pub use write_observations::{WRITE_BUCKET_MS, WRITE_BUCKETS, WriteObservationBucket};
+
 mod observation;
 use observation::ObservedTransaction;
 
@@ -31,7 +34,7 @@ fn begin_immediate_tx<'a>(
 ) -> impl std::future::Future<Output = Result<ObservedTransaction<'static>>> + Send + 'a {
     let caller = std::panic::Location::caller();
     async move {
-        begin_observed(&pool.writer().pool, caller, RetryPolicy::Bounded)
+        begin_observed(pool.writer(), caller, RetryPolicy::Bounded)
             .await
             .map_err(Into::into)
     }
@@ -43,7 +46,7 @@ enum RetryPolicy {
 }
 
 async fn begin_observed(
-    pool: &SqlitePool,
+    manager: &WriteManager,
     caller: &'static std::panic::Location<'static>,
     retry: RetryPolicy,
 ) -> sqlx::Result<ObservedTransaction<'static>> {
@@ -53,10 +56,10 @@ async fn begin_observed(
         RetryPolicy::Bounded => 6,
     };
     let mut backoff = Duration::from_millis(10);
-    let mut observation = Observation::new(caller);
+    let mut observation = Observation::new(caller, manager.observations.clone());
 
     for attempt in 0..=retries {
-        match begin_attempt(pool, &mut observation).await {
+        match begin_attempt(&manager.pool, &mut observation).await {
             Ok(transaction) => return Ok(ObservedTransaction::new(transaction, observation)),
             Err(error) if is_sqlite_busy(&error) && attempt < retries => {
                 tracing::debug!(

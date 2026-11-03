@@ -151,6 +151,24 @@ async fn supervisor_snapshot_requires_deployment_owner() {
 
     let fixture = Fixture::new().await;
     let (state, app, owner_cookie, auth) = fixture.application_with_auth(false).await;
+    let db = state.mcp_context().sqlite_db.clone().unwrap();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                session
+                    .begin_immediate()
+                    .await
+                    .unwrap()
+                    .commit()
+                    .await
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
+    let observed = db.writer().recent_observations(crate::model::now_ms());
+    let observed_transactions: u64 = observed.iter().map(|bucket| bucket.transactions).sum();
+    assert!(observed_transactions > 0);
     let member_session = auth.sessions.create(
         SessionIdentity {
             user_id: "member".into(),
@@ -185,7 +203,13 @@ async fn supervisor_snapshot_requires_deployment_owner() {
                 body["scheduler_boot_sweep_completed"],
                 state.dispatcher.scheduler().boot_sweep_completed()
             );
-            assert!(body["database_probe_ms"].as_f64().unwrap() >= 0.0);
+            let reported_transactions: u64 = body["database_writes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|bucket| bucket["transactions"].as_u64().unwrap())
+                .sum();
+            assert!(reported_transactions >= observed_transactions);
             assert_eq!(body["retired_workspaces"]["count"], 0);
             assert!(body["retired_workspaces"]["oldest_retired_at_ms"].is_null());
         }

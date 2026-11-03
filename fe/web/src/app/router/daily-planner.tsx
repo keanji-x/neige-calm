@@ -10,7 +10,9 @@ import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, supervisorSnapshotOperation, type ReportChange } from '../../../../core/domain/daily-planner.ts';
 import { DEPLOYMENT_OWNER_USER_ID } from '../../../../core/api/auth.ts';
-import { SupervisorDashboard } from '../../features/today/supervisor-dashboard.tsx';
+import { supervisorDetails, supervisorReport } from '../../../../core/domain/supervisor-view.ts';
+import { SupervisorWaitChart } from '../../features/today/supervisor-wait.tsx';
+import { ReportDocument } from '../../features/report/document/public.tsx';
 import { useCurrentUser } from '../auth/current-user.tsx';
 import { useGo } from './navigation.ts';
 import { TodayCalendarTasks } from './calendar.tsx';
@@ -57,10 +59,18 @@ function DailySupervisor({ transport, unauthorized }: Readonly<{ transport: ApiT
   });
   if (!isOwner) return null;
 
-  return <SupervisorDashboard snapshot={snapshot.isError ? undefined : snapshot.data}
-    status={snapshot.isError
-      ? <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />
-      : snapshot.isPending && <p role="status">正在读取实例状态…</p>} />;
+  if (snapshot.isError) return <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />;
+  if (snapshot.data === undefined) return <p role="status">正在读取实例状态…</p>;
+
+  return <section aria-label="Daily Supervisor">
+    <ReportDocument report={supervisorReport(snapshot.data)} empty={null} />
+    <SupervisorWaitChart writes={snapshot.data.database_writes} observedAt={snapshot.data.observed_at_ms}
+      bucketMs={snapshot.data.write_bucket_ms} bucketCount={snapshot.data.write_bucket_count} />
+    <ReportDetails title="实例明细" layout="appendix">
+      <dl>{supervisorDetails(snapshot.data).map(({ label, value }) =>
+        <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    </ReportDetails>
+  </section>;
 }
 
 function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{

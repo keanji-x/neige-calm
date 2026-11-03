@@ -1,10 +1,13 @@
 //! Caller-observed SQLite transaction phases. SQLx retains ownership of all database cleanup.
 use std::ops::{Deref, DerefMut};
 use std::panic::Location;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sqlx::{Sqlite, Transaction};
 use tracing::Span;
+
+use super::write_observations::WriteObservations;
 
 const TARGET: &str = "calm_truth::db::transaction";
 
@@ -32,10 +35,14 @@ pub(super) struct Observation {
     elapsed: [Duration; 6],
     attempts: usize,
     begin_attempts: usize,
+    observations: Arc<WriteObservations>,
 }
 
 impl Observation {
-    pub(super) fn new(caller: &'static Location<'static>) -> Self {
+    pub(super) fn new(
+        caller: &'static Location<'static>,
+        observations: Arc<WriteObservations>,
+    ) -> Self {
         // Capture execution context at first poll, including future.instrument/with_subscriber.
         let parent = Span::current();
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -50,6 +57,7 @@ impl Observation {
             elapsed: [Duration::ZERO; 6],
             attempts: 0,
             begin_attempts: 0,
+            observations,
         }
     }
 
@@ -88,6 +96,15 @@ impl Observation {
     pub(super) fn finish(&mut self, outcome: &'static str) {
         self.record_phase();
         self.phase = Phase::Finished;
+        self.observations.record(
+            crate::model::now_ms(),
+            self.elapsed[..3].iter().sum::<Duration>().as_secs_f64() * 1000.0,
+            matches!(
+                outcome,
+                "acquire_error" | "begin_error" | "commit_error" | "rollback_error"
+            ),
+            self.attempts.saturating_sub(1),
+        );
         // No originating subscriber can receive this event. Do not register its callsite
         // in that empty context or redirect the transaction to a later subscriber.
         if self.dispatch.is::<tracing::subscriber::NoSubscriber>() {

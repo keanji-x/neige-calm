@@ -143,8 +143,8 @@ pub use events::{
 #[cfg(any(test, feature = "fixtures"))]
 pub use infra::{HeldWriter, WriterPoolState};
 pub use infra::{
-    NestedWrite, SqliteDb, WriteConnection, WriteManager, WriteSession, WriteTx,
-    inherit_write_scope, is_sqlite_busy,
+    NestedWrite, SqliteDb, WRITE_BUCKET_MS, WRITE_BUCKETS, WriteConnection, WriteManager,
+    WriteObservationBucket, WriteSession, WriteTx, inherit_write_scope, is_sqlite_busy,
 };
 #[cfg(test)]
 pub(crate) use out_of_domain::worker_flow_item_insert_tx;

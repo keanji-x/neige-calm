@@ -11,7 +11,7 @@ export type MetricDatum = { id: string; label: string; value: ValueDisplay; deta
   tone: 'neutral' | 'positive' | 'negative' | 'warning'; emphasis: 'primary' | 'normal' };
 export type PlotDataset = { id: string; label: string; unit: string; style: 'line' | 'stacked';
   series: readonly { id: string; label: string; palette: number }[];
-  points: readonly { date: string; values: readonly (number | null)[] }[] };
+  points: readonly { date: string; timestampMs?: number; values: readonly (number | null)[] }[] };
 export type DistributionDatum = { id: string; label: string; value: number; palette: number };
 export type PlotSelection = { datasetId: string; selected: string | null; sample: number | null; readoutOpen: boolean };
 
@@ -117,7 +117,7 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
   const incompleteStack = data.style === 'stacked' && points.some(point => point.values.some(v => v === null || v < 0));
   if (incompleteStack) return <p className={styles.empty}>无法绘制不完整的堆叠数据。</p>;
   const hasData = points.some(point => point.values.some(v => v !== null));
-  const stamps = points.map(p => Date.parse(`${p.date}T00:00:00Z`));
+  const stamps = points.map(p => p.timestampMs ?? Date.parse(`${p.date}T00:00:00Z`));
   const start = stamps[0] ?? 0, end = stamps.at(-1) ?? start;
   const x = (stamp: number) => end === start ? WIDTH / 2 : PAD + (stamp - start) / (end - start) * (WIDTH - 2 * PAD);
   const all = data.style === 'stacked'
@@ -152,7 +152,7 @@ export function TimeSeriesChart({ label, datasets, emptyText, selection, onSelec
         <div className={styles.yAxis} aria-hidden="true">{[maximum, (maximum + minimum) / 2, minimum].map((v, i) => <span key={i}>{axisNumber(v)}</span>)}</div>
         <div className={styles.plotFrame}>
         <svg className={styles.plotSvg} viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img"
-          aria-label={`${label}: ${points.length} observations, ${points[0]?.date} to ${points.at(-1)?.date}; ${data.unit}`}>
+          aria-label={`${label}: ${points.length} intervals, ${points[0]?.date} to ${points.at(-1)?.date}; ${data.unit}`}>
           {[minimum, (maximum + minimum) / 2, maximum].map((v, i) => <line key={i} className={styles.grid}
             x1={PAD} x2={WIDTH - PAD} y1={y(v)} y2={y(v)} vectorEffect="non-scaling-stroke" />)}
           {data.series.map((series, seriesIndex) => {

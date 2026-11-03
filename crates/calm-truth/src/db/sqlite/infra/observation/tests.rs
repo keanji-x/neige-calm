@@ -500,11 +500,12 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_lazy_with(options.journal_mode(SqliteJournalMode::Wal));
+    let manager = std::sync::Arc::new(super::super::WriteManager::new(pool.clone()));
     let recorder = Recorder::default();
     let dispatch = recorder.dispatch();
     let error = async {
         match super::super::begin_observed(
-            &pool,
+            &manager,
             std::panic::Location::caller(),
             super::super::RetryPolicy::Once,
         )
@@ -522,11 +523,11 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
     assert_eq!(record["attempts"], 1);
     assert_eq!(record["begin_attempts"], 0);
     let retry = recorder.retried.clone();
-    let next_pool = pool.clone();
+    let next_manager = manager.clone();
     let task = tokio::spawn(
         async move {
             super::super::begin_observed(
-                &next_pool,
+                &next_manager,
                 std::panic::Location::caller(),
                 super::super::RetryPolicy::Bounded,
             )
@@ -550,6 +551,10 @@ async fn observation_acquire_busy_preserves_once_errors_and_bounded_retry_policy
     assert!(record["attempts"].as_u64().unwrap() >= 2);
     assert_eq!(record["begin_attempts"], 1);
     assert!(elapsed(record, "backoff_ms") > 0.0);
+    let buckets = manager.recent_observations(crate::model::now_ms());
+    assert_eq!(buckets.iter().map(|b| b.transactions).sum::<u64>(), 2);
+    assert_eq!(buckets.iter().map(|b| b.failures).sum::<u64>(), 1);
+    assert!(buckets.iter().map(|b| b.retries).sum::<u64>() >= 1);
     pool.close().await;
 }
 

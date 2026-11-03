@@ -4,15 +4,14 @@ use crate::daily_planner::{TIME_ZONE, track_for_date};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Query};
 use crate::state::{AppState, RouteState};
+use crate::supervisor_read::SupervisorSnapshot;
 use crate::workspace_reports::{
     self, ReportChangesPage, ReportChangesQuery, ReportEditsPage, ReportEditsQuery,
 };
 use axum::{Router, extract::State, routing::get};
 pub use calm_types::daily_planner::DailyTrackResolved;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
-use utoipa::ToSchema;
+use serde::Deserialize;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -80,27 +79,6 @@ pub(crate) async fn report_edits(
     ))
 }
 
-/// A current observation, with null values for unavailable sources.
-#[derive(Serialize, ToSchema)]
-pub(crate) struct SupervisorSnapshot {
-    observed_at_ms: i64,
-    kernel_version: String,
-    #[schema(required = true)]
-    build_sha: Option<String>,
-    #[schema(required = true)]
-    database_probe_ms: Option<f64>,
-    scheduler_boot_sweep_completed: bool,
-    #[schema(required = true)]
-    retired_workspaces: Option<RetiredWorkspaceSummary>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct RetiredWorkspaceSummary {
-    count: i64,
-    #[schema(required = true)]
-    oldest_retired_at_ms: Option<i64>,
-}
-
 #[utoipa::path(get,path="/api/today/supervisor",tag="tracks",
     responses(
         (status=200,body=SupervisorSnapshot,description="Current deployment-owner observations"),
@@ -114,40 +92,5 @@ pub(crate) async fn supervisor_snapshot(
     if !principal.is_deployment_owner() {
         return Err(CalmError::Forbidden("Deployment owner required".into()));
     }
-    let version = super::version::current_version_info(
-        (*state.db_instance_id).clone(),
-        (*state.database_id).clone(),
-    );
-    let mut snapshot = SupervisorSnapshot {
-        observed_at_ms: Utc::now().timestamp_millis(),
-        kernel_version: version.kernel_version,
-        build_sha: version.build_sha,
-        database_probe_ms: None,
-        scheduler_boot_sweep_completed: state.dispatcher.scheduler().boot_sweep_completed(),
-        retired_workspaces: None,
-    };
-    if let Some(db) = state.mcp_context.sqlite_db.as_ref() {
-        let start = Instant::now();
-        let probe = tokio::time::timeout(
-            Duration::from_secs(1),
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM database_identity")
-                .fetch_one(db.read_pool()),
-        )
-        .await;
-        if matches!(probe, Ok(Ok(1))) {
-            snapshot.database_probe_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
-            snapshot.retired_workspaces = tokio::time::timeout(Duration::from_secs(1), async {
-                let mut conn = db.read_pool().acquire().await?;
-                calm_truth::db::sqlite::workspace_retirement::retirement_summary(&mut conn).await
-            })
-            .await
-            .ok()
-            .and_then(std::result::Result::ok)
-            .map(|(count, oldest_retired_at_ms)| RetiredWorkspaceSummary {
-                count,
-                oldest_retired_at_ms,
-            });
-        }
-    }
-    Ok(Json(snapshot))
+    Ok(Json(crate::supervisor_read::snapshot(&state).await))
 }

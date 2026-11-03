@@ -96,6 +96,15 @@ pub const SETTLED_WORKER_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.car
         AND NOT EXISTS (SELECT 1 FROM tasks active WHERE active.worker_card_id = ws.card_id \
                           AND active.status IN ('dispatched','running','verifying'))";
 
+/// Counts sessions eligible for the settled-worker sweep, without attempting cleanup.
+pub(crate) async fn settled_worker_cleanup_count(db: &crate::db::sqlite::SqliteDb) -> Result<i64> {
+    let query = format!("SELECT count(*) FROM ({SETTLED_WORKER_SESSIONS_SQL})");
+    Ok(sqlx::query_scalar(&query)
+        .bind(SETTLED_WORKER_GRACE_MS)
+        .fetch_one(db.read_pool())
+        .await?)
+}
+
 /// Spawn the sweeper task. Subscribes to no events; purely time-driven.
 pub fn spawn(state: AppState) {
     tokio::spawn(async move {

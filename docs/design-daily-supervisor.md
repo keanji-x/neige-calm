@@ -22,7 +22,7 @@ Distinguish healthy, degraded, unavailable and stale sources.
 
 | Rule | Evidence | Classification |
 | --- | --- | --- |
-| Database probe | Time to complete a bounded read on the service read pool, probe failures, last successful probe | Distinguish probe latency from business query latency. Report the sample count with percentiles. |
+| SQLite writes | Existing managed transaction observations, aggregated into twelve five-minute buckets per open database handle | Report mean acquisition, BEGIN and retry-backoff time, lifecycle error count and built-in retry attempts. Statement errors, outer caller retries, cancellations and successful rollbacks are outside these error and retry counts. Buckets are process-local and empty buckets have no observation. |
 | Scheduler recovery (#3432) | HTTP readiness plus recovery phase, remaining work and oldest item | HTTP readiness alone does not establish scheduler health. |
 | Track progress | Current task or attempt state, last progress event, provider state | Waiting for user input is expected. Flag only states with an execution progress expectation. |
 | Stop settlement (#3374) | Stop request and its original driver identity, observed exit or unsettled outcome | Flag unresolved execution past its existing cancellation window. Keep unknown distinct from alive. |
