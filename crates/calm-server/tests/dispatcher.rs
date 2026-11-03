@@ -503,11 +503,17 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         4,
     );
     dispatcher.scheduler().mark_boot_sweep_complete();
-    dispatcher.scheduler().open_context_sweep_gate().await;
-    dispatcher
+    dispatcher.scheduler().mark_context_sweep_boot_complete();
+    let pending = repo.task_get(&task_id).await.unwrap().unwrap();
+    let track = repo.track_get(track_id.as_str()).await.unwrap().unwrap();
+    let claimed = dispatcher
         .scheduler()
-        .schedule_track(track_id.clone())
-        .await;
+        .claim_task_for_test(pending, &track)
+        .await
+        .unwrap()
+        .expect("freeze a real claim before its operation starts");
+    assert_eq!(claimed.status, TaskStatus::Dispatched);
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
     let frozen_context: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
             .bind(&task_id)
@@ -515,7 +521,6 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
             .await
             .expect("production claim context");
     assert_ne!(frozen_context, "[]");
-    spawned.store(0, Ordering::SeqCst);
     (pool).writer().execute(sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.command', 'changed') \
          WHERE id = 'lagged-context-report'",
@@ -555,7 +560,19 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         stale.is_some(),
         "Lagged recovery must persist material verdict"
     );
-    tokio::task::yield_now().await;
+    let rejected = wait_for(Duration::from_secs(5), || {
+        let repo = repo.clone();
+        let task_id = task_id.clone();
+        async move {
+            repo.task_get(&task_id)
+                .await
+                .ok()
+                .flatten()
+                .filter(|task| task.status == TaskStatus::Failed)
+        }
+    })
+    .await;
+    assert!(rejected.is_some(), "recovery must reject the stale claim");
     assert_eq!(
         spawned.load(Ordering::SeqCst),
         0,

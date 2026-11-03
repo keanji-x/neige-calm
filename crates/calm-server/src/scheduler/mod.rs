@@ -923,6 +923,13 @@ impl Scheduler {
         }))
     }
 
+    /// Freeze an actual claim without starting its operation, for recovery fixtures.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn claim_task_for_test(&self, task: Task, track: &Track) -> Result<Option<Task>> {
+        self.claim_task(task, track).await
+    }
+
     /// The claim tx, one eventized write: in-tx open re-check, single-winner
     /// `pending → dispatched` UPDATE and `Event::TaskDispatched`. Returns the post-claim re-read (the frozen row); `Ok(None)` = race lost,
     /// no event persisted.
