@@ -1,2 +1,0 @@
-[Task needs Planner follow-up] {fact}
-Inspect current task and operation evidence, then call neige_followup_settle with this attempt_id and notice_id: wait (review_after_secs 60..86400), bypass (independent authorized route), or terminate (only when cancellation is available). Give a concrete reason in message and update the Report. This is elapsed-phase evidence, not proof of failure or process termination. Unknown execution retains its resources. Without a decision the kernel rechecks in 15 minutes.

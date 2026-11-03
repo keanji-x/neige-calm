@@ -323,7 +323,8 @@ pub(super) fn helper_command(
         .stderr(Stdio::null());
     let mut allowed = vec![configuration.as_raw_fd(), reports.as_raw_fd()];
     allowed.extend_from_slice(inherited);
-    // SAFETY: executed after fork, only fcntl/close_range on the exact owned bootstrap FDs.
+    // SAFETY: descriptor isolation allocates nothing after fork; explicit reopening
+    // touches only the owned allowlist descriptors.
     unsafe {
         command.pre_exec(move || {
             mark_child_descriptors_cloexec()?;
@@ -442,7 +443,11 @@ mod tests {
             spawned = Some(pid);
             Err(std::io::Error::from_raw_os_error(libc::EMFILE).into())
         });
-        assert!(result.is_err());
+        let error = result.err().expect("post-spawn pinning must fail");
+        assert!(
+            !error.is::<NoChild>(),
+            "a successful spawn cannot prove that no child existed"
+        );
         let pid = spawned.expect("fault must occur after a successful real spawn");
         let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
         // A non-consuming exact query establishes collection, rather than merely a stop request.

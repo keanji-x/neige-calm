@@ -104,7 +104,6 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_log",
     // Planning, review, admin.
     "neige_task_cancel",
-    "neige_followup_settle",
     "neige_task_ls",
     "neige_admin_gc",
     "neige_admin_vacuum",

@@ -3,7 +3,6 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 pub(crate) mod card_disposal;
-pub(crate) mod followup;
 mod terminal_completion;
 mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;
@@ -394,7 +393,7 @@ pub struct Scheduler {
     /// The process's one `planner_recovery_locks` map, shared with `RouteState` from boot: the
     /// child-track bootstrap starts the child's Planner under that card's `CardStartFence`.
     pub(crate) planner_recovery_locks: PerCardLocks,
-    /// The dispatcher's global spawn semaphore: caps total cross-track spawn work.
+    /// Shared admission capacity, released before operation driving.
     semaphore: Arc<Semaphore>,
     /// The running-worker windows: the cap is stamped per task, the idle window applies live.
     worker_liveness: WorkerLiveness,
@@ -578,14 +577,17 @@ impl Scheduler {
         self.liveness_floor_ms.store(floor_ms, Ordering::SeqCst);
     }
 
-    /// Fire-and-forget trigger: schedule the track on a fresh task. Used
-    /// by the dispatcher's envelope arms.
+    /// Queue at most one admission pass per Track; further triggers mark it dirty.
     pub fn poke(self: &Arc<Self>, track_id: TrackId) {
         #[cfg(feature = "fixtures")]
         self.poke_count.fetch_add(1, Ordering::SeqCst);
+        let (dirty, lock) = self.mark_track_dirty(&track_id);
+        let Ok(guard) = lock.try_lock_owned() else {
+            return;
+        };
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            this.schedule_track(track_id).await;
+            this.schedule_track_guarded(track_id, dirty, guard).await;
         });
     }
 
@@ -756,25 +758,39 @@ impl Scheduler {
         self.reconcile_child_track_task(child_track_id).await
     }
 
-    /// Run scheduling passes for one track until quiescent. Per-track
-    /// mutex + dirty flag: concurrent callers collapse into the lock
-    /// holder's loop.
-    pub async fn schedule_track(self: &Arc<Self>, track_id: TrackId) {
+    /// Mark before taking the lock, so the current holder observes a concurrent trigger.
+    fn mark_track_dirty(
+        &self,
+        track_id: &TrackId,
+    ) -> (Arc<AtomicBool>, Arc<tokio::sync::Mutex<()>>) {
         let dirty = self
             .track_dirty
             .entry(track_id.clone())
             .or_insert_with(|| Arc::new(AtomicBool::new(false)))
             .clone();
         dirty.store(true, Ordering::SeqCst);
-        // IMPORTANT: do NOT bind the DashMap Entry to a `let` — the
-        // shard guard must drop at this statement's `;` before the
-        // `.await` below (same hazard as the dispatcher's push locks).
+        // Drop both DashMap shard guards before a caller waits or spawns.
         let lock = self
             .track_locks
             .entry(track_id.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let guard = lock.lock().await;
+        (dirty, lock)
+    }
+
+    /// Await this call's admission and drives. Background triggers coalesce in `poke`.
+    pub async fn schedule_track(self: &Arc<Self>, track_id: TrackId) {
+        let (dirty, lock) = self.mark_track_dirty(&track_id);
+        let guard = lock.lock_owned().await;
+        self.schedule_track_guarded(track_id, dirty, guard).await;
+    }
+
+    async fn schedule_track_guarded(
+        self: &Arc<Self>,
+        track_id: TrackId,
+        dirty: Arc<AtomicBool>,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) {
         let mut drives = Vec::new();
         while dirty.swap(false, Ordering::SeqCst) {
             match self.schedule_pass(&track_id).await {
@@ -783,9 +799,16 @@ impl Scheduler {
                     "scheduler: scheduling pass failed; will retry on next trigger/sweep"),
             }
         }
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("scheduler-admissions-drained", track_id.as_str()).await;
         // Operation admission and settlement can wait indefinitely. Join only after releasing
         // the Track lock, so later declarations can still be claimed under the usual fences.
         drop(guard);
+        // A trigger can set dirty after the final swap but before unlock. Retry after
+        // releasing the lock; a newer holder either drains it or coalesces this poke.
+        if dirty.load(Ordering::SeqCst) {
+            self.poke(track_id.clone());
+        }
         for drive in drives {
             if let Err(error) = drive.await {
                 tracing::warn!(%track_id, %error, "scheduler: spawn drive ended unexpectedly");
@@ -1327,9 +1350,8 @@ impl Scheduler {
         };
         // Under the child card's start fence (#2275), like every other start: a reset or send of
         // the just-minted child waits for this start instead of interleaving with it. Held from
-        // the submit through the wait, and nothing else: the scheduler holds its per-track pass
-        // lock and a spawn permit here, which no fence holder ever waits on, and neither the drive
-        // mutex nor `track_delete_locks` (see `state.rs`'s lock order).
+        // submit through wait. The caller holds neither the Track scheduling lock, admission
+        // permit, drive mutex nor `track_delete_locks` (see `state.rs`'s lock order).
         let route_repo: Arc<dyn RouteRepo> = self.repo.clone();
         let fence = CardStartFence::lock(
             &self.planner_recovery_locks,
@@ -1655,7 +1677,6 @@ impl Scheduler {
         if let Err(error) = self.sweep_progress_obligations().await {
             tracing::warn!(%error, "progress-obligation sweep failed; independent watchdog will retry");
         }
-        self.inspect_stalls().await;
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade() {

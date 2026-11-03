@@ -1,6 +1,8 @@
 //! Kernel scheduler integration coverage: an in-memory `SqlxRepo` + `EventBus`, a real `OperationRuntime`
 //! with stub worker adapters, and a `Scheduler` built like the dispatcher construction site builds it.
 
+#[path = "scheduler/admission.rs"]
+mod admission;
 #[path = "scheduler/c2b.rs"]
 mod c2b;
 #[path = "scheduler/child_failure_notice.rs"]
@@ -15,8 +17,6 @@ mod child_track_handback;
 mod compact;
 #[path = "scheduler/progress_obligation_tests.rs"]
 mod progress_obligation_tests;
-#[path = "scheduler/stall.rs"]
-mod stall;
 mod support;
 
 use calm_types::organization::LEGACY_OWNER_USER_ID;

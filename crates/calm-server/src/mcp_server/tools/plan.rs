@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod cancel_running;
-mod followup;
 mod list;
 
 pub const TOOL_TASK_CANCEL: &str = "neige_task_cancel";
@@ -35,7 +34,6 @@ pub const TOOL_TASK_LS: &str = "neige_task_ls";
 /// Gate timeout defaults/caps; the task-verify adapter re-clamps at run time.
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
-    registry.register(followup::descriptor(), wrap(followup::decide));
     registry.register(plan_list_descriptor(), wrap(plan_list));
 }
 
@@ -445,8 +443,37 @@ where
                         ));
                     }
                 };
-                let events =
-                    cancel_execution_tx(tx, &current, in_flight, actor, scope, message).await?;
+                let (rows, released) = if in_flight {
+                    cancel_running::cancel_running_in_tx(tx, &current, &key).await?
+                } else {
+                    (task_cancel_tx(tx, &task_id, now_ms()).await?, Vec::new())
+                };
+                if rows == 0 {
+                    // Disambiguate the 0-row flip: a concurrent `canceled` is the idempotent path (no `plan.updated`); anything else is a real concurrent state change.
+                    let now_canceled = task_get_tx(tx, &task_id)
+                        .await?
+                        .is_some_and(|t| t.status == TaskStatus::Canceled);
+                    if !now_canceled {
+                        return Err(CalmError::Conflict(format!(
+                            "task {key} changed state concurrently; re-check with \
+                             `neige track status` and retry"
+                        )));
+                    }
+                }
+
+                let mut events = released;
+                // Idempotent re-cancel changed nothing — suppress `plan.updated` so a retry can't re-trigger the scheduler.
+                if rows > 0 {
+                    events.push((
+                        actor,
+                        scope,
+                        Event::PlanUpdated {
+                            track_id: track_id_typed,
+                            changed_keys: vec![key.clone()],
+                            agent_message: Some(message),
+                        },
+                    ));
+                }
                 // An empty batch means a concurrent cancel already did this request's work;
                 // `write_with_actor_events` rejects empty batches, so roll back through the
                 // sentinel and answer the idempotent success.
@@ -471,45 +498,6 @@ where
         }
         Err(e) => Err(map_plan_error(TOOL_TASK_CANCEL, e)),
     }
-}
-
-/// Shared cancellation owner for ordinary cancel and an attempt-bound stall decision.
-async fn cancel_execution_tx(
-    tx: &mut crate::operation::Tx<'_>,
-    current: &Task,
-    in_flight: bool,
-    actor: crate::ids::ActorId,
-    scope: EventScope,
-    message: String,
-) -> Result<Vec<(crate::ids::ActorId, EventScope, Event)>, CalmError> {
-    let task_id = &current.id;
-    let key = &current.key;
-    let (rows, mut events) = if in_flight {
-        cancel_running::cancel_running_in_tx(tx, current, key).await?
-    } else {
-        (task_cancel_tx(tx, task_id, now_ms()).await?, Vec::new())
-    };
-    if rows == 0
-        && !task_get_tx(tx, task_id)
-            .await?
-            .is_some_and(|task| task.status == TaskStatus::Canceled)
-    {
-        return Err(CalmError::Conflict(format!(
-            "task {key} changed state concurrently; refresh neige_task_ls"
-        )));
-    }
-    if rows > 0 {
-        events.push((
-            actor,
-            scope,
-            Event::PlanUpdated {
-                track_id: current.track_id.clone().into(),
-                changed_keys: vec![key.clone()],
-                agent_message: Some(message),
-            },
-        ));
-    }
-    Ok(events)
 }
 
 /// Sentinel: the cancel tx found nothing left to write (a concurrent cancel won); never surfaced.
