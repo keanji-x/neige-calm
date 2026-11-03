@@ -28,6 +28,7 @@ async fn u8_canonical_managed_admin_commits_empty_and_human_carriers() {
             let a = area(&app, &cookie, "managed admin").await;
             let mut body = body(&a, provider);
             body["admin"] = json!(true);
+            body["attach_folder"] = json!(true);
             if human {
                 body["first_message"] = json!(FIRST_BODY);
             }

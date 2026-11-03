@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! System-target HTTP creation consumes the same canonical owners as User targets.
 use super::u8_canonical::{body, counts, create};
 use super::*;
@@ -19,7 +20,6 @@ async fn g4_empty_creation_is_canonical_keyed_and_unkeyed() {
         request["attach_folder"] = json!(true);
         if named {
             request["template_id"] = json!("small-change");
-            request["attach_folder"] = json!(false);
         }
         let created = post(&app, &cookie, "/api/tracks", "empty", request.clone()).await;
         let track = created["id"].as_str().unwrap();
@@ -61,6 +61,7 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
         let area = system(&app, &cookie).await;
         let mut request = body(&area, provider.wire_name());
         request["first_message"] = json!(FIRST_BODY);
+        request["attach_folder"] = json!(true);
         if named {
             request["template_id"] = json!("small-change");
         }
@@ -361,36 +362,134 @@ async fn g4_canonical_storage_failure_rolls_back_without_historical_fallback() {
 }
 
 #[tokio::test]
-async fn g4_area_cutover_does_not_expand_unadmitted_shapes_or_admin() {
-    let fixture = Fixture::new().await;
-    let (state, app, cookie) = fixture.application().await;
-    let area = system(&app, &cookie).await;
-    let mut request = body(&area, "codex");
-    request["template_id"] = json!("investigation");
-    request["attach_folder"] = json!(true);
-    let created = post(&app, &cookie, "/api/tracks", "excluded", request).await;
-    let mut connection = fixture.repo.pool().acquire().await.unwrap();
-    let planner: String =
-        sqlx::query_scalar("SELECT id FROM cards WHERE track_id=?1 AND role='planner'")
-            .bind(created["id"].as_str().unwrap())
-            .fetch_one(&mut *connection)
-            .await
-            .unwrap();
-    assert!(
-        !crate::db::sqlite::conversation::card_has_canonical_storage(&mut connection, &planner)
-            .await
-            .unwrap()
-    );
-    drop(connection);
+async fn g4_attached_named_and_admin_without_cwd_use_managed_canonical_creation() {
     for provider in calm_types::runtime::AgentProvider::ALL {
-        let mut admin = body(&area, provider.wire_name());
-        admin["admin"] = json!(true);
-        let before = counts(&fixture).await;
-        assert_eq!(
-            create(&app, &cookie, "admin", admin).await.0,
-            StatusCode::FORBIDDEN
-        );
-        assert_eq!(counts(&fixture).await, before);
+        for system_area in [false, true] {
+            let fixture = Fixture::new().await;
+            let (state, app, cookie) = fixture.application().await;
+            state.plugin.enable("gitforge").await.unwrap();
+            let area = if system_area {
+                system(&app, &cookie).await
+            } else {
+                super::u8_canonical::area(&app, &cookie, "attached named").await
+            };
+            let recipe = post(
+                &app,
+                &cookie,
+                "/api/track-recipes",
+                "recipe",
+                json!({"title":"Frozen recipe","body":"Original method"}),
+            )
+            .await;
+            let source = post(
+                &app,
+                &cookie,
+                "/api/tracks",
+                "source",
+                body(&area, provider.wire_name()),
+            )
+            .await;
+            for (variant, fields) in [
+                ("template", json!({"template_id":"investigation"})),
+                ("recipe", json!({"recipe_id":recipe["id"]})),
+                (
+                    "input",
+                    json!({"template_id":"dev","template_input":{"merge_policy":"ask"}}),
+                ),
+                ("fork", json!({"fork_report_from":source["id"]})),
+                ("admin", json!({"admin":true})),
+            ] {
+                let mut request = body(&area, provider.wire_name());
+                request["attach_folder"] = json!(true);
+                request
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(fields.as_object().unwrap().clone());
+                let before = counts(&fixture).await;
+                if system_area && variant == "admin" {
+                    assert_eq!(
+                        create(&app, &cookie, variant, request).await.0,
+                        StatusCode::FORBIDDEN
+                    );
+                    assert_eq!(counts(&fixture).await, before);
+                    continue;
+                }
+                let created = post(&app, &cookie, "/api/tracks", variant, request.clone()).await;
+                let track = created["id"].as_str().unwrap();
+                let (card, worker, frame) = fixture.carrier(track).await;
+                assert!(frame.canonical_inputs.pending.is_empty());
+                assert!(frame.canonical_inputs.active.is_none());
+                assert!(frame.canonical_inputs.attempts.is_empty());
+                assert!(frame.header.last_thread_id.is_none());
+                assert_eq!(fixture.counts(&card).await, (0, 0, 1, 0, 0));
+                let starts: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM operations WHERE kind=?1")
+                        .bind(crate::routes::conversations_shared::PLANNER_HARNESS_START)
+                        .fetch_one(fixture.repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(starts, 0);
+                if variant == "recipe" {
+                    assert_eq!(created["recipe_id"], recipe["id"]);
+                    assert_eq!(created["recipe_revision"], recipe["revision"]);
+                }
+                assert_eq!(created["workspace"]["kind"], "managed");
+                assert!(created["workspace"]["worktree"].is_null());
+                assert_eq!(created["admin_granted_at"].is_number(), variant == "admin");
+                assert!(!state.shared_codex_appserver.is_running());
+                assert!(state.harness.get(&worker).is_none());
+                let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+                    .bind(&card)
+                    .fetch_one(fixture.repo.pool())
+                    .await
+                    .unwrap();
+                let after = counts(&fixture).await;
+                let replay = post(&app, &cookie, "/api/tracks", variant, request.clone()).await;
+                assert_eq!(replay, created);
+                assert_eq!(fixture.carrier(track).await, (card.clone(), worker, frame));
+                assert_eq!(counts(&fixture).await, after);
+                let replay_payload: String =
+                    sqlx::query_scalar("SELECT payload FROM cards WHERE id=?1")
+                        .bind(&card)
+                        .fetch_one(fixture.repo.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(replay_payload, payload);
+                request["title"] = json!("changed");
+                assert_eq!(
+                    create(&app, &cookie, variant, request).await.0,
+                    StatusCode::CONFLICT
+                );
+                assert_eq!(counts(&fixture).await, after);
+            }
+            for fields in [
+                json!({"template_id":"missing-template"}),
+                json!({"recipe_id":"missing-recipe"}),
+                json!({"fork_report_from":"missing-track"}),
+                json!({"template_input":{}}),
+                json!({"template_id":"investigation","recipe_id":recipe["id"]}),
+            ] {
+                let mut invalid = body(&area, provider.wire_name());
+                invalid["attach_folder"] = json!(true);
+                invalid
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(fields.as_object().unwrap().clone());
+                let before = counts(&fixture).await;
+                assert_eq!(
+                    create(&app, &cookie, "invalid", invalid).await.0,
+                    StatusCode::BAD_REQUEST
+                );
+                assert_eq!(counts(&fixture).await, before);
+            }
+            let claims: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM area_folders WHERE area_id=?1")
+                    .bind(area["id"].as_str().unwrap())
+                    .fetch_one(fixture.repo.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(claims, 0);
+            fixture.shutdown_process(&state).await;
+        }
     }
-    fixture.shutdown_process(&state).await;
 }

@@ -59,6 +59,7 @@ async fn u7_canonical_named_sources_commit_original_human_acceptance() {
         ] {
             let mut body = json!({"area_id":area["id"], "title":"U7", "planner_provider":provider,
                 "theme":{"fg":[255,255,255],"bg":[0,0,0]}, "first_message":FIRST_BODY});
+            body["attach_folder"] = json!(true);
             body[field] = value;
             if let Some(input) = input {
                 body["template_input"] = input;
@@ -259,7 +260,7 @@ async fn u7_canonical_original_recipe_receipt_replays_after_source_deletion() {
         )
         .await;
         let body = json!({"area_id":area["id"],"planner_provider":provider,"title":"",
-            "recipe_id":recipe["id"],"first_message":FIRST_BODY,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
+            "attach_folder":true,"recipe_id":recipe["id"],"first_message":FIRST_BODY,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
         let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
         let receipt = fixture.receipt(area["id"].as_str().unwrap()).await;
         let before = fixture.carrier(created["id"].as_str().unwrap()).await;
@@ -436,7 +437,7 @@ async fn u7_canonical_frozen_context_binds_first_plan_once_across_cold_restart()
     .await;
     let recipe = post(&app, &cookie, "/api/track-recipes", "recipe", json!({"title":"Original frozen method", "body":"# Method\nFrozen U7 sentinel {track_id}."})).await;
     let body = json!({"area_id":area["id"],"planner_provider":"codex","title":"",
-        "recipe_id":recipe["id"],"first_message":FIRST_BODY,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
+        "attach_folder":true,"recipe_id":recipe["id"],"first_message":FIRST_BODY,"theme":{"fg":[255,255,255],"bg":[0,0,0]}});
     super::u7_nondelivery::hold(&fixture).await;
     let created = post(&app, &cookie, "/api/tracks", "first", body.clone()).await;
     let track = created["id"].as_str().unwrap().to_owned();
