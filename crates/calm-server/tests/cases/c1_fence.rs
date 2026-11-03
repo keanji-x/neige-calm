@@ -84,12 +84,19 @@ fn terminal(track: &str) -> Value {
         "theme":{"fg":[255,255,255],"bg":[0,0,0]}})
 }
 async fn pending(b: &Boot, kind: &str, payload: Value) -> String {
+    let idempotency_key =
+        calm_server::model::TaskKind::from_worker_operation_kind(kind).map(|_| {
+            payload["idempotency_key"]
+                .as_str()
+                .expect("worker task id")
+                .to_owned()
+        });
     SqlxOperationRepo::new(b.repo.db().clone())
         .insert_operation(
             kind,
             OperationKey {
                 operation_key: calm_server::model::new_id(),
-                idempotency_key: None,
+                idempotency_key,
                 payload_hash: "c1".into(),
             },
             payload,
@@ -182,9 +189,11 @@ async fn preparation(kind: &str, boot: bool) {
         .unwrap(),
         _ => {
             let task = format!("{track}:c1");
+            let task_kind = calm_server::model::TaskKind::from_worker_operation_kind(kind)
+                .expect("checkout worker kind");
             (b.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json,\
-                 status,created_at_ms,updated_at_ms) VALUES (?,?,'c1','terminal','test','null','[]','dispatched',1,1)")
-                .bind(&task).bind(&track)).await.unwrap();
+                 status,created_at_ms,updated_at_ms) VALUES (?,?,'c1',?,'test','null','[]','dispatched',1,1)")
+                .bind(&task).bind(&track).bind(task_kind)).await.unwrap();
             json!({"actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":track,"idempotency_key":task,"cmd":"true","goal":"test","cwd":path})
         }
     };
