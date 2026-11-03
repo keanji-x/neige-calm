@@ -286,8 +286,11 @@ async fn u13_p1_facts_whole_root_version_shape_and_provider_separation() {
             let facts = classify_facts(&audit).unwrap();
             let w = &facts.workers()[0];
             assert!(
-                matches!(w.frame,Some(FrameFacts::DeferredReleased{original_version}) if original_version==version)
+                calm_types::harness::snapshot::CanonicalHarnessSnapshot::from_released(v.clone())
+                    .is_err()
             );
+            assert!(w.frame.is_none());
+            assert!(blocked(w, "", FactReason::Malformed));
             assert!(stored(w, "/schema_version", json!(version)));
             assert_eq!(deferred(&facts, w, prefix), 4);
         }

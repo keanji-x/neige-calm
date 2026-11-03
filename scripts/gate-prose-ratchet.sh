@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# F-released bounded declaration exception: long_literal 207 -> 209.
+# The two new matches are released.rs's flattened canonical/header field list
+# and its optional-field list. They describe the persisted owner contract,
+# not agent-facing prose. Later wire changes edit the owner, projection and
+# focused fixture; this existing baseline changes only if match counts change.
+# The existing once-per-lint scan and separate selftest remain unchanged.
 # OBS adds one long literal (206 -> 207): the preserved nested-presence
 # fixture's original field-path list in observation_tests.rs. This is offline
 # source evidence, not agent-facing prose. Fixture edits update their owner and

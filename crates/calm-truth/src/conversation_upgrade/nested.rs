@@ -46,6 +46,11 @@ impl FrameView<'_> {
             };
             let p = format!("{path}/{key}");
             self.presence(&p, !optional.split_ascii_whitespace().any(|n| n == *name))?;
+            if value.is_array() {
+                self.worker
+                    .sequence_fields
+                    .push((format!("{path}/{name}"), p.clone()));
+            }
             paths.push((*name, p));
         }
         let unknown: Vec<_> = match value {
@@ -79,7 +84,16 @@ impl FrameView<'_> {
     }
 }
 pub(super) fn header(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
-    for name in super::legacy::HEADER {
+    header_for(f, false)
+}
+pub(super) fn released_header(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
+    header_for(f, true)
+}
+fn header_for(f: &mut FrameView<'_>, released: bool) -> Result<(), FactCoverageError> {
+    for name in super::legacy::HEADER
+        .into_iter()
+        .filter(|name| !released || !matches!(*name, "planner_compaction" | "projection_client_id"))
+    {
         let path = format!("/{name}");
         match name {
             "schema_version" => f.check::<u32>(&path)?,

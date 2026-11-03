@@ -13,14 +13,19 @@ pub(super) fn observation(
     } else {
         f.diagnose::<Observation>(path)?;
     }
-    if !f.value_at(path).is_some_and(Value::is_object) {
+    if !f
+        .value_at(path)
+        .is_some_and(|v| v.is_object() || v.is_array())
+    {
         return Ok(());
     }
-    f.check::<String>(&format!("{path}/type"))?;
-    let tag = f
-        .value_at(path)
-        .and_then(|v| v.get("type"))
-        .and_then(Value::as_str);
+    let tag_path = if f.value_at(path).is_some_and(Value::is_array) {
+        format!("{path}/0")
+    } else {
+        format!("{path}/type")
+    };
+    f.check::<String>(&tag_path)?;
+    let tag = f.value_at(&tag_path).and_then(Value::as_str);
     let (declaration, optional) = match tag {
         Some("track_goal" | "system_context" | "user_message") => ("type text", ""),
         Some("report_edited") => (
@@ -57,7 +62,7 @@ pub(super) fn observation(
         Some("worktree_committed") => ("type track_id card_id commit_sha branch", ""),
         Some("ask_answered") => ("type track_id answers", ""),
         _ => {
-            f.block(&format!("{path}/type"), FactReason::MissingOwnerDecoder)?;
+            f.block(&tag_path, FactReason::MissingOwnerDecoder)?;
             return Ok(());
         }
     };
@@ -146,6 +151,10 @@ pub(super) fn observation(
             _ => f.check::<String>(&p)?,
         }
     }
+    retire_explained(f);
+    Ok(())
+}
+pub(super) fn retire_explained(f: &mut FrameView<'_>) {
     // Retire only exact sources with a successful owner fact. Unexplained,
     // unknown and opaque descendants retain their original Deferred marker.
     let explained: Vec<_> = f
@@ -166,8 +175,8 @@ pub(super) fn observation(
             != Interpretation::Blocked(FactReason::DeferredObservationInterpretation)
             || !explained.contains(&fact.source)
     });
-    Ok(())
 }
+
 fn discriminator_path(f: &FrameView<'_>, path: &str, name: &str) -> String {
     format!(
         "{path}/{}",
@@ -357,7 +366,7 @@ fn failed_check(f: &mut FrameView<'_>, p: &str) -> Result<(), FactCoverageError>
 }
 
 // V2–V4 Checkpoint and V5 ConversationInputCheckpoint declare pending second.
-// Only the original System payload is interpreted; the frame stays DeferredReleased.
+// Interpret the original System payload; released.rs owns whole-frame adaptation.
 pub(super) fn released(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
     let root = "/canonical_inputs";
     let pending = if f.value_at(root).is_some_and(Value::is_array) {
@@ -366,12 +375,14 @@ pub(super) fn released(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
         format!("{root}/pending")
     };
     for slot in f.slots(&pending) {
-        // This entry point only traverses object carriers. Sequence carrier
-        // adaptation stays deferred; nested tagged values have their own layout.
         if f.value_at(&slot).is_some_and(Value::is_object)
             && discriminator(f, &slot, "kind") == Some("system")
         {
             observation(f, &format!("{slot}/observation"), true)?;
+        } else if f.value_at(&slot).is_some_and(Value::is_array)
+            && f.value_at(&format!("{slot}/0")).and_then(Value::as_str) == Some("system")
+        {
+            observation(f, &format!("{slot}/2"), true)?;
         }
     }
     Ok(())
