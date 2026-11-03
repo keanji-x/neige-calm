@@ -54,7 +54,7 @@ async fn acp_catalog_before_creation_never_prompts_or_grants_mcp() {
         )
         .await;
     assert_eq!(
-        turn(&stack, &card, "selected before creation", 1).await["status"],
+        super::acp_compact::turn(&stack, &card, "selected before creation", 1).await["status"],
         "completed"
     );
     assert_eq!(
