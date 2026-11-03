@@ -37,12 +37,11 @@ impl WakeContext {
     }
 
     async fn cleanup_closed_planner(&self, row: Cleanup) -> Result<()> {
-        // The transport keeps its admission through response flush. In particular a self-close
-        // never waits synchronously for its own RPC to drain, nor stops before that reply.
-        let _calls = self
-            .tool_calls
-            .fence_when_idle(&row.worker_session_id)
-            .await;
+        // A held reply defers only this session. The transport pokes cleanup after releasing
+        // its admissions; the regular sweep also retries the durable obligation.
+        let Ok(_calls) = self.tool_calls.fence(&row.worker_session_id) else {
+            return Ok(());
+        };
         let operations = self
             .operation_runtime
             .upgrade()

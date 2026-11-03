@@ -118,6 +118,15 @@ async fn close_cancels_running_descendant_planners_and_refuses_restart_and_reope
 
 #[tokio::test]
 async fn close_cancels_running_self_mcp_replies_before_planner_shutdown() {
+    self_mcp_close_with_held_reply(false).await;
+}
+
+#[tokio::test]
+async fn close_cancels_running_other_track_while_self_mcp_reply_is_held() {
+    self_mcp_close_with_held_reply(true).await;
+}
+
+async fn self_mcp_close_with_held_reply(close_other: bool) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let boot = boot(16).await;
     let (track, planner) = boot.user_track("self-close").await;
@@ -128,6 +137,22 @@ async fn close_cancels_running_self_mcp_replies_before_planner_shutdown() {
         boot.harness.get(&planner.identity.session_id).is_some(),
         "production start installs its owner"
     );
+    let thread: String = boot
+        .scalar(
+            "SELECT thread_id FROM worker_sessions WHERE id=?1",
+            &planner.identity.session_id,
+        )
+        .await;
+    let other = if close_other {
+        let (track, planner) = boot.user_track("independent-close").await;
+        let (status, started) = planner_input_finished(&boot, &planner, "independent/start").await;
+        assert_eq!(status, StatusCode::OK, "{started}");
+        let planner = boot.planner_of(&track).await;
+        assert!(boot.harness.get(&planner.identity.session_id).is_some());
+        Some((track, planner))
+    } else {
+        None
+    };
     let token = calm_server::mcp_server::auth::CardMcpToken::generate();
     boot.repo
         .db()
@@ -208,6 +233,90 @@ async fn close_cancels_running_self_mcp_replies_before_planner_shutdown() {
     );
     // The caller-visible closed state commits without a network wait in the SQLite writer.
     assert!(!open(&boot, &track).await);
+    let other_finished = if let Some((other_track, other_planner)) = &other {
+        // Strictly separate request timestamps so A is first in every cleanup scan,
+        // even if its random session id sorts after B's.
+        let requested: i64 = boot
+            .scalar(
+                "SELECT requested_at_ms FROM track_close_cleanups WHERE worker_session_id=?1",
+                &planner.identity.session_id,
+            )
+            .await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while calm_server::model::now_ms() <= requested {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(rest_close(&boot, other_track).await, StatusCode::OK);
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let pending: i64 = boot
+                    .scalar(
+                        "SELECT count(*) FROM track_close_cleanups WHERE worker_session_id=?1",
+                        &other_planner.identity.session_id,
+                    )
+                    .await;
+                let state: String = boot
+                    .scalar(
+                        "SELECT state FROM worker_sessions WHERE id=?1",
+                        &other_planner.identity.session_id,
+                    )
+                    .await;
+                if pending == 0
+                    && state == "failed"
+                    && boot
+                        .harness
+                        .get(&other_planner.identity.session_id)
+                        .is_none()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let state: String = boot
+            .scalar(
+                "SELECT state FROM worker_sessions WHERE id=?1",
+                &other_planner.identity.session_id,
+            )
+            .await;
+        let pending: i64 = boot
+            .scalar(
+                "SELECT count(*) FROM track_close_cleanups WHERE worker_session_id=?1",
+                &other_planner.identity.session_id,
+            )
+            .await;
+        eprintln!(
+            "before A reply: B session={} state={state} harness={} cleanup={pending} completed={}",
+            other_planner.identity.session_id,
+            boot.harness
+                .get(&other_planner.identity.session_id)
+                .is_some(),
+            finished.is_ok()
+        );
+        finished.is_ok()
+    } else {
+        true
+    };
+    assert!(boot.harness.get(&planner.identity.session_id).is_some());
+    let pending: i64 = boot
+        .scalar(
+            "SELECT count(*) FROM track_close_cleanups WHERE worker_session_id=?1",
+            &planner.identity.session_id,
+        )
+        .await;
+    assert_eq!(pending, 1, "A retains its exact obligation until its reply");
+    let active: bool = boot.scalar("SELECT state IN ('starting','running','idle','turn_pending') FROM worker_sessions WHERE id=?1", &planner.identity.session_id).await;
+    assert!(active);
+    assert!(
+        boot.codex
+            .interrupted_turns_for_test()
+            .iter()
+            .all(|(id, _)| id != &thread)
+    );
     reply.notify_one();
     line.clear();
     tokio::time::timeout(std::time::Duration::from_secs(5), rd.read_line(&mut line))
@@ -217,6 +326,7 @@ async fn close_cancels_running_self_mcp_replies_before_planner_shutdown() {
     let response: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(response["id"], 2);
     assert!(response.get("error").is_none(), "{response}");
+    assert_ne!(response["result"]["isError"], true, "{response}");
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while boot
             .count("SELECT count(*) FROM track_close_cleanups")
@@ -236,7 +346,17 @@ async fn close_cancels_running_self_mcp_replies_before_planner_shutdown() {
         )
         .await;
     assert_eq!(state, "failed");
+    assert!(
+        boot.codex
+            .interrupted_turns_for_test()
+            .iter()
+            .any(|(id, _)| id == &thread)
+    );
     server.stop_listener_for_test().await;
+    assert!(
+        other_finished,
+        "an independent idle-admission Planner must finish cleanup before A's held MCP reply is released"
+    );
 }
 
 #[tokio::test]

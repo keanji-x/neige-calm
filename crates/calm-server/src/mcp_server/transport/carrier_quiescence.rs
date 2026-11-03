@@ -9,15 +9,24 @@ struct State {
     fenced: Option<Arc<()>>,
 }
 #[derive(Clone, Default)]
-pub struct ToolCallAdmission(Arc<Mutex<HashMap<String, State>>>, Arc<tokio::sync::Notify>);
+pub struct ToolCallAdmission(Arc<Mutex<HashMap<String, State>>>);
 
 tokio::task_local! {
     static REPLY_CALLS: std::cell::RefCell<Vec<ToolCallGuard>>;
 }
 
 /// The transport owns admitted calls until their result has been flushed to the caller.
-pub(super) async fn through_reply<F: std::future::Future>(reply: F) -> F::Output {
-    REPLY_CALLS.scope(Default::default(), reply).await
+pub(super) async fn through_reply<F: std::future::Future>(reply: F) -> (F::Output, bool) {
+    let (result, calls) = REPLY_CALLS
+        .scope(Default::default(), async {
+            let result = reply.await;
+            let calls = REPLY_CALLS.with(|calls| calls.take());
+            (result, calls)
+        })
+        .await;
+    let admitted = !calls.is_empty();
+    drop(calls);
+    (result, admitted)
 }
 
 pub struct ToolCallGuard {
@@ -57,18 +66,6 @@ impl ToolCallAdmission {
     /// Park only an idle worker through commit/publication; new calls fail.
     pub fn fence(&self, worker: &str) -> Result<ToolCallGuard, RpcError> {
         self.acquire(worker, true)
-    }
-
-    pub(crate) async fn fence_when_idle(&self, worker: &str) -> ToolCallGuard {
-        loop {
-            let changed = self.1.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if let Ok(guard) = self.fence(worker) {
-                return guard;
-            }
-            changed.await;
-        }
     }
 }
 impl ToolCallGuard {
@@ -114,7 +111,5 @@ impl Drop for ToolCallGuard {
         if state.fenced.is_none() && state.calls == 0 {
             entries.remove(&self.worker);
         }
-        drop(entries);
-        self.owner.1.notify_waiters();
     }
 }

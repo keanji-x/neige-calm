@@ -333,7 +333,7 @@ async fn handle_connection(
                 params,
                 request_meta,
             } => {
-                carrier_quiescence::through_reply(async {
+                let (response, admitted) = carrier_quiescence::through_reply(async {
                     let resp = dispatch_request(
                         &method,
                         params,
@@ -351,7 +351,11 @@ async fn handle_connection(
                     wr.flush().await?;
                     Ok::<(), anyhow::Error>(())
                 })
-                .await?;
+                .await;
+                if admitted && let Some(poke) = ctx.scheduler_poke.get() {
+                    poke.poke_track_close_cleanups();
+                }
+                response?;
             }
             Frame::Notification { method, .. } => {
                 tracing::debug!(method = %method, "mcp_server: notification dropped (PR7a no-op)");

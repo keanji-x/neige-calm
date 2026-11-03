@@ -93,9 +93,13 @@ with all four fields as a compare-and-set guard and completion of that exact
 session. Neither lookup nor completion follows the card to a successor session.
 
 The tool admission guard survives through the Unix socket response flush. Cleanup
-waits for that admission to drain asynchronously before it takes lifecycle locks,
-so an MCP self-close receives its result before its own harness stops. The short
-SQLite revalidation transaction ends before native Stop or run-loop joining.
+tries the existing idle-admission fence before taking lifecycle locks and skips
+busy sessions, so a held reply cannot queue other Tracks behind it. After releasing
+the response guards, the transport pokes the same cleanup owner; the periodic
+sweep also retries retained obligations. This adds one cleanup scan per admitted
+MCP request, including failed response writes, with no per-session waiter or new
+retry registry. An MCP self-close receives its result before its own harness stops.
+The short SQLite revalidation transaction ends before native Stop or run-loop joining.
 The worker cleanup owner likewise confirms Stop before clearing its exact
 attempt marker and releasing its lease; the general settled-worker sweep skips
 sessions carrying that marker.
@@ -109,7 +113,8 @@ canonical wake completion boundary before checking that no native thread or
 turn started. A referenced child's reopen remains refused; parent reopen does
 not replay canceled child creation or continuation.
 
-The lifecycle regressions exercise response-flush ordering, failed-Stop retry,
+The lifecycle regressions exercise response-flush ordering, another Track's real
+harness retirement and exact session completion while the oldest reply is held, failed-Stop retry,
 successor-session isolation, a SQLite write during blocked native Stop, and a
 real worker process whose lease remains held until cleanup confirms shutdown.
 The behavioral evidence and mutation sets belong in the delivery result, not in
