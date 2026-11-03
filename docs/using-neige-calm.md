@@ -73,9 +73,11 @@ is supported too: `@＃`, `@、`, and `@》` select the same three kinds respect
 
 ## Close and find Tracks
 
-Tracks are **open** or **closed**. Use **Close** on the Track page when you are
-finished and **Reopen** before scheduling more work. Sending a message to a
-closed Track does not reopen it; its Planner cannot schedule until you reopen.
+Tracks are **open** or **closed**. **Close** stops the selected Track and all of
+its descendants: it cancels pending work, safely cancelable running workers and
+child assignments, then stops their Planners. Unsafe inflight work refuses the
+entire close. Other Tracks are unaffected. Reopening does not resume canceled
+work; declare a new task when you want to continue.
 
 The desktop rail shows an Area's five most recent visible Tracks, followed by
 **Show N more**. Closed Tracks are hidden unless unread or currently open.

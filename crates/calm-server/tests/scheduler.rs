@@ -10028,3 +10028,6 @@ mod boot_recovery;
 mod recovery_3192;
 #[path = "scheduler/terminal_pipe.rs"]
 mod terminal_pipe;
+
+#[path = "scheduler/close_subtree.rs"]
+mod close_subtree;

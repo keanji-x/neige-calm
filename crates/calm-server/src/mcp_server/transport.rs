@@ -333,21 +333,25 @@ async fn handle_connection(
                 params,
                 request_meta,
             } => {
-                let resp = dispatch_request(
-                    &method,
-                    params,
-                    request_meta,
-                    &ctx,
-                    &connection_identity,
-                    &registry,
-                )
-                .await;
-                let bytes = match resp {
-                    Ok(value) => build_ok_response_frame(&id, &value),
-                    Err(err) => build_error_response_frame(&id, &err),
-                };
-                wr.write_all(&bytes).await?;
-                wr.flush().await?;
+                carrier_quiescence::through_reply(async {
+                    let resp = dispatch_request(
+                        &method,
+                        params,
+                        request_meta,
+                        &ctx,
+                        &connection_identity,
+                        &registry,
+                    )
+                    .await;
+                    let bytes = match resp {
+                        Ok(value) => build_ok_response_frame(&id, &value),
+                        Err(err) => build_error_response_frame(&id, &err),
+                    };
+                    wr.write_all(&bytes).await?;
+                    wr.flush().await?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await?;
             }
             Frame::Notification { method, .. } => {
                 tracing::debug!(method = %method, "mcp_server: notification dropped (PR7a no-op)");
@@ -580,6 +584,7 @@ async fn dispatch_plugin_tools_call(
     // Identity FIRST, before any route knowledge, so identity failures are uniform whether or not `name` exists.
     let (identity, _call) =
         admit_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    let _call = _call.hold_until_reply();
     crate::managed_track::require_tool_allowed(ctx, &identity, name).await?;
     // EVERY existence-shaped rejection below is this one construction, so the error object is byte-identical and cannot be an existence oracle.
     let unknown_tool = || catalog::unknown_tool_error(ctx, registry, &identity, name);

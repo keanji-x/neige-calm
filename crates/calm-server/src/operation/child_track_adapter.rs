@@ -121,6 +121,12 @@ impl ChildTrackAdapter {
         let payload: ChildTrackOperationPayload = serde_json::from_value(input.clone())?;
         // Deliberately the first DB action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
+        crate::track_close::require_open_tx(tx, &payload.parent_track_id).await?;
+        let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND track_id=?2 AND status='dispatched' AND spawn='sub-track')")
+            .bind(&payload.task_id).bind(&payload.parent_track_id).fetch_one(&mut **tx).await?;
+        if !current {
+            return Err(CalmError::Conflict("child-track-binding-refused".into()));
+        }
         if let Some(config) = &payload.child_track {
             config.validate().map_err(CalmError::BadRequest)?;
             if let Some(child) = &config.continue_track_id {
@@ -528,8 +534,13 @@ impl ProviderAdapter for ChildTrackAdapter {
             .as_str()
             .ok_or_else(|| CalmError::Internal("child output missing child_track_id".into()))?;
         let _guard = crate::per_card_lock::lock_key(&ctx.track_delete_locks, child_id).await;
-        if ctx.repo.track_get(child_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("child track {child_id}")));
+        let child = ctx
+            .repo
+            .track_get(child_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("child track {child_id}")))?;
+        if child.closed_at.is_some() {
+            return Err(CalmError::Conflict("track-closed".into()));
         }
         if _op.payload["child_track"]["continue"].as_str() == Some(child_id) {
             return Ok(AppServerInteractOutcome::NotApplicable);

@@ -3,6 +3,7 @@
 
 mod display;
 mod execution;
+pub(crate) use execution::cancel_child_gate_tx;
 mod preparation;
 pub(crate) mod regate;
 mod reuse;

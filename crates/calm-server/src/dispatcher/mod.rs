@@ -514,6 +514,32 @@ impl Dispatcher {
             .expect("Planner wake context") = Some(wake);
     }
 
+    pub(crate) fn poke_track_close_cleanups(&self) {
+        let wake = self
+            .inner
+            .planner_wake
+            .read()
+            .expect("Planner wake context")
+            .clone();
+        if let Some(wake) = wake {
+            tokio::spawn(async move {
+                wake.sweep_close_cleanups().await;
+            });
+        }
+    }
+
+    pub(crate) async fn sweep_track_close_cleanups(&self) {
+        let wake = self
+            .inner
+            .planner_wake
+            .read()
+            .expect("Planner wake context")
+            .clone();
+        if let Some(wake) = wake {
+            wake.sweep_close_cleanups().await;
+        }
+    }
+
     pub(crate) async fn wake_planner_on_reopen(&self, track: &TrackId) -> crate::error::Result<()> {
         let Some(target) =
             planner_admission::PlannerAdmission::discover(self.inner.repo.as_ref(), track).await?

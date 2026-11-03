@@ -218,6 +218,34 @@ impl PlannerFactory<'_> {
 impl PlannerFactory<'_> {
     /// Strict timeout cleanup: propagate an unconfirmed stop so the product retains its
     /// cleanup marker and lease for retry. Settled-worker cleanup above is warning-only.
+    /// The cancellation and replay owners share the stop address contract. Missing
+    /// native identity is not evidence that a live worker has already stopped.
+    pub(crate) fn require_worker_stop_binding(
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+        terminal: Option<&crate::model::Terminal>,
+    ) -> Result<()> {
+        use crate::session_projection_repo::AgentProvider;
+        if runtime.status.is_terminal() {
+            return Ok(());
+        }
+        let bound = match runtime.agent_provider {
+            Some(AgentProvider::Codex) => {
+                crate::operation::TxOutput::non_empty_string(runtime.thread_id.as_deref()).is_some()
+            }
+            Some(AgentProvider::Claude) => terminal.is_some_and(|terminal| {
+                runtime.terminal_run_id.as_deref() == Some(terminal.id.as_str())
+                    && runtime.card_id.as_str() == terminal.card_id.as_str()
+            }),
+            _ => false,
+        };
+        if !bound {
+            return Err(CalmError::Conflict(
+                "worker stop binding unavailable".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn stop_timed_out_worker(
         runtime: &crate::session_projection_repo::WorkerSessionProjection,
         shared: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
@@ -247,7 +275,7 @@ impl PlannerFactory<'_> {
                 thread_id = %thread_id,
                 "timed-out codex worker has no shared appserver handle; cannot interrupt active turn"
             );
-            return Ok(());
+            return Err(crate::error::CalmError::ExecutionUnavailable);
         };
         let cached_turn = shared_codex_appserver.active_turn_id_for_thread(&thread_id);
         // A failed interrupt fails the cleanup (#1830 S2 D7): the marker stays, the lease stays

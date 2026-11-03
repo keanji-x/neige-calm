@@ -295,6 +295,36 @@ impl<'a> PlannerFactory<'a> {
     }
 
     /// Registry-miss cleanup uses persisted ownership facts, never a reopened session.
+    pub(crate) async fn shutdown_closed_session(
+        &self,
+        runtime: &crate::session_projection_repo::WorkerSessionProjection,
+        native: Option<&crate::shared_codex_appserver::SharedCodexAppServer>,
+    ) -> Result<()> {
+        match runtime.agent_provider.as_ref().map(AgentProvider::protocol) {
+            Some(AgentProtocol::Codex) => Self::stop_timed_out_worker(runtime, native).await,
+            Some(AgentProtocol::Claude) => {
+                crate::claude_planner::lifecycle::stop_session(
+                    self.claude,
+                    &runtime.id,
+                    crate::provider_execution::StopReason::Shutdown,
+                )
+                .await
+            }
+            Some(AgentProtocol::Acp) => {
+                crate::acp_planner::lifecycle::stop_session(
+                    self.acp,
+                    &runtime.id,
+                    crate::provider_execution::StopReason::Shutdown,
+                )
+                .await
+            }
+            None => Err(CalmError::Conflict(
+                "closed Planner has no provider binding".into(),
+            )),
+        }
+    }
+
+    /// Registry-miss cleanup uses persisted ownership facts, never a reopened session.
     pub(crate) async fn shutdown_replay(
         &self,
         runtime: &crate::session_projection_repo::WorkerSessionProjection,

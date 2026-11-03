@@ -2643,7 +2643,7 @@ pub(crate) async fn update_track(
     }
     // Asking for the state the track is already in is an idempotent silent success.
     let mut p = p;
-    if p.closed == Some(existing.closed_at.is_some()) {
+    if p.closed == Some(false) && existing.closed_at.is_none() {
         p.closed = None;
     }
 
@@ -2685,6 +2685,7 @@ pub(crate) async fn update_track(
     }
 
     let reopening = p.closed == Some(false);
+    let closing = p.closed == Some(true);
     let lifecycle_guard = if p.closed.is_some() {
         Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await)
     } else {
@@ -2729,7 +2730,39 @@ pub(crate) async fn update_track(
                         "admin already in requested state".into(),
                     ));
                 }
-                let mut track = track_update_tx(tx, &id, patch).await?;
+                let closed = if patch.closed == Some(true) {
+                    patch.closed = None;
+                    Some(
+                        crate::track_close::close_subtree_tx(tx, &live.id, actor_id.clone(), None)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
+                let row_changes = patch.title.is_some()
+                    || patch.sort.is_some()
+                    || patch.pinned_at.is_some()
+                    || patch.closed.is_some()
+                    || patch.require_task_gates.is_some()
+                    || patch.planner_task_ceiling.is_some()
+                    || patch.automation_policy.is_some()
+                    || patch.tree_task_budget.is_some();
+                let mut close_events = Vec::new();
+                let mut close_executions = Vec::new();
+                let mut track = if let Some(closed) = closed {
+                    close_events = closed.events;
+                    close_executions = closed.executions;
+                    closed.track
+                } else {
+                    live
+                };
+                if row_changes {
+                    track = track_update_tx(tx, &id, patch).await?;
+                }
+                if close_events.is_empty() && !row_changes && !admin_changed {
+                    let _ = unchanged_tx.set(track);
+                    return Err(CalmError::Conflict("close already applied".into()));
+                }
                 if admin_changed {
                     track = crate::area_admin::set_tx(tx, &track, admin.unwrap()).await?;
                 }
@@ -2742,15 +2775,17 @@ pub(crate) async fn update_track(
                 } else {
                     Vec::new()
                 };
-                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
-                events.push((
-                    actor_id.clone(),
-                    scope.clone(),
-                    Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
-                        track.clone(),
-                        None,
-                    )),
-                ));
+                let mut events: Vec<(ActorId, EventScope, Event)> = close_events;
+                if row_changes || admin_changed {
+                    events.push((
+                        actor_id.clone(),
+                        scope.clone(),
+                        Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+                            track.clone(),
+                            None,
+                        )),
+                    ));
+                }
                 for (projected_track, projection) in projections {
                     if !projection.changed_keys.is_empty() {
                         events.push((
@@ -2768,17 +2803,23 @@ pub(crate) async fn update_track(
                     }
                     events.extend(projection.kernel_events);
                 }
-                Ok((track, events))
+                Ok(((track, close_executions), events))
             })
         })
         .await;
-    let track = match written {
-        Err(_) if unchanged.get().is_some() => {
-            unchanged.get().expect("unchanged row was set").clone()
-        }
+    let (track, executions) = match written {
+        Err(_) if unchanged.get().is_some() => (
+            unchanged.get().expect("unchanged row was set").clone(),
+            Vec::new(),
+        ),
         result => result?.0,
     };
     drop(lifecycle_guard);
+    if closing {
+        s.operation_runtime.execution().drive(executions);
+        w.dispatcher.poke_track_close_cleanups();
+        w.dispatcher.scheduler().poke_worker_cleanups();
+    }
     if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
         tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");
     }

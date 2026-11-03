@@ -36,6 +36,8 @@ use tower::ServiceExt;
 
 struct Boot {
     app: axum::Router,
+    harness: calm_server::harness::HarnessRegistry,
+    role_cache: CardRoleCache,
     /// The fake app-server, for a test that fails a start; not the `AppState`, which
     /// `track_creator_does_not_keep_the_state_alive` must be able to drop.
     codex: Arc<SharedCodexAppServer>,
@@ -108,7 +110,7 @@ async fn boot_with_plugins(
             calm_server::state::WriteContext::new(roles.clone(), tracks.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
-        Some(roles),
+        Some(roles.clone()),
         Some(tracks),
     )
     .with_workspace_root(tmp.path().join("workspaces"))
@@ -126,6 +128,7 @@ async fn boot_with_plugins(
     state.bind_track_creator(max_open);
     let ctx = state.mcp_context();
     let codex = state.shared_codex_appserver.clone();
+    let harness = state.harness.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -152,6 +155,8 @@ async fn boot_with_plugins(
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     Boot {
         app,
+        harness,
+        role_cache: roles,
         codex,
         ctx,
         registry,
@@ -776,6 +781,9 @@ mod admin;
 
 #[path = "track_add/close_admin.rs"]
 mod close_admin;
+
+#[path = "track_add/close_subtree.rs"]
+mod close_subtree;
 
 #[path = "track_add/rebuild.rs"]
 mod rebuild;

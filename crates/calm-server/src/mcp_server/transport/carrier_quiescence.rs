@@ -1,4 +1,4 @@
-//! Per-worker tool admission, from resolved call identity until handler completion.
+//! Per-worker tool admission through the handler and transport reply flush.
 use super::RpcError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,16 @@ struct State {
     fenced: Option<Arc<()>>,
 }
 #[derive(Clone, Default)]
-pub struct ToolCallAdmission(Arc<Mutex<HashMap<String, State>>>);
+pub struct ToolCallAdmission(Arc<Mutex<HashMap<String, State>>>, Arc<tokio::sync::Notify>);
+
+tokio::task_local! {
+    static REPLY_CALLS: std::cell::RefCell<Vec<ToolCallGuard>>;
+}
+
+/// The transport owns admitted calls until their result has been flushed to the caller.
+pub(super) async fn through_reply<F: std::future::Future>(reply: F) -> F::Output {
+    REPLY_CALLS.scope(Default::default(), reply).await
+}
 
 pub struct ToolCallGuard {
     owner: ToolCallAdmission,
@@ -49,8 +58,26 @@ impl ToolCallAdmission {
     pub fn fence(&self, worker: &str) -> Result<ToolCallGuard, RpcError> {
         self.acquire(worker, true)
     }
+
+    pub(crate) async fn fence_when_idle(&self, worker: &str) -> ToolCallGuard {
+        loop {
+            let changed = self.1.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if let Ok(guard) = self.fence(worker) {
+                return guard;
+            }
+            changed.await;
+        }
+    }
 }
 impl ToolCallGuard {
+    pub(super) fn hold_until_reply(self) -> Option<Self> {
+        let mut call = Some(self);
+        let _ = REPLY_CALLS
+            .try_with(|calls| calls.borrow_mut().push(call.take().expect("admitted call")));
+        call
+    }
     pub fn worker(&self) -> &str {
         &self.worker
     }
@@ -87,5 +114,7 @@ impl Drop for ToolCallGuard {
         if state.fenced.is_none() && state.calls == 0 {
             entries.remove(&self.worker);
         }
+        drop(entries);
+        self.owner.1.notify_waiters();
     }
 }

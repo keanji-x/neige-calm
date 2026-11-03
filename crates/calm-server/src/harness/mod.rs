@@ -308,6 +308,13 @@ pub(crate) async fn spawn_recovered_harness_admitted(
     if current_card.track_id != track_id {
         return Ok(RecoveryOutcome::Skipped);
     }
+    if let Some(db) = repo.sqlite_db()
+        && crate::track_close::require_planner_start(db.read_pool(), current_card.id.as_str())
+            .await
+            .is_err()
+    {
+        return Ok(RecoveryOutcome::Skipped);
+    }
     if current_track.closed_at.is_some() && !matches!(claim_mode, ClaimMode::Replace) {
         // Automatic recovery must not resurrect a sleeping Planner, but closure
         // alone does not make queued input or active work eligible for sleep.
