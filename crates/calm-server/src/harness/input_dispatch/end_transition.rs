@@ -169,7 +169,7 @@ pub(crate) async fn complete_once(
     };
     if let Some(terminal) = observed.terminal() {
         let mut terminal = terminal.clone();
-        crate::harness::turn_outcome::canonical_diagnostic(&mut terminal);
+        crate::harness::turn_outcome::canonical_diagnostic(&mut terminal, &provider);
         let (thread_id, turn_id) = sampled.target.scope.thread_and_turn();
         crate::harness::turn_outcome::record(
             repo,
