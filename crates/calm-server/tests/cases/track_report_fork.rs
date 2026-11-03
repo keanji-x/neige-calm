@@ -1790,9 +1790,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
         "fork and source renderers must preserve the same complete instructions apart from Track identity"
     );
     assert!(
-        prompt.contains(
-            "Before report edits, read affected sections with `neige_report_read`"
-        ),
+        prompt.contains("Before report edits, read affected sections with `neige_report_read`"),
         "forked planner must require the report read before direct edits"
     );
     assert!(prompt.contains("Existing report tasks belong to this track's current work"));

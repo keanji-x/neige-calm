@@ -2884,9 +2884,8 @@ mod tests {
 
         assert_eq!(out, expected);
         assert!(
-            expected.contains(
-                "Before report edits, read affected sections with `neige_report_read`"
-            ),
+            expected
+                .contains("Before report edits, read affected sections with `neige_report_read`"),
             "base prompt must require the report read before direct edits"
         );
         assert!(expected.contains("Selected Template snapshot"));
