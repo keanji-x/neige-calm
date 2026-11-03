@@ -112,13 +112,17 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         self.inner.assert_sqlite_version().await
     }
 
-    async fn insert_operation(
+    async fn insert_operation_for(
         &self,
         kind: &str,
         key: OperationKey,
         payload: Value,
+        retry_owner: calm_server::operation::PendingRetryOwner,
     ) -> CalmResult<String> {
-        let id = self.inner.insert_operation(kind, key, payload).await?;
+        let id = self
+            .inner
+            .insert_operation_for(kind, key, payload, retry_owner)
+            .await?;
         self.inserted_count.fetch_add(1, Ordering::SeqCst);
         Ok(id)
     }
@@ -246,13 +250,16 @@ impl OperationRepo for DriveErrorOnceRepo {
         self.inner.assert_sqlite_version().await
     }
 
-    async fn insert_operation(
+    async fn insert_operation_for(
         &self,
         kind: &str,
         key: OperationKey,
         payload: Value,
+        retry_owner: calm_server::operation::PendingRetryOwner,
     ) -> CalmResult<String> {
-        self.inner.insert_operation(kind, key, payload).await
+        self.inner
+            .insert_operation_for(kind, key, payload, retry_owner)
+            .await
     }
 
     async fn find_by_idempotency_key(

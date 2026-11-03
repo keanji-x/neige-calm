@@ -287,7 +287,9 @@ impl OperationRuntime {
             Some(op_id) => op_id,
             None => {
                 adapter.validate(&payload).await?;
-                self.repo.insert_operation(kind, key, payload).await?
+                self.repo
+                    .insert_operation_for(kind, key, payload, super::PendingRetryOwner::Scheduler)
+                    .await?
             }
         };
         if let Some(result) = self.repo.operation_result(&op_id).await? {
@@ -300,7 +302,9 @@ impl OperationRuntime {
                 "global-drive",
                 "the current finite drive turn completes",
             );
-            self.repo.defer_unclaimed_pending(&op_id, &blocker).await?;
+            if !self.repo.defer_unclaimed_pending(&op_id, &blocker).await? {
+                return Err(CalmError::WorkspaceBusy(op_id));
+            }
             let op = self
                 .repo
                 .get_operation(&op_id)
@@ -318,7 +322,7 @@ impl OperationRuntime {
         // A retry claims this exact row while retaining its blocker. Preparation
         // rechecks checkout admission and clears the blocker with its output commit.
         let mut retry = if let Some(op) = self.repo.get_operation(&op_id).await?
-            && super::pending_blocker(&op)?.is_some()
+            && matches!(op.phase, Phase::Pending)
         {
             self.repo.claim_pending_retry(&op).await?
         } else {
@@ -343,7 +347,9 @@ impl OperationRuntime {
                     op_id.clone(),
                     "the current operation claim expires or completes",
                 );
-                self.repo.defer_unclaimed_pending(&op_id, &blocker).await?;
+                if !self.repo.defer_unclaimed_pending(&op_id, &blocker).await? {
+                    return Err(CalmError::WorkspaceBusy(op_id));
+                }
                 let op = self
                     .repo
                     .get_operation(&op_id)
@@ -364,7 +370,14 @@ impl OperationRuntime {
                 )));
             }
             visited.push(phase);
-            self.drive_claimed(adapter.clone(), op).await?;
+            self.drive_claimed_with_preparation_fence(
+                adapter.clone(),
+                op,
+                None,
+                &self.spawn_ctx,
+                super::PendingRetryOwner::Scheduler,
+            )
+            .await?;
             if let Some(wait) = self.observe_task_bounded(&op_id).await? {
                 return Ok((op_id, wait));
             }
@@ -489,6 +502,7 @@ impl OperationRuntime {
                 op,
                 preparation_fence.as_ref(),
                 &ctx,
+                super::PendingRetryOwner::Driver,
             )
             .await?;
             if matches!(fence_mode, InvocationTrackFence::ReleaseAfterPreparation) {
@@ -820,8 +834,14 @@ impl OperationRuntime {
         adapter: Arc<dyn ProviderAdapter>,
         op: Operation,
     ) -> Result<()> {
-        self.drive_claimed_with_preparation_fence(adapter, op, None, &self.spawn_ctx)
-            .await
+        self.drive_claimed_with_preparation_fence(
+            adapter,
+            op,
+            None,
+            &self.spawn_ctx,
+            super::PendingRetryOwner::Driver,
+        )
+        .await
     }
 
     async fn drive_claimed_with_preparation_fence(
@@ -830,10 +850,17 @@ impl OperationRuntime {
         op: Operation,
         preparation_fence: Option<&LaunchFence>,
         ctx: &SpawnCtx,
+        retry_owner: super::PendingRetryOwner,
     ) -> Result<()> {
         let from_phase = op.phase.tag();
         if let Err(error) = self
-            .drive_one(adapter.clone(), op.clone(), preparation_fence, ctx)
+            .drive_one(
+                adapter.clone(),
+                op.clone(),
+                preparation_fence,
+                ctx,
+                retry_owner,
+            )
             .await
         {
             if let Some(result) = self.leave_write(
@@ -971,6 +998,7 @@ impl OperationRuntime {
         op: Operation,
         preparation_fence: Option<&LaunchFence>,
         ctx: &SpawnCtx,
+        retry_owner: super::PendingRetryOwner,
     ) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
@@ -988,7 +1016,9 @@ impl OperationRuntime {
                                     track.clone(),
                                     "the reclaim or competing launch releases its Track fence",
                                 );
-                                self.repo.defer_pending_claim(&op, &blocker).await?;
+                                self.repo
+                                    .defer_pending_claim(&op, &blocker, retry_owner)
+                                    .await?;
                                 if !TASK_BOUND_ADAPTER_KINDS.contains(&op.kind.as_str()) {
                                     self.retry_after_track(&op.id, track);
                                 }
@@ -1040,20 +1070,23 @@ impl OperationRuntime {
                             return Ok(());
                         }
                         Err(CalmError::OperationBlocked(blocker)) => {
-                            self.repo.defer_pending_claim(&op, &blocker).await?;
+                            self.repo
+                                .defer_pending_claim(&op, &blocker, retry_owner)
+                                .await?;
                             return Ok(());
                         }
                         Err(CalmError::WorkspaceBusy(resource)) => {
-                            // Durable owner reservations can outlive this process's locks. Keep
-                            // Pending leased for the existing expiry retry, without binding a
-                            // temporary refusal as a permanent keyed failure or spinning a waker.
+                            // Durable owner reservations can outlive process locks. Return
+                            // the Pending operation to the current drive policy.
                             let blocker = PendingBlocker::new(
                                 PendingBlockerClass::LocationOwner,
                                 "workspace-location",
                                 resource,
                                 "the competing location owner releases its fence",
                             );
-                            self.repo.defer_pending_claim(&op, &blocker).await?;
+                            self.repo
+                                .defer_pending_claim(&op, &blocker, retry_owner)
+                                .await?;
                             return Ok(());
                         }
                         Err(e) => {
@@ -1087,6 +1120,17 @@ impl OperationRuntime {
                     }
                 }
                 let Some((_next, events)) = committed else {
+                    if retry_owner == super::PendingRetryOwner::Scheduler {
+                        let blocker = PendingBlocker::new(
+                            PendingBlockerClass::DriverBusy,
+                            "operation-preparation",
+                            op.id.clone(),
+                            "workspace preparation facts stabilize",
+                        );
+                        self.repo
+                            .defer_pending_claim(&op, &blocker, retry_owner)
+                            .await?;
+                    }
                     return Ok(());
                 };
                 for envelope in events {
@@ -1849,7 +1893,13 @@ impl OperationRuntime {
                 // drive may have moved it on, and a row stuck from `pending` must have written nothing.
                 let from_phase = op.phase.tag();
                 if let Err(e) = self
-                    .drive_one(adapter.clone(), op.clone(), None, &self.spawn_ctx)
+                    .drive_one(
+                        adapter.clone(),
+                        op.clone(),
+                        None,
+                        &self.spawn_ctx,
+                        super::PendingRetryOwner::Driver,
+                    )
                     .await
                 {
                     if let Some(result) = self.leave_write(

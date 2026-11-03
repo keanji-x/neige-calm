@@ -75,12 +75,19 @@ async fn reclaim_recovery_batch_of_blocked_writers_admits_one_execution_at_a_tim
         assert!(op.tx_output.is_none());
     }
     drop(fence);
-    // Expire both retry deadlines together so the ordinary batch driver claims
-    // both before either preparation rechecks the checkout.
+    // The ordinary driver can resume its writer after expiry. The scheduler
+    // retains ownership of the other writer even with an expired deadline.
     h.db.db().writer().execute(sqlx::query(
         "UPDATE operations SET lease_until_ms=0 WHERE id IN (?1,?2) AND phase='pending' AND lease_owner IS NULL",
     ).bind(&h.id).bind(&second_op.id)).await.unwrap();
     runtime.drive().await.unwrap();
+    let deferred = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &second.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(deferred.phase, Phase::Pending);
+    assert!(deferred.tx_output.is_none());
     tokio::time::timeout(Duration::from_secs(8), async {
         while !h.root.path().join("ran").exists() {
             tokio::time::sleep(Duration::from_millis(25)).await;

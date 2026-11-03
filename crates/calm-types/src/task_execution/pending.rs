@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub enum PendingBlocker {
     V1 {
         class: PendingBlockerClass,
+        #[serde(default, skip_serializing_if = "PendingRetryOwner::is_driver")]
+        retry_owner: PendingRetryOwner,
         #[serde(deserialize_with = "nonempty")]
         owner_scope: String,
         #[serde(deserialize_with = "nonempty")]
@@ -15,6 +17,22 @@ pub enum PendingBlocker {
         #[serde(deserialize_with = "nonempty")]
         retry_when: String,
     },
+}
+
+/// Who may claim the Pending operation after a blocked drive returns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingRetryOwner {
+    /// Also the interpretation of blockers written before retry ownership was recorded.
+    #[default]
+    Driver,
+    Scheduler,
+}
+
+impl PendingRetryOwner {
+    fn is_driver(&self) -> bool {
+        *self == Self::Driver
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,10 +62,17 @@ impl PendingBlocker {
     ) -> Self {
         Self::V1 {
             class,
+            retry_owner: PendingRetryOwner::Driver,
             owner_scope: owner_scope.into(),
             resource: resource.into(),
             retry_when: retry_when.into(),
         }
+    }
+
+    pub fn with_retry_owner(mut self, owner: PendingRetryOwner) -> Self {
+        let Self::V1 { retry_owner, .. } = &mut self;
+        *retry_owner = owner;
+        self
     }
 
     pub fn diagnostic(&self, operation_id: &str) -> String {
@@ -62,6 +87,7 @@ impl std::fmt::Display for PendingBlocker {
             owner_scope,
             resource,
             retry_when,
+            ..
         } = self;
         write!(
             formatter,

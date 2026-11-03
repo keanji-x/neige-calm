@@ -13,9 +13,14 @@ permit while waiting.
 The operation owner records a versioned blocker in a `pending` operation's
 existing `phase_detail_json`.  The detail contains resource facts (blocker
 class, owning scope, resource identity and retry condition), not rendered user
-copy.  A retry claims that same pending operation without clearing its blocker;
-successful preparation clears the detail atomically with its phase transition.
-Missing detail is an old ordinary pending operation.  Malformed detail fails
+copy.  Scheduler submission records its retry owner at insertion, or adopts an
+existing Pending row in the same transaction as its exact claim. The owner
+is separate from resource facts and survives release of the execution lease. Batch driving and boot
+recovery cannot claim a scheduler-owned Pending row, including after an old
+lease expires. The scheduler claims that exact row after acquiring capacity.
+Successful preparation clears the Pending detail atomically with its phase
+transition. Ordinary deferrals keep their existing driver retry policy.
+Missing detail is an old ordinary pending operation. Malformed detail fails
 closed.
 
 Only task-bound startup consumes this deferred result.  Invocation-specific

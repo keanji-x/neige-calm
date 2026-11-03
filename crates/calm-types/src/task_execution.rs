@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use utoipa::ToSchema;
 
 mod pending;
-pub use pending::{PendingBlocker, PendingBlockerClass};
+pub use pending::{PendingBlocker, PendingBlockerClass, PendingRetryOwner};
 
 /// #1830 S2 D5, #2139 R2: whether a task runs in its track's checkout — a codex, claude or terminal
 /// task that is not on the child-track route. Such tasks share the checkout, so a task that changes

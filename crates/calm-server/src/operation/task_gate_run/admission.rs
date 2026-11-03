@@ -167,9 +167,15 @@ pub(crate) async fn admit_run_tx(
         idempotency_key: Some(key.clone()),
         payload_hash: stable_payload_hash(&payload)?,
     };
-    insert_pending_row(&new_id(), TASK_GATE_RUN_KIND, &operation_key, &payload)?
-        .execute(&mut **tx)
-        .await?;
+    insert_pending_row(
+        &new_id(),
+        TASK_GATE_RUN_KIND,
+        &operation_key,
+        &payload,
+        None,
+    )?
+    .execute(&mut **tx)
+    .await?;
     Ok(Admitted::New {
         key,
         run,

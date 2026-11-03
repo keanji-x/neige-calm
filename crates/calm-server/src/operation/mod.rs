@@ -227,7 +227,9 @@ pub struct Operation {
     pub parked_deadline_ms: Option<TimestampMs>,
 }
 
-pub use calm_types::task_execution::{PendingBlocker, PendingBlockerClass};
+pub use calm_types::task_execution::{PendingBlocker, PendingBlockerClass, PendingRetryOwner};
+
+const SCHEDULER_PENDING_DETAIL: &str = r#"{"retry_owner":"scheduler"}"#;
 
 pub fn pending_blocker(op: &Operation) -> Result<Option<PendingBlocker>> {
     if !matches!(op.phase, Phase::Pending) {
@@ -236,6 +238,13 @@ pub fn pending_blocker(op: &Operation) -> Result<Option<PendingBlocker>> {
     let Some(detail) = op.phase_detail.as_ref() else {
         return Ok(None);
     };
+    // A scheduler-owned row may have been inserted or claimed before it
+    // encounters a blocker. Ownership alone does not release checkout occupancy.
+    if detail.as_object().is_some_and(|fields| {
+        fields.len() == 1 && fields.get("retry_owner").and_then(Value::as_str) == Some("scheduler")
+    }) {
+        return Ok(None);
+    }
     serde_json::from_value(detail.clone())
         .map(Some)
         .map_err(|error| {
@@ -1069,6 +1078,16 @@ pub trait OperationRepo: Send + Sync {
         kind: &str,
         key: OperationKey,
         payload: Value,
+    ) -> Result<OperationId> {
+        self.insert_operation_for(kind, key, payload, PendingRetryOwner::Driver)
+            .await
+    }
+    async fn insert_operation_for(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+        retry_owner: PendingRetryOwner,
     ) -> Result<OperationId>;
     async fn find_by_idempotency_key(
         &self,
@@ -1087,18 +1106,24 @@ pub trait OperationRepo: Send + Sync {
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
     /// Persist a blocker only while this caller still owns the exact Pending claim.
-    /// Keep its retry deadline so an ordinary drive pass cannot immediately
-    /// reclaim the same still-blocked row after releasing this owner.
-    async fn defer_pending_claim(&self, op: &Operation, blocker: &PendingBlocker) -> Result<bool> {
+    /// Ordinary deferrals keep their backoff. Scheduler deferrals release the
+    /// lease and retain scheduler ownership in the Pending detail.
+    async fn defer_pending_claim(
+        &self,
+        op: &Operation,
+        blocker: &PendingBlocker,
+        retry_owner: PendingRetryOwner,
+    ) -> Result<bool> {
         let db = self.sqlite_db();
         db.writer().with_writer(|write_session| Box::pin(async move {
             let mut tx = write_session.begin_immediate().await?;
             require_live_claim_tx(&mut tx, op).await?;
             let changed = sqlx::query(
-                "UPDATE operations SET phase_detail_json=?1,lease_owner=NULL,updated_at_ms=?2 \
+                "UPDATE operations SET phase_detail_json=?1,lease_owner=NULL,updated_at_ms=?2, \
+                 lease_until_ms=CASE WHEN ?5 THEN NULL ELSE lease_until_ms END \
                  WHERE id=?3 AND phase='pending' AND lease_owner=?4",
             )
-            .bind(serde_json::to_string(blocker)?)
+            .bind(serde_json::to_string(&blocker.clone().with_retry_owner(retry_owner))?)
             .bind(now_ms())
             .bind(&op.id)
             .bind(
@@ -1106,6 +1131,7 @@ pub trait OperationRepo: Send + Sync {
                     .as_deref()
                     .ok_or_else(|| CalmError::Conflict("pending blocker claim has no owner".into()))?,
             )
+            .bind(retry_owner == PendingRetryOwner::Scheduler)
             .execute(&mut **tx)
             .await?
             .rows_affected()
@@ -1124,11 +1150,11 @@ pub trait OperationRepo: Send + Sync {
             .writer()
             .execute(
                 sqlx::query(
-                    "UPDATE operations SET phase_detail_json=?1,updated_at_ms=?2 \
+                    "UPDATE operations SET phase_detail_json=?1,updated_at_ms=?2,lease_owner=NULL,lease_until_ms=NULL \
              WHERE id=?3 AND phase='pending' \
                AND (lease_owner IS NULL OR lease_until_ms < ?2)",
                 )
-                .bind(serde_json::to_string(blocker)?)
+                .bind(serde_json::to_string(&blocker.clone().with_retry_owner(PendingRetryOwner::Scheduler))?)
                 .bind(now)
                 .bind(id),
             )
@@ -1137,9 +1163,10 @@ pub trait OperationRepo: Send + Sync {
             == 1;
         Ok(changed)
     }
-    /// A scheduler retry takes a new claim without erasing the blocker first.
+    /// A scheduler claim adopts Pending ownership and retains any blocker.
     /// Only successful preparation may atomically replace that pre-effect evidence.
     async fn claim_pending_retry(&self, original: &Operation) -> Result<Option<Operation>> {
+        pending_blocker(original)?;
         let db = self.sqlite_db();
         db.writer()
             .with_writer(|write_session| {
@@ -1149,7 +1176,8 @@ pub trait OperationRepo: Send + Sync {
                     let now = now_ms();
                     let owner = new_id();
                     let changed = sqlx::query(
-                        "UPDATE operations SET lease_owner=?1,lease_until_ms=?2,updated_at_ms=?3 \
+                        "UPDATE operations SET lease_owner=?1,lease_until_ms=?2,updated_at_ms=?3, \
+                         phase_detail_json=json_set(coalesce(phase_detail_json,'{}'),'$.retry_owner','scheduler') \
                  WHERE id=?4 AND phase='pending' AND completed_at_ms IS NULL \
                    AND (lease_owner IS NULL OR lease_until_ms < ?3)",
                     )

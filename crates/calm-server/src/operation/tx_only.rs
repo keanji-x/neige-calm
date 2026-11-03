@@ -194,7 +194,7 @@ async fn commit_in_tx(
         }
     }
     let op_id = new_id();
-    insert_pending_row(&op_id, kind, &key, &payload)?
+    insert_pending_row(&op_id, kind, &key, &payload, None)?
         .execute(&mut **tx)
         .await?;
     let op = read_row(tx, &op_id).await?;

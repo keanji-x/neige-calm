@@ -73,16 +73,79 @@ async fn reclaim_recovery_deferred_claim_does_not_reenter_ordinary_batch() {
         "busy-track",
         "the owning lifecycle releases its fence",
     );
-    assert!(repo.defer_pending_claim(&claimed, &blocker).await.unwrap());
+    assert!(
+        repo.defer_pending_claim(
+            &claimed,
+            &blocker,
+            crate::operation::PendingRetryOwner::Scheduler
+        )
+        .await
+        .unwrap()
+    );
     assert!(
         repo.claim_drive_batch(32).await.unwrap().is_empty(),
         "ordinary drive must return instead of immediately reclaiming the same blocker"
     );
-    expire(&db, &claimed).await;
-    let retried = repo.claim_drive_batch(32).await.unwrap();
-    assert_eq!(retried.len(), 1);
-    assert_eq!(retried[0].id, claimed.id);
-    assert_eq!(retried[0].idempotency_key, claimed.idempotency_key);
+    let scheduler_claim = repo.claim_pending_retry(&claimed).await.unwrap().unwrap();
+    expire(&db, &scheduler_claim).await;
+    assert!(
+        repo.claim_drive_batch(32).await.unwrap().is_empty(),
+        "an expired lease must not transfer a scheduler retry to the ordinary driver"
+    );
+    assert!(
+        repo.claim_drive_operation(&claimed.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        repo.claim_operation_for_recovery(&claimed.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let retried = repo.claim_pending_retry(&claimed).await.unwrap().unwrap();
+    assert_eq!(retried.id, claimed.id);
+    assert_eq!(retried.idempotency_key, claimed.idempotency_key);
+}
+
+#[tokio::test]
+async fn reclaim_recovery_scheduler_insertion_excludes_ordinary_claims_before_first_drive() {
+    let db = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let repo = SqlxOperationRepo::new(db.db().clone());
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(new_id()),
+        payload_hash: "same-payload".into(),
+    };
+    let id = repo
+        .insert_operation_for(
+            "claim-test",
+            key,
+            json!({"input":"original"}),
+            crate::operation::PendingRetryOwner::Scheduler,
+        )
+        .await
+        .unwrap();
+    // Interleave ordinary driving after insertion but before the scheduler's
+    // first claim. No lease or blocker protects the row at this point.
+    assert!(repo.claim_drive_batch(32).await.unwrap().is_empty());
+    assert!(
+        repo.claim_operation_for_recovery(&id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let original = repo.get_operation(&id).await.unwrap().unwrap();
+    assert!(
+        crate::operation::pending_blocker(&original)
+            .unwrap()
+            .is_none()
+    );
+    let claimed = repo.claim_pending_retry(&original).await.unwrap().unwrap();
+    assert_eq!(claimed.id, id);
 }
 
 #[tokio::test]
@@ -94,8 +157,17 @@ async fn reclaim_recovery_pending_retry_preserves_blocker_and_fences_claimants()
         "busy-track",
         "the checkout writer settles",
     );
-    assert!(repo.defer_pending_claim(&original, &blocker).await.unwrap());
+    assert!(
+        repo.defer_pending_claim(
+            &original,
+            &blocker,
+            crate::operation::PendingRetryOwner::Driver
+        )
+        .await
+        .unwrap()
+    );
     let retry = repo.claim_pending_retry(&original).await.unwrap().unwrap();
+    let blocker = blocker.with_retry_owner(crate::operation::PendingRetryOwner::Scheduler);
     assert_eq!(
         crate::operation::pending_blocker(&retry).unwrap(),
         Some(blocker.clone())
@@ -111,7 +183,12 @@ async fn reclaim_recovery_pending_retry_preserves_blocker_and_fences_claimants()
     let replacement = repo.claim_pending_retry(&original).await.unwrap().unwrap();
     assert_ne!(replacement.lease_owner, retry.lease_owner);
     assert!(matches!(
-        repo.defer_pending_claim(&retry, &blocker).await,
+        repo.defer_pending_claim(
+            &retry,
+            &blocker,
+            crate::operation::PendingRetryOwner::Driver
+        )
+        .await,
         Err(CalmError::Conflict(_))
     ));
     let stored = repo.get_operation(&original.id).await.unwrap().unwrap();

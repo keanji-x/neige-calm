@@ -242,7 +242,7 @@ pub async fn create(
                 let kind = if typed { KIND } else { "terminal-create" };
                 let adapter = runtime.adapter(kind)?;
                 let id = crate::model::new_id();
-                insert_pending_row(&id, kind, &key, &payload)?
+                insert_pending_row(&id, kind, &key, &payload, None)?
                     .execute(&mut **tx)
                     .await?;
                 let row = sqlx::query("SELECT * FROM operations WHERE id = ?")
