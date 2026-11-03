@@ -81,7 +81,10 @@ reconciliation pokes admissions and resumes dispatches without joining them.
 Task follow-up observes pending, dispatched and verifying tasks, plus running tasks
 without the existing worker-liveness owner (terminals, compactions and child Tracks).
 It never converts elapsed time into exit evidence. Ordinary worker liveness retains
-its current owner.
+its current owner. Dispatched child startup retains the existing child-bootstrap
+progress-obligation owner and its durable parent-notice retries, avoiding a second
+notice for the same handoff. Child tasks still receive general stall follow-up
+before admission and after they reach running.
 
 Task follow-up is a scheduler-owned record keyed by the current attempt, phase,
 phase timestamp and gate number. After a bounded period without a phase change,

@@ -18,10 +18,14 @@ pub(crate) struct Notice {
 }
 
 pub(crate) fn watched(task: &Task) -> bool {
-    matches!(
-        task.status,
-        TaskStatus::Pending | TaskStatus::Dispatched | TaskStatus::Verifying
-    ) || (task.status == TaskStatus::Running && !task_has_running_liveness_deadline(task))
+    match task.status {
+        TaskStatus::Pending | TaskStatus::Verifying => true,
+        // The child-bootstrap owner already supervises this exact handoff and
+        // durably retries its parent notice. Do not create a second stall episode.
+        TaskStatus::Dispatched => task.spawn != calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE,
+        TaskStatus::Running => !task_has_running_liveness_deadline(task),
+        _ => false,
+    }
 }
 
 pub(crate) fn phase(task: &Task) -> String {

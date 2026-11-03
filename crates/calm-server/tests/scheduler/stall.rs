@@ -121,6 +121,45 @@ fn notice_args(wake: &(String, Value), attempt: &str, decision: &str) -> Value {
         "message":"Inspect execution evidence and record the next action"})
 }
 
+#[tokio::test]
+async fn stalled_child_admission_and_running_keep_followup_outside_bootstrap() {
+    for status in ["pending", "running"] {
+        let boot = boot().await;
+        let (task_id, _) = seed_child_parent(&boot, "stalled-child", false, None).await;
+        boot.repo
+            .sqlite_db()
+            .unwrap()
+            .writer()
+            .execute(
+                sqlx::query("UPDATE tasks SET status=?1,updated_at_ms=?2 WHERE id=?3")
+                    .bind(status)
+                    .bind(now_ms() - 31 * 60 * 1000)
+                    .bind(&task_id),
+            )
+            .await
+            .unwrap();
+        let (_runtime, scheduler) =
+            build_scheduler_with_semaphore(&boot, vec![], Arc::new(tokio::sync::Semaphore::new(0)));
+        scheduler.sweep_all().await;
+        let wakes = event_rows(&boot, "track.wake_requested").await;
+        assert_eq!(
+            wakes.len(),
+            1,
+            "{status} remains outside bootstrap supervision"
+        );
+        assert_eq!(wakes[0].1["source"], "task-stall");
+        assert!(wakes[0].1["text"].as_str().unwrap().contains(&task_id));
+        assert_eq!(
+            task_row(&boot, "stalled-child").await.status,
+            if status == "pending" {
+                TaskStatus::Pending
+            } else {
+                TaskStatus::Running
+            }
+        );
+    }
+}
+
 async fn stalled_fixture(
     status: TaskStatus,
 ) -> (Boot, Arc<OperationRuntime>, Arc<Scheduler>, Task) {

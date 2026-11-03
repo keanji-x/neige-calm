@@ -15,6 +15,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_area_ls",
         "neige_catalog_cat",
         "neige_catalog_ls",
+        "neige_followup_settle",
         "neige_link_ls",
         "neige_mail_send",
         "neige_objective_ask",
