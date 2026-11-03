@@ -350,11 +350,22 @@ async fn worker_claim_replacement_prevents_publication_and_scheduler_reclaims_af
             .await
             .unwrap();
         drop(guard);
-        fx.scheduler().sweep_all().await;
-        let started = tokio::time::timeout(WAIT, admission)
-            .await
-            .expect("scheduler reclaims expired worker preparation")
-            .unwrap();
+        let scheduler = fx.scheduler();
+        scheduler.mark_context_sweep_boot_complete();
+        scheduler.mark_boot_sweep_complete();
+        let started = tokio::time::timeout(WAIT, async {
+            tokio::pin!(admission);
+            loop {
+                scheduler.sweep_all().await;
+                tokio::select! {
+                    result = &mut admission => break result,
+                    () = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
+            }
+        })
+        .await
+        .expect("scheduler reclaims expired worker preparation")
+        .unwrap();
         assert_eq!(started.cwd, fx.worktree);
         assert_eq!(fx.table_count("workspace_leases").await, 1);
     }

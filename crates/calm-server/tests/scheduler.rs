@@ -3334,14 +3334,32 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     let mut pending = plan_task(&boot.track_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
     seed_task(&boot, pending).await;
-    let mut missing = plan_task(&boot.track_id, "boot-missing-op", TaskKind::Terminal, &[]);
+    let other_workspace = tempfile::tempdir().unwrap();
+    let other_track = boot
+        .repo
+        .track_create(NewTrack {
+            area_id: boot.area_id.clone(),
+            title: "second recovery track".into(),
+            sort: None,
+            cwd: other_workspace.path().to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut missing = plan_task(&other_track.id, "boot-missing-op", TaskKind::Terminal, &[]);
+    let missing_id = missing.id.clone();
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
     (boot.repo.sqlite_db().unwrap())
         .writer()
         .execute(
-            sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
-                .bind(boot.track_id.as_str()),
+            sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id IN (?1,?2)")
+                .bind(boot.track_id.as_str())
+                .bind(other_track.id.as_str()),
         )
         .await
         .unwrap();
@@ -3413,7 +3431,12 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
         TaskStatus::Running
     );
     assert_eq!(
-        task_row(&boot, "boot-missing-op").await.status,
+        boot.repo
+            .task_get(&missing_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
         TaskStatus::Running
     );
 }

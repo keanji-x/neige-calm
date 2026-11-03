@@ -1799,6 +1799,13 @@ impl Scheduler {
 
     /// Sweep `dispatched` arm: the claim landed but the spawn outcome was never reconciled.
     async fn resume_dispatched_for_sweep(self: &Arc<Self>, task: Task, during_boot: bool) {
+        if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
+            tracing::debug!(
+                task_id = %task.id,
+                "scheduler sweep: dispatched task left untouched until context boot sweep completes"
+            );
+            return;
+        }
         if during_boot {
             let scheduler = Arc::clone(self);
             tokio::spawn(async move {
@@ -1811,13 +1818,6 @@ impl Scheduler {
 
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()` + guarded writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task, during_boot: bool) {
-        if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
-            tracing::debug!(
-                task_id = %task.id,
-                "scheduler sweep: dispatched task left untouched until context boot sweep completes"
-            );
-            return;
-        }
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };
