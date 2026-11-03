@@ -96,7 +96,8 @@ async fn u13_p1_facts_whole_root_original_numeric_sources() {
             assert!(exact(w, p, Interpretation::ArrayLength(1)), "{p}");
         }
         assert!(stored(w, "/14", v[14].clone()));
-        assert_eq!(deferred(&facts, w, "/5/0"), 3);
+        assert!(stored(w, "/5/0/type", json!("user_message")));
+        assert!(stored(w, "/5/0/text", json!("healthy")));
         for f in &w.fields {
             if let Some(p) = &f.expected_path {
                 assert!(p.split('/').nth(1).unwrap().parse::<usize>().is_ok(), "{p}");
@@ -205,7 +206,7 @@ async fn u13_p1_facts_whole_root_parallel_holes_bad_siblings_and_identity() {
         assert!(stored(w, p, val), "{p}");
     }
     assert!(blocked(w, "/3/4/1", FactReason::AmbiguousRepresentation));
-    assert!(deferred(&facts, w, "/5/1") > 0);
+    assert!(stored(w, "/5/1/text", json!("tail")));
 }
 
 #[tokio::test]

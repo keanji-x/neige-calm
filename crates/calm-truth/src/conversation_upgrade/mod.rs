@@ -180,6 +180,7 @@ mod schema_fact_tests;
 mod classify;
 mod legacy;
 mod nested;
+mod observation_projection;
 mod root;
 pub use classify::{
     CompleteFactAudit, FactReason, FieldFact, FrameFacts, Interpretation, Presence, WorkerFacts,
@@ -200,3 +201,8 @@ mod carrier_contract_tests;
 
 #[cfg(test)]
 mod root_tests;
+
+#[cfg(test)]
+mod observation_matrix_tests;
+#[cfg(test)]
+mod observation_tests;

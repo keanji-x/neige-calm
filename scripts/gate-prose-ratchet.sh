@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# OBS adds one long literal (206 -> 207): the preserved nested-presence
+# fixture's original field-path list in observation_tests.rs. This is offline
+# source evidence, not agent-facing prose. Fixture edits update their owner and
+# this baseline. The existing once-per-lint scan and selftest stay unchanged.
 # A1 bounded SQL exception: long_literal/crates/**/*.rs 202 -> 206.
 # Four real-schema test fixtures, not agent-facing prose:
 # 1-2. scheduler/child_failure_notice.rs: recovery-allocation INSERT and the

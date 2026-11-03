@@ -401,20 +401,3 @@ pub(super) fn provider(f: &mut FrameView<'_>, text: &str) -> Result<(), FactCove
     }
     Ok(())
 }
-
-// Carrier records queue shape/kind and owner diagnostics, without settling payloads.
-pub(super) fn observation(
-    f: &mut FrameView<'_>,
-    path: &str,
-    system: bool,
-) -> Result<(), FactCoverageError> {
-    if system {
-        f.diagnose::<calm_types::conversation::SystemObservation>(path)?;
-    } else {
-        f.diagnose::<calm_types::observation::Observation>(path)?;
-    }
-    if f.value_at(path).is_some_and(Value::is_object) {
-        f.diagnose::<String>(&format!("{path}/type"))?;
-    }
-    Ok(())
-}

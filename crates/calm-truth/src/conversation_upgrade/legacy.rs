@@ -67,7 +67,7 @@ pub(super) fn facts(f: &mut FrameView<'_>) -> Result<(), FactCoverageError> {
         for i in 0..max {
             let slot = format!("{path}/{i}");
             match name {
-                "pending_queue" => super::nested::observation(f, &slot, false)?,
+                "pending_queue" => super::observation_projection::observation(f, &slot, false)?,
                 "pending_envelope_ids" => f.check::<i64>(&slot)?,
                 "pending_entry_meta" => {
                     match f.value_at(&slot) {
