@@ -360,7 +360,7 @@ it('uses the shared daily empty report for the heading-only skeleton', async () 
 
 it('shows observed DB latency and deferred workspaces to the owner', async () => {
   const { requests } = renderDailyFixture({
-    identity: { userId: 'owner', displayName: 'Owner', role: 'owner', sessionId: 'supervisor' },
+    identity: { userId: 'local-owner', displayName: 'Owner', role: 'member', sessionId: 'supervisor' },
     reply: request => request.path === '/api/today/supervisor' ? {
       status: 200, statusText: 'OK', body: {
         observed_at_ms: 1, kernel_version: '1.2.3', build_sha: 'abc123',
@@ -376,4 +376,29 @@ it('shows observed DB latency and deferred workspaces to the owner', async () =>
   await expect.element(page.getByText('3.5 ms')).toBeVisible();
   await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
   await expect.element(page.getByText('最早退役时间')).toBeVisible();
+});
+
+it('does not show the Supervisor to a non-owner with the owner role label', async () => {
+  const { requests } = renderDailyFixture({
+    identity: { userId: 'other', displayName: 'Other', role: 'owner', sessionId: 'other' },
+  });
+  await expect.element(page.getByText('Report changes', { exact: true })).toBeVisible();
+  expect(page.getByText('Daily Supervisor', { exact: true }).query()).toBeNull();
+  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(false);
+});
+
+it('can inspect scheduler recovery before the daily Track exists', async () => {
+  renderDailyFixture({
+    identity: { userId: 'local-owner', displayName: 'Owner', role: 'owner', sessionId: 'preparing' },
+    reply: request => {
+      if (request.path === '/api/today/daily') return { status: 200, statusText: 'OK', body: null };
+      if (request.path === '/api/today/supervisor') return { status: 200, statusText: 'OK', body: {
+        observed_at_ms: 1, kernel_version: '1.2.3', build_sha: null,
+        database_probe_ms: null, scheduler_boot_sweep_completed: false, retired_workspaces: null,
+      } };
+    },
+  });
+  await expect.element(page.getByText('Preparing today’s Track…')).toBeVisible();
+  await page.getByText('Daily Supervisor', { exact: true }).click();
+  await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
 });
