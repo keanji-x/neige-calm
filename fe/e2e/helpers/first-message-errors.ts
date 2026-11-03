@@ -25,16 +25,7 @@ export function captureFirstMessageErrors(page: Page, runUrl: () => string | und
     const allowedResources = new Map<string, number>();
     for (const failure of failures) {
       const { url, method, status, body } = await failure;
-      let declaredConflict = false;
-      if (url === runUrl() && method === 'GET' && status === 409 && body !== null) {
-        try {
-          const value: unknown = JSON.parse(body);
-          declaredConflict = value !== null && typeof value === 'object'
-            && 'code' in value && value.code === 'conflict'
-            && 'error' in value && value.error === 'conversation runtime changed while reading'
-            && Object.keys(value).length === 2;
-        } catch { /* Malformed bodies stay unexpected HTTP failures. */ }
-      }
+      const declaredConflict = url === runUrl() && method === 'GET' && isRunReadConflict(status, body);
       if (declaredConflict) allowedResources.set(url, (allowedResources.get(url) ?? 0) + 1);
       else errors.push(`${method} ${url} → ${status}: ${body ?? '<unreadable body>'}`);
     }
@@ -47,4 +38,18 @@ export function captureFirstMessageErrors(page: Page, runUrl: () => string | und
     }
     return [...errors, ...pageErrors];
   };
+}
+
+/** The negotiated run read can refuse to publish a snapshot that changed during the read. */
+export function isRunReadConflict(status: number, body: string | null): boolean {
+  if (status !== 409 || body === null) return false;
+  try {
+    const value: unknown = JSON.parse(body);
+    return value !== null && typeof value === 'object'
+      && 'code' in value && value.code === 'conflict'
+      && 'error' in value && value.error === 'conversation runtime changed while reading'
+      && Object.keys(value).length === 2;
+  } catch {
+    return false;
+  }
 }
