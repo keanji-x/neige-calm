@@ -66,6 +66,35 @@ async fn seed_report_session(state: &crate::state::RouteState, identity: &ToolCa
 }
 
 #[tokio::test]
+async fn daily_planner_reads_operations_guides_through_track_cat() {
+    let (_tmp, _repo, state) = fixture().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let track = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
+        .await
+        .unwrap();
+    let id = identity(&route, &track).await;
+    let handler = crate::mcp_server::build_default_registry()
+        .lookup(crate::mcp_server::tools::track_file::TOOL_TRACK_CAT)
+        .unwrap();
+    for (path, marker) in [
+        ("guide/operations.md", "Daily Supervisor"),
+        ("guide/database.md", "PRAGMA database_list"),
+        ("guide/stalled-work.md", "/api/version"),
+    ] {
+        let result = handler(
+            route.mcp_context.clone(),
+            id.clone(),
+            json!({ "path": path }),
+        )
+        .await
+        .unwrap()
+        .into_structured();
+        assert_eq!(result["content_type"], "text/markdown");
+        assert!(result["content"].as_str().unwrap().contains(marker));
+    }
+}
+
+#[tokio::test]
 async fn granted_planner_reads_foreign_reports_without_write_authority() {
     let (_tmp, _repo, state) = fixture().await;
     let route = crate::state::RouteState::from_ref(&state);

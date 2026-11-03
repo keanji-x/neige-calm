@@ -39,6 +39,10 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         ] {
             assert!(text.contains(name), "{role:?}: missing {name}");
         }
+        assert_eq!(
+            text.contains("guide/operations.md"),
+            role == CardRole::Planner
+        );
         assert!(
             text.find("neige_workspace_ls").unwrap()
                 < text.find("Read other Areas' reports").unwrap()

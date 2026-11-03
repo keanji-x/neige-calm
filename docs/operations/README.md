@@ -1,37 +1,21 @@
-# 运维入口
+# Operations index
 
-面向维护 Neige 实例的人和协助排障的 Daily Planner。先确认实例与证据，再选择下面的操作说明。
+Use this guide to identify the affected Neige instance and choose the next read-only check.
 
-## 先建立实例上下文
+Start with the effective configuration, data directory, service addresses, running version, and observation time. Find the configuration file from the service start command and check for command-line overrides. Keep host-specific values in the incident record and omit credentials.
 
-每次排障记录目标主机、实例名称、实际配置文件、数据目录、服务地址、运行版本和观测时间。机器迁移或升级后重新确认这些值。
+The instance manager owns service lifecycle and upgrades. The runtime owns Tracks, attempts, sessions, and their persisted state. Today and reports present the evidence. Follow the running version and deployment history to identify the instance, then trace the affected Track to its attempt, session, and execution or lease.
 
-从启动命令或服务管理器找到实际的配置入口。配置中的路径、端口与命令行覆盖项决定当前实例；安装时生成的配置文件可能位于安装根目录。读取配置时只摘取排障需要的字段，记录中省略凭据。配置规则见 [neige-app 配置](../neige-app-config.md)。
-
-项目介绍保持在三个职责上即可：
-
-- 实例管理层负责服务进程、安装版本、升级与恢复。
-- 运行层负责 Track、任务、会话、执行资源及其持久化状态。
-- 页面和报告负责展示状态、证据与用户操作入口。
-
-具体模块位置和数据库表结构在排障时从当前版本发现。
-
-## 按问题查阅
-
-| 问题 | 入口 |
+| Question | Read |
 | --- | --- |
-| DB 在哪里、是什么格式、怎样只读查看 | [数据库定位与读取](database.md) |
-| 服务、Track 或任务卡住，怎样查状态 | [停滞与资源排查](stalled-work.md) |
-| 升级前要看什么，怎样备份和恢复 | [部署与升级](../deploy-and-upgrade.md) 的升级触发、结果分类、故障排查和备份恢复章节 |
-| 判断升级兼容性 | [升级稳定性](../upgrade-stability.md) |
-| 理解 SQLite 等待、提交和重试观测 | [事务观测](../db-transaction-observation.md) |
-| 理解退役工作区为何仍存在 | [工作区退役策略](../workspace-retirement.md) |
-| 排查事件留存和磁盘增长 | [事件留存](../events-retention.md) |
+| Where is the database and what is its current schema? | [Locate and inspect SQLite](database.md) |
+| Why is a service, Track, or execution stalled? | [Investigate stalled work](stalled-work.md) |
+| What is the effective instance configuration? | [neige-app configuration](../neige-app-config.md) |
+| What was deployed? How do I upgrade or recover? | [Upgrade history](../deploy-and-upgrade.md#51-get-upgradehistory) and [deployment runbook](../deploy-and-upgrade.md) |
+| What do SQLite wait times and retries measure? | [Transaction observations](../db-transaction-observation.md) |
+| Why are retired workspaces still on disk? | [Workspace retirement](../workspace-retirement.md) |
+| How do I investigate event retention and disk growth? | [Event retention](../events-retention.md) |
 
-## Daily Planner 的使用方式
+Deployment owners can open **Today → Daily Supervisor** for the scheduler boot scan, Worker cleanup candidates, retired workspaces, and SQLite write wait. Use the stall guide to investigate individual executions.
 
-记录“观察到什么、影响谁、证据来自哪里、下一步需要什么”。区分代码已合入、release 已产生、升级已执行和实例验证已通过，每个阶段分别引用证据。
-
-先用当前可用的状态工具和只读接口。工具缺失或读取被拒绝时，写明无法确认的范围。操作授权由当前工具和执行入口校验；运维说明用于选择检查步骤。
-
-维护这组文档时，索引保留职责和入口，详细流程归各 runbook。主机路径、实时版本和具体事故记录放入实例记录，避免成为通用文档里的过期事实。
+Daily Planner can read `guide/operations.md`, `guide/database.md`, and `guide/stalled-work.md` with `neige_track_cat`. Links to the deployment runbooks are for operators. In reports, distinguish a merged PR, an available release, an applied upgrade, and a verified running version. Cite the observation for each claimed stage and record missing evidence as unknown.
