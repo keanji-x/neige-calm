@@ -1661,10 +1661,10 @@ impl Scheduler {
         }
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
-        if let Some(runtime) = self.operation_runtime.upgrade() {
-            if let Err(error) = runtime.sweep_parked().await {
-                tracing::warn!(%error, "scheduler sweep: sweep_parked failed; next tick retries");
-            }
+        if let Some(runtime) = self.operation_runtime.upgrade()
+            && let Err(error) = runtime.sweep_parked().await
+        {
+            tracing::warn!(%error, "scheduler sweep: sweep_parked failed; next tick retries");
         }
         self.sweep_timeout_worker_cleanups().await;
         let mut pending_tracks: BTreeSet<String> = BTreeSet::new();
