@@ -1,10 +1,10 @@
-//! Confirmed release survives a lost observation or idempotent stdin-close connection.
+//! Confirmed release survives a lost observation on the execution change path.
 use super::c3_execution::*;
 use super::*;
 #[path = "../support/execution_fault.rs"]
 mod fault;
 
-async fn released_transport_error(kind: &str, close: bool) {
+async fn released_transport_error(kind: &str) {
     let boot = TestBoot::new().await;
     let started = boot.temp_path("transport-started");
     let finish = boot.temp_path("transport-finish");
@@ -51,7 +51,8 @@ async fn released_transport_error(kind: &str, close: bool) {
             .fetch_one(boot.repo.pool())
             .await
             .unwrap();
-    let mut fault = fault::Fault::install(&boot._execution.socket, execution.into(), close);
+    let mut fault = fault::Fault::install(&boot._execution.socket, execution.into());
+    super::c3_observer::wake_observer(&boot, &id).await;
     tokio::time::timeout(Duration::from_secs(5), &mut fault.hit)
         .await
         .unwrap()
@@ -59,23 +60,19 @@ async fn released_transport_error(kind: &str, close: bool) {
     // The child remains blocked, so any Stop or refusal can only come from the lost connection.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let retained = c3_op(&boot, &id).await;
-    assert_eq!(retained.phase, Phase::Parked, "{kind} close={close}");
+    assert_eq!(retained.phase, Phase::Parked, "{kind}");
     assert_eq!(forge_event_count(&boot.repo).await, 0);
-    assert_eq!(
-        select(&c3_record(&retained)),
-        before,
-        "{kind} close={close}"
-    );
+    assert_eq!(select(&c3_record(&retained)), before, "{kind}");
     let after: String =
         sqlx::query_scalar("SELECT desired FROM workspace_executions WHERE execution_id=?")
             .bind(execution)
             .fetch_one(boot.repo.pool())
             .await
             .unwrap();
-    assert_eq!(after, desired, "{kind} close={close}");
+    assert_eq!(after, desired, "{kind}");
     drop(fault);
     std::fs::write(&finish, "go").unwrap();
-    let result = c3_result(&boot, &id).await;
+    let result = super::c3_observer::result_without_sweep(&boot, &id).await;
     let OperationOutcome::Succeeded { result } = result.outcome else {
         panic!("original outcome lost: {result:?}")
     };
@@ -91,30 +88,15 @@ async fn released_transport_error(kind: &str, close: bool) {
 
 #[tokio::test]
 async fn c3_released_action_output_transport_error() {
-    released_transport_error("action", false).await;
-}
-
-#[tokio::test]
-async fn c3_released_action_close_transport_error() {
-    released_transport_error("action", true).await;
+    released_transport_error("action").await;
 }
 
 #[tokio::test]
 async fn c3_released_verdict_output_transport_error() {
-    released_transport_error("verdict", false).await;
-}
-
-#[tokio::test]
-async fn c3_released_verdict_close_transport_error() {
-    released_transport_error("verdict", true).await;
+    released_transport_error("verdict").await;
 }
 
 #[tokio::test]
 async fn c3_released_output_output_transport_error() {
-    released_transport_error("output", false).await;
-}
-
-#[tokio::test]
-async fn c3_released_output_close_transport_error() {
-    released_transport_error("output", true).await;
+    released_transport_error("output").await;
 }

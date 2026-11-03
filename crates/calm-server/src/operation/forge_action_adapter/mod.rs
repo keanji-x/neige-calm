@@ -606,6 +606,10 @@ impl ProviderAdapter for ForgeActionAdapter {
         })
     }
 
+    async fn owned_parked_recovery_eligible(&self, op: &Operation, ctx: &SpawnCtx) -> bool {
+        lifecycle::recovery_eligible(ctx, op).await
+    }
+
     async fn recover_owned_parked(
         &self,
         op: &Operation,

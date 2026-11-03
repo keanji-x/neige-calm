@@ -2,7 +2,8 @@
 use super::*;
 use crate::operation::{ParkedRecovery, RecoveryMode, owned_execution, owned_parked};
 use execution::{Decision, Kind, Release, StopReason, Verdict};
-use workspace_runtime::execution::{ExecutionReply, ExecutionState, Settlement};
+use owned_execution::observation::{ExecutionWatch, execution_ready};
+use workspace_runtime::execution::{ExecutionState, Settlement};
 
 pub(super) fn legacy_error(op: &Operation) -> CalmError {
     CalmError::Conflict(format!(
@@ -312,23 +313,6 @@ async fn observer_step(ctx: &SpawnCtx, op: &Operation) -> Result<()> {
             }
             break;
         }
-        if matches!(probe.release, Release::Released { .. })
-            && let Some(engine) = ctx.execution.engine()
-        {
-            // Unknown is not evidence of a live session; never close it.
-            // Once authorization is durable, a failed transport cannot authorize a replay.
-            if matches!(
-                engine.output(&probe.execution_id, None).await,
-                Ok(ExecutionReply::Observation {
-                    state: ExecutionState::Spawned | ExecutionState::Exited { .. },
-                    ..
-                })
-            ) {
-                // Released is already confirmed. A lost observation or idempotent close
-                // response changes neither the decision nor Desired; retry next step.
-                let _ = engine.close_stdin(&probe.execution_id).await;
-            }
-        }
     }
     let latest = execution::refresh_claim(ctx, op).await?;
     owned_parked::reconcile(
@@ -370,64 +354,119 @@ async fn observe_inner(ctx: &SpawnCtx, id: &str) {
                 .map_or("none", |s| s.event_kind.as_str())
         ));
     }
-    let mut retry_delay = std::time::Duration::from_millis(50);
     loop {
+        let watch = ExecutionWatch::subscribe(ctx).await;
         #[cfg(feature = "fixtures")]
         crate::test_seams::pause_point("forge-observer-before-read", id).await;
-        match ctx.operation_repo.get_operation(id).await {
-            Ok(Some(current)) => {
-                if current.phase.tag() != PhaseTag::Parked {
-                    if let Ok(record) = execution::record(&current) {
-                        ctx.execution.drive(record.ids());
-                    }
-                    return;
-                }
-                if current
-                    .parked_deadline_ms
-                    .is_some_and(|deadline| crate::model::now_ms() >= deadline)
-                    && let Ok(record) = execution::record(&current)
-                    && record.decision == Decision::Observing
-                {
-                    // Only the sweep owns the action deadline. Do not compete for
-                    // its claim once due. A settled action has no remaining timer
-                    // and may still need its probes driven to completion.
-                    match owned_execution::settlement(ctx, &record.execution_id).await {
-                        Ok(Some(_)) => {}
-                        _ => return,
-                    }
-                }
-            }
-            Ok(None) => return,
+        let result = observe_once(ctx, id, watch).await;
+        match result {
+            Ok(true) => {}
+            Ok(false) => return,
             Err(error) => {
-                repository_backoff(id, &error, &mut retry_delay).await;
-                continue;
+                tracing::warn!(op_id=%id, %error, "forge observation will retry");
+                ExecutionWatch::retry().await;
             }
         }
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point("forge-observer-before-claim", id).await;
-        let op = match ctx.operation_repo.claim_parked(id).await {
-            Ok(op) => op,
-            Err(error) => {
-                repository_backoff(id, &error, &mut retry_delay).await;
-                continue;
-            }
-        };
-        retry_delay = std::time::Duration::from_millis(50);
-        if let Some(op) = op {
-            let result = observer_step(ctx, &op).await;
-            #[cfg(feature = "fixtures")]
-            crate::test_seams::pause_point("forge-observer-after-step", id).await;
-            if let Err(error) = result {
-                // Preserve the error and lease backoff through the same owned recovery path.
-                tracing::warn!(op_id=%id,%error,"forge execution retained");
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
-async fn repository_backoff(id: &str, error: &CalmError, delay: &mut std::time::Duration) {
-    tracing::warn!(op_id=%id, %error, "forge observer repository access will retry");
-    tokio::time::sleep(*delay).await;
-    *delay = (*delay * 2).min(std::time::Duration::from_secs(2));
+#[derive(Default)]
+struct Readiness {
+    ready: bool,
+    sweep_due: bool,
+    deadline: Option<i64>,
+}
+
+async fn readiness(ctx: &SpawnCtx, op: &Operation, mode: RecoveryMode) -> Result<Readiness> {
+    let record = execution::record(op)?;
+    let mut state = Readiness::default();
+    let mut all_settled = true;
+    for kind in [Kind::Action, Kind::Verdict, Kind::Output] {
+        if matches!(kind, Kind::Verdict) && record.probes.verdict.is_none()
+            || matches!(kind, Kind::Output) && record.probes.output.is_none()
+        {
+            continue;
+        }
+        let probe = record.execution(kind);
+        let settled = owned_execution::settlement(ctx, &probe.execution_id)
+            .await?
+            .is_some();
+        all_settled &= settled;
+        if !settled && matches!(kind, Kind::Action) && probe.decision == Decision::Observing {
+            state.deadline = op.parked_deadline_ms;
+            state.sweep_due = op
+                .parked_deadline_ms
+                .is_some_and(|at| crate::model::now_ms() >= at);
+        }
+        if !settled {
+            state.deadline = state
+                .deadline
+                .into_iter()
+                .chain(execution::observer_deadline(kind, &probe))
+                .min();
+        }
+        if execution::stop_reason(op, kind, &probe, settled, mode).is_some()
+            || (!settled && probe.decision == Decision::Observing && probe.release == Release::Held)
+            || (!settled && execution_ready(ctx, &probe.execution_id).await?)
+        {
+            state.ready = true;
+        }
+    }
+    state.ready |= all_settled;
+    Ok(state)
+}
+
+pub(super) async fn recovery_eligible(ctx: &SpawnCtx, op: &Operation) -> bool {
+    let mode = if op
+        .parked_deadline_ms
+        .is_some_and(|at| crate::model::now_ms() > at)
+    {
+        RecoveryMode::PastDeadline
+    } else {
+        RecoveryMode::PreDeadlineProbe
+    };
+    // An unavailable read must not suppress the authoritative recovery path.
+    readiness(ctx, op, mode)
+        .await
+        .map_or(true, |state| state.ready)
+}
+
+async fn observe_once(ctx: &SpawnCtx, id: &str, watch: ExecutionWatch) -> Result<bool> {
+    let Some(current) = ctx.operation_repo.get_operation(id).await? else {
+        return Ok(false);
+    };
+    if current.phase.tag() != PhaseTag::Parked {
+        if let Ok(record) = execution::record(&current) {
+            ctx.execution.drive(record.ids());
+        }
+        return Ok(false);
+    }
+    let state = readiness(ctx, &current, RecoveryMode::PreDeadlineProbe).await?;
+    if state.sweep_due {
+        // Only the sweep owns the action deadline.
+        return Ok(false);
+    }
+    if !state.ready {
+        watch.wait(state.deadline).await?;
+        return Ok(true);
+    }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("forge-observer-before-claim", id).await;
+    let Some(op) = ctx.operation_repo.claim_parked(id).await? else {
+        ExecutionWatch::retry().await;
+        return Ok(true);
+    };
+    let result = observer_step(ctx, &op).await;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("forge-observer-after-step", id).await;
+    result?;
+    if let Some(latest) = ctx.operation_repo.get_operation(id).await?
+        && latest.phase.tag() == PhaseTag::Parked
+        && execution::record(&latest)? == execution::record(&op)?
+    {
+        // A busy probe admission or a drain still in progress may produce no
+        // change. Pace retries without imposing a timer on healthy executions.
+        ExecutionWatch::retry().await;
+    }
+    Ok(true)
 }

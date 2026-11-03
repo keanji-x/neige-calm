@@ -57,14 +57,14 @@ async fn c3_boot_final_sweep_preserves_fresh_probe_claim() {
 async fn c3_observer_repeated_sweeps_stay_bounded() {
     let boot = TestBoot::new().await;
     let id = c3_running_probe(&boot, "bounded-observer").await;
-    let claim = pause_before_claim(&id).await;
+    let claim = pause_before_read(&boot, &id).await;
     (boot.repo.db())
         .writer()
         .execute(sqlx::query("UPDATE operations SET parked_deadline_ms=0 WHERE id=?").bind(&id))
         .await
         .unwrap();
     for _ in 0..8 {
-        // Force a successful sweep claim rather than a skipped leased row.
+        // Remove any lease so only readiness can suppress a steady claim.
         (boot.repo.db())
             .writer()
             .execute(
@@ -148,7 +148,7 @@ async fn c3_observer_unknown_executions_stay_bounded() {
             wait_for_file(&boot.temp_path("started")).await;
             id
         };
-        let claim = pause_before_claim(&id).await;
+        let claim = pause_before_read(&boot, &id).await;
         boot._execution.restart().await;
         (boot.repo.db())
             .writer()
@@ -189,13 +189,20 @@ async fn c3_observer_unknown_executions_stay_bounded() {
     }
 }
 
-async fn pause_before_claim(id: &str) -> PausePoint {
+async fn pause_before_read(boot: &TestBoot, id: &str) -> PausePoint {
     let claim = PausePoint::default();
-    install_pause_for_test("forge-observer-before-claim", id, claim.clone());
+    install_pause_for_test("forge-observer-before-read", id, claim.clone());
+    wake_observer(boot, id).await;
     tokio::time::timeout(Duration::from_secs(10), claim.entered.notified())
         .await
         .unwrap();
     claim
+}
+
+pub(super) async fn wake_observer(boot: &TestBoot, id: &str) {
+    let record = c3_record(&c3_op(boot, id).await);
+    let execution = serde_json::from_value(record["execution_id"].clone()).unwrap();
+    boot.spawn_ctx.execution.drive([execution]);
 }
 
 pub(super) async fn result_without_sweep(boot: &TestBoot, id: &str) -> OperationResult {
@@ -352,6 +359,7 @@ async fn c4_recovery_tick_redrives_forge_retire_after_store_error() {
         &id,
         pause.clone(),
     );
+    wake_observer(&boot, &id).await;
     tokio::time::timeout(Duration::from_secs(10), pause.entered.notified())
         .await
         .unwrap();

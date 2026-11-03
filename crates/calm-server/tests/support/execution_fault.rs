@@ -19,7 +19,7 @@ impl Drop for Fault {
     }
 }
 impl Fault {
-    pub fn install(socket: &std::path::Path, execution: String, close: bool) -> Self {
+    pub fn install(socket: &std::path::Path, execution: String) -> Self {
         let backend = socket.with_extension("backend");
         std::fs::rename(socket, &backend).unwrap();
         let listener = tokio::net::UnixListener::bind(socket).unwrap();
@@ -45,8 +45,7 @@ impl Fault {
                 let selected = matches!(&command, ControlMsg::Execution(request)
                     if matches!(request.as_ref(), ExecutionRequest::Control(control)
                         if control.capability.identity.execution_id.as_str() == execution
-                        && if close { matches!(control.action, ProcessAction::CloseStdin) }
-                            else { matches!(control.action, ProcessAction::Observe { .. }) }));
+                        && matches!(control.action, ProcessAction::Observe { .. })));
                 if selected {
                     drop(client);
                     if let Some(send) = send.take() {
