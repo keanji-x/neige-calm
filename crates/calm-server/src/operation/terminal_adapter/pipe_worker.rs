@@ -43,7 +43,7 @@ struct Authority<'a>(&'a str);
 #[async_trait]
 impl pipe::ReleaseAuthorization for Authority<'_> {
     async fn authorize_tx(&self, tx: &mut Tx<'_>) -> Result<()> {
-        crate::task_recovery::require_attempt_startable_tx(tx, self.0).await?;
+        crate::task_recovery::require_checkout_startable_tx(tx, self.0).await?;
         let task = crate::db::sqlite::task_get_tx(tx, self.0)
             .await?
             .ok_or_else(|| CalmError::Conflict("terminal task disappeared".into()))?;
@@ -287,6 +287,11 @@ impl TerminalWorkerAdapter {
                     None,
                 )
                 .await;
+                if matches!(result, Err(CalmError::OperationBlocked(_))) {
+                    // Authorization refused before Held -> Releasing. Nothing
+                    // was sent; keep the same execution for the owner's retry.
+                    return Ok(());
+                }
                 if result.is_err() {
                     let latest = owned::refresh_claim(ctx, op).await?;
                     pipe::stop(CONFIG, ctx, &latest, StopReason::ReleaseRefused).await?;

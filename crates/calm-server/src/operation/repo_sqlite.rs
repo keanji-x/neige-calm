@@ -10,8 +10,9 @@ use crate::model::{new_id, now_ms};
 
 use super::{
     CompensationStateVersioned, OPERATION_LEASE_MS, Operation, OperationId, OperationKey,
-    OperationRepo, OperationResult, Phase, ProviderAdapter, SpawnArtifacts, TxOutput,
-    idempotency_payload_conflict, operation_result_from, required_lease_owner,
+    OperationRepo, OperationResult, PendingRetryOwner, Phase, ProviderAdapter,
+    SCHEDULER_PENDING_DETAIL, SpawnArtifacts, TxOutput, idempotency_payload_conflict,
+    operation_result_from, required_lease_owner,
 };
 
 #[cfg(any(test, feature = "fixtures"))]
@@ -30,6 +31,17 @@ pub(crate) use writes::{
 
 #[cfg(test)]
 mod claim_tests;
+
+// A lease controls concurrent execution. The Pending detail controls which
+// caller may acquire the next lease, including during boot recovery.
+const DRIVER_MAY_CLAIM: &str = r#"CASE
+    WHEN phase <> 'pending' OR phase_detail_json IS NULL THEN 1
+    WHEN json_valid(phase_detail_json)
+        THEN json_type(phase_detail_json) = 'object'
+            AND (json_type(phase_detail_json, '$.retry_owner') IS NULL
+                OR json_extract(phase_detail_json, '$.retry_owner') = 'driver')
+    ELSE 0
+END"#;
 
 #[derive(Clone)]
 pub struct SqlxOperationRepo {
@@ -53,7 +65,7 @@ impl SqlxOperationRepo {
             .with_writer(|write_session| {
                 Box::pin(async move {
                     let mut tx = write_session.begin_immediate().await?;
-                    let ids = sqlx::query(
+                    let ids = sqlx::query(&format!(
                         r#"SELECT id
                FROM operations
                WHERE phase IN (
@@ -66,9 +78,10 @@ impl SqlxOperationRepo {
                )
                AND (lease_until_ms IS NULL OR lease_until_ms < ?1)
                AND (?3 IS NULL OR id = ?3)
+               AND ({DRIVER_MAY_CLAIM})
                ORDER BY created_at_ms ASC
                LIMIT ?2"#,
-                    )
+                    ))
                     .bind(now)
                     .bind(limit)
                     .bind(exact_id)
@@ -123,7 +136,7 @@ impl SqlxOperationRepo {
         let result = (self.pool)
             .writer()
             .execute(
-                sqlx::query(
+                sqlx::query(&format!(
                     r#"UPDATE operations
                SET lease_owner = ?1,
                    lease_until_ms = ?2,
@@ -136,8 +149,9 @@ impl SqlxOperationRepo {
                    'spawn_started',
                    'spawn_succeeded',
                    'compensating'
-                 )"#,
-                )
+                 )
+                 AND ({DRIVER_MAY_CLAIM})"#,
+                ))
                 .bind(&lease_owner)
                 .bind(lease_until)
                 .bind(now)
@@ -170,11 +184,12 @@ impl OperationRepo for SqlxOperationRepo {
         ))
     }
 
-    async fn insert_operation(
+    async fn insert_operation_for(
         &self,
         kind: &str,
         key: OperationKey,
         payload: Value,
+        retry_owner: PendingRetryOwner,
     ) -> Result<OperationId> {
         if let Some(idempotency_key) = key.idempotency_key.as_deref()
             && let Some(existing) = self.find_by_kind_idempotency(kind, idempotency_key).await?
@@ -196,7 +211,13 @@ impl OperationRepo for SqlxOperationRepo {
         let id = new_id();
         let inserted = (self.pool)
             .writer()
-            .execute(insert_pending_row(&id, kind, &key, &payload)?)
+            .execute(insert_pending_row(
+                &id,
+                kind,
+                &key,
+                &payload,
+                (retry_owner == PendingRetryOwner::Scheduler).then_some(SCHEDULER_PENDING_DETAIL),
+            )?)
             .await;
 
         match inserted {
@@ -318,6 +339,7 @@ impl OperationRepo for SqlxOperationRepo {
                     if !has_live_claim_tx(&mut tx, op).await? {
                         return Ok(super::PrepareAdvance::ClaimLost);
                     }
+                    crate::task_recovery::require_operation_checkout_tx(&mut tx, op).await?;
                     let applied = match prepared {
                         Some(prepared) => prepared.apply(&mut tx, op).await,
                         None => adapter
@@ -655,15 +677,16 @@ pub(super) fn insert_pending_row(
     kind: &str,
     key: &OperationKey,
     payload: &Value,
+    phase_detail: Option<&str>,
 ) -> Result<Query<'static, Sqlite, SqliteArguments<'static>>> {
     let (target_type, target_id, target_json) = target_from_payload(payload);
     Ok(sqlx::query(
         r#"INSERT INTO operations (
                id, operation_key, kind, idempotency_key, payload_hash,
                target_type, target_id, target_json, payload_json,
-               phase, created_at_ms, updated_at_ms
+               phase, created_at_ms, updated_at_ms, phase_detail_json
            )
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10)"#,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', ?10, ?10, ?11)"#,
     )
     .bind(id.to_string())
     .bind(key.operation_key.clone())
@@ -674,7 +697,8 @@ pub(super) fn insert_pending_row(
     .bind(target_id)
     .bind(serde_json::to_string(&target_json)?)
     .bind(serde_json::to_string(payload)?)
-    .bind(now_ms()))
+    .bind(now_ms())
+    .bind(phase_detail.map(str::to_owned)))
 }
 
 pub(super) fn operation_from_row(row: &SqliteRow) -> Result<Operation> {

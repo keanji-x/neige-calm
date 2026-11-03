@@ -227,6 +227,34 @@ pub struct Operation {
     pub parked_deadline_ms: Option<TimestampMs>,
 }
 
+pub use calm_types::task_execution::{PendingBlocker, PendingBlockerClass, PendingRetryOwner};
+
+const SCHEDULER_PENDING_DETAIL: &str = r#"{"retry_owner":"scheduler"}"#;
+
+pub fn pending_blocker(op: &Operation) -> Result<Option<PendingBlocker>> {
+    if !matches!(op.phase, Phase::Pending) {
+        return Ok(None);
+    }
+    let Some(detail) = op.phase_detail.as_ref() else {
+        return Ok(None);
+    };
+    // A scheduler-owned row may have been inserted or claimed before it
+    // encounters a blocker. Ownership alone does not release checkout occupancy.
+    if detail.as_object().is_some_and(|fields| {
+        fields.len() == 1 && fields.get("retry_owner").and_then(Value::as_str) == Some("scheduler")
+    }) {
+        return Ok(None);
+    }
+    serde_json::from_value(detail.clone())
+        .map(Some)
+        .map_err(|error| {
+            CalmError::Conflict(format!(
+                "pending operation {} has unreadable blocker: {error}",
+                op.id
+            ))
+        })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TxOutput {
     pub target_type: String,
@@ -765,6 +793,11 @@ pub enum OperationWait {
     Settled(OperationResult),
     /// Parked on an execution the adapter owns; the row as read at that moment.
     OwnedParked(Box<Operation>),
+    /// The exact operation remains Pending with a durable recoverable blocker.
+    Deferred {
+        op: Box<Operation>,
+        blocker: PendingBlocker,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1045,6 +1078,16 @@ pub trait OperationRepo: Send + Sync {
         kind: &str,
         key: OperationKey,
         payload: Value,
+    ) -> Result<OperationId> {
+        self.insert_operation_for(kind, key, payload, PendingRetryOwner::Driver)
+            .await
+    }
+    async fn insert_operation_for(
+        &self,
+        kind: &str,
+        key: OperationKey,
+        payload: Value,
+        retry_owner: PendingRetryOwner,
     ) -> Result<OperationId>;
     async fn find_by_idempotency_key(
         &self,
@@ -1062,18 +1105,128 @@ pub trait OperationRepo: Send + Sync {
     ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
+    /// Persist a blocker only while this caller still owns the exact Pending claim.
+    /// Ordinary deferrals keep their backoff. Scheduler deferrals release the
+    /// lease and retain scheduler ownership in the Pending detail.
+    async fn defer_pending_claim(
+        &self,
+        op: &Operation,
+        blocker: &PendingBlocker,
+        retry_owner: PendingRetryOwner,
+    ) -> Result<bool> {
+        let db = self.sqlite_db();
+        db.writer().with_writer(|write_session| Box::pin(async move {
+            let mut tx = write_session.begin_immediate().await?;
+            require_live_claim_tx(&mut tx, op).await?;
+            let changed = sqlx::query(
+                "UPDATE operations SET phase_detail_json=?1,lease_owner=NULL,updated_at_ms=?2, \
+                 lease_until_ms=CASE WHEN ?5 THEN NULL ELSE lease_until_ms END \
+                 WHERE id=?3 AND phase='pending' AND lease_owner=?4",
+            )
+            .bind(serde_json::to_string(&blocker.clone().with_retry_owner(retry_owner))?)
+            .bind(now_ms())
+            .bind(&op.id)
+            .bind(
+                op.lease_owner
+                    .as_deref()
+                    .ok_or_else(|| CalmError::Conflict("pending blocker claim has no owner".into()))?,
+            )
+            .bind(retry_owner == PendingRetryOwner::Scheduler)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected()
+                == 1;
+            tx.commit().await?;
+            Ok(changed)
+        })).await.map_err(calm_truth::TruthError::from)?
+    }
+
+    /// A global-driver refusal happens before an operation claim. Write only when
+    /// there is no live claimant, so this observation cannot overwrite another owner.
+    async fn defer_unclaimed_pending(&self, id: &str, blocker: &PendingBlocker) -> Result<bool> {
+        let db = self.sqlite_db();
+        let now = now_ms();
+        let changed = db
+            .writer()
+            .execute(
+                sqlx::query(
+                    "UPDATE operations SET phase_detail_json=?1,updated_at_ms=?2,lease_owner=NULL,lease_until_ms=NULL \
+             WHERE id=?3 AND phase='pending' \
+               AND (lease_owner IS NULL OR lease_until_ms < ?2)",
+                )
+                .bind(serde_json::to_string(&blocker.clone().with_retry_owner(PendingRetryOwner::Scheduler))?)
+                .bind(now)
+                .bind(id),
+            )
+            .await?
+            .rows_affected()
+            == 1;
+        Ok(changed)
+    }
+    /// A scheduler claim adopts Pending ownership and retains any blocker.
+    /// Only successful preparation may atomically replace that pre-effect evidence.
+    async fn claim_pending_retry(&self, original: &Operation) -> Result<Option<Operation>> {
+        pending_blocker(original)?;
+        let db = self.sqlite_db();
+        db.writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    repo_sqlite::require_original_operation_tx(&mut tx, original).await?;
+                    let now = now_ms();
+                    let owner = new_id();
+                    let changed = sqlx::query(
+                        "UPDATE operations SET lease_owner=?1,lease_until_ms=?2,updated_at_ms=?3, \
+                         phase_detail_json=json_set(coalesce(phase_detail_json,'{}'),'$.retry_owner','scheduler') \
+                 WHERE id=?4 AND phase='pending' AND completed_at_ms IS NULL \
+                   AND (lease_owner IS NULL OR lease_until_ms < ?3)",
+                    )
+                    .bind(&owner)
+                    .bind(now + OPERATION_LEASE_MS)
+                    .bind(now)
+                    .bind(&original.id)
+                    .execute(&mut **tx)
+                    .await?;
+                    if changed.rows_affected() == 0 {
+                        return Ok(None);
+                    }
+                    let row = sqlx::query("SELECT * FROM operations WHERE id=?1")
+                        .bind(&original.id)
+                        .fetch_one(&mut **tx)
+                        .await?;
+                    let claimed = operation_from_row(&row)?;
+                    pending_blocker(&claimed)?;
+                    tx.commit().await?;
+                    Ok(Some(claimed))
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
+    }
     /// Called under drive after a Busy waker releases track; a later phase owns its lease.
     async fn release_pending_for_retry(&self, id: &str) -> Result<()> {
         let db = self.sqlite_db();
         let write_db = (db).clone();
-        write_db.writer().with_writer(|write_session| Box::pin(async move {
-            let mut tx = write_session.begin_immediate().await?;
-            sqlx::query("UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL WHERE id=? AND phase='pending'")
-                .bind(id).execute(&mut **tx).await?;
-            tx.commit().await?;
-            Ok(())
-
-    })).await.map_err(calm_truth::TruthError::from)?
+        write_db
+            .writer()
+            .with_writer(|write_session| {
+                Box::pin(async move {
+                    let mut tx = write_session.begin_immediate().await?;
+                    sqlx::query(
+                        "UPDATE operations SET lease_owner=NULL, lease_until_ms=NULL \
+                        WHERE id=?1 AND phase='pending' \
+                        AND (lease_owner IS NULL OR lease_until_ms < ?2)",
+                    )
+                    .bind(id)
+                    .bind(now_ms())
+                    .execute(&mut **tx)
+                    .await?;
+                    tx.commit().await?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(calm_truth::TruthError::from)?
     }
 
     /// The same drive phase/lease predicate restricted to one existing operation.

@@ -62,6 +62,7 @@ struct PreparedWorker<A> {
 
 async fn read_facts(tx: &mut Tx<'_>, track_id: &str, attempt: &str) -> Result<Facts> {
     crate::operation::refuse_if_context_stale(tx, Some(attempt)).await?;
+    crate::task_recovery::require_checkout_startable_tx(tx, attempt).await?;
     let task = task_get_tx(tx, attempt)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("task {attempt}")))?;
@@ -77,11 +78,6 @@ async fn read_facts(tx: &mut Tx<'_>, track_id: &str, attempt: &str) -> Result<Fa
     let workspace = track_workspace_read_tx(tx, track_id).await?;
     let observation = workspace_observation_snapshot(tx, track_id).await?;
     let occupancy = checkout_occupancy(tx, track_id, attempt).await?;
-    if !occupancy.admits(task.access) {
-        return Err(CalmError::Conflict(
-            "track checkout is in use by another attempt".into(),
-        ));
-    }
     let sql = format!(
         include_str!("preparation_leases.sql"),
         columns = WORKSPACE_LEASE_COLUMNS

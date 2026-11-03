@@ -83,23 +83,6 @@ pub enum BusyReason {
     OutputOpen,
 }
 
-/// Immutable, secret-free execution history. Unknown-id revocation has no source or slot.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionTombstone {
-    pub execution_id: ExecutionId,
-    pub ticket_id: LaunchTicketId,
-    pub registration: Option<ObjectRegistrationId>,
-    pub directory: Option<ExternalDirectoryId>,
-    pub slot: Option<(String, u64)>,
-    pub outcome: TombstoneOutcome,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TombstoneOutcome {
-    Revoked,
-    Retired,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrepareExecution {
     pub source: PreparedSource,
@@ -208,50 +191,6 @@ pub enum OutputEnd {
     Open,
     Complete { final_cursor: u64 },
     Incomplete { reason: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ExecutionState {
-    Prepared,
-    Revoked,
-    Forking,
-    Spawned,
-    Exited {
-        status: Option<i32>,
-    },
-    Drained {
-        status: Option<i32>,
-    },
-    NoChild {
-        reason: String,
-    },
-    Unknown {
-        reason: String,
-    },
-    /// Original identity is gone and its original group and session are empty after restart.
-    /// No child exit status or descendant-wide drain proof is implied.
-    InterruptedQuiescent {
-        reason: ExecutionInterruption,
-        proof: InterruptedQuiescenceProof,
-    },
-    /// Owned root exited and its pinned original process group was observed empty.
-    /// Does not prove absence of descendants which deliberately left that group.
-    OriginalGroupEmpty {
-        status: Option<i32>,
-    },
-}
-
-impl ExecutionState {
-    pub fn permits_handoff(&self) -> bool {
-        matches!(
-            self,
-            Self::Revoked
-                | Self::Drained { .. }
-                | Self::OriginalGroupEmpty { .. }
-                | Self::InterruptedQuiescent { .. }
-                | Self::NoChild { .. }
-        )
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

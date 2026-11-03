@@ -1,6 +1,93 @@
 use std::path::{Path, PathBuf};
 use workspace_runtime::execution::CapabilityToken;
 
+/// An optional-viewer endpoint that never executes the requested program.
+pub struct RefuseLegacySpawn {
+    pub socket: PathBuf,
+    absence_probes: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _dir: tempfile::TempDir,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for RefuseLegacySpawn {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl RefuseLegacySpawn {
+    pub fn allow_absence_probes(&self) {
+        self.absence_probes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn start() -> Self {
+        use calm_session::control::{
+            ControlErrorKind, ControlMsg, ControlReply, SpawnFailedDisposition,
+        };
+        let dir = calm_test_sockets::socket_dir("no-viewer");
+        let socket = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let absence_probes = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let endpoint_probes = absence_probes.clone();
+        let task = tokio::spawn(async move {
+            let mut clients = tokio::task::JoinSet::new();
+            loop {
+                let (mut client, _) = listener.accept().await.unwrap();
+                let absence_probes = endpoint_probes.clone();
+                clients.spawn(async move {
+                    loop {
+                        let Ok(message) =
+                            calm_session::read_frame::<ControlMsg, _>(&mut client).await
+                        else {
+                            return;
+                        };
+                        let reply = match message {
+                            ControlMsg::Probe(_)
+                                if absence_probes.load(std::sync::atomic::Ordering::SeqCst) =>
+                            {
+                                ControlReply::ProbeOk {
+                                    supervisor_version: 2,
+                                    proc_running: false,
+                                }
+                            }
+                            // Fail the version handshake before the launch
+                            // request is issued. The owner can then persist
+                            // NotRequested and safely dispose the optional view.
+                            ControlMsg::Probe(_) => ControlReply::Error {
+                                kind: ControlErrorKind::BadRequest,
+                                message: "fixture optional viewer unavailable".into(),
+                            },
+                            ControlMsg::EnsureProc(_) => ControlReply::SpawnFailed {
+                                disposition: SpawnFailedDisposition::NoChildCreated,
+                                error: "fixture optional viewer unavailable".into(),
+                                child_already_reaped: true,
+                            },
+                            ControlMsg::Attach(_)
+                            | ControlMsg::Signal(_)
+                            | ControlMsg::Cleanup(_) => ControlReply::Error {
+                                kind: ControlErrorKind::UnknownProc,
+                                message: "optional viewer was never created".into(),
+                            },
+                            other => panic!("unexpected viewer request: {other:?}"),
+                        };
+                        if calm_session::write_frame(&mut client, &reply)
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        Self {
+            socket,
+            absence_probes,
+            _dir: dir,
+            task,
+        }
+    }
+}
+
 // Both production-entry suites use the same single-owner watchdog. Keep its
 // implementation and panic/timeout regression in the supervisor's test layer.
 #[cfg(target_os = "macos")]

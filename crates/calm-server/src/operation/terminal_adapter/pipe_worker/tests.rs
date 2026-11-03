@@ -1,12 +1,15 @@
 use super::*;
 use crate::db::RepoOutOfDomain;
 use crate::operation::forge_action_adapter::tests::executor::Executor;
+
+const WAIT_FOR_GO: &str =
+    "i=0; until [ -e go ] || [ \"$i\" -ge 600 ]; do sleep 0.05; i=$((i+1)); done; test -e go";
 use crate::{
     db::{RepoRead, sqlite::SqlxRepo},
     event::EventBus,
     operation::{
-        OperationCompletionBus, OperationKey, OperationRepo, OperationRuntime, Phase,
-        SqlxOperationRepo,
+        OperationCompletionBus, OperationKey, OperationRepo, OperationRuntime, PendingBlocker,
+        PendingBlockerClass, Phase, SqlxOperationRepo,
     },
     state::DaemonClient,
     terminal_renderer::TerminalRendererRegistry,

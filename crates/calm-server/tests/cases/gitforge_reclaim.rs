@@ -192,7 +192,10 @@ async fn recover_reclaims(f: &Fixture) -> Arc<calm_server::operation::OperationR
 }
 
 fn state_for_reclaim(b: &Boot, socket: &Path) -> AppState {
-    AppState::from_parts(
+    // These fixtures drive their final runtime explicitly. A prior state's
+    // listener must not claim report tasks through its original stub runtime.
+    b.state.dispatcher.abort_event_listener_for_test();
+    let state = AppState::from_parts(
         b.repo.clone(),
         b.state.events.clone(),
         Arc::new(calm_server::state::DaemonClient {
@@ -205,7 +208,9 @@ fn state_for_reclaim(b: &Boot, socket: &Path) -> AppState {
         Some(b.state.track_area_cache.clone()),
     )
     .with_workspace_root(b.tmp.path().join("workspaces"))
-    .with_shared_codex_appserver(b.state.shared_codex_appserver.clone())
+    .with_shared_codex_appserver(b.state.shared_codex_appserver.clone());
+    state.dispatcher.abort_event_listener_for_test();
+    state
 }
 
 #[tokio::test]

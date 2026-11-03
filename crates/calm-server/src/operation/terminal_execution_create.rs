@@ -179,11 +179,16 @@ pub async fn create(
                         });
                     }
                     if !typed && legacy_drive.is_none() {
-                        tx.rollback().await?;
                         let request = serde_json::from_value::<
                             super::terminal_adapter::TerminalCreateOperationPayload,
                         >(payload.clone())?
                         .request;
+                        crate::workspace_service::reclaim::operation::terminal_admission_tx(
+                            &mut tx,
+                            &request.track_id,
+                        )
+                        .await?;
+                        tx.rollback().await?;
                         // Refuse a busy target before waiting for ordinary Legacy driving.
                         // Release this preliminary observation before drive -> track acquisition;
                         // the actual admission takes the same fence again under drive below.
@@ -205,12 +210,16 @@ pub async fn create(
                     // A replay/conflict needs no new-request validation. Shared Terminal validation reads
                     // through the repository, so release the transaction before borrowing its connection.
                     // Recheck the key under the final write lock after validation to close that race.
-                    tx.rollback().await?;
                     let track = serde_json::from_value::<
                         super::terminal_adapter::TerminalCreateOperationPayload,
                     >(payload.clone())?
                     .request
                     .track_id;
+                    crate::workspace_service::reclaim::operation::terminal_admission_tx(
+                        &mut tx, &track,
+                    )
+                    .await?;
+                    tx.rollback().await?;
                     track_fence = Some(runtime.try_launch_fence(&track)?);
                     if let Some(cwd) = &explicit_cwd {
                         location_fence = Some(
@@ -233,7 +242,7 @@ pub async fn create(
                 let kind = if typed { KIND } else { "terminal-create" };
                 let adapter = runtime.adapter(kind)?;
                 let id = crate::model::new_id();
-                insert_pending_row(&id, kind, &key, &payload)?
+                insert_pending_row(&id, kind, &key, &payload, None)?
                     .execute(&mut **tx)
                     .await?;
                 let row = sqlx::query("SELECT * FROM operations WHERE id = ?")

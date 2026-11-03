@@ -265,10 +265,18 @@ pub async fn location_occupancy(
         source: Source,
     }
     let mut occupants = unsettled_executions(conn, scope).await?;
+    let owning: std::collections::BTreeSet<String> =
+        occupants.iter().map(|id| id.as_str().to_owned()).collect();
     let rows = sqlx::query("SELECT execution_id,intent_json FROM workspace_executions WHERE settled_at_ms IS NULL ORDER BY execution_id")
         .fetch_all(&mut *conn).await?;
     for row in rows {
         let id: String = row.try_get("execution_id")?;
+        // The owning-scope query already proves this execution occupies the scope.
+        // Its root cannot make that known occupancy safer or broaden it, so a bad
+        // root here must not turn one scoped blocker into a global parse failure.
+        if owning.contains(&id) {
+            continue;
+        }
         let json: String = row.try_get("intent_json")?;
         let root = (|| -> crate::error::Result<_> {
             let intent: Intent = serde_json::from_str(&json)?;
@@ -427,5 +435,61 @@ mod tests {
             })
             .await
             .expect("independent write operation")
+    }
+
+    async fn insert_unsettled(repo: &SqlxRepo, id: &str, track: &str, intent: &str) {
+        repo.db()
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO workspace_executions \
+             (execution_id,track_id,alias,intent_json,secrets_json,desired) \
+             VALUES (?1,?2,?1,?3,'{}','run')",
+                )
+                .bind(id)
+                .bind(track)
+                .bind(intent),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_owning_scope_bad_root_is_known_occupied() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        insert_unsettled(&repo, id, "owner", r#"{"source":{}}"#).await;
+        let occupants = location_occupancy(
+            &mut repo.pool().acquire().await.unwrap(),
+            Scope::Track("owner"),
+            &[std::path::PathBuf::from("/target")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(occupants.len(), 1);
+        assert_eq!(occupants[0].as_str(), id);
+    }
+
+    #[tokio::test]
+    async fn reclaim_recovery_foreign_bad_root_fails_closed() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        insert_unsettled(
+            &repo,
+            "0123456789abcdef0123456789abcdef",
+            "foreign",
+            r#"{"source":{}}"#,
+        )
+        .await;
+        let error = location_occupancy(
+            &mut repo.pool().acquire().await.unwrap(),
+            Scope::Track("owner"),
+            &[std::path::PathBuf::from("/target")],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("unreadable source root"),
+            "{error}"
+        );
     }
 }

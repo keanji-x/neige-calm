@@ -188,7 +188,8 @@ async fn admit_probe(
     kind: Kind,
 ) -> Result<ParkedRecovery> {
     match execution::admit_probe(ctx, op, frozen, kind).await {
-        Ok(execution::ProbeAdmission::Admitted) | Err(CalmError::WorkspaceBusy(_)) => {
+        Ok(execution::ProbeAdmission::Admitted)
+        | Err(CalmError::WorkspaceBusy(_) | CalmError::OperationBlocked(_)) => {
             Ok(ParkedRecovery::LeaveParked)
         }
         Ok(execution::ProbeAdmission::TrackGone) => Ok(failed(

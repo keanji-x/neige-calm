@@ -84,12 +84,19 @@ fn terminal(track: &str) -> Value {
         "theme":{"fg":[255,255,255],"bg":[0,0,0]}})
 }
 async fn pending(b: &Boot, kind: &str, payload: Value) -> String {
+    let idempotency_key =
+        calm_server::model::TaskKind::from_worker_operation_kind(kind).map(|_| {
+            payload["idempotency_key"]
+                .as_str()
+                .expect("worker task id")
+                .to_owned()
+        });
     SqlxOperationRepo::new(b.repo.db().clone())
         .insert_operation(
             kind,
             OperationKey {
                 operation_key: calm_server::model::new_id(),
-                idempotency_key: None,
+                idempotency_key,
                 payload_hash: "c1".into(),
             },
             payload,
@@ -182,9 +189,11 @@ async fn preparation(kind: &str, boot: bool) {
         .unwrap(),
         _ => {
             let task = format!("{track}:c1");
+            let task_kind = calm_server::model::TaskKind::from_worker_operation_kind(kind)
+                .expect("checkout worker kind");
             (b.repo.db()).writer().execute(sqlx::query("INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json,\
-                 status,created_at_ms,updated_at_ms) VALUES (?,?,'c1','terminal','test','null','[]','dispatched',1,1)")
-                .bind(&task).bind(&track)).await.unwrap();
+                 status,created_at_ms,updated_at_ms) VALUES (?,?,'c1',?,'test','null','[]','dispatched',1,1)")
+                .bind(&task).bind(&track).bind(task_kind)).await.unwrap();
             json!({"actor":calm_server::ids::ActorId::KernelDispatcher,"track_id":track,"idempotency_key":task,"cmd":"true","goal":"test","cwd":path})
         }
     };
@@ -202,6 +211,16 @@ async fn preparation(kind: &str, boot: bool) {
         .execute(sqlx::query("UPDATE tasks SET status='dispatched' WHERE track_id=?").bind(&track))
         .await
         .unwrap();
+    if calm_server::model::TaskKind::from_worker_operation_kind(kind).is_some() {
+        // The closed snapshot was already checked under the fence. A worker
+        // must re-admit against an open Track once that fence is released.
+        b.repo
+            .db()
+            .writer()
+            .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(&track))
+            .await
+            .unwrap();
+    }
     let op = pending(&b, kind, payload).await;
     if boot {
         b.state
@@ -246,15 +265,15 @@ async fn preparation(kind: &str, boot: bool) {
     .await
     .expect("Busy operation must retry promptly after clean releases");
     assert_ne!(phase(&b, &op).await, "stuck");
-    let output: Option<String> =
-        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE id=?")
+    let (output, error): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT tx_output_json,last_error FROM operations WHERE id=?")
             .bind(&op)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
-    let output: Value = serde_json::from_str(
-        &output.expect("retry must commit preparation, not merely fail Pending"),
-    )
+    let output: Value = serde_json::from_str(&output.unwrap_or_else(|| {
+        panic!("retry must commit preparation, not merely fail Pending: {error:?}")
+    }))
     .unwrap();
     if kind == "terminal-worker" {
         assert!(

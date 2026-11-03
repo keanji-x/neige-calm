@@ -1,11 +1,7 @@
-//! A terminal task whose preparation is deferred reaches Pipe Parked only after the scheduler
-//! entered its wait; the scheduler must still hand it off as Running.
+//! Deferred preparation returns scheduler capacity, then a later sweep hands the
+//! original operation's Pipe execution off as Running.
 use super::*;
 use crate::scheduler::{PostClaimDriveTestHook, Scheduler};
-
-/// Waits, bounded, for a `go` file in its checkout so the test controls when it exits.
-const WAIT_FOR_GO: &str =
-    "i=0; until [ -e go ] || [ \"$i\" -ge 600 ]; do sleep 0.05; i=$((i+1)); done; test -e go";
 
 #[tokio::test]
 async fn w_terminal_worker_deferred_prepare_hands_off_running() {
@@ -82,8 +78,7 @@ async fn w_terminal_worker_deferred_prepare_hands_off_running() {
     scheduler.mark_boot_sweep_complete();
     scheduler.mark_context_sweep_boot_complete();
 
-    let (claimed, resume, wait_entered) = (
-        Arc::new(tokio::sync::Notify::new()),
+    let (claimed, resume) = (
         Arc::new(tokio::sync::Notify::new()),
         Arc::new(tokio::sync::Notify::new()),
     );
@@ -91,7 +86,6 @@ async fn w_terminal_worker_deferred_prepare_hands_off_running() {
         claimed: claimed.clone(),
         resume: resume.clone(),
     });
-    runtime.install_wait_entered_hook_for_test(wait_entered.clone());
     let first_track = crate::ids::TrackId::from(base.track_id.clone());
     let mut scheduled = tokio::spawn({
         let (scheduler, track) = (scheduler.clone(), first_track.clone());
@@ -103,9 +97,10 @@ async fn w_terminal_worker_deferred_prepare_hands_off_running() {
     // Hold the Track fence so the submitted preparation is deferred past submit.
     let fence = crate::per_card_lock::lock_key(runtime.track_delete_locks(), &base.track_id).await;
     resume.notify_one();
-    tokio::time::timeout(Duration::from_secs(5), wait_entered.notified())
+    tokio::time::timeout(Duration::from_secs(5), &mut scheduled)
         .await
-        .expect("the scheduler waits on the deferred preparation");
+        .expect("the scheduler returns while preparation remains blocked")
+        .unwrap();
     let op = |task: &crate::model::Task| {
         let (runtime, id) = (runtime.clone(), task.id.clone());
         async move {
@@ -115,12 +110,30 @@ async fn w_terminal_worker_deferred_prepare_hands_off_running() {
                 .unwrap()
         }
     };
-    assert_eq!(op(&tasks[0]).await.unwrap().phase, Phase::Pending);
+    let blocked = op(&tasks[0]).await.unwrap();
+    assert_eq!(blocked.phase, Phase::Pending);
+    assert_eq!(semaphore.available_permits(), 1);
+    assert_eq!(
+        db.task_get(&tasks[0].id).await.unwrap().unwrap().status,
+        crate::model::TaskStatus::Dispatched
+    );
+    // The other Track starts before the first launch fence is released.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        scheduler.schedule_track(crate::ids::TrackId::from(second.track_id.clone())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.task_get(&tasks[1].id).await.unwrap().unwrap().status,
+        crate::model::TaskStatus::Running
+    );
     drop(fence);
 
-    let handed_off = tokio::time::timeout(Duration::from_secs(10), &mut scheduled)
+    let handed_off = tokio::time::timeout(Duration::from_secs(10), scheduler.sweep_all())
         .await
         .is_ok();
+    assert_eq!(op(&tasks[0]).await.unwrap().id, blocked.id);
     let first_phase = op(&tasks[0]).await.unwrap().phase.tag();
     let first_status = db.task_get(&tasks[0].id).await.unwrap().unwrap().status;
     let permits = semaphore.available_permits();

@@ -234,7 +234,7 @@ impl<S: Store + 'static, X: Executor + 'static> Engine<S, X> {
                 if settlement.is_none() {
                     self.0
                         .store
-                        .settle(id, &Settlement::from_fact(&fact))
+                        .settle(id, &settlement_from_fact(&fact))
                         .await?;
                     self.changed();
                 }

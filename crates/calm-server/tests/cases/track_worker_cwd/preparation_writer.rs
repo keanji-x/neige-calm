@@ -295,7 +295,7 @@ async fn worker_discards_obsolete_declared_head_error_and_reprepares() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn worker_claim_replacement_prevents_publication_and_wait_reclaims_after_expiry() {
+async fn worker_claim_replacement_prevents_publication_and_scheduler_reclaims_after_expiry() {
     use calm_server::operation::PhaseTag;
     for kind in ["codex", "claude"] {
         let w = Arc::new(world().await);
@@ -350,10 +350,22 @@ async fn worker_claim_replacement_prevents_publication_and_wait_reclaims_after_e
             .await
             .unwrap();
         drop(guard);
-        let started = tokio::time::timeout(WAIT, admission)
-            .await
-            .expect("real wait reclaims expired worker preparation")
-            .unwrap();
+        let scheduler = fx.scheduler();
+        scheduler.mark_context_sweep_boot_complete();
+        scheduler.mark_boot_sweep_complete();
+        let started = tokio::time::timeout(WAIT, async {
+            tokio::pin!(admission);
+            loop {
+                scheduler.sweep_all().await;
+                tokio::select! {
+                    result = &mut admission => break result,
+                    () = tokio::time::sleep(Duration::from_millis(25)) => {}
+                }
+            }
+        })
+        .await
+        .expect("scheduler reclaims expired worker preparation")
+        .unwrap();
         assert_eq!(started.cwd, fx.worktree);
         assert_eq!(fx.table_count("workspace_leases").await, 1);
     }

@@ -273,7 +273,7 @@ async fn claim_worker_operation(
             "codex-worker",
             OperationKey {
                 operation_key: new_id(),
-                idempotency_key: Some(format!("op-{key}")),
+                idempotency_key: Some(task_id),
                 payload_hash: format!("hash-{key}"),
             },
             payload,

@@ -294,6 +294,30 @@ pub enum TaskKind {
     Compact,
 }
 
+impl TaskKind {
+    const CHECKOUT_WORKERS: [(Self, &'static str); 3] = [
+        (Self::Codex, "codex-worker"),
+        (Self::Claude, "claude-worker"),
+        (Self::Terminal, "terminal-worker"),
+    ];
+
+    /// The operation whose preparation owns a task's checkout admission.
+    /// Compact and child-track lifecycle work do not acquire worker checkouts.
+    pub fn worker_operation_kind(self) -> Option<&'static str> {
+        Self::CHECKOUT_WORKERS
+            .iter()
+            .find(|(kind, _)| *kind == self)
+            .map(|(_, operation)| *operation)
+    }
+
+    pub fn from_worker_operation_kind(operation: &str) -> Option<Self> {
+        Self::CHECKOUT_WORKERS
+            .iter()
+            .find(|(_, name)| *name == operation)
+            .map(|(kind, _)| *kind)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]

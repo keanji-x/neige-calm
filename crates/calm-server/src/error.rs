@@ -47,6 +47,10 @@ pub enum CalmError {
     #[error("workspace busy: {0}")]
     WorkspaceBusy(String),
 
+    /// A typed recoverable preparation fact; never a terminal keyed failure.
+    #[error("operation blocked: {0}")]
+    OperationBlocked(calm_types::task_execution::PendingBlocker),
+
     #[error("conflict: {0}")]
     Conflict(String),
 
@@ -216,6 +220,7 @@ impl CalmError {
             CalmError::PathNotFound(_) => "path_not_found",
             CalmError::Conflict(_) => "conflict",
             CalmError::WorkspaceBusy(_) => "workspace_busy",
+            CalmError::OperationBlocked(_) => "workspace_busy",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
             CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
             CalmError::IdempotencyKeyInvalid(_) => "idempotency_key_invalid",
@@ -262,6 +267,7 @@ impl CalmError {
             CalmError::NotFound(_) | CalmError::PathNotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
             | CalmError::WorkspaceBusy(_)
+            | CalmError::OperationBlocked(_)
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::IdempotencyKeyReused(_)
@@ -309,6 +315,7 @@ impl CalmError {
     /// text is all a reader gets; an HTTP answer has `code` beside it.
     pub fn reason(&self) -> String {
         match self {
+            CalmError::OperationBlocked(blocker) => blocker.to_string(),
             CalmError::ExecutionUnavailable => "execution unavailable".into(),
             CalmError::TodayAdoptionRefused(reason) => reason.code().into(),
             CalmError::CodexRefused(m)

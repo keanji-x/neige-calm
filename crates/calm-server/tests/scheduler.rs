@@ -50,8 +50,9 @@ use calm_server::operation::terminal_adapter::legacy_test_adapter::LegacyPrepare
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, NON_TASK_BOUND_ADAPTER_KINDS, Operation,
     OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
-    ParkedOutcome, PhaseTag, ProviderAdapter, SpawnArtifacts, SpawnCtx, SpawnHandle, SpawnOutcome,
-    SqlxOperationRepo, TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput, complete_parked_for_test,
+    ParkedOutcome, PendingBlocker, PendingBlockerClass, PhaseTag, ProviderAdapter, SpawnArtifacts,
+    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
+    complete_parked_for_test,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -468,6 +469,15 @@ fn build_scheduler_unbooted_with(
         worker_idle,
     );
     (runtime, scheduler)
+}
+
+fn pause_claim(scheduler: &Scheduler) -> ClaimFenceTestHook {
+    let hook = ClaimFenceTestHook {
+        resolved: Arc::new(tokio::sync::Notify::new()),
+        resume: Arc::new(tokio::sync::Notify::new()),
+    };
+    scheduler.set_claim_fence_test_hook(hook.clone());
+    hook
 }
 
 fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Task {
@@ -968,6 +978,41 @@ async fn operation_count(boot: &Boot, kind: &str) -> i64 {
     count
 }
 
+async fn reclaim_recovery_seed_durable_removal(boot: &Boot, path: &str) {
+    let execution = new_id();
+    let operation = new_id();
+    boot.repo
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(
+            sqlx::query(
+                "INSERT INTO workspace_executions \
+         (execution_id,track_id,alias,intent_json,secrets_json,desired) \
+         VALUES (?1,'removing-owner',?2,?3,'{}','run')",
+            )
+            .bind(&execution)
+            .bind(format!("reclaim:{execution}"))
+            .bind(json!({"consumer":"workspace-reclaim"}).to_string()),
+        )
+        .await
+        .unwrap();
+    boot.repo.sqlite_db().unwrap().writer().execute(sqlx::query(
+        "INSERT INTO operations \
+         (id,operation_key,kind,payload_hash,target_type,target_json,payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) \
+         VALUES (?1,?1,'workspace-reclaim','hash','track','{}',?2,?3,'pending',1,1)",
+    )
+    .bind(&operation)
+    .bind(
+        json!({"target":{"track_id":"removing-owner","request":{"path":path}}}).to_string(),
+    )
+    .bind(
+        json!({"data":{"workspace_reclaim":{"execution_id":execution}}}).to_string(),
+    ))
+    .await
+    .unwrap();
+}
+
 const STUB_PHASES: &[PhaseTag] = &[];
 const BLOCKING_BOOTSTRAP_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -1452,6 +1497,270 @@ async fn plan_to_done_end_to_end() {
         "t2 dispatched once t1 is done"
     );
     assert_eq!(operation_count(&boot, "codex-worker").await, 2);
+}
+
+#[tokio::test]
+async fn reclaim_recovery_live_fence_allows_same_track_progress_and_resumes_once() {
+    let boot = boot().await;
+    let mut blocked = plan_task(&boot.track_id, "a-blocked", TaskKind::Terminal, &[]);
+    blocked.priority = 10;
+    let blocked_id = blocked.id.clone();
+    seed_projected_task(&boot, blocked).await;
+    seed_projected_task(
+        &boot,
+        plan_task(&boot.track_id, "b-follower", TaskKind::Codex, &[]),
+    )
+    .await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let adapters = vec![
+        context_checked_terminal_adapter(&boot, Arc::clone(&spawned)),
+        Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        }) as Arc<dyn ProviderAdapter>,
+    ];
+    let (runtime, scheduler) =
+        build_scheduler_with_semaphore(&boot, adapters, Arc::new(tokio::sync::Semaphore::new(1)));
+    let fence = calm_server::per_card_lock::lock_key(
+        runtime.track_locks_for_test(),
+        boot.track_id.as_str(),
+    )
+    .await;
+
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        scheduler.schedule_track(boot.track_id.clone()),
+    )
+    .await
+    .expect("blocked task must return its Track lock and sole permit");
+    assert_eq!(
+        task_row(&boot, "a-blocked").await.status,
+        TaskStatus::Dispatched
+    );
+    assert_eq!(
+        task_row(&boot, "b-follower").await.status,
+        TaskStatus::Running,
+        "unrelated same-Track work advances while the blocker remains"
+    );
+    let operation = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &blocked_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        calm_server::operation::pending_blocker(&operation).unwrap(),
+        Some(PendingBlocker::V1 {
+            class: PendingBlockerClass::LaunchFence,
+            ..
+        })
+    ));
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    let original_operation = operation.id;
+    drop(fence);
+    scheduler.sweep_all().await;
+    assert_eq!(
+        task_row(&boot, "a-blocked").await.status,
+        TaskStatus::Dispatched
+    );
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        0,
+        "the follower still owns the checkout"
+    );
+    let follower = task_row(&boot, "b-follower").await;
+    call_tool(
+        &boot,
+        TOOL_TASK_DONE,
+        worker_identity(&boot),
+        json!({"attempt_id": follower.id, "result": {"ok": true}}),
+    )
+    .await
+    .expect("the unrelated follower completes through its production report path");
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            scheduler.sweep_all().await;
+            if task_row(&boot, "a-blocked").await.status == TaskStatus::Running {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the original task resumes after the fence and follower release");
+    let resumed = task_row(&boot, "a-blocked").await;
+    let resumed_operation = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &blocked_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        resumed.status == TaskStatus::Running,
+        "status={:?} detail={:?} op_phase={:?} op_detail={:?} last_error={:?}",
+        resumed.status,
+        resumed.status_detail,
+        resumed_operation.phase,
+        resumed_operation.phase_detail,
+        resumed_operation.last_error
+    );
+    assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .find_by_kind_and_idempotency("terminal-worker", &blocked_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        original_operation,
+        "retry preserves task, operation and idempotency identity"
+    );
+    scheduler.sweep_all().await;
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        1,
+        "duplicate sweeps cannot launch the effect twice"
+    );
+}
+
+#[tokio::test]
+async fn reclaim_recovery_busy_permit_returns_dispatch_and_recovery_scans() {
+    for dispatched in [false, true] {
+        let boot = boot().await;
+        let mut task = plan_task(&boot.track_id, "capacity", TaskKind::Terminal, &[]);
+        if dispatched {
+            task.status = TaskStatus::Dispatched;
+        }
+        seed_projected_task(&boot, task).await;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let (_runtime, scheduler) = build_scheduler_with_semaphore(
+            &boot,
+            vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+            semaphore,
+        );
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            scheduler.schedule_track(boot.track_id.clone()),
+        )
+        .await
+        .expect("dispatch must return while the sole permit remains occupied");
+        tokio::time::timeout(Duration::from_secs(1), scheduler.sweep_all())
+            .await
+            .expect("steady recovery must return while the sole permit remains occupied");
+        tokio::time::timeout(Duration::from_secs(1), scheduler.sweep_boot())
+            .await
+            .expect("boot recovery must return while the sole permit remains occupied");
+        drop(permit);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while task_row(&boot, "capacity").await.status != TaskStatus::Running {
+                scheduler.sweep_all().await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("ordinary recovery starts the original task when capacity returns");
+        assert_eq!(spawned.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn reclaim_recovery_durable_blocker_does_not_stop_boot_or_steady_scans() {
+    for boot_scan in [false, true] {
+        let boot = boot().await;
+        let mut blocked = plan_task(&boot.track_id, "a-blocked", TaskKind::Terminal, &[]);
+        blocked.priority = 10;
+        let blocked_id = blocked.id.clone();
+        seed_projected_task(&boot, blocked).await;
+        reclaim_recovery_seed_durable_removal(&boot, "/durable/removing").await;
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let (runtime, scheduler) = if boot_scan {
+            build_scheduler_unbooted(
+                &boot,
+                vec![context_checked_terminal_adapter(
+                    &boot,
+                    Arc::clone(&spawned),
+                )],
+                semaphore,
+            )
+        } else {
+            build_scheduler_with_semaphore(
+                &boot,
+                vec![context_checked_terminal_adapter(
+                    &boot,
+                    Arc::clone(&spawned),
+                )],
+                semaphore,
+            )
+        };
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            scheduler.schedule_track(boot.track_id.clone()),
+        )
+        .await
+        .expect("durable blocker must return the scheduler turn");
+        assert_eq!(
+            task_row(&boot, "a-blocked").await.status,
+            TaskStatus::Dispatched
+        );
+        let operation = runtime
+            .find_by_kind_and_idempotency("terminal-worker", &blocked_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            calm_server::operation::pending_blocker(&operation).unwrap(),
+            Some(PendingBlocker::V1 {
+                class: PendingBlockerClass::WorkspaceRemoval,
+                ..
+            })
+        ));
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+
+        seed_projected_task(
+            &boot,
+            plan_task(&boot.track_id, "b-follower", TaskKind::Codex, &[]),
+        )
+        .await;
+        // Add the unrelated adapter only by rebuilding over the same durable rows.
+        let adapters = vec![
+            context_checked_terminal_adapter(&boot, Arc::clone(&spawned)),
+            Arc::new(CardSpawnAdapter {
+                kind: "codex-worker",
+                card_id: boot.worker_card_id.as_str().to_string(),
+            }) as Arc<dyn ProviderAdapter>,
+        ];
+        let (_runtime, scanning) = if boot_scan {
+            build_scheduler_unbooted(&boot, adapters, Arc::new(tokio::sync::Semaphore::new(1)))
+        } else {
+            build_scheduler_with_semaphore(
+                &boot,
+                adapters,
+                Arc::new(tokio::sync::Semaphore::new(1)),
+            )
+        };
+        if boot_scan {
+            scanning.sweep_boot().await;
+        } else {
+            scanning.sweep_all().await;
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if task_row(&boot, "b-follower").await.status == TaskStatus::Running {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("scan must advance past the durable blocker");
+        assert_eq!(
+            task_row(&boot, "a-blocked").await.status,
+            TaskStatus::Dispatched
+        );
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test]
@@ -3027,14 +3336,32 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     let mut pending = plan_task(&boot.track_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
     seed_task(&boot, pending).await;
-    let mut missing = plan_task(&boot.track_id, "boot-missing-op", TaskKind::Terminal, &[]);
+    let other_workspace = tempfile::tempdir().unwrap();
+    let other_track = boot
+        .repo
+        .track_create(NewTrack {
+            area_id: boot.area_id.clone(),
+            title: "second recovery track".into(),
+            sort: None,
+            cwd: other_workspace.path().to_str().unwrap().into(),
+            template_id: None,
+            plugin_scope: None,
+            template_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut missing = plan_task(&other_track.id, "boot-missing-op", TaskKind::Terminal, &[]);
+    let missing_id = missing.id.clone();
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
     (boot.repo.sqlite_db().unwrap())
         .writer()
         .execute(
-            sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id=?1")
-                .bind(boot.track_id.as_str()),
+            sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE track_id IN (?1,?2)")
+                .bind(boot.track_id.as_str())
+                .bind(other_track.id.as_str()),
         )
         .await
         .unwrap();
@@ -3106,7 +3433,12 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
         TaskStatus::Running
     );
     assert_eq!(
-        task_row(&boot, "boot-missing-op").await.status,
+        boot.repo
+            .task_get(&missing_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
         TaskStatus::Running
     );
 }
@@ -3174,12 +3506,7 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
 
-    // Hold the semaphore's only permit: the pass snapshots the plan rows, then parks inside `dispatch_task` — the snapshot → claim window.
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
     let (runtime, scheduler) = build_scheduler_with_semaphore(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3188,12 +3515,13 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
         })],
         semaphore,
     );
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
         let track_id = boot.track_id.clone();
         async move { scheduler.schedule_track(track_id).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    pause.resolved.notified().await;
 
     // Revise the still-pending row mid-window (pending rows are
     // mutable; post-claim they are frozen).
@@ -3212,7 +3540,7 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
         "revision landed while the pass was parked pre-claim"
     );
 
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.expect("schedule_track task");
 
     let op = runtime
@@ -6676,13 +7004,8 @@ async fn claim_aborts_when_the_track_closes() {
     )
     .await;
 
-    // Park the pass between the (passing) pre-claim open read and
-    // the claim tx, then close the track.
+    // Pause after context resolution, before the claim tx's open recheck.
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
     let (_runtime, scheduler) = build_scheduler_with_semaphore(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -6691,15 +7014,16 @@ async fn claim_aborts_when_the_track_closes() {
         })],
         semaphore,
     );
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
         let track_id = boot.track_id.clone();
         async move { scheduler.schedule_track(track_id).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    pause.resolved.notified().await;
 
     set_closed(&boot, true).await;
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.expect("schedule_track task");
 
     assert_eq!(
@@ -7119,15 +7443,10 @@ async fn claim_aborts_when_dep_added_pre_claim() {
     let boot = boot().await;
     let task = plan_task(&boot.track_id, "revised", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
 
-    // Park the pass inside `dispatch_task` between the ready-set
-    // snapshot and the claim (the semaphore wait window).
+    // Pause between the ready-set snapshot and the claim transaction.
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
     let (_runtime, scheduler) = build_scheduler_with_semaphore(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -7136,12 +7455,13 @@ async fn claim_aborts_when_dep_added_pre_claim() {
         })],
         semaphore,
     );
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
         let track_id = boot.track_id.clone();
         async move { scheduler.schedule_track(track_id).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    pause.resolved.notified().await;
 
     // The plan.updated shape: the planner inserts a new prerequisite task
     // and revises the still-pending row to depend on it.
@@ -7164,7 +7484,7 @@ async fn claim_aborts_when_dep_added_pre_claim() {
         .expect("revise pending row deps");
     assert_eq!(revised.rows_affected(), 1, "dep added while parked");
 
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.expect("schedule_track task");
 
     assert_eq!(
@@ -7184,17 +7504,13 @@ async fn claim_aborts_when_dep_added_pre_claim() {
 #[tokio::test]
 async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
     let boot = boot().await;
-    seed_task(
+    seed_projected_task(
         &boot,
         plan_task(&boot.track_id, "held", TaskKind::Codex, &[]),
     )
     .await;
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
     let (_runtime, scheduler) = build_scheduler_with_semaphore(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -7203,18 +7519,19 @@ async fn claim_aborts_when_the_track_turns_busy_pre_claim() {
         })],
         semaphore,
     );
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
         let track_id = boot.track_id.clone();
         async move { scheduler.schedule_track(track_id).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    pause.resolved.notified().await;
 
     let mut occupying = plan_task(&boot.track_id, "occupying", TaskKind::Codex, &[]);
     occupying.status = TaskStatus::Running;
     seed_task(&boot, occupying).await;
 
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.expect("schedule_track task");
 
     assert_eq!(
@@ -7245,10 +7562,6 @@ async fn claim_refuses_a_reader_behind_a_writer_that_started_waiting() {
     );
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = Arc::clone(&semaphore)
-        .acquire_owned()
-        .await
-        .expect("test holds the only permit");
     let (_runtime, scheduler) = build_scheduler_with_semaphore(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -7257,19 +7570,20 @@ async fn claim_refuses_a_reader_behind_a_writer_that_started_waiting() {
         })],
         semaphore,
     );
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = Arc::clone(&scheduler);
         let track_id = boot.track_id.clone();
         async move { scheduler.schedule_track(track_id).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    pause.resolved.notified().await;
 
     let mut running_reader = plan_task(&boot.track_id, "r1", TaskKind::Codex, &[]);
     running_reader.access = calm_server::model::TaskAccess::ReadOnly;
     running_reader.status = TaskStatus::Running;
     seed_task(&boot, running_reader).await;
 
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.expect("schedule_track task");
 
     assert_eq!(task_row(&boot, "w").await.status, TaskStatus::Pending);
@@ -9082,7 +9396,6 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     let task_id = task.id.clone();
     seed_projected_task(&boot, task).await;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
-    let permit = semaphore.clone().acquire_owned().await.unwrap();
     let adapters = vec![
         Arc::new(ChildTrackAdapter::new(
             std::sync::Arc::new(
@@ -9097,12 +9410,13 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
     let (_runtime, scheduler) = build_scheduler_with_semaphore(&boot, adapters, semaphore);
+    let pause = pause_claim(&scheduler);
     let handle = tokio::spawn({
         let scheduler = scheduler.clone();
         let track = boot.track_id.clone();
         async move { scheduler.schedule_track(track).await }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    pause.resolved.notified().await;
     (boot.repo.sqlite_db().unwrap())
         .writer()
         .execute(
@@ -9111,7 +9425,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         )
         .await
         .unwrap();
-    drop(permit);
+    pause.resume.notify_one();
     handle.await.unwrap();
     assert_eq!(operation_count(&boot, "child-track").await, 1);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);

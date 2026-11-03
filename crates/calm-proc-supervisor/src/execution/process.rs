@@ -17,6 +17,8 @@ use super::{
     scope_helper::{HelperContext, HelperPlan},
 };
 
+mod child_fds;
+
 pub(super) struct Process {
     pub ready: std::sync::atomic::AtomicBool,
     pub started: std::sync::atomic::AtomicBool,
@@ -310,19 +312,7 @@ pub(super) fn helper_command(
 
 /// Child-only allowlist: stdio and explicitly reopened helper channels are the only exec survivors.
 pub(super) fn mark_child_descriptors_cloexec() -> std::io::Result<()> {
-    // SAFETY: called only after fork in the child; no host descriptor flags are changed.
-    if unsafe {
-        libc::syscall(
-            libc::SYS_close_range,
-            3u32,
-            u32::MAX,
-            libc::CLOSE_RANGE_CLOEXEC,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
+    child_fds::mark_cloexec()
 }
 
 pub(super) fn pipe() -> std::io::Result<(File, File)> {
