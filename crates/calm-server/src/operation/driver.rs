@@ -1019,7 +1019,7 @@ impl OperationRuntime {
                                 self.repo
                                     .defer_pending_claim(&op, &blocker, retry_owner)
                                     .await?;
-                                if !TASK_BOUND_ADAPTER_KINDS.contains(&op.kind.as_str()) {
+                                if retry_owner == super::PendingRetryOwner::Driver {
                                     self.retry_after_track(&op.id, track);
                                 }
                                 return Ok(());

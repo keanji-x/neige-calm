@@ -406,22 +406,6 @@ async fn reclaim_recovery_ordinary_drive_returns_while_launch_fence_is_held() {
     assert!(deferred.lease_until_ms.is_some());
     assert!(!h.root.path().join("ran").exists());
     drop(fence);
-    let (_, payload) = crate::scheduler::build_worker_payload(&h.task).unwrap();
-    let key = OperationKey {
-        operation_key: new_id(),
-        idempotency_key: Some(h.task.id.clone()),
-        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
-    };
-    let (id, result) = h
-        .runtime
-        .submit_task_bounded("terminal-worker", key, payload)
-        .await
-        .unwrap();
-    assert_eq!(id, h.id);
-    assert!(matches!(
-        result,
-        crate::operation::OperationWait::OwnedParked(_)
-    ));
     h.wait_done().await;
     assert_eq!(
         std::fs::read_to_string(h.root.path().join("ran")).unwrap(),
@@ -571,24 +555,13 @@ async fn reclaim_recovery_closed_track_refuses_late_blocked_launch() {
         .await
         .unwrap();
     drop(fence);
-    let (_, payload) = crate::scheduler::build_worker_payload(&h.task).unwrap();
-    let key = OperationKey {
-        operation_key: new_id(),
-        idempotency_key: Some(h.task.id.clone()),
-        payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
-    };
-    let (id, result) = h
-        .runtime
-        .submit_task_bounded("terminal-worker", key, payload)
+    let result = tokio::time::timeout(Duration::from_secs(5), h.runtime.wait(&h.id))
         .await
+        .expect("ordinary driver settles the blocked launch after the fence releases")
         .unwrap();
-    assert_eq!(id, h.id);
     assert!(matches!(
-        result,
-        crate::operation::OperationWait::Settled(crate::operation::OperationResult {
-            outcome: crate::operation::OperationOutcome::Failed { .. },
-            ..
-        })
+        result.outcome,
+        crate::operation::OperationOutcome::Failed { .. }
     ));
     assert!(!h.root.path().join("ran").exists());
 }

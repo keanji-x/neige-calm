@@ -1605,6 +1605,11 @@ impl Scheduler {
         for track_id in pending_tracks {
             self.schedule_track(TrackId::from(track_id)).await;
         }
+        // Retry ordinary operations after bounded task starts. The ordinary
+        // driver takes the same mutex and would otherwise block this sweep's starts.
+        if let Some(runtime) = self.operation_runtime.upgrade() {
+            runtime.reconcile_drivable();
+        }
     }
 
     /// Boot-time sweep: reconcile recovered state after operation recovery, then resume
@@ -1657,9 +1662,6 @@ impl Scheduler {
         // The parked sweep recovers durable verdicts from dead gates and kill-fails
         // past-deadline work; every arm is fenced single-winner, so racing the live observer is safe.
         if let Some(runtime) = self.operation_runtime.upgrade() {
-            // A terminal transaction can roll back before an adapter owns a parked
-            // resource. Retry expired drivable claims too; never rearm AwaitingRetry.
-            runtime.reconcile_drivable();
             if let Err(error) = runtime.sweep_parked().await {
                 tracing::warn!(%error, "scheduler sweep: sweep_parked failed; next tick retries");
             }

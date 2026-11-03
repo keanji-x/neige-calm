@@ -2545,7 +2545,8 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         let idem = "codex-worker-recovery-exited";
         seed_dispatched_task(&boot.repo, &boot.track_id, idem, "codex").await;
         let payload = codex_worker_payload(&boot.track_id, idem);
-        let op = pending_operation("codex-worker", &boot.track_id, payload.clone());
+        let mut op = pending_operation("codex-worker", &boot.track_id, payload.clone());
+        op.idempotency_key = Some(idem.into());
         insert_pending_operation_row(&boot.repo, &op).await;
         let (output, op) = crate::support::worker_preparation::prepare(
             boot.repo.clone(),
@@ -2555,39 +2556,21 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         )
         .await;
         assert!(git_repo.join(".git").is_dir());
-        mark_operation_succeeded(&boot.repo, &op.id).await;
         let terminal_id = output.data["terminal_id"].as_str().unwrap().to_string();
         boot.repo
             .terminal_set_exit(&terminal_id, Some(0), false)
             .await
             .unwrap();
 
-        let op_id = new_id();
-        let now = now_ms();
-        let target_type = output.target_type.clone();
-        let target_id = output.target_id.clone();
-        (boot.repo.db()).writer().execute(sqlx::query(
-            r#"INSERT INTO operations (
-               id, operation_key, kind, idempotency_key, payload_hash,
-               target_type, target_id, target_json, payload_json,
-               tx_output_json, phase, lease_owner, lease_until_ms, created_at_ms, updated_at_ms
-           )
-           VALUES (?1, ?2, 'codex-worker', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'spawn_started', ?10, ?11, ?12, ?12)"#,
-        )
-        .bind(&op_id)
-        .bind("codex-worker-recovery-exited-op")
-        .bind(idem)
-        .bind("codex-worker-recovery-exited-hash")
-        .bind(&target_type)
-        .bind(target_id.as_deref())
-        .bind(serde_json::to_string(&json!({ "type": target_type, "id": target_id })).unwrap())
-        .bind(serde_json::to_string(&payload).unwrap())
-        .bind(serde_json::to_string(&output).unwrap())
-        .bind("dead-process")
-        .bind(now + 60_000)
-        .bind(now))
-        .await
-        .unwrap();
+        let op_id = op.id;
+        boot.repo.db().writer().execute(
+            sqlx::query(
+                "UPDATE operations SET phase='spawn_started', lease_owner='dead-process',
+                 lease_until_ms=?1 WHERE id=?2",
+            )
+            .bind(now_ms() + 60_000)
+            .bind(&op_id),
+        ).await.unwrap();
 
         let mut rx = boot.state.events.subscribe();
         let plan = boot

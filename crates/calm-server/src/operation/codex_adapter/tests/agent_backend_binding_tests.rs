@@ -331,6 +331,11 @@ async fn agent_backend_no_eligible_and_single_down_share_task_failure_semantics(
         // Seed the real task/operation and return its claim to the normal driver.
         let op = claim_worker_operation(&h, "unavailable", "unavailable").await;
         let operations = Arc::new(SqlxOperationRepo::new(h.repo.db().clone()));
+        (h.repo.db())
+            .writer()
+            .execute(sqlx::query("UPDATE operations SET lease_until_ms=0 WHERE id=?1").bind(&op.id))
+            .await
+            .unwrap();
         operations.release_pending_for_retry(&op.id).await.unwrap();
         let completion = OperationCompletionBus::new();
         let ctx = SpawnCtx::new_with_codex_backends(
