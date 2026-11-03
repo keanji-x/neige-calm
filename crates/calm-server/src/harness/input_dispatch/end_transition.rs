@@ -169,7 +169,11 @@ pub(crate) async fn complete_once(
     };
     if let Some(terminal) = observed.terminal() {
         let mut terminal = terminal.clone();
-        crate::harness::turn_outcome::canonical_diagnostic(&mut terminal, &provider);
+        // Codex qualifies only closed terminal facts already sanitized by the
+        // native turn owner, including when it reconstructs them from history.
+        if provider != AgentProvider::Codex {
+            crate::harness::turn_outcome::canonical_diagnostic(&mut terminal);
+        }
         let (thread_id, turn_id) = sampled.target.scope.thread_and_turn();
         crate::harness::turn_outcome::record(
             repo,

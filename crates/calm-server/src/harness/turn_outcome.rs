@@ -11,24 +11,18 @@ pub(crate) enum Confirmation {
 }
 
 /// Native errors can echo accepted input or malformed request frames.
-/// Persist only a diagnostic derived from the provider's known error codes.
-pub(crate) fn canonical_diagnostic(
-    turn: &mut Value,
-    provider: &calm_types::runtime::AgentProvider,
-) {
+pub(crate) fn canonical_diagnostic(turn: &mut Value) {
     if let Some(error) = turn.get_mut("error").filter(|error| !error.is_null()) {
-        let diagnostic = match provider {
-            calm_types::runtime::AgentProvider::Codex => {
-                provider::codex::error::terminal_diagnostic(&error["codexErrorInfo"])
-            }
-            _ => None,
-        };
-        let (code, message) = diagnostic.unwrap_or((
-            "provider_error",
-            "The provider ended this execution with an error.",
-        ));
-        *error = serde_json::json!({ "code": code, "message": message });
+        *error = safe_diagnostic(None);
     }
+}
+
+pub(crate) fn safe_diagnostic(diagnostic: Option<(&'static str, &'static str)>) -> Value {
+    let (code, message) = diagnostic.unwrap_or((
+        "provider_error",
+        "The provider ended this execution with an error.",
+    ));
+    serde_json::json!({ "code": code, "message": message })
 }
 
 // Keep the full terminal identity and confirmation explicit at this authority boundary.

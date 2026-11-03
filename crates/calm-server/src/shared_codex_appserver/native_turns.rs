@@ -26,9 +26,9 @@ fn terminal_fact(id: &str, native: &Value) -> Value {
     {
         fact["status"] = Value::String(status.into());
     }
-    if native.get("error").is_some_and(|error| !error.is_null()) {
-        fact["error"] = Value::Bool(true);
-        crate::harness::turn_outcome::canonical_diagnostic(&mut fact);
+    if let Some(error) = native.get("error").filter(|error| !error.is_null()) {
+        let diagnostic = provider::codex::error::terminal_diagnostic(&error["codexErrorInfo"]);
+        fact["error"] = crate::harness::turn_outcome::safe_diagnostic(diagnostic);
     }
     fact
 }
