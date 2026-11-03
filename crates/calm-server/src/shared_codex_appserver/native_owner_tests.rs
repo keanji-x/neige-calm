@@ -716,3 +716,6 @@ async fn completion_blocked_after_observation_cannot_publish_from_a_retired_sour
 }
 
 mod detach_tests;
+
+#[cfg(test)]
+mod backpressure_tests;

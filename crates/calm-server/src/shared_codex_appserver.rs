@@ -13,7 +13,9 @@ mod macos_process;
 pub(crate) mod exact_thread;
 use crate::harness::profile::HarnessProfileExt;
 use control::ControlError;
+mod harness_notifications;
 mod maintenance;
+use harness_notifications::HarnessNotifications;
 mod metadata_reads;
 mod native_turns;
 mod prompt_attempt;
@@ -488,6 +490,7 @@ pub struct SharedCodexAppServer {
     /// cleanup. A cooperative daemon pays its actual exit time, never the full grace.
     stop_grace: Duration,
     notifications: NotificationFanout,
+    harness_notifications: Arc<HarnessNotifications>,
     authentication: Arc<crate::codex_authentication::CodexAuthentication>,
     authentication_monitor_started: AtomicBool,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
@@ -739,6 +742,7 @@ impl SharedCodexAppServer {
             authentication: Arc::new(crate::codex_authentication::CodexAuthentication::default()),
             authentication_monitor_started: AtomicBool::new(false),
             notifications: tx,
+            harness_notifications: Arc::new(HarnessNotifications::new(16)),
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
@@ -892,6 +896,7 @@ impl SharedCodexAppServer {
             authentication,
             authentication_monitor_started: AtomicBool::new(false),
             notifications: tx,
+            harness_notifications: Arc::new(HarnessNotifications::new(1024)),
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
@@ -1600,8 +1605,15 @@ impl SharedCodexAppServer {
         self.authentication.sign_in_failed()
     }
 
+    /// Diagnostic observers may lag. Persisting harness consumers use the lossless handoff.
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
         self.notifications.subscribe()
+    }
+
+    pub(crate) fn subscribe_harness_notifications(
+        &self,
+    ) -> tokio::sync::mpsc::Receiver<Arc<Notification>> {
+        self.harness_notifications.subscribe()
     }
 
     /// Whether a Running daemon is installed, read from the readiness channel (#1817): unlike
@@ -3301,6 +3313,8 @@ impl SharedCodexAppServer {
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
+        let harness_notifications = self.harness_notifications.clone();
+        let notification_owner = self.paths.socket.to_string_lossy().into_owned();
         let authentication = self.authentication.clone();
         let authentication_epoch = authentication.bind_client();
         // The notification task must not keep its own client alive: a strong Arc here leaves the
@@ -3387,6 +3401,10 @@ impl SharedCodexAppServer {
                         }
                     });
                 }
+                // Await capacity outside native-source and completion bookkeeping locks.
+                // The transport reader continues receiving RPC replies independently.
+                let publication = harness_notifications.reserve(&notification_owner).await;
+                let harness_notification = Arc::new(notification.clone());
                 let completed_thread = turn_completed_thread_id(&notification).map(str::to_owned);
                 let mut completion_markers = if completed_thread.is_some() {
                     Some(kernel_initiated_threads.lock().await)
@@ -3401,6 +3419,7 @@ impl SharedCodexAppServer {
                     {
                         markers.remove(thread);
                     }
+                    publication.publish(&harness_notification);
                     let _ = tx.send(notification);
                 };
                 if native_scoped {
@@ -3826,12 +3845,12 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn notification_receiver_count_for_test(&self) -> usize {
-        self.notifications.receiver_count()
+        self.notifications.receiver_count() + self.harness_notifications.receiver_count()
     }
 
     #[cfg(feature = "fixtures")]
     pub fn emit_turn_started_for_test(&self, thread_id: &str, turn_id: &str) {
-        let _ = self.notifications.send(Notification::TurnStarted {
+        self.emit_notification_for_test(Notification::TurnStarted {
             thread_id: thread_id.to_string(),
             turn: serde_json::json!({ "id": turn_id }),
         });
@@ -3840,6 +3859,7 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn emit_notification_for_test(&self, notification: Notification) {
         self.authentication.observe(&notification);
+        self.harness_notifications.publish_for_test(&notification);
         let _ = self.notifications.send(notification);
     }
 

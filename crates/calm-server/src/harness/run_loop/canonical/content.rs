@@ -180,6 +180,9 @@ pub(in crate::harness::run_loop) async fn persist_native_item(
     method: &str,
     params: &Value,
 ) -> Result<Option<CommittedNativePresentation>> {
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("canonical-native-item-before-write", inner.card_id.as_str())
+        .await;
     let card = inner.card_id.to_string();
     let worker = inner.worker_session_id.clone();
     let thread = thread.to_owned();
