@@ -901,6 +901,7 @@ async fn calendar_reconcile_rejects_operator_disable_without_mutation() {
     assert_eq!(before.manifest, after.manifest);
 }
 
+mod grants;
 mod read;
 mod verbs;
 mod wake;

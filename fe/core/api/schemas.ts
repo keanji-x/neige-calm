@@ -646,6 +646,7 @@ export const askQuestionSchema = z.object({
 export const askActionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }),
   z.object({ kind: z.literal('grant_admin') }),
+  z.object({ kind: z.literal('track_plugin_access'), plugin_id: z.string(), enabled: z.boolean(), manifest_sha256: z.string(), expected_revision: z.number() }),
   z.object({ kind: z.literal('forge_action'), idempotency_key: z.string(), payload_hash: z.string() }),
   z.object({ kind: z.literal('objective_approval'), objective: z.string(), standard_hash: z.string() }),
   z.object({ kind: z.literal('objective_approval_v2'), objective: z.string(), standard_hash: z.string() }),

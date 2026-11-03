@@ -1,5 +1,41 @@
 [
   {
+    "name": "neige_access_ask",
+    "description_sha256": "bee196b0431a22b7a2d23180d9a2fee2ff103209626ebd62166b584f6bf25b01",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "status",
+            "request"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "plugin_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_admin_gc",
     "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
     "input_schema": {

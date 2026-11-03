@@ -135,11 +135,10 @@ impl Adapter {
         let track =
             crate::db::sqlite::track_get_tx(tx, &TrackId(self.config.track_id.clone())).await?;
         if track.closed_at.is_some()
-            || !crate::mcp_server::tool_visibility::plugin_scope_for_track_row(
-                &track,
-                Some(&self.host),
+            || !crate::mcp_server::tool_visibility::plugin_scope_for_track_row_tx(
+                tx, &track, &self.host,
             )
-            .await
+            .await?
             .allows(PLUGIN_ID)
         {
             return Err(CalmError::Conflict(
