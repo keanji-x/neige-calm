@@ -464,7 +464,8 @@ it.each([false, true])('latches external exit choice across removal and frame re
     await expect.poll(() => dialog.open).toBe(false);
     expect(focus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(removed ? document.body : external);
-    expect(panel.textContent).toBe('');
+    // Native close precedes the React commit that removes retained content.
+    await expect.poll(() => panel.textContent).toBe('');
   } finally { controls.remove(); }
 });
 
