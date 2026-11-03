@@ -410,7 +410,7 @@ impl Observation {
                     ""
                 };
                 let paths = format!(
-                    "Gate log reference: runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
+                    "Gate log reference: runs/{idempotency_key}/gates/{attempt}.log; if needed, read runs/{idempotency_key}/summary.json."
                 );
                 let paths = match failing_step.as_deref().filter(|_| !*passed) {
                     Some(step) => format!(
@@ -901,7 +901,7 @@ mod tests {
         );
         assert!(
             text.ends_with(
-                " Gate log reference: runs/w:k/gates/1.log; read the worker output at runs/w:k.md."
+                " Gate log reference: runs/w:k/gates/1.log; if needed, read runs/w:k/summary.json."
             ),
             "{text}"
         );

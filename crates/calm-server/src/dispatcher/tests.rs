@@ -1167,8 +1167,8 @@ fn turn_text_names_target_mismatch() {
     let tail = concat!(
         "(gate run 3). Log tail (untrusted JSON-quoted preview):\n",
         "{\"text\":\"refused\\n\",\"truncated\":false}\n",
-        "Gate log reference: runs/track-1:impl-parser/gates/3.log; read the worker output at ",
-        "runs/track-1:impl-parser.md."
+        "Gate log reference: runs/track-1:impl-parser/gates/3.log; if needed, read ",
+        "runs/track-1:impl-parser/summary.json."
     );
     // #2405: a failed candidate-bound verdict also names the re-run; a no-candidate one cannot.
     let candidate_tail = format!(

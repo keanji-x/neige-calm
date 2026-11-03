@@ -391,22 +391,28 @@ impl<'a> TrackFsView<'a> {
                 "target_evidence": gate["target"]["evidence"]["kind"],
             })
         });
-        let worker = match latest_final_event(
-            run.completed_event.as_ref(),
-            run.failed_event.as_ref(),
-        ) {
-            Some(FinalRunEvent::Completed(event)) => {
-                json!({
-                    "status": "completed",
-                    "summary": preview(event.payload["result"].get("summary").and_then(Value::as_str).or_else(|| event.payload["result"].as_str())),
-                })
-            }
-            Some(FinalRunEvent::Failed(event)) => json!({
-                "status": "failed",
-                "reason": preview(event.payload["reason"].as_str()),
-            }),
-            None => Value::Null,
-        };
+        let worker =
+            match latest_final_event(run.completed_event.as_ref(), run.failed_event.as_ref()) {
+                Some(FinalRunEvent::Completed(event)) => {
+                    let result = event.payload.get("result");
+                    let summary = result.and_then(|result| {
+                        result
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .or_else(|| result.as_str())
+                    });
+                    json!({
+                        "status": "completed",
+                        "summary": preview(summary),
+                        "result_ref": result.map(|_| format!("runs/{}/result", run.attempt_id)),
+                    })
+                }
+                Some(FinalRunEvent::Failed(event)) => json!({
+                    "status": "failed",
+                    "reason": preview(event.payload["reason"].as_str()),
+                }),
+                None => Value::Null,
+            };
         let verdict = run_verdict_full(run).map(|verdict| {
             json!({
                 "status": verdict.status,

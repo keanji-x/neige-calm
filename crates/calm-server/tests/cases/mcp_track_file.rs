@@ -1378,7 +1378,7 @@ async fn run_summary_keeps_outcomes_separate_and_points_to_evidence() {
         ("pending-summary", Value::Null),
         (
             "completed-summary",
-            json!({"status":"completed","summary":"finished cleanly"}),
+            json!({"status":"completed","summary":"finished cleanly","result_ref":"runs/completed-summary/result"}),
         ),
         (
             "failed-summary",
