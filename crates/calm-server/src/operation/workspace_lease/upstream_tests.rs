@@ -579,8 +579,8 @@ fn lease_start_follows_heads_relation_to_the_upstream() {
         ahead_count,
         behind,
     );
-    let crate::error::CalmError::Conflict(text) = &refusal else {
-        panic!("the refusal is a client-class Conflict: {refusal:?}");
+    let crate::error::CalmError::AttachedRepoDiverged(text) = &refusal else {
+        panic!("the refusal is an attached repository divergence: {refusal:?}");
     };
     for needle in [
         "refused: attached-repo-diverged:",
@@ -602,7 +602,7 @@ fn lease_start_follows_heads_relation_to_the_upstream() {
         source: UpstreamSource::KernelFetch,
         ..upstream
     };
-    let crate::error::CalmError::Conflict(text) =
+    let crate::error::CalmError::AttachedRepoDiverged(text) =
         diverged_refusal(attached.path(), &head, &kernel_seen, 1, 1, 2)
     else {
         unreachable!()

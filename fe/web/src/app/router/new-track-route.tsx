@@ -8,7 +8,7 @@ import { availabilityOf } from '../../../../core/domain/agent-providers.ts';
 import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
-import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
+import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, trackCreateWorkspaceError, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
 import { ModelPill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
@@ -126,12 +126,13 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         });
         return;
       }
-      const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, TRACK_CREATE_FAILURES);
+      const apiFailure = failure instanceof ApiError ? failure.failure : null;
+      const kind = classifyFailure(apiFailure, TRACK_CREATE_FAILURES);
       const rejectedBeforeDispatch = failure instanceof NotSentError;
       store.update(areaId, {
         // Not sent leaves an earlier unconfirmed create as it was; an unknown answer is the fixed state, never its text.
         error: rejectedBeforeDispatch ? (hadUnconfirmedRequest ? TRACK_CREATE_TEXT.unknown : TRACK_CREATE_TEXT.refused)
-          : kind === 'unconfirmed' ? TRACK_CREATE_TEXT.unknown : refusedText(writeFailureOf(failure), TRACK_CREATE_TEXT.refused),
+          : kind === 'unconfirmed' ? (trackCreateWorkspaceError(apiFailure) ?? TRACK_CREATE_TEXT.unknown) : refusedText(writeFailureOf(failure), TRACK_CREATE_TEXT.refused),
         ...(kind === 'exhausted' ? { key: mintIdempotencyKey(), request: null } : {}),
         // A refused retry says nothing about the earlier attempt's outcome.
         ...(!hadUnconfirmedRequest && (rejectedBeforeDispatch || kind === 'rejected') ? { request: null } : {}),
