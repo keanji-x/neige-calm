@@ -38,36 +38,6 @@ async fn u13_p1_facts_carrier_issued_object_shape() {
     }
 }
 
-#[tokio::test]
-async fn u13_p1_facts_carrier_observation_ledger_deferred() {
-    let mut v = original();
-    v["pending_queue"] = json!([
-        {"type":"forge_scan_completed","track_id":"t","overlapping_prs":[false,"bad",3]},
-        {"type":"task_completed","idempotency_key":"k","result":{"opaque":[null,true]}}
-    ]);
-    let fixture = fixture(&v.to_string()).await;
-    let audit = fixture.audit().await;
-    let facts = classify_facts(&audit).unwrap();
-    super::node_oracle::assert_all(&fixture, &facts).await;
-    let w = &facts.workers()[0];
-    for node in facts.sources().nodes() {
-        if let SourceLocation::Cell { json: Some(a), .. } = &node.source.location {
-            let p = a.pointer();
-            if p.starts_with("/pending_queue/0") || p.starts_with("/pending_queue/1") {
-                assert!(w.fields.iter().any(|f| f.source == node.source
-                    && f.expected_path.is_none()
-                    && f.interpretation
-                        == Interpretation::Blocked(FactReason::DeferredObservationInterpretation)));
-            }
-        }
-    }
-    assert!(!w.fields.iter().any(|f| matches!(&f.source.location,
-        SourceLocation::Cell { json: Some(a), .. } if a.pointer().starts_with("/pending_queue/"))
-        && matches!(f.interpretation, Interpretation::Stored(_))));
-    assert!(blocked(w, "/pending_queue/0", FactReason::Malformed));
-    assert_eq!(facts.semantic_status(), "BlockedAudit/NeedsQualification");
-}
-
 // Permanent source guard: payload interpretation cannot discard sources when a
 // duplicate prevents the frame from entering any semantic decoder.
 #[tokio::test]

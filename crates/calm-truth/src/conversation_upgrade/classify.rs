@@ -265,6 +265,7 @@ pub fn classify_facts(
                             frame.block("", FactReason::AmbiguousRepresentation)?;
                         }
                         Some(version @ 2..=5) => {
+                            super::observation_projection::released(&mut frame)?;
                             frame.block("", FactReason::DeferredReleased)?;
                             frame.worker.frame = Some(FrameFacts::DeferredReleased {
                                 original_version: version,
