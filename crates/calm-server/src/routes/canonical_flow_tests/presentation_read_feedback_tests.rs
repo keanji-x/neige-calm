@@ -2,23 +2,12 @@
 use super::*;
 
 pub(super) async fn read_run(app: &axum::Router, cookie: &str, card: &str) -> Value {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::get(format!(
-                "/api/cards/{card}/planner/run?contract=conversation_v1"
-            ))
-            .header(header::COOKIE, cookie)
-            .body(Body::empty())
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(status, StatusCode::OK, "{body}");
-    body
+    super::input_feedback_tests::run(
+        app,
+        cookie,
+        &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+    )
+    .await
 }
 
 async fn save_frame(fixture: &Fixture, worker: &str, frame: &CanonicalHarnessSnapshot) {
