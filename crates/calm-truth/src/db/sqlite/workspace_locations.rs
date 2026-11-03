@@ -149,7 +149,8 @@ async fn inventory(
         {
             continue;
         }
-        let typed_link = decoded_output.and_then(|output| output.data.workspace_reclaim.execution_id);
+        let typed_link =
+            decoded_output.and_then(|output| output.data.workspace_reclaim.execution_id);
         let typed_consumer = intent
             .as_deref()
             .and_then(|raw| serde_json::from_str::<Intent>(raw).ok())

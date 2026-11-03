@@ -250,7 +250,9 @@ pub(crate) async fn terminal_admission_tx(tx: &mut Tx<'_>, _track: &str) -> Resu
         .iter()
         .find(|location| location.removing)
     {
-        return Err(crate::operation::location_admission::removal_blocker(location)?);
+        return Err(crate::operation::location_admission::removal_blocker(
+            location,
+        )?);
     }
     Ok(())
 }

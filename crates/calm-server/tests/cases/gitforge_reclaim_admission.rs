@@ -228,12 +228,20 @@ async fn legacy_pending_allows_progress(restart: bool) {
         f.b.app = crate::support::authenticated_router::application(f.b.state.clone()).await;
     }
     assert_pending_pipe_allows_unrelated_worker(&mut f, id.as_str()).await;
-    tokio::time::timeout(std::time::Duration::from_secs(2), f.b.state.operation_runtime.sweep_parked())
-        .await.unwrap().unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        f.b.state.operation_runtime.sweep_parked(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let recovered = tokio::time::timeout(std::time::Duration::from_secs(5), recover_reclaims(&f))
-        .await.expect("legacy boot recovery returns while settlement is unavailable");
+        .await
+        .expect("legacy boot recovery returns while settlement is unavailable");
     tokio::time::timeout(std::time::Duration::from_secs(2), recovered.sweep_parked())
-        .await.unwrap().unwrap();
+        .await
+        .unwrap()
+        .unwrap();
     let uri = format!(
         "/api/tracks/{}/terminal-cards",
         other["id"].as_str().unwrap()
@@ -406,4 +414,3 @@ async fn assert_pending_pipe_allows_unrelated_worker(f: &mut Fixture, reclaim: &
     f.b.state = original_state;
     f.b.app = crate::support::authenticated_router::application(f.b.state.clone()).await;
 }
-
