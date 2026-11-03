@@ -354,6 +354,20 @@ async fn turn_pending_row_with_live_harness_is_working() {
 }
 
 #[tokio::test]
+async fn running_planner_marks_track_working_only_with_live_harness() {
+    let f = fx().await;
+    let (t, planner, ws) = harness_track(&f, WorkerSessionState::Running).await;
+    let offline = f.recompute(&t).await;
+    assert!(!offline.working, "{offline:?}");
+    assert_eq!(card_state(&offline, &planner), None);
+
+    f.install_live_harness(&t, &planner, &ws).await;
+    let online = f.recompute(&t).await;
+    assert!(online.working, "{online:?}");
+    assert_eq!(card_state(&online, &planner), Some(CardState::Working));
+}
+
+#[tokio::test]
 async fn planning_track_with_idle_planner_is_not_working() {
     let f = fx().await;
     let (t, planner, ws) = harness_track(&f, WorkerSessionState::Idle).await;

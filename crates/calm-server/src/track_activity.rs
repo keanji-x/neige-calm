@@ -227,8 +227,10 @@ pub fn fold(track_id: &str, rows: &TrackRows) -> Fold {
         let harness = ws.mode.as_deref() == Some(calm_types::harness::HARNESS_MODE);
         let pty_backed = ws.interactive_pty;
         if harness {
-            // (i) harness codex — planner + assistant.
-            if ws.state == "turn_pending" && rows.live_harness_sessions.contains(&ws.id) {
+            // (i) Live Planner and assistant harness turns, pending or running.
+            if matches!(ws.state.as_str(), "turn_pending" | "running")
+                && rows.live_harness_sessions.contains(&ws.id)
+            {
                 working = true;
                 raise_working(&mut cards, &mut working_cards, &ws.card_id);
             }
