@@ -1,35 +1,9 @@
 //! Read-only composition of observations owned by runtime components.
 use crate::state::RouteState;
-use calm_truth::db::sqlite::{WRITE_BUCKET_MS, WRITE_BUCKETS, WriteObservationBucket};
+use calm_truth::db::sqlite::{WRITE_BUCKET_MS, WRITE_BUCKETS};
+use calm_types::daily_planner::{RetiredWorkspaceSummary, SupervisorSnapshot};
 use chrono::Utc;
-use serde::Serialize;
 use std::time::Duration;
-use utoipa::ToSchema;
-
-/// A current observation, with null values for unavailable sources.
-#[derive(Serialize, ToSchema)]
-pub(crate) struct SupervisorSnapshot {
-    observed_at_ms: i64,
-    kernel_version: String,
-    #[schema(required = true)]
-    build_sha: Option<String>,
-    #[schema(required = true)]
-    database_writes: Option<Vec<WriteObservationBucket>>,
-    write_bucket_ms: i64,
-    write_bucket_count: i64,
-    scheduler_boot_sweep_completed: bool,
-    #[schema(required = true)]
-    settled_worker_cleanup_candidates: Option<i64>,
-    #[schema(required = true)]
-    retired_workspaces: Option<RetiredWorkspaceSummary>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct RetiredWorkspaceSummary {
-    count: i64,
-    #[schema(required = true)]
-    oldest_retired_at_ms: Option<i64>,
-}
 
 pub(crate) async fn snapshot(state: &RouteState) -> SupervisorSnapshot {
     let version = crate::routes::version::current_version_info(

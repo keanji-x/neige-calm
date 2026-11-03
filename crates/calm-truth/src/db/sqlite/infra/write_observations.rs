@@ -5,14 +5,7 @@ use std::sync::Mutex;
 pub const WRITE_BUCKET_MS: i64 = 5 * 60 * 1000;
 pub const WRITE_BUCKETS: i64 = 12;
 
-#[derive(Clone, serde::Serialize, utoipa::ToSchema)]
-pub struct WriteObservationBucket {
-    pub started_at_ms: i64,
-    pub transactions: u64,
-    pub failures: u64,
-    pub retries: u64,
-    pub mean_wait_ms: f64,
-}
+pub use calm_types::daily_planner::WriteObservationBucket;
 
 #[derive(Default)]
 pub(super) struct WriteObservations(Mutex<BTreeMap<i64, Bucket>>);

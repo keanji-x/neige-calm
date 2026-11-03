@@ -4,12 +4,12 @@ use crate::daily_planner::{TIME_ZONE, track_for_date};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Query};
 use crate::state::{AppState, RouteState};
-use crate::supervisor_read::SupervisorSnapshot;
 use crate::workspace_reports::{
     self, ReportChangesPage, ReportChangesQuery, ReportEditsPage, ReportEditsQuery,
 };
 use axum::{Router, extract::State, routing::get};
 pub use calm_types::daily_planner::DailyTrackResolved;
+use calm_types::daily_planner::SupervisorSnapshot;
 use chrono::Utc;
 use serde::Deserialize;
 
