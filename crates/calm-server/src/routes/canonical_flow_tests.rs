@@ -286,18 +286,10 @@ impl Fixture {
         method: Option<&str>,
         item: Option<&str>,
     ) -> i64 {
-        sqlx::query_scalar(
-            "SELECT count(*) FROM harness_items WHERE card_id=?1
-             AND (?2 IS NULL OR worker_session_id=?2)
-             AND (?3 IS NULL OR method=?3) AND (?4 IS NULL OR item_uuid=?4)",
+        crate::test_support::canonical_batch::transcript_count(
+            &self.repo, card, worker, method, item,
         )
-        .bind(card)
-        .bind(worker)
-        .bind(method)
-        .bind(item)
-        .fetch_one(self.repo.pool())
         .await
-        .unwrap()
     }
 
     async fn wait_phase(&self, track: &str, phase: HarnessPhaseTag) -> CanonicalHarnessSnapshot {

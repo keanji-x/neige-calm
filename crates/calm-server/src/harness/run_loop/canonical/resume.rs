@@ -2,7 +2,7 @@
 use super::*;
 
 /// A claim without any crossing can resume only from a newly supplied live
-/// source for its exact frozen human revision. Crossing/Unknown/Accepted never
+/// source for its whole frozen input plan. Crossing/Unknown/Accepted never
 /// flow through this path, even when no native turn is currently visible.
 /// Resume the immutable plan as composed, including pre-feature plans without
 /// a context-usage segment. Never add or resample context during replay.
@@ -79,12 +79,9 @@ pub(super) async fn resume_unattempted(
                     .plan
                     .input_refs()
                     .map_err(|error| CalmError::Conflict(error.into()))?;
-                Ok(match refs.as_slice() {
-                    [input] => Some(CanonicalPendingIdentity::Accepted {
-                        input: input.clone(),
-                    }),
-                    _ => None,
-                })
+                // The first reference finds the actual issuer; stored admission
+                // and dispatch still authorize every input in the original plan.
+                Ok(refs.into_iter().next().map(CanonicalPendingIdentity::from))
             })
         }
     })

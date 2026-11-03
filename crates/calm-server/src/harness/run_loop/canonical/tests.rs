@@ -13,6 +13,7 @@ use calm_types::conversation::MessageRevisionRef;
 use calm_types::conversation::{AcceptedInputRef, HumanPayload, InputDeliveryFact};
 use serde_json::json;
 
+mod batch_tests;
 mod compact_tests;
 mod content_tests;
 mod control_tests;

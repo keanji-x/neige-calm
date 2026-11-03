@@ -98,7 +98,7 @@ async fn canonical_revoked_source_cannot_continue_from_config_to_catalog() {
     );
 }
 
-async fn configure_default_effort(repo: &crate::db::sqlite::SqlxRepo, card_id: &str) {
+pub(super) async fn configure_default_effort(repo: &crate::db::sqlite::SqlxRepo, card_id: &str) {
     // Use the settings owner's real value transition: an explicit effort was
     // selected, then changed to the installation default. A config with no
     // effort must consult the actual model catalog to resolve that default.
@@ -143,7 +143,7 @@ async fn configure_default_effort(repo: &crate::db::sqlite::SqlxRepo, card_id: &
         .expect("independent write operation")
 }
 
-fn catalog_reply(call: &Value, next: Option<&str>) -> Value {
+pub(super) fn catalog_reply(call: &Value, next: Option<&str>) -> Value {
     json!({"id":call["id"],"result":{"data":[{
         "id":"fixture-preset","model":"fixture-private-model",
         "displayName":"Fixture model","description":"test peer",
@@ -152,7 +152,7 @@ fn catalog_reply(call: &Value, next: Option<&str>) -> Value {
     }],"nextCursor":next}})
 }
 
-async fn config_reply(
+pub(super) async fn config_reply(
     peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
     call: &Value,
 ) {

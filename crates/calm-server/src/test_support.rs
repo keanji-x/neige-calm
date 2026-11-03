@@ -1,4 +1,7 @@
 #[cfg(test)]
+pub(crate) mod canonical_batch;
+
+#[cfg(test)]
 #[cfg(feature = "fixtures")]
 pub(crate) mod database_snapshot_tests;
 

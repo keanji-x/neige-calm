@@ -1,12 +1,13 @@
 //! Transport/scheduler tests for an internally committed intent. Truth's tests
 //! exercise the real private resolution transaction; no HTTP activation is claimed.
 use super::*;
-
+use crate::db::sqlite::conversation::pending_plan_for_prefix_tx;
 use crate::shared_codex_appserver::native_owner_tests::{notify_thread, request, send};
 use calm_types::conversation::*;
 use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::json;
 
+mod batch;
 mod fixture;
 use fixture::RetryFixture;
 

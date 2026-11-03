@@ -48,6 +48,17 @@ impl SelectionReadAdmission {
         self.source.check_current()
     }
 
+    pub(crate) async fn select_pending_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        repo: Arc<dyn Repo>,
+        source: InputSource,
+        carrier: &CurrentInputCarrier,
+    ) -> Result<Self> {
+        source.require_repo(repo.as_ref())?;
+        let plan = super::pending_selection::plan_tx(tx, &source, carrier).await?;
+        Self::pending_tx(tx, repo, source, carrier, plan).await
+    }
+
     pub(crate) async fn pending_tx(
         tx: &mut Transaction<'_, Sqlite>,
         repo: Arc<dyn Repo>,
@@ -125,21 +136,58 @@ impl SelectionReadAdmission {
         self.current_payload().await.map(drop)
     }
 
+    /// Compose claim-time context only after revalidating every frozen input
+    /// and the same read target. Appended inputs cannot enlarge this selection.
+    pub(crate) async fn pending_plan_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        carrier: &CurrentInputCarrier,
+        contexts: Vec<calm_types::conversation::SystemRenderContext>,
+    ) -> Result<SubmissionRenderPlan> {
+        self.require_current_tx(tx, carrier).await?;
+        let InputScope::Pending(plan) = &self.input else {
+            return Err(CalmError::Conflict(
+                "model read is not a pending selection".into(),
+            ));
+        };
+        let count = u32::try_from(
+            plan.input_refs()
+                .map_err(|error| CalmError::Conflict(error.into()))?
+                .len(),
+        )
+        .ok()
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or_else(|| CalmError::Conflict("invalid pending selection size".into()))?;
+        Ok(conversation::pending_plan_for_prefix_tx(tx, carrier, count, contexts).await?)
+    }
+
+    async fn require_current_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        carrier: &CurrentInputCarrier,
+    ) -> Result<()> {
+        self.source.require_repo(self.repo.as_ref())?;
+        // This fence intentionally excludes appended pending entries.
+        if carrier.card_id() != self.card
+            || carrier.worker_session_id() != self.worker
+            || RuntimeExecutionFence::from_carrier(carrier) != self.fence
+        {
+            return Err(CalmError::Conflict("model read execution changed".into()));
+        }
+        let target = check_input_and_target(tx, &self.source, carrier, &self.input).await?;
+        if target != self.target {
+            return Err(CalmError::Conflict("model read target changed".into()));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn current_payload(&self) -> Result<serde_json::Value> {
         self.source.require_repo(self.repo.as_ref())?;
         let bound = self.clone();
         write_in_tx_typed(self.repo.as_ref(), move |tx| {
             Box::pin(async move {
                 let carrier = current_input_carrier_tx(tx, &bound.card, &bound.worker).await?;
-                // This fence intentionally excludes appended pending entries.
-                if RuntimeExecutionFence::from_carrier(&carrier) != bound.fence {
-                    return Err(CalmError::Conflict("model read execution changed".into()));
-                }
-                let target =
-                    check_input_and_target(tx, &bound.source, &carrier, &bound.input).await?;
-                if target != bound.target {
-                    return Err(CalmError::Conflict("model read target changed".into()));
-                }
+                bound.require_current_tx(tx, &carrier).await?;
                 Ok(crate::db::sqlite::card_execution_shape_tx(tx, &bound.card)
                     .await?
                     .payload)

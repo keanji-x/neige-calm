@@ -3,8 +3,7 @@
 use super::*;
 use crate::conversation_inputs::InputSource;
 use crate::db::sqlite::conversation::{
-    CurrentInputCarrier, RuntimeFrameAfterWrite, pending_plan_for_prefix_tx,
-    persist_runtime_frame_tx,
+    CurrentInputCarrier, RuntimeFrameAfterWrite, persist_runtime_frame_tx,
 };
 use crate::db::sqlite::conversation::{
     RuntimeExecutionFence, current_input_carrier_tx, current_input_fact_carrier_tx,
@@ -448,8 +447,8 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
     let runtime = inner.worker_session_id.clone();
     let expected = current.fence.clone();
     let message = message.clone();
-    // Before model/workspace/config reads, validate the same source and exact
-    // head through the shared admission owner. Claim and crossing repeat it.
+    // Freeze the source-qualified prefix before model/workspace/config reads.
+    // The shared admission owner rechecks that complete selection before claim.
     let read_admission = write_in_tx_typed(inner.repo.as_ref(), {
         let repo = inner.repo.clone();
         let (card, runtime, source, message, expected) = (
@@ -463,15 +462,8 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
             Box::pin(async move {
                 let carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
                 require_head(&carrier, &expected, &message)?;
-                let plan = pending_plan_for_prefix_tx(
-                    tx,
-                    &carrier,
-                    std::num::NonZeroU32::new(1).expect("one input"),
-                    vec![],
-                )
-                .await?;
-                crate::conversation_inputs::SelectionReadAdmission::pending_tx(
-                    tx, repo, source, &carrier, plan,
+                crate::conversation_inputs::SelectionReadAdmission::select_pending_tx(
+                    tx, repo, source, &carrier,
                 )
                 .await
             })
@@ -539,13 +531,9 @@ async fn advance_once(inner: &Arc<Inner>, ingress_empty: bool) -> Result<Progres
                 let mut carrier = current_input_carrier_tx(tx, &card, &runtime).await?;
                 require_head(&carrier, &expected, &message)?;
                 report_context::append_tx(tx, &source, &carrier, &track, &mut contexts).await?;
-                let plan = pending_plan_for_prefix_tx(
-                    tx,
-                    &carrier,
-                    std::num::NonZeroU32::new(1).expect("one input"),
-                    contexts,
-                )
-                .await?;
+                let plan = read_admission
+                    .pending_plan_tx(tx, &carrier, contexts)
+                    .await?;
                 let claimed =
                     crate::conversation_inputs::claim_initial_tx(tx, &source, &mut carrier, plan)
                         .await?;

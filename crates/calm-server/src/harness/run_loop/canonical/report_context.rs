@@ -12,8 +12,8 @@ pub(super) async fn append_tx(
     contexts: &mut Vec<SystemRenderContext>,
 ) -> Result<()> {
     crate::conversation_inputs::authorize_resource_tx(tx, source, carrier).await?;
-    // Canonical claims select exactly one pending input. Its frozen Report suggestion
-    // already covers that observation; historical observations retain their own copy.
+    // A System head stays a single producer-bound input. Its frozen Report
+    // suggestion already covers that observation; Human batches use this delta.
     if matches!(carrier.checkpoint().pending.first(),
     Some(PendingInput::System { observation, .. })
     if matches!(observation.observation(), Observation::ReportEdited {
