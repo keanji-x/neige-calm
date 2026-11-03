@@ -34,7 +34,7 @@
 
   .block h3 {
     font: var(--type-ui);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     margin-block-end: var(--space-3);
   }
 
