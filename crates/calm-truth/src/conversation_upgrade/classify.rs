@@ -17,6 +17,7 @@ pub enum FactReason {
     MissingOwnerDecoder,
     MissingProviderAuthority,
     DeferredReleased,
+    RelationshipRequiresP2,
     DeferredObservationInterpretation,
     OwnerDiagnosticNotLeaf,
     AmbiguousRepresentation,
@@ -60,6 +61,8 @@ pub struct WorkerFacts {
     pub logical_key: WorkerKey,
     pub fields: Vec<FieldFact>,
     pub frame: Option<FrameFacts>,
+    // Transient shared projection coordinates, scoped to the current original cell.
+    pub(super) sequence_fields: Vec<(String, String)>,
 }
 impl WorkerFacts {
     fn record(
@@ -76,8 +79,20 @@ impl WorkerFacts {
     }
 }
 #[derive(Debug)]
+pub struct DerivedValue {
+    pub ancestor: SourceRef,
+    pub target_path: String,
+    pub value: Value,
+    pub owner_adapter: &'static str,
+}
+#[derive(Debug)]
 pub enum FrameFacts {
     LegacyV1,
+    DerivedByReleasedAdapter {
+        original_version: u64,
+        adapted: Box<calm_types::harness::snapshot::CanonicalHarnessSnapshot>,
+        derived: Vec<DerivedValue>,
+    },
     /// Released bytes and nodes remain in the ledger; interpretation is deferred.
     DeferredReleased {
         original_version: u64,
@@ -151,6 +166,7 @@ pub fn classify_facts(
                 logical_key,
                 fields: Vec::new(),
                 frame: None,
+                sequence_fields: Vec::new(),
             };
             for node in sources.nodes().iter().filter(|n| matches!(&n.source.location,
                 SourceLocation::Cell { row: r, .. } if r.relation == relation.name && r.raw_key == row.key)) {
@@ -235,6 +251,7 @@ pub fn classify_facts(
                 let text = schema::text(raw, &audit.inventory().encoding)
                     .map_err(|_| FactCoverageError::InconsistentSource)?;
                 let value: Value = serde_json::from_str(&text)?;
+                worker.sequence_fields.clear();
                 let mut frame = FrameView {
                     worker: &mut worker,
                     cell: source,
@@ -266,10 +283,7 @@ pub fn classify_facts(
                         }
                         Some(version @ 2..=5) => {
                             super::observation_projection::released(&mut frame)?;
-                            frame.block("", FactReason::DeferredReleased)?;
-                            frame.worker.frame = Some(FrameFacts::DeferredReleased {
-                                original_version: version,
-                            });
+                            super::released::facts(&mut frame, version)?;
                         }
                         Some(_) => {
                             frame.block("/schema_version", FactReason::UnsupportedVersion)?
@@ -278,6 +292,7 @@ pub fn classify_facts(
                     }
                 }
             }
+            worker.sequence_fields.clear();
             workers.push(worker);
         }
     }
@@ -395,7 +410,7 @@ impl<'a> FrameView<'a> {
             true,
         )
     }
-    fn decoded<T>(
+    pub(super) fn decoded<T>(
         &mut self,
         path: &str,
         result: Result<T, serde_path_to_error::Error<serde_json::Error>>,

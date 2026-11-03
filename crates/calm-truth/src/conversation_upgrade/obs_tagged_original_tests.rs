@@ -326,7 +326,7 @@ async fn u13_p1_obs_tagged_preserves_uninterpreted_sequence_carrier() {
     let audit = frame_audit(&v).await;
     let facts = classify_facts(&audit).unwrap();
     let w = &facts.workers()[0];
-    // Main defers sequence carriers; nested tagged values must not activate
+    // Released adaptation preserves sequence carriers; nested tagged values must not activate
     // named-field dispatch against an array and invent a missing observation.
     assert!(
         !w.fields
@@ -335,8 +335,9 @@ async fn u13_p1_obs_tagged_preserves_uninterpreted_sequence_carrier() {
     );
     assert!(matches!(
         w.frame,
-        Some(FrameFacts::DeferredReleased {
-            original_version: 5
+        Some(FrameFacts::DerivedByReleasedAdapter {
+            original_version: 5,
+            ..
         })
     ));
 }

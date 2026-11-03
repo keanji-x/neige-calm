@@ -291,8 +291,11 @@ async fn u13_p1_facts_observation_released_actual_entry_and_system_refusal() {
             let path = "/canonical_inputs/pending/0/observation";
             assert_eq!(blocked(w, path, FactReason::Malformed), refused);
             assert!(
-                matches!(w.frame, Some(FrameFacts::DeferredReleased { original_version }) if original_version == version)
+                calm_types::harness::snapshot::CanonicalHarnessSnapshot::from_released(v.clone())
+                    .is_err()
             );
+            assert!(w.frame.is_none());
+            assert!(blocked(w, "", FactReason::Malformed));
             assert_stored(&v, &format!("{path}/text"), observation["text"].clone()).await;
         }
     }
@@ -469,8 +472,13 @@ async fn u13_p1_facts_observation_released_all_owners_and_checkpoint_representat
                 };
                 assert_eq!(blocked(w, path, FactReason::Malformed), !accepted);
                 assert!(
-                    matches!(w.frame,Some(FrameFacts::DeferredReleased {original_version}) if original_version==version)
+                    calm_types::harness::snapshot::CanonicalHarnessSnapshot::from_released(
+                        v.clone()
+                    )
+                    .is_err()
                 );
+                assert!(w.frame.is_none());
+                assert!(blocked(w, "", FactReason::Malformed));
                 assert!(w.fields.iter().any(|f| at(f, &format!("{path}/type"))
                     && f.interpretation == Interpretation::Stored(observation["type"].clone())));
                 assert_eq!(facts.semantic_status(), "BlockedAudit/NeedsQualification");

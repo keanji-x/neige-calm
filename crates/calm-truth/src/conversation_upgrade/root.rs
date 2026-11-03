@@ -68,5 +68,8 @@ pub(super) fn deferred_observation_source(source: &SourceRef) -> bool {
             // ConversationInputCheckpoint (checkpoint.rs:103) and each released
             // CheckpointV2/V3/V4 declare pending second. No released leaf decoding.
             && (member(1, "pending") || matches!(a.0.get(1), Some(JsonStep::Index(1))))
-            && matches!(a.0.get(2), Some(JsonStep::Index(_))) && member(3, "observation")
+            && matches!(a.0.get(2), Some(JsonStep::Index(_)))
+            // A tag-first System sequence carries its observation at index 2.
+            // This remains a syntactic candidate, never a variant acceptance.
+            && (member(3, "observation") || matches!(a.0.get(3), Some(JsonStep::Index(2))))
 }

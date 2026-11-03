@@ -181,10 +181,11 @@ mod classify;
 mod legacy;
 mod nested;
 mod observation_projection;
+mod released;
 mod root;
 pub use classify::{
-    CompleteFactAudit, FactReason, FieldFact, FrameFacts, Interpretation, Presence, WorkerFacts,
-    WorkerKey, classify_facts,
+    CompleteFactAudit, DerivedValue, FactReason, FieldFact, FrameFacts, Interpretation, Presence,
+    WorkerFacts, WorkerKey, classify_facts,
 };
 #[cfg(test)]
 mod classification_tests;
@@ -206,6 +207,14 @@ mod root_tests;
 mod observation_matrix_tests;
 #[cfg(test)]
 mod observation_tests;
+
+#[cfg(test)]
+mod released_matrix_tests;
+#[cfg(test)]
+mod released_tests;
+
+#[cfg(test)]
+mod released_tagged_tests;
 
 #[cfg(test)]
 mod obs_tagged_original_tests;
