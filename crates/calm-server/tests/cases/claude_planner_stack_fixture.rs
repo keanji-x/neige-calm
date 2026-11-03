@@ -438,7 +438,7 @@ impl Stack {
 
     /// A historical Claude Planner on a managed workspace; returns the track and its Planner card.
     pub async fn create_claude_track(&self) -> (String, String) {
-        self.create_claude_track_with(json!({})).await
+        self.create_historical_track_with(json!({})).await
     }
 
     /// A fresh area for a create body.
@@ -458,31 +458,38 @@ impl Stack {
             .to_string()
     }
 
-    /// [`Self::create_claude_track`] with `extra` merged into the create body.
-    pub async fn create_claude_track_with(&self, extra: Value) -> (String, String) {
+    async fn track_request(&self, extra: Value) -> Value {
         let mut request = json!({
             "planner_provider": "claude",
             "area_id": self.area().await,
             "title": "claude planner",
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
         });
-        let managed = extra.get("cwd").is_none();
-        if managed {
-            request["template_id"] = json!("small-change");
-        }
         for (key, value) in extra.as_object().expect("extra is an object") {
             request[key] = value.clone();
         }
-        let body = if managed {
-            // The lifecycle tests need released Managed storage and eager startup.
-            crate::support::planner::historical_track(&self.state, request, None)
-                .await
-                .expect("released Planner fixture")
-        } else {
-            let (status, body) = self.send("POST", "/api/tracks", Some(request)).await;
-            assert_eq!(status, StatusCode::CREATED, "{body}");
-            body
-        };
+        request
+    }
+
+    pub async fn create_historical_track_with(&self, extra: Value) -> (String, String) {
+        let mut request = self.track_request(extra).await;
+        if request.get("template_id").is_none() {
+            request["template_id"] = json!("small-change");
+        }
+        let body = crate::support::planner::historical_track(&self.state, request, None)
+            .await
+            .expect("released Planner fixture");
+        self.created_track_planner(body).await
+    }
+
+    pub async fn create_canonical_track_with(&self, extra: Value) -> (String, String) {
+        let request = self.track_request(extra).await;
+        let (status, body) = self.send("POST", "/api/tracks", Some(request)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        self.created_track_planner(body).await
+    }
+
+    async fn created_track_planner(&self, body: Value) -> (String, String) {
         let track_id = body["id"].as_str().expect("track id").to_string();
         let card = self
             .repo()

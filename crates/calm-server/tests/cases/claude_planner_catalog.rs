@@ -276,7 +276,7 @@ async fn with_no_list_a_put_is_refused_and_a_turn_still_runs() {
     let root = root_with_catalog("ok");
     let stack = Stack::boot(&root).await;
     let (_track, card_id) = stack
-        .create_claude_track_with(json!({"model": "sonnet", "reasoning_effort": "high"}))
+        .create_historical_track_with(json!({"model": "sonnet", "reasoning_effort": "high"}))
         .await;
     std::fs::write(root.fake_dir().join("catalog"), "empty").expect("break the CLI");
     let claude = claude_entry(&stack, "?refresh=true").await;

@@ -90,12 +90,16 @@ async fn fixture(
     let checkout = root.path().join("checkout");
     crate::support::git_helpers::init_bare_origin(&origin, &seed);
     crate::support::git_helpers::clone_for_track(&origin, &checkout);
-    let (track, card) = stack.create_claude_track_with(json!({
-        "attach_folder": !entry.canonical(), "planner_provider":provider,
+    let request = json!({
+        "planner_provider":provider,
         "model": if provider == "claude" { json!("claude-fable-5-1[1m]") } else { serde_json::Value::Null },
-        "reasoning_effort": if provider == "claude" { json!("high") } else { serde_json::Value::Null },
-        "template_id": if entry.canonical() { serde_json::Value::Null } else { json!("small-change") }
-    })).await;
+        "reasoning_effort": if provider == "claude" { json!("high") } else { serde_json::Value::Null }
+    });
+    let (track, card) = if entry.canonical() {
+        stack.create_canonical_track_with(request).await
+    } else {
+        stack.create_historical_track_with(request).await
+    };
     // Seed the location through its owner before activation: canonical creation
     // context intentionally prevents using the relocation API as fixture setup.
     let mut workspace = stack

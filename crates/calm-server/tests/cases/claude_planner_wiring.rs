@@ -370,7 +370,7 @@ async fn claude_planner_turn_runs_in_the_track_worktree() {
     let checkout = checkout.canonicalize().expect("canonical checkout");
     let stack = Stack::boot(&root).await;
     let (track_id, card_id) = stack
-        .create_claude_track_with(json!({"cwd": checkout, "attach_folder": true}))
+        .create_canonical_track_with(json!({"cwd": checkout, "attach_folder": true}))
         .await;
     let original = stack.runtime(&card_id).await;
     let empty: CanonicalHarnessSnapshot = serde_json::from_value(

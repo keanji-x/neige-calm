@@ -198,7 +198,7 @@ async fn acp_assistant_first_turn_model_prompt_and_restart() {
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
     let (track, planner) = stack
-        .create_claude_track_with(json!({"planner_provider":"opencode"}))
+        .create_historical_track_with(json!({"planner_provider":"opencode"}))
         .await;
     let root_before = stack.runtime(&planner).await.id;
     std::fs::write(root.path().join("scenario"), "assistant-mcp").unwrap();
@@ -308,7 +308,7 @@ async fn acp_assistant_unknown_receipt_is_not_resent_after_boot() {
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
     let (track, _) = stack
-        .create_claude_track_with(json!({"planner_provider":"opencode"}))
+        .create_historical_track_with(json!({"planner_provider":"opencode"}))
         .await;
     let (status, row) = create(
         &stack,
@@ -469,7 +469,7 @@ async fn assistant_provider_shutdown_replay_preserves_each_provider_cleanup_cont
             boot_acp(&root).await
         };
         let (track, _) = stack
-            .create_claude_track_with(json!({"planner_provider":provider}))
+            .create_historical_track_with(json!({"planner_provider":provider}))
             .await;
         let (status, row) = create(
             &stack,
@@ -605,7 +605,7 @@ async fn images_false_refuses(check_upload: bool) {
     let root = Root::new("unused");
     let stack = boot_acp(&root).await;
     let (track, _) = stack
-        .create_claude_track_with(json!({"planner_provider":"opencode"}))
+        .create_historical_track_with(json!({"planner_provider":"opencode"}))
         .await;
     let (status, row) = create(
         &stack,
@@ -694,7 +694,7 @@ async fn acp_assistant_archive_survives_cold_boot_and_restores_the_same_native_c
     let root = Root::new("exit");
     let stack = boot_acp(&root).await;
     let (track, _) = stack
-        .create_claude_track_with(json!({"planner_provider":"opencode"}))
+        .create_historical_track_with(json!({"planner_provider":"opencode"}))
         .await;
     let (status, row) = create(
         &stack,

@@ -53,7 +53,7 @@ async fn the_chosen_model_and_effort_reach_each_next_turn() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (_track, card_id) = stack
-        .create_claude_track_with(
+        .create_historical_track_with(
             json!({"model": "claude-fable-5-1[1m]", "reasoning_effort": "high"}),
         )
         .await;
@@ -205,7 +205,7 @@ async fn create_refuses_an_undeclared_effort_and_mints_an_unlisted_value() {
         assert!(tracks.is_empty(), "{extra}: no track is minted");
     }
     let (_track, card_id) = stack
-        .create_claude_track_with(json!({"model": "opus"}))
+        .create_canonical_track_with(json!({"model": "opus"}))
         .await;
     assert_eq!(payload(&stack, &card_id).await["model"], "opus");
 }
