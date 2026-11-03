@@ -3,3 +3,4 @@ close-range	5.9	https://raw.githubusercontent.com/torvalds/linux/v5.9/arch/x86/e
 close-range-cloexec	5.11	https://raw.githubusercontent.com/torvalds/linux/v5.11/include/uapi/linux/close_range.h
 openat2	5.6	https://raw.githubusercontent.com/torvalds/linux/v5.6/arch/x86/entry/syscalls/syscall_64.tbl
 pidfd-open	5.3	https://raw.githubusercontent.com/torvalds/linux/v5.3/arch/x86/entry/syscalls/syscall_64.tbl
+pidfd-send-signal	5.1	https://raw.githubusercontent.com/torvalds/linux/v5.1/arch/x86/entry/syscalls/syscall_64.tbl

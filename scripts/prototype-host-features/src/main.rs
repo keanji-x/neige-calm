@@ -41,6 +41,22 @@ fn classify(call: &ExprCall) -> Option<Finding> {
     if is_path(&call.func, &["openat2"]) || is_path(&call.func, &["nix", "fcntl", "openat2"]) {
         return Some(Recognized("openat2"));
     }
+    if is_path(&call.func, &["rustix", "process", "pidfd_open"]) {
+        return Some(match call.args.last() {
+            Some(Expr::Call(flags))
+                if call.args.len() == 2
+                    && flags.args.is_empty()
+                    && (is_path(&flags.func, &["PidfdFlags", "empty"])
+                        || is_path(&flags.func, &["rustix", "process", "PidfdFlags", "empty"])) =>
+            {
+                Recognized("pidfd-open")
+            }
+            _ => NeedsReview("pidfd_open: flags or arguments are not recognized".into()),
+        });
+    }
+    if is_path(&call.func, &["rustix", "process", "pidfd_send_signal"]) {
+        return Some(Recognized("pidfd-send-signal"));
+    }
     if !is_path(&call.func, &["libc", "syscall"]) {
         return None;
     }
@@ -50,6 +66,14 @@ fn classify(call: &ExprCall) -> Option<Finding> {
             Some(flags) if call.args.len() == 3 && is_zero(flags) => Recognized("pidfd-open"),
             _ => NeedsReview("pidfd_open: flags or arguments are not recognized".into()),
         },
+        Some(syscall) if is_path(syscall, &["libc", "SYS_pidfd_send_signal"]) => {
+            match call.args.get(4) {
+                Some(flags) if call.args.len() == 5 && is_zero(flags) => {
+                    Recognized("pidfd-send-signal")
+                }
+                _ => NeedsReview("pidfd_send_signal: flags or arguments are not recognized".into()),
+            }
+        }
         Some(syscall) if is_path(syscall, &["libc", "SYS_close_range"]) => match call.args.get(3) {
             Some(flags)
                 if call.args.len() == 4 && is_path(flags, &["libc", "CLOSE_RANGE_CLOEXEC"]) =>
@@ -205,6 +229,9 @@ mod tests {
                 libc::syscall(libc::SYS_pidfd_open, pid, flags);
                 libc::syscall(libc::SYS_openat, fd, path, 0);
                 libc::syscall(number, 0);
+                rustix::process::pidfd_open(pid, PidfdFlags::empty());
+                rustix::process::pidfd_send_signal(fd, signal);
+                libc::syscall(libc::SYS_pidfd_send_signal, fd, signal, std::ptr::null(), 0);
             }
             "#,
         )
@@ -235,6 +262,9 @@ mod tests {
                     14,
                     NeedsReview("syscall number cannot be resolved statically".into())
                 ),
+                (15, Recognized("pidfd-open")),
+                (16, Recognized("pidfd-send-signal")),
+                (17, Recognized("pidfd-send-signal")),
             ]
         );
     }

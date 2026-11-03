@@ -13,6 +13,7 @@ UPSTREAM = "https://raw.githubusercontent.com/torvalds/linux"
 TABLE = "arch/x86/entry/syscalls/syscall_64.tbl"
 CLOSE_RANGE_HEADER = "include/uapi/linux/close_range.h"
 SYSCALLS = {
+    "pidfd_send_signal": "pidfd-send-signal",
     "pidfd_open": "pidfd-open",
     "openat2": "openat2",
     "close_range": "close-range",
