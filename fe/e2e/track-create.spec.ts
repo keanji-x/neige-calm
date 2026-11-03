@@ -1,5 +1,6 @@
 import type { ConversationPage } from '../core/api/generated/wire.ts';
 import { expect, test, type Page, type Request } from '@playwright/test';
+import { isRunReadConflict } from './helpers/first-message-errors.js';
 import { createArea } from './helpers/seed.js';
 
 const createdAreaIds: string[] = [];
@@ -252,9 +253,19 @@ test('creates the planner with the model and effort selected beside Send', async
   const detail = await detailResponse.json() as { cards: { id: string; payload: { planner_harness?: boolean } }[] };
   const planner = detail.cards.find((card) => card.payload.planner_harness === true);
   if (planner === undefined) throw new Error('Created track has no planner card');
-  const run = await request.get(`/api/cards/${planner.id}/planner/run?contract=conversation_v1`);
-  expect(run.ok()).toBe(true);
-  expect(await run.json()).toMatchObject({ input_contract: 'canonical', model: 'e2e-model', reasoning_effort: 'high' });
+  let persisted: unknown;
+  // The first turn can advance while the run endpoint is assembling its snapshot.
+  await expect.poll(async () => {
+    const run = await request.get(`/api/cards/${planner.id}/planner/run?contract=conversation_v1`);
+    if (run.ok()) {
+      persisted = await run.json();
+      return true;
+    }
+    const body = await run.text().catch(() => null);
+    if (isRunReadConflict(run.status(), body)) return false;
+    throw new Error(`GET planner run returned HTTP ${run.status()}: unexpected response (body omitted)`);
+  }, { message: 'GET planner run kept returning HTTP 409: conversation runtime changed while reading' }).toBe(true);
+  expect(persisted).toMatchObject({ input_contract: 'canonical', model: 'e2e-model', reasoning_effort: 'high' });
 });
 
 /**

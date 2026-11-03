@@ -1147,13 +1147,14 @@ jobs:
         working-directory: fe
         run: npx playwright install --with-deps chromium
       - name: npm run e2e
+        id: playwright
         working-directory: fe
         env:
           CI: "true"
           FE_API_PROXY_TARGET: http://127.0.0.1:4041
         run: npm run e2e
-      - name: upload playwright report on failure
-        if: failure()
+      - name: upload playwright report
+        if: ${{ !cancelled() && steps.playwright.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: fe-playwright-report
