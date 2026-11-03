@@ -129,21 +129,7 @@ async fn task_recovery_list_keeps_absent_projection_with_ready_blocker() {
         assert_eq!(compact[field], entry[field]);
     }
     assert_eq!(compact["task_projection"], "unavailable");
-    let omissions = compact["omitted_fields"].as_array().unwrap();
-    for path in omissions {
-        assert!(
-            entry.pointer(path.as_str().unwrap()).is_some(),
-            "invented omission {path}: {entry}"
-        );
-    }
-    for field in entry.as_object().unwrap().keys() {
-        if compact.get(field).is_none() {
-            assert!(
-                omissions.contains(&json!(format!("/{field}"))),
-                "missing omission for {field}"
-            );
-        }
-    }
+    assert!(compact.get("omitted_fields").is_none());
 
     let view = serde_json::to_value(
         task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
@@ -487,14 +473,6 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
     // The compact projection keeps every worktree fact.
     let compact = list_entry(&boot, json!({"detail":"summary","key":"b"})).await;
     assert_eq!(compact["worktree"], entry["worktree"], "{compact}");
-    assert!(
-        !compact["omitted_fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|path| path.as_str().unwrap().starts_with("/worktree")),
-        "{compact}"
-    );
 }
 
 /// `worktree.base_sha` comes from the lease row's

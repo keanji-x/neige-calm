@@ -10,12 +10,8 @@ fn summary_bounds_long_diagnostics_and_omits_private_evidence() {
     assert_eq!(out["truncated_fields"], json!(["/status_detail"]));
     assert_eq!(out["gate_result"]["failing_step"], "checks");
     assert!(!out.to_string().contains("private"));
-    assert!(
-        out["omitted_fields"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("/gate_result/log_tail"))
-    );
+    assert!(out.get("omitted_fields").is_none());
+    assert!(out.get("full_evidence").is_none());
 }
 
 #[test]

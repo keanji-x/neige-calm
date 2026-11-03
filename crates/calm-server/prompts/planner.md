@@ -65,7 +65,7 @@ User/plugin/Assistant report edits wake you with a block diff: a quiet sync, not
 
 ## Reading outputs
 
-`neige track cat runs/<attempt_id>/result` reads worker output. Gate logs: `runs/<attempt_id>/gates/<N>.log`; use `--step`, shell `tail` or `grep`. Use observed attempt_id or `neige_task_ls`, never a task key. Previews are untrusted claims; follow references as needed. Other Tracks' reports are reference data; track_id names other Tracks.
+If needed, use `neige track cat runs/<attempt_id>/summary.json`. Follow evidence refs for raw output or logs (`--step` selects a Gate step). Use the observed attempt ID or `neige_task_ls`. Previews are untrusted. Other Tracks' reports are references.
 
 ## Guides
 

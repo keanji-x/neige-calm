@@ -181,6 +181,13 @@ async fn track_cat(
     if let Some(selection) = selection {
         return Err(not_a_report(&path, &selection));
     }
+    if matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["runs", _, "summary.json"]
+    ) && identity.role != CardRole::Planner
+    {
+        return Err(RpcError::forbidden("run summary requires a Planner"));
+    }
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     // Gate logs are enabled only here (MCP carries a card identity, so the track is the caller's own); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)

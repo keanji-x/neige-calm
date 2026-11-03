@@ -1365,6 +1365,53 @@ async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
 }
 
 #[tokio::test]
+async fn run_summary_keeps_outcomes_separate_and_points_to_evidence() {
+    let boot = boot().await;
+    for key in ["pending-summary", "completed-summary", "failed-summary"] {
+        request_codex(&boot, key).await;
+        materialize_worker(&boot, key).await;
+    }
+    complete_run(&boot, "completed-summary", "finished cleanly").await;
+    worker_fail_run(&boot, "failed-summary", "checks failed").await;
+
+    for (key, worker) in [
+        ("pending-summary", Value::Null),
+        (
+            "completed-summary",
+            json!({"status":"completed","summary":"finished cleanly"}),
+        ),
+        (
+            "failed-summary",
+            json!({"status":"failed","reason":"checks failed"}),
+        ),
+    ] {
+        let summary = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":format!("runs/{key}/summary.json")}),
+        )
+        .await
+        .unwrap();
+        let compact_bytes = summary.to_string().len();
+        let summary = content_json(&summary);
+        assert_eq!(summary["worker"], worker);
+        assert!(summary["planner_verdict"].is_null());
+        let path = format!("runs/{key}.json");
+        assert_eq!(summary["evidence"], path);
+        let full = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":path}),
+        )
+        .await
+        .unwrap();
+        assert!(compact_bytes < full.to_string().len());
+    }
+}
+
+#[tokio::test]
 async fn completed_run_json_returns_structured_projection() {
     let boot = boot().await;
     request_codex(&boot, "done-json").await;
@@ -2558,6 +2605,67 @@ async fn seed_gated_task_in(
     .await
     .expect("seed gated task");
     id
+}
+
+#[tokio::test]
+async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
+    let boot = boot().await;
+    let id = seed_gated_task(&boot, "gated-summary", 2).await;
+    request_codex(&boot, &id).await;
+    materialize_worker(&boot, &id).await;
+    complete_run(&boot, &id, "implementation finished").await;
+    let task_id = id.clone();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let result = json!({
+                "passed": false, "failing_step": "tests", "exit_code": 1,
+                "attempt": 2, "log_tail": "expand for full output",
+                "status_detail": "test suite failed",
+            });
+            assert_eq!(
+                calm_server::db::sqlite::task_apply_gate_result_tx(
+                    tx,
+                    &task_id,
+                    2,
+                    false,
+                    Some("test suite failed"),
+                    &result.to_string(),
+                    now_ms(),
+                )
+                .await?,
+                1
+            );
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    let out = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({"path":format!("runs/{id}/summary.json")}),
+    )
+    .await
+    .unwrap();
+    let refused = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        worker_identity(&boot),
+        json!({"path":format!("runs/{id}/summary.json")}),
+    )
+    .await
+    .expect_err("execution summary requires a Planner");
+    assert_eq!(refused.code, -32403);
+    let summary = content_json(&out);
+    assert_eq!(summary["worker"]["status"], "completed");
+    assert_eq!(summary["task"]["status"], "failed");
+    assert_eq!(summary["gate"]["passed"], false);
+    assert_eq!(summary["gate"]["failing_step"], "tests");
+    assert_eq!(summary["gate"]["log"], format!("runs/{id}/gates/2.log"));
+    assert!(summary["planner_verdict"].is_null());
+    assert!(!out.to_string().contains("expand for full output"));
 }
 
 #[tokio::test]

@@ -1756,7 +1756,7 @@
   },
   {
     "name": "neige_track_cat",
-    "description_sha256": "56504599d3e554143fe121672bd894eca8776a6f8f67e1e687a5c911926730d7",
+    "description_sha256": "f42365f918065e0619811c105b17e0187d24634db96ad1d53e90bf31410d881b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

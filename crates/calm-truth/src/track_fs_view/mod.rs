@@ -17,7 +17,7 @@ use crate::track_fs_dto::{
 pub use crate::track_path::normalize_path;
 use crate::track_report::TrackReportPayload;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
@@ -221,7 +221,10 @@ impl<'a> TrackFsView<'a> {
                 }
                 let runs = self.runs_for_track(track).await?;
                 let run_path = path.trim_start_matches("runs/");
-                if let Some(key) = run_path.strip_suffix(".md") {
+                if let [_, attempt_id, "summary.json"] = parts.as_slice() {
+                    let run = run_by_key(&runs, attempt_id)?;
+                    self.run_summary(track, run).await
+                } else if let Some(key) = run_path.strip_suffix(".md") {
                     let run = run_by_key(&runs, key)?;
                     Ok(content_markdown(run_markdown(run)))
                 } else if let Some(key) = run_path.strip_suffix(".json") {
@@ -347,6 +350,84 @@ impl<'a> TrackFsView<'a> {
             hooks = hooks.split_off(hooks.len() - HOOK_EVENT_TRANSCRIPT_CAP);
         }
         Ok(hooks)
+    }
+
+    async fn run_summary(
+        &self,
+        track: &Track,
+        run: &RunProjection,
+    ) -> Result<TrackFsContent, TrackFsError> {
+        let task = if self.gate_log_access.is_some() {
+            self.repo
+                .task_get(&run.attempt_id)
+                .await
+                .map_err(|error| {
+                    TrackFsError::Internal(format!("track_file: task lookup: {error}"))
+                })?
+                .filter(|task| task.track_id == track.id.as_str())
+        } else {
+            None
+        };
+        let gate = task
+            .as_ref()
+            .and_then(|task| task.gate_result_json.as_deref())
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|error| TrackFsError::Internal(format!("track_file: gate result: {error}")))?;
+        let gate = gate.map(|gate| {
+            let log = gate["attempt"]
+                .as_i64()
+                .and_then(|attempt| task_gate_log_path(&run.attempt_id, attempt).ok());
+            json!({
+                "passed": gate["passed"],
+                "status_detail": preview(gate["status_detail"].as_str()),
+                "failing_step": gate["failing_step"],
+                "exit_code": gate["exit_code"],
+                "attempt": gate["attempt"],
+                "log": log,
+                "target_kind": gate["target"]["kind"],
+                "candidate_id": gate["target"]["candidate_id"],
+                "commit_sha": gate["target"]["commit_sha"],
+                "target_evidence": gate["target"]["evidence"]["kind"],
+            })
+        });
+        let worker = match latest_final_event(
+            run.completed_event.as_ref(),
+            run.failed_event.as_ref(),
+        ) {
+            Some(FinalRunEvent::Completed(event)) => {
+                json!({
+                    "status": "completed",
+                    "summary": preview(event.payload["result"].get("summary").and_then(Value::as_str).or_else(|| event.payload["result"].as_str())),
+                })
+            }
+            Some(FinalRunEvent::Failed(event)) => json!({
+                "status": "failed",
+                "reason": preview(event.payload["reason"].as_str()),
+            }),
+            None => Value::Null,
+        };
+        let verdict = run_verdict_full(run).map(|verdict| {
+            json!({
+                "status": verdict.status,
+                "reason": preview(verdict.reason.as_deref()),
+                "at": verdict.at,
+            })
+        });
+        let mut content = content_json(&json!({
+            "attempt_id": run.attempt_id,
+            "status": run.status,
+            "worker": worker,
+            "task": task.map(|task| json!({
+                "status": task.status,
+                "status_detail": preview(task.status_detail.as_deref()),
+            })),
+            "gate": gate,
+            "planner_verdict": verdict,
+            "evidence": format!("runs/{}.json", run.attempt_id),
+        }))?;
+        content.content = calm_types::observation::receipt::escape_json(&content.content);
+        Ok(content)
     }
 
     async fn runs_for_track(&self, track: &Track) -> Result<Vec<RunProjection>, TrackFsError> {
@@ -1313,6 +1394,13 @@ fn normalize_hook_event_name(name: &str) -> String {
         .filter(|ch| ch.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn preview(text: Option<&str>) -> Option<String> {
+    text.map(|text| match text.char_indices().nth(512) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_owned(),
+    })
 }
 
 pub(crate) fn run_markdown(run: &RunProjection) -> String {

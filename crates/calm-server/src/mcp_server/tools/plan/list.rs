@@ -58,18 +58,6 @@ fn select(source: &Value, paths: &[&str]) -> Value {
     result
 }
 
-fn omitted(source: &Value, result: &Value, prefix: &str, paths: &mut Vec<String>) {
-    if let Some(fields) = source.as_object() {
-        for (key, value) in fields {
-            let path = format!("{prefix}/{key}");
-            match result.get(key) {
-                None => paths.push(path),
-                Some(selected) => omitted(value, selected, &path, paths),
-            }
-        }
-    }
-}
-
 fn bound_diagnostics(value: &mut Value, prefix: &str, paths: &mut Vec<String>) {
     if let Some(fields) = value.as_object_mut() {
         for (key, value) in fields {
@@ -131,37 +119,11 @@ pub(super) fn summary(entry: &Value) -> Value {
     if result.get("gate_result").is_none() {
         result["gate_result"] = Value::Null;
     }
-    let mut omitted_fields = Vec::new();
-    omitted(entry, &result, "", &mut omitted_fields);
-    // Keep these paths in sync with task_list_entry; registry tests compare both views.
-    if entry.get("task_projection").is_none() {
-        omitted_fields.extend(
-            [
-                "/depends_on",
-                "/priority",
-                "/gate",
-                "/worker_card_id",
-                "/created_at",
-                "/finished_at",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        );
-        omitted_fields.push(
-            if entry["kind"] == "terminal" {
-                "/command"
-            } else {
-                "/goal"
-            }
-            .into(),
-        );
-    }
     let mut truncated_fields = Vec::new();
     bound_diagnostics(&mut result, "", &mut truncated_fields);
-    result["omitted_fields"] = json!(omitted_fields);
-    result["truncated_fields"] = json!(truncated_fields);
-    result["full_evidence"] =
-        json!({"tool":TOOL_TASK_LS,"arguments":{"detail":"full","key":entry["key"]}});
+    if !truncated_fields.is_empty() {
+        result["truncated_fields"] = json!(truncated_fields);
+    }
     result
 }
 
