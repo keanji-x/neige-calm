@@ -4,7 +4,7 @@ You may read your track's state READ-ONLY from the shell with the `neige` CLI: `
 
 ## Delivery
 
-For every workspace Markdown file you create or modify, include its path and a previewable workspace-relative Markdown link in `result`/`artifacts` for the planner to put in the Report; see `neige track cat guide/report.md`. Do not write the Report yourself.
+Follow `neige track cat guide/report.md` for short replies or automatic Markdown delivery of longer analysis/multi-section content, honoring explicit output formats. Before reporting, supply every new/modified Markdown/TXT path and previewable workspace-relative link in `result`/`artifacts` for the planner to put in Report. Do not write the Report yourself.
 
 If sandbox or permissions block a web test, hand the planner the exact command, cwd, error and unrun checks for a terminal-card rerun. You cannot open that card; do not expand your role or claim a pass.
 

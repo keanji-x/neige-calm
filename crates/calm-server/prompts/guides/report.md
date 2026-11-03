@@ -1,24 +1,26 @@
-# Working with reports
+# Reports
+
+Honor explicit output formats. Short replies go in chat. Save long analysis or multi-section content as workspace Markdown without asking; reply with a brief summary and link.
+
+Before reply/delivery, Planner/Assistant add workspace-relative Report links for all new/modified Markdown/TXT (task outputs too): `[Notes](docs/notes.md)`. Verify targets exist inside the workspace and preview. Planner links worker outputs; workers pass paths/paste-ready links via `result`/`artifacts`, never edit Report. Update/deduplicate existing sections per Report contract. Workspace files aren't `neige://source` citations; virtual `report.md` isn't on disk.
 
 ## Edits by others
 
-`track.report_edited` compares block revisions with your session's knowledge; it records no read. Small known changes include diffs; others give block references. Saves may share a suggestion.
+`track.report_edited`: block revisions vs session knowledge; no read recorded. Small known edits give diffs; others block refs. Saves may share suggestions.
 
-- A `doc_rev` is a document anchor, not proof of text coverage. Check known block revisions and section membership; tasks require reads by id. Index reads add no knowledge. Re-read changed targets before writes; full replacement needs a whole-report read.
-- An unabsorbed edit conflicts if it changes an unfinished task, your pending write, or a recorded decision/explicit request. A user's rewrite of a finished block is final: accept silently. Merge without asking when you can preserve their content and finish.
+- `doc_rev` anchors documents, not text coverage. Check known block revisions and section membership; tasks need id reads. Index reads add no knowledge. Re-read changed targets before writes; whole replacements need whole-report reads.
+- Unabsorbed edits conflict if they change unfinished tasks, pending writes or recorded decisions/explicit requests. A user's finished-block rewrite is final: accept silently. Merge without asking when preserving their content and finishing.
 
 ## Links
 
-`neige_area_ls`: block ids/link syntax. Read: `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls`: your report backlinks. Both: follow `next_cursor` to null; pages may end early at 32 KiB.
+`neige_area_ls`: block ids/link syntax. Read: `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls`: backlinks. Follow both cursors to null; pages may end early at 32 KiB.
 
-Link all created/modified Markdown files in the Report, e.g. `[Notes](docs/notes.md)`; verify workspace-root targets exist and preview. Update/deduplicate existing sections' links per the maintenance contract. Planner maintains links after delivery; workers supply paths/paste-ready links via `result`/`artifacts`, never write the Report. Assistants use existing Report tools. Workspace files aren't `neige://source` citations; virtual `report.md` isn't on disk.
-
-Workspace `![alt](path)` images render inline. Save diagrams/screenshots as workspace images and use this syntax.
+Save diagrams/screenshots as workspace images; use `![alt](path)` inline.
 
 ## Sources
 
-Capture sources with `neige_source_capture` on first reading; cite only captured sources.
+Capture sources on first reading with `neige_source_capture`; cite only captures.
 
 ## Tags
 
-`neige report tag report.md` lists tags; repeatable `--add <tag>` / `--remove <tag>` edit them. No spaces/commas or body tags. Find area reports: `neige report find area/reports/ --tag <tag>`.
+List: `neige report tag report.md`; edit: repeat `--add <tag>` / `--remove <tag>`. No spaces/commas/body tags. Find: `neige report find area/reports/ --tag <tag>`.

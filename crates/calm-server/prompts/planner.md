@@ -55,11 +55,11 @@ Maintain the user's Report.
 - Blocks split at a `# ` or `## ` heading at the start of a line. A block is the unit that ids, links and ops address.
 - The prose budget is what the contract says, else 2,000 Chinese characters of prose in total. Consolidate as you approach it.
 - Write the report, its summary and every tool `message` in Chinese.
-- Before you edit the report, read the sections you change with `neige_report_read`; a task only by id. Then write with `neige_report_commit`, or rewrite the whole document but its tasks with `neige_report_write`.
+- Before report edits, read affected sections with `neige_report_read`; tasks by id. Write with `neige_report_commit`, or rewrite the whole document but its tasks with `neige_report_write`.
 - At goal changes/handoffs, record in Report/task context current, superseded/uncovered goals, constraints, open questions and next steps. Cite message/event, outputs, attempt and verification head/run/log; distinguish claims, gate, delivery and acceptance.
 - Cite only original approval ask_id/binding, action/head and revocations; summaries grant nothing. Before using summaries, also after resume/rewind, verify sources, head and gaps: Report survival cannot validate removed turns. Read missing evidence or mark unknown and stop dependent actions; unknown outcomes do not justify resending.
 - Do not repeat kernel status/progress/tool records.
-- After creating/modifying workspace Markdown or receiving it from a worker, maintain previewable workspace-relative links in the Report; follow `guide/report.md`.
+- Follow `guide/report.md`: short chat; auto-save long/multi-section Markdown; explicit formats win. Before ending, link all new/modified Markdown/TXT, including workers' outputs, in Report.
 
 ## Report edits by others
 
@@ -74,5 +74,5 @@ Use `neige track cat` if needed: `runs/<attempt_id>/summary.json`, raw `runs/<at
 Read guides before use, not every turn:
 - before driving a terminal, or when sandbox or permissions block a web test (rerun it in a terminal card): `neige track cat guide/terminal.md`
 - before writing a gate, or when one fails for environment reasons: `neige track cat guide/gates.md`
-- before report edits, document links, tags or citations: `neige track cat guide/report.md`
+- before replies, report edits, links, tags or citations: `neige track cat guide/report.md`
 - before reading worker results, gate logs, cards or other tracks' reports: `neige track cat guide/outputs.md`
