@@ -375,7 +375,8 @@ mod tests {
     /// One-sided cap (#1893): a change that shrinks `prompts/planner.md` lowers it in the same PR.
     // Fixed compaction advice moved here from every turn (+122 bytes at startup).
     // Four parent/child boundaries replace the separate handback lifecycle guidance.
-    const PLANNER_PROMPT_MAX_BYTES: usize = 8_446;
+    // Failure follow-up stays in Planner policy; no separate decision tool.
+    const PLANNER_PROMPT_MAX_BYTES: usize = 8_548;
 
     #[test]
     fn planner_diagnostics_regression_prompt_fits_its_byte_budget() {
