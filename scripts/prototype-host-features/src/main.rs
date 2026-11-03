@@ -25,39 +25,58 @@ fn is_path(expr: &Expr, segments: &[&str]) -> bool {
             .all(|(segment, name)| segment.ident == *name)
 }
 
-fn capability(call: &ExprCall) -> Option<&'static str> {
+#[derive(Debug, PartialEq, Eq)]
+enum Finding {
+    Recognized(&'static str),
+    NeedsReview(String),
+}
+
+fn is_zero(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lit(expr) if matches!(&expr.lit, Lit::Int(value) if value.base10_parse::<u32>().ok() == Some(0)))
+}
+
+fn classify(call: &ExprCall) -> Option<Finding> {
+    use Finding::{NeedsReview, Recognized};
+
     if is_path(&call.func, &["openat2"]) || is_path(&call.func, &["nix", "fcntl", "openat2"]) {
-        return Some("openat2");
+        return Some(Recognized("openat2"));
     }
     if !is_path(&call.func, &["libc", "syscall"]) {
         return None;
     }
 
-    let syscall = call.args.first()?;
-    if is_path(syscall, &["libc", "SYS_pidfd_open"]) {
-        return Some("pidfd-open");
-    }
-    if !is_path(syscall, &["libc", "SYS_close_range"]) || call.args.len() != 4 {
-        return None;
-    }
-
-    let flags = &call.args[3];
-    if is_path(flags, &["libc", "CLOSE_RANGE_CLOEXEC"]) {
-        Some("close-range-cloexec")
-    } else if matches!(flags, Expr::Lit(expr) if matches!(&expr.lit, Lit::Int(value) if value.base10_parse::<u32>().ok() == Some(0)))
-    {
-        Some("close-range")
-    } else {
-        None
-    }
+    let finding = match call.args.first() {
+        Some(syscall) if is_path(syscall, &["libc", "SYS_pidfd_open"]) => match call.args.get(2) {
+            Some(flags) if call.args.len() == 3 && is_zero(flags) => Recognized("pidfd-open"),
+            _ => NeedsReview("pidfd_open: flags or arguments are not recognized".into()),
+        },
+        Some(syscall) if is_path(syscall, &["libc", "SYS_close_range"]) => match call.args.get(3) {
+            Some(flags)
+                if call.args.len() == 4 && is_path(flags, &["libc", "CLOSE_RANGE_CLOEXEC"]) =>
+            {
+                Recognized("close-range-cloexec")
+            }
+            Some(flags) if call.args.len() == 4 && is_zero(flags) => Recognized("close-range"),
+            _ => NeedsReview("close_range: flags or arguments are not recognized".into()),
+        },
+        Some(Expr::Path(path))
+            if let Some(segment) = path.path.segments.last()
+                && segment.ident.to_string().starts_with("SYS_") =>
+        {
+            NeedsReview(format!("unrecognized syscall constant {}", segment.ident))
+        }
+        Some(_) => NeedsReview("syscall number cannot be resolved statically".into()),
+        None => NeedsReview("missing syscall number".into()),
+    };
+    Some(finding)
 }
 
 #[derive(Default)]
-struct Scan(Vec<(usize, &'static str)>);
+struct Scan(Vec<(usize, Finding)>);
 
 impl<'ast> Visit<'ast> for Scan {
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
-        if let Some(api) = capability(call) {
+        if let Some(api) = classify(call) {
             self.0.push((call.span().start().line, api));
         }
         visit::visit_expr_call(self, call);
@@ -146,16 +165,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             syn::parse_file(&source).map_err(|err| format!("{}: {err}", path.display()))?;
         let mut scan = Scan::default();
         scan.visit_file(&syntax);
-        for (line, name) in scan.0 {
-            let version = *versions
-                .get(name)
-                .ok_or_else(|| format!("missing Linux version metadata for {name}"))?;
-            println!("{}:{line}: {name} (Linux {version})", path.display());
-            features.insert(name, version);
+        for (line, finding) in scan.0 {
+            let path = path.display();
+            match finding {
+                Finding::Recognized(name) => {
+                    let version = *versions
+                        .get(name)
+                        .ok_or_else(|| format!("missing Linux version metadata for {name}"))?;
+                    println!("{path}:{line}: recognized: {name} (Linux {version})");
+                    features.insert(name, version);
+                }
+                Finding::NeedsReview(reason) => {
+                    println!("{path}:{line}: needs review: {reason}");
+                }
+            }
         }
-    }
-    if features.is_empty() {
-        return Err("no known calls found in crates/*/src; run from the repository root".into());
     }
     generate(Path::new(&output), features)
 }
@@ -178,19 +202,39 @@ mod tests {
                 libc::syscall(libc::SYS_close_range, first(), last(), flags);
                 nix::fcntl::openat2(fd, path, how);
                 libc::syscall(libc::SYS_pidfd_open, pid, 0);
+                libc::syscall(libc::SYS_pidfd_open, pid, flags);
+                libc::syscall(libc::SYS_openat, fd, path, 0);
+                libc::syscall(number, 0);
             }
             "#,
         )
         .unwrap();
         let mut scan = Scan::default();
         scan.visit_file(&syntax);
+        use Finding::{NeedsReview, Recognized};
         assert_eq!(
             scan.0,
             [
-                (5, "close-range"),
-                (6, "close-range-cloexec"),
-                (10, "openat2"),
-                (11, "pidfd-open"),
+                (5, Recognized("close-range")),
+                (6, Recognized("close-range-cloexec")),
+                (
+                    9,
+                    NeedsReview("close_range: flags or arguments are not recognized".into())
+                ),
+                (10, Recognized("openat2")),
+                (11, Recognized("pidfd-open")),
+                (
+                    12,
+                    NeedsReview("pidfd_open: flags or arguments are not recognized".into())
+                ),
+                (
+                    13,
+                    NeedsReview("unrecognized syscall constant SYS_openat".into())
+                ),
+                (
+                    14,
+                    NeedsReview("syscall number cannot be resolved statically".into())
+                ),
             ]
         );
     }
