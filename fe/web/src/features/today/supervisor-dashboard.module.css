@@ -3,6 +3,9 @@
     display: grid;
     gap: var(--space-4);
     margin-block-end: var(--space-7);
+    /* Use the reading column published by the Track page. */
+    inline-size: min(100%, var(--document-measure, 100%));
+    margin-inline-start: var(--document-start, 0);
     min-inline-size: 0;
   }
 
@@ -24,7 +27,7 @@
     gap: var(--space-4);
   }
 
-  .primary { grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); }
+  .primary { grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); }
   .secondary { grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); }
 
   .block {
@@ -50,4 +53,8 @@
   }
 
   .content summary { cursor: pointer; }
+
+  @media (width < 60rem) {
+    .dashboard { margin-inline: auto; }
+  }
 }

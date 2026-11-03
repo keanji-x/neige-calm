@@ -377,6 +377,17 @@ it('shows observed DB latency and deferred workspaces to the owner', async () =>
   await expect.element(page.getByText('3.5 ms')).toBeVisible();
   await expect.element(page.getByText('尚未完成', { exact: true })).toBeVisible();
   await expect.element(page.getByText('最早退役时间')).toBeVisible();
+  const dashboard = page.getByRole('region', { name: 'Daily Supervisor' });
+  const reading = page.getByText('Prioritize the release.', { exact: false });
+  for (const width of [1440, 820, 390]) {
+    await page.viewport(width, 900);
+    await expect.poll(() => {
+      const a = dashboard.query()?.getBoundingClientRect();
+      const b = reading.query()?.closest('[data-nc-report-reading]')?.getBoundingClientRect();
+      if (a === undefined || b === undefined || a.width === 0 || b.width === 0) return Infinity;
+      return Math.max(Math.abs(a.left - b.left), Math.abs(a.right - b.right));
+    }).toBeLessThanOrEqual(1);
+  }
 });
 
 it('does not show the Supervisor to a non-owner with the owner role label', async () => {
