@@ -1,8 +1,8 @@
 @layer features {
   .dashboard {
     display: grid;
-    gap: var(--space-3);
-    margin-block-end: var(--space-5);
+    gap: var(--space-4);
+    margin-block-end: var(--space-7);
     min-inline-size: 0;
   }
 
@@ -11,23 +11,43 @@
     flex-wrap: wrap;
     align-items: baseline;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: var(--space-2) var(--space-4);
+    margin-block-end: var(--space-1);
   }
 
   .heading h2 { font: var(--type-empty-heading); }
   .heading p, .muted { color: var(--text-2); }
-  .heading h2, .heading p, .content p { margin: 0; }
+  .heading h2, .heading p, .block h3, .content p { margin: 0; }
 
   .primary, .secondary {
     display: grid;
-    gap: var(--space-3);
+    gap: var(--space-4);
   }
 
-  .primary { grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); }
-  .secondary { grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr)); }
+  .primary { grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); }
+  .secondary { grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); }
 
-  .block { min-inline-size: 0; }
-  .content { display: grid; gap: var(--space-1); overflow-wrap: anywhere; }
-  .metric { font: var(--type-empty-heading); font-variant-numeric: tabular-nums; }
+  .block {
+    padding: var(--space-4);
+    min-inline-size: 0;
+  }
+
+  .block h3 {
+    font: var(--type-ui);
+    font-weight: 600;
+    margin-block-end: var(--space-3);
+  }
+
+  .content {
+    display: grid;
+    gap: var(--space-2);
+    overflow-wrap: anywhere;
+  }
+
+  .metric {
+    font: var(--type-metric-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
   .content summary { cursor: pointer; }
 }
