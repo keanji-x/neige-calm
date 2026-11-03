@@ -11,8 +11,6 @@ use syn::spanned::Spanned as _;
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, Lit};
 
-type Capability = (&'static str, &'static str);
-
 fn is_path(expr: &Expr, segments: &[&str]) -> bool {
     let Expr::Path(expr) = expr else {
         return false;
@@ -27,9 +25,9 @@ fn is_path(expr: &Expr, segments: &[&str]) -> bool {
             .all(|(segment, name)| segment.ident == *name)
 }
 
-fn capability(call: &ExprCall) -> Option<Capability> {
+fn capability(call: &ExprCall) -> Option<&'static str> {
     if is_path(&call.func, &["openat2"]) || is_path(&call.func, &["nix", "fcntl", "openat2"]) {
-        return Some(("openat2", "5.6"));
+        return Some("openat2");
     }
     if !is_path(&call.func, &["libc", "syscall"]) {
         return None;
@@ -37,7 +35,7 @@ fn capability(call: &ExprCall) -> Option<Capability> {
 
     let syscall = call.args.first()?;
     if is_path(syscall, &["libc", "SYS_pidfd_open"]) {
-        return Some(("pidfd-open", "5.3"));
+        return Some("pidfd-open");
     }
     if !is_path(syscall, &["libc", "SYS_close_range"]) || call.args.len() != 4 {
         return None;
@@ -45,17 +43,17 @@ fn capability(call: &ExprCall) -> Option<Capability> {
 
     let flags = &call.args[3];
     if is_path(flags, &["libc", "CLOSE_RANGE_CLOEXEC"]) {
-        Some(("close-range-cloexec", "5.11"))
+        Some("close-range-cloexec")
     } else if matches!(flags, Expr::Lit(expr) if matches!(&expr.lit, Lit::Int(value) if value.base10_parse::<u32>().ok() == Some(0)))
     {
-        Some(("close-range", "5.9"))
+        Some("close-range")
     } else {
         None
     }
 }
 
 #[derive(Default)]
-struct Scan(Vec<(usize, Capability)>);
+struct Scan(Vec<(usize, &'static str)>);
 
 impl<'ast> Visit<'ast> for Scan {
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
@@ -108,6 +106,22 @@ fn generate(output: &Path, features: BTreeMap<&str, &str>) -> Result<(), Box<dyn
     Ok(())
 }
 
+fn linux_versions() -> Result<BTreeMap<&'static str, &'static str>, Box<dyn Error>> {
+    let mut versions = BTreeMap::new();
+    for line in include_str!("../linux-versions.tsv").lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let [name, version, _source] = line.split('\t').collect::<Vec<_>>()[..] else {
+            return Err(format!("invalid Linux version metadata row: {line}").into());
+        };
+        if versions.insert(name, version).is_some() {
+            return Err(format!("duplicate Linux version metadata for {name}").into());
+        }
+    }
+    Ok(versions)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
     let output = args.next().ok_or("expected a fresh output directory")?;
@@ -124,6 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     paths.sort();
 
+    let versions = linux_versions()?;
     let mut features = BTreeMap::new();
     for path in paths {
         let source = fs::read_to_string(&path)?;
@@ -131,7 +146,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             syn::parse_file(&source).map_err(|err| format!("{}: {err}", path.display()))?;
         let mut scan = Scan::default();
         scan.visit_file(&syntax);
-        for (line, (name, version)) in scan.0 {
+        for (line, name) in scan.0 {
+            let version = *versions
+                .get(name)
+                .ok_or_else(|| format!("missing Linux version metadata for {name}"))?;
             println!("{}:{line}: {name} (Linux {version})", path.display());
             features.insert(name, version);
         }
@@ -169,10 +187,10 @@ mod tests {
         assert_eq!(
             scan.0,
             [
-                (5, ("close-range", "5.9")),
-                (6, ("close-range-cloexec", "5.11")),
-                (10, ("openat2", "5.6")),
-                (11, ("pidfd-open", "5.3")),
+                (5, "close-range"),
+                (6, "close-range-cloexec"),
+                (10, "openat2"),
+                (11, "pidfd-open"),
             ]
         );
     }
