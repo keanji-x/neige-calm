@@ -357,3 +357,64 @@ it('uses the shared daily empty report for the heading-only skeleton', async () 
   await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
   expect(page.getByRole('button', { name: '开始对话', exact: true }).elements()).toHaveLength(0);
 });
+
+it('shows observed SQLite writes and deferred workspaces to the owner', async () => {
+  const { requests } = renderDailyFixture({
+    identity: { userId: 'local-owner', displayName: 'Owner', role: 'member', sessionId: 'supervisor' },
+    reply: request => request.path === '/api/today/supervisor' ? {
+      status: 200, statusText: 'OK', body: {
+        observed_at_ms: 1, kernel_version: '1.2.3', build_sha: 'abc123',
+        settled_worker_cleanup_candidates: 0, write_bucket_ms: 300000, write_bucket_count: 6, database_writes: [{ started_at_ms: 0, transactions: 5, failures: 1, retries: 2, mean_wait_ms: 3.5 }], scheduler_boot_sweep_completed: false, retired_workspaces: { count: 2, oldest_retired_at_ms: 1 },
+      },
+    } : undefined,
+  });
+  const supervisor = page.getByText('Daily Supervisor', { exact: true });
+  await expect.element(supervisor).toBeVisible();
+  await expect.element(page.getByText('abc123', { exact: true })).not.toBeVisible();
+  await expect.element(page.getByText('1.2.3', { exact: true })).not.toBeVisible();
+  await expect.element(page.getByText('待清理 Worker 会话', { exact: true })).toBeVisible();
+  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(true);
+  await expect.element(page.getByRole('button', { name: '放大查看 Daily Supervisor' })).toBeVisible();
+  await expect.element(page.getByRole('img', { name: /SQLite 写事务等待.*6 intervals/ })).toBeVisible();
+  await expect.element(page.getByText('调度器启动扫描尚未完成', { exact: true })).toBeVisible();
+  await page.getByText('实例明细', { exact: true }).click();
+  await expect.element(page.getByText('abc123', { exact: true })).toBeVisible();
+  await expect.element(page.getByText('最早退役时间')).toBeVisible();
+  await expect.element(page.getByText('历史巡检', { exact: true })).toBeVisible();
+  const dashboard = page.getByRole('region', { name: 'Daily Supervisor' }).getByRole('heading', { name: 'Daily Supervisor' });
+  const reading = page.getByText('Prioritize the release.', { exact: false });
+  for (const width of [1440, 820, 390]) {
+    await page.viewport(width, 900);
+    await expect.poll(() => {
+      const a = dashboard.query()?.closest('[data-nc-report-reading]')?.getBoundingClientRect();
+      const b = reading.query()?.closest('[data-nc-report-reading]')?.getBoundingClientRect();
+      if (a === undefined || b === undefined || a.width === 0 || b.width === 0) return Infinity;
+      return Math.max(Math.abs(a.left - b.left), Math.abs(a.right - b.right));
+    }).toBeLessThanOrEqual(1);
+  }
+});
+
+it('does not show the Supervisor to a non-owner with the owner role label', async () => {
+  const { requests } = renderDailyFixture({
+    identity: { userId: 'other', displayName: 'Other', role: 'owner', sessionId: 'other' },
+  });
+  await expect.element(page.getByText('Report changes', { exact: true })).toBeVisible();
+  expect(page.getByText('Daily Supervisor', { exact: true }).query()).toBeNull();
+  expect(requests.some(request => request.path === '/api/today/supervisor')).toBe(false);
+});
+
+it('can inspect scheduler recovery before the daily Track exists', async () => {
+  renderDailyFixture({
+    identity: { userId: 'local-owner', displayName: 'Owner', role: 'owner', sessionId: 'preparing' },
+    reply: request => {
+      if (request.path === '/api/today/daily') return { status: 200, statusText: 'OK', body: null };
+      if (request.path === '/api/today/supervisor') return { status: 200, statusText: 'OK', body: {
+        observed_at_ms: 1, kernel_version: '1.2.3', build_sha: null,
+        settled_worker_cleanup_candidates: 0, write_bucket_ms: 300000, write_bucket_count: 12, database_writes: [], scheduler_boot_sweep_completed: false, retired_workspaces: null,
+      } };
+    },
+  });
+  await expect.element(page.getByText('Preparing today’s Track…')).toBeVisible();
+  await expect.element(page.getByRole('region', { name: 'Daily Supervisor' })).toBeVisible();
+  await expect.element(page.getByText('调度器启动扫描尚未完成', { exact: true })).toBeVisible();
+});

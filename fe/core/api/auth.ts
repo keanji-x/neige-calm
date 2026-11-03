@@ -23,3 +23,6 @@ export function whoamiOperation(): ApiOperation<SessionIdentity> {
 export function loginOperation(body: LoginRequest): ApiOperation<SessionIdentity> {
   return { method: 'POST', path: '/api/auth/login', body, responseSchema: sessionIdentitySchema };
 }
+
+/** Stable deployment owner identity from the whoami protocol. */
+export const DEPLOYMENT_OWNER_USER_ID = 'local-owner';

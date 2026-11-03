@@ -140,6 +140,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::tracks::list_track_files,
         crate::routes::tracks::cat_track_file,
         crate::routes::daily_planner::resolve_daily_track,
+        crate::routes::daily_planner::supervisor_snapshot,
         crate::routes::daily_planner::report_changes,
         crate::routes::daily_planner::report_edits,
         crate::routes::today::ensure_today_launchpad,

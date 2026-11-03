@@ -1,0 +1,11 @@
+@layer features {
+  .chart {
+    inline-size: min(100%, var(--document-measure, 100%));
+    margin-inline-start: var(--document-start, 0);
+    margin-block: var(--space-4);
+  }
+
+  @media (width < 60rem) {
+    .chart { margin-inline: auto; }
+  }
+}

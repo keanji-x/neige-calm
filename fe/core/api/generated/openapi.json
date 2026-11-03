@@ -9609,6 +9609,46 @@
         }
       }
     },
+    "/api/today/supervisor": {
+      "get": {
+        "tags": [
+          "tracks"
+        ],
+        "operationId": "supervisor_snapshot",
+        "responses": {
+          "200": {
+            "description": "Current deployment-owner observations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Deployment owner required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/track-recipes": {
       "get": {
         "tags": [
@@ -19868,6 +19908,26 @@
           }
         }
       },
+      "RetiredWorkspaceSummary": {
+        "type": "object",
+        "required": [
+          "count",
+          "oldest_retired_at_ms"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "oldest_retired_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "RetryConversationInputRequest": {
         "type": "object",
         "description": "Exact predecessor CAS for an explicit Human repeat; never a resend command.",
@@ -20365,6 +20425,73 @@
           }
         },
         "additionalProperties": false
+      },
+      "SupervisorSnapshot": {
+        "type": "object",
+        "description": "A current observation, with null values for unavailable sources.",
+        "required": [
+          "observed_at_ms",
+          "kernel_version",
+          "build_sha",
+          "database_writes",
+          "write_bucket_ms",
+          "write_bucket_count",
+          "scheduler_boot_sweep_completed",
+          "settled_worker_cleanup_candidates",
+          "retired_workspaces"
+        ],
+        "properties": {
+          "build_sha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "database_writes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WriteObservationBucket"
+            }
+          },
+          "kernel_version": {
+            "type": "string"
+          },
+          "observed_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "retired_workspaces": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RetiredWorkspaceSummary"
+              }
+            ]
+          },
+          "scheduler_boot_sweep_completed": {
+            "type": "boolean"
+          },
+          "settled_worker_cleanup_candidates": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "write_bucket_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "write_bucket_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "SystemInputPresentation": {
         "type": "string",
@@ -22650,6 +22777,41 @@
           "worktree",
           "none"
         ]
+      },
+      "WriteObservationBucket": {
+        "type": "object",
+        "required": [
+          "started_at_ms",
+          "transactions",
+          "failures",
+          "retries",
+          "mean_wait_ms"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mean_wait_ms": {
+            "type": "number",
+            "format": "double"
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "started_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "transactions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       }
     },
     "securitySchemes": {

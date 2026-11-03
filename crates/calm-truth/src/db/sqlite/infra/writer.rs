@@ -67,6 +67,7 @@ impl From<NestedWrite> for sqlx::Error {
 /// It cannot be cloned or constructed by domain callers.
 pub struct WriteManager {
     pub(super) pool: SqlitePool,
+    pub(super) observations: Arc<super::write_observations::WriteObservations>,
     identity: Arc<()>,
 }
 
@@ -83,8 +84,14 @@ impl WriteManager {
     pub(super) fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
+            observations: Arc::default(),
             identity: Arc::new(()),
         }
+    }
+
+    /// Recent caller-observed write timings for this database handle.
+    pub fn recent_observations(&self, now_ms: i64) -> Vec<super::WriteObservationBucket> {
+        self.observations.snapshot(now_ms)
     }
 
     /// Run an operation with an exclusively borrowable writer capability.
@@ -254,7 +261,7 @@ impl<'m> WriteSession<'m> {
         retry: RetryPolicy,
     ) -> std::result::Result<WriteTx<'_>, BeginError> {
         let active = self.activate()?;
-        let transaction = begin_observed(&self.manager.pool, caller, retry).await?;
+        let transaction = begin_observed(self.manager, caller, retry).await?;
         Ok(WriteTx {
             transaction: Some(transaction),
             _active: active,

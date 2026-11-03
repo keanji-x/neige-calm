@@ -654,6 +654,7 @@ pub mod daily_planner;
 pub(crate) mod managed_track;
 pub mod report_backlinks;
 pub mod report_read_ledger;
+mod supervisor_read;
 pub use calm_report::sections as report_sections;
 pub mod report_series;
 pub mod report_sources;

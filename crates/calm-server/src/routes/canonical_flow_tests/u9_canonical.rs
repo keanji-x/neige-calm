@@ -144,3 +144,74 @@ async fn u9_canonical_managed_first_input_once() {
     }
     fixture.shutdown_process(&state).await;
 }
+
+#[tokio::test]
+async fn supervisor_snapshot_requires_deployment_owner() {
+    use crate::auth::{SessionAuthority, SessionIdentity};
+
+    let fixture = Fixture::new().await;
+    let (state, app, owner_cookie, auth) = fixture.application_with_auth(false).await;
+    let db = state.mcp_context().sqlite_db.clone().unwrap();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                session
+                    .begin_immediate()
+                    .await
+                    .unwrap()
+                    .commit()
+                    .await
+                    .unwrap();
+            })
+        })
+        .await
+        .unwrap();
+    let observed = db.writer().recent_observations(crate::model::now_ms());
+    let observed_transactions: u64 = observed.iter().map(|bucket| bucket.transactions).sum();
+    assert!(observed_transactions > 0);
+    let member_session = auth.sessions.create(
+        SessionIdentity {
+            user_id: "member".into(),
+            display_name: "Member".into(),
+            role: "member".into(),
+        },
+        SessionAuthority::PasswordLogin,
+    );
+
+    for (cookie, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (
+            Some(format!("{}={member_session}", crate::auth::SESSION_COOKIE)),
+            StatusCode::FORBIDDEN,
+        ),
+        (Some(owner_cookie), StatusCode::OK),
+    ] {
+        let mut request = Request::get("/api/today/supervisor");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                body["scheduler_boot_sweep_completed"],
+                state.dispatcher.scheduler().boot_sweep_completed()
+            );
+            let reported_transactions: u64 = body["database_writes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|bucket| bucket["transactions"].as_u64().unwrap())
+                .sum();
+            assert!(reported_transactions >= observed_transactions);
+            assert_eq!(body["retired_workspaces"]["count"], 0);
+            assert!(body["retired_workspaces"]["oldest_retired_at_ms"].is_null());
+        }
+    }
+}

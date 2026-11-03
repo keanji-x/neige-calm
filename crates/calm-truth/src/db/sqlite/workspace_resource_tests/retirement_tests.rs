@@ -161,7 +161,12 @@ async fn retirement_extra_provision_rejects_stale_and_mismatched_identity() {
                         .unwrap()
                 );
                 retired(require_active_workspace_path(&mut tx, root.path()).await);
-                assert_eq!(retired_workspaces(&mut tx).await.unwrap().len(), 1);
+                let retired = retired_workspaces(&mut tx).await.unwrap();
+                assert_eq!(retired.len(), 1);
+                assert_eq!(
+                    retirement_summary(&mut tx).await.unwrap(),
+                    (1, Some(retired[0].retired_at_ms))
+                );
                 tx.commit().await.unwrap();
             })
         })
@@ -186,9 +191,11 @@ async fn retirement_reservation_survives_database_reopen_and_owner_deletion() {
         .unwrap();
     repo.pool().close().await;
     let reopened = SqlxRepo::open(&url).await.unwrap();
-    retired(
-        require_active_workspace_path(&mut reopened.pool().acquire().await.unwrap(), &path).await,
-    );
+    let mut conn = reopened.db().read_pool().acquire().await.unwrap();
+    retired(require_active_workspace_path(&mut conn, &path).await);
+    let (count, oldest) = retirement_summary(&mut conn).await.unwrap();
+    assert_eq!(count, 1);
+    assert!(oldest.is_some());
 }
 
 #[cfg(unix)]

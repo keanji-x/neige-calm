@@ -1,4 +1,5 @@
 //! Read-only daily Track resolution and report change browsing.
+use crate::auth::Principal;
 use crate::daily_planner::{TIME_ZONE, track_for_date};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Query};
@@ -8,12 +9,14 @@ use crate::workspace_reports::{
 };
 use axum::{Router, extract::State, routing::get};
 pub use calm_types::daily_planner::DailyTrackResolved;
+use calm_types::daily_planner::SupervisorSnapshot;
 use chrono::Utc;
 use serde::Deserialize;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/today/daily", get(resolve_daily_track))
+        .route("/api/today/supervisor", get(supervisor_snapshot))
         .route("/api/today/report-changes", get(report_changes))
         .route("/api/today/report-edits", get(report_edits))
 }
@@ -74,4 +77,20 @@ pub(crate) async fn report_edits(
     Ok(Json(
         workspace_reports::edits(pool(&state)?.read_pool(), &query, TIME_ZONE).await?,
     ))
+}
+
+#[utoipa::path(get,path="/api/today/supervisor",tag="tracks",
+    responses(
+        (status=200,body=SupervisorSnapshot,description="Current deployment-owner observations"),
+        (status=401,body=ErrorBody,description="Authentication required"),
+        (status=403,body=ErrorBody,description="Deployment owner required"),
+    ))]
+pub(crate) async fn supervisor_snapshot(
+    principal: Principal,
+    State(state): State<RouteState>,
+) -> Result<Json<SupervisorSnapshot>> {
+    if !principal.is_deployment_owner() {
+        return Err(CalmError::Forbidden("Deployment owner required".into()));
+    }
+    Ok(Json(crate::supervisor_read::snapshot(&state).await))
 }

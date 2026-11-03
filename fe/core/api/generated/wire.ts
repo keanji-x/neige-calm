@@ -699,6 +699,8 @@ export type ReportEditEntry = { event_id: number, at: number, edit: ReportEdit, 
 
 export type ReportEditsPage = { edits: Array<ReportEditEntry>, next_cursor: string | null, };
 
+export type RetiredWorkspaceSummary = { count: number, oldest_retired_at_ms: number | null, };
+
 /**
  * Exact predecessor CAS for an explicit Human repeat; never a resend command.
  */
@@ -747,6 +749,11 @@ export type SourceProvenance = "full_text" | "summary" | "web_page" | "manual";
 export type SourceQuote = { id: string, text: string, start: number, end: number, };
 
 export type SteerQueuedMessageRequest = { carrier_id: string, if_revision: number, turn_id: string, };
+
+/**
+ * A current observation, with null values for unavailable sources.
+ */
+export type SupervisorSnapshot = { observed_at_ms: number, kernel_version: string, build_sha: string | null, database_writes: Array<WriteObservationBucket> | null, write_bucket_ms: number, write_bucket_count: number, scheduler_boot_sweep_completed: boolean, settled_worker_cleanup_candidates: number | null, retired_workspaces: RetiredWorkspaceSummary | null, };
 
 export type SystemAssistantSource = "today-summary" | "worker-watcher";
 
@@ -1181,3 +1188,5 @@ export type WorkerSessionState = "starting" | "running" | "idle" | "turn_pending
  * The decoded isolation of a track. This is derived, never stored separately.
  */
 export type WorkspaceIsolation = "managed" | "worktree" | "none";
+
+export type WriteObservationBucket = { started_at_ms: number, transactions: number, failures: number, retries: number, mean_wait_ms: number, };

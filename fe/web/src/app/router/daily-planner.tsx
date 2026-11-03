@@ -8,7 +8,12 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
-import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, supervisorSnapshotOperation, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { DEPLOYMENT_OWNER_USER_ID } from '../../../../core/api/auth.ts';
+import { supervisorDetails, supervisorReport } from '../../../../core/domain/supervisor-view.ts';
+import { SupervisorWaitChart } from '../../features/today/supervisor-wait.tsx';
+import { ReportDocument } from '../../features/report/document/public.tsx';
+import { useCurrentUser } from '../auth/current-user.tsx';
 import { useGo } from './navigation.ts';
 import { TodayCalendarTasks } from './calendar.tsx';
 import { ReportDetails } from '../../features/report/document/details.tsx';
@@ -21,23 +26,51 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode, supervisor: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
   const trackId = daily.data?.track_id;
   const detail = useQuery({ ...trackDetailQueryOptions(transport, trackId ?? '', unauthorized), enabled: trackId !== undefined });
-  if (daily.isError) return <ErrorBox message={readErrorText(daily.error, 'The daily Planner is unavailable.')} onRetry={() => { void daily.refetch(); }} />;
-  if (daily.isPending) return <p role="status">Loading daily Planner…</p>;
-  if (daily.data === null) return selectedDate === undefined ? <p role="status">Preparing today’s Track…</p> : <EmptyState variant="panel" icon={<Icon name="file" />} title="No daily Track was created for this date." description="这一天还没有日报记录。" />;
-  if (detail.isError) return <ErrorBox message={readErrorText(detail.error, 'The daily Track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />;
-  if (detail.data === undefined || detail.data.track.id !== trackId) return <p role="status">Loading daily Track…</p>;
+  const supervisor = selectedDate === undefined && <DailySupervisor transport={transport} unauthorized={unauthorized} />;
+  const withSupervisor = (content: ReactNode) => <>{supervisor}{content}</>;
+  if (daily.isError) return withSupervisor(<ErrorBox message={readErrorText(daily.error, 'The daily Planner is unavailable.')} onRetry={() => { void daily.refetch(); }} />);
+  if (daily.isPending) return withSupervisor(<p role="status">Loading daily Planner…</p>);
+  if (daily.data === null) return withSupervisor(selectedDate === undefined ? <p role="status">Preparing today’s Track…</p> : <EmptyState variant="panel" icon={<Icon name="file" />} title="No daily Track was created for this date." description="这一天还没有日报记录。" />);
+  if (detail.isError) return withSupervisor(<ErrorBox message={readErrorText(detail.error, 'The daily Track could not be loaded.')} onRetry={() => { void detail.refetch(); }} />);
+  if (detail.data === undefined || detail.data.track.id !== trackId) return withSupervisor(<p role="status">Loading daily Track…</p>);
   const date = daily.data.date;
   return renderTrack({ ...detail.data, track: { ...detail.data.track, title: date } },
     <DailyReportChanges key={date} isToday={selectedDate === undefined} date={shiftDailyDate(date, -1)}
       transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
     <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
-    <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>);
+    <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>,
+    supervisor);
+}
+
+function DailySupervisor({ transport, unauthorized }: Readonly<{ transport: ApiTransportPort; unauthorized: UnauthorizedChannel }>) {
+  const user = useCurrentUser();
+  const isOwner = user?.userId === DEPLOYMENT_OWNER_USER_ID;
+  const snapshot = useQuery({
+    queryKey: ['daily-supervisor', user?.userId],
+    queryFn: () => runOperation(transport, supervisorSnapshotOperation(), unauthorized),
+    enabled: isOwner,
+    refetchInterval: isOwner ? 30_000 : false,
+  });
+  if (!isOwner) return null;
+
+  if (snapshot.isError) return <ErrorBox message="无法读取当前实例状态。" onRetry={() => { void snapshot.refetch(); }} />;
+  if (snapshot.data === undefined) return <p role="status">正在读取实例状态…</p>;
+
+  return <section aria-label="Daily Supervisor">
+    <ReportDocument report={supervisorReport(snapshot.data)} empty={null} />
+    <SupervisorWaitChart writes={snapshot.data.database_writes} observedAt={snapshot.data.observed_at_ms}
+      bucketMs={snapshot.data.write_bucket_ms} bucketCount={snapshot.data.write_bucket_count} />
+    <ReportDetails title="实例明细" layout="appendix">
+      <dl>{supervisorDetails(snapshot.data).map(({ label, value }) =>
+        <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    </ReportDetails>
+  </section>;
 }
 
 function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{
