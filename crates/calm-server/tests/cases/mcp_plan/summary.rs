@@ -68,10 +68,7 @@ async fn plan_list_summary_exact_current_key() {
         format!("{}:ab", boot.track_id)
     );
     assert!(out["tasks"][0].get("goal").is_none());
-    assert_eq!(
-        out["tasks"][0]["full_evidence"]["arguments"],
-        json!({"detail":"full","key":"ab"})
-    );
+    assert!(out["tasks"][0].get("full_evidence").is_none());
     assert_eq!(all_persistent_rows(&boot).await, before);
 }
 
@@ -246,15 +243,8 @@ async fn plan_list_summary_covers_omitted_full_fields() {
     let summary = &summary["tasks"][0];
     assert_eq!(full["depends_on"], json!(["dependency"]));
     assert_eq!(full["gate"]["steps"], json!(["named-check"]));
-    let omitted = summary["omitted_fields"].as_array().unwrap();
-    for field in full.as_object().unwrap().keys() {
-        if summary.get(field).is_none() {
-            assert!(
-                omitted.contains(&json!(format!("/{field}"))),
-                "missing omission for {field}: {summary}"
-            );
-        }
-    }
+    assert!(summary.get("omitted_fields").is_none());
+    assert!(summary.to_string().len() < full.to_string().len());
     assert!(!summary.to_string().contains("Check output"));
     assert!(!summary.to_string().contains("named-check"));
     assert!(!summary.to_string().contains("private-command"));

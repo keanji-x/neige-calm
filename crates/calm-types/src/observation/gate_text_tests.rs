@@ -149,5 +149,5 @@ fn failed_gate_tail_is_bounded_untrusted_data_with_step_reference() {
     let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
     assert_eq!(preview["truncated"], true);
     assert!(text.contains("runs/w:k/gates/3.log --step 'checks'"));
-    assert!(text.contains("runs/w:k.md"));
+    assert!(text.contains("runs/w:k/summary.json"));
 }

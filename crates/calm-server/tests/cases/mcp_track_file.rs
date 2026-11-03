@@ -1365,6 +1365,53 @@ async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
 }
 
 #[tokio::test]
+async fn run_summary_keeps_outcomes_separate_and_points_to_evidence() {
+    let boot = boot().await;
+    for key in ["pending-summary", "completed-summary", "failed-summary"] {
+        request_codex(&boot, key).await;
+        materialize_worker(&boot, key).await;
+    }
+    complete_run(&boot, "completed-summary", "finished cleanly").await;
+    worker_fail_run(&boot, "failed-summary", "checks failed").await;
+
+    for (key, worker) in [
+        ("pending-summary", Value::Null),
+        (
+            "completed-summary",
+            json!({"status":"completed","summary":"finished cleanly","result_ref":"runs/completed-summary/result"}),
+        ),
+        (
+            "failed-summary",
+            json!({"status":"failed","reason":"checks failed"}),
+        ),
+    ] {
+        let summary = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":format!("runs/{key}/summary.json")}),
+        )
+        .await
+        .unwrap();
+        let compact_bytes = summary.to_string().len();
+        let summary = content_json(&summary);
+        assert_eq!(summary["worker"], worker);
+        assert!(summary["planner_verdict"].is_null());
+        let path = format!("runs/{key}.json");
+        assert_eq!(summary["evidence"], path);
+        let full = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path":path}),
+        )
+        .await
+        .unwrap();
+        assert!(compact_bytes < full.to_string().len());
+    }
+}
+
+#[tokio::test]
 async fn completed_run_json_returns_structured_projection() {
     let boot = boot().await;
     request_codex(&boot, "done-json").await;
@@ -2558,6 +2605,103 @@ async fn seed_gated_task_in(
     .await
     .expect("seed gated task");
     id
+}
+
+#[tokio::test]
+async fn run_summary_keeps_gate_failure_separate_from_worker_success() {
+    check_run_summary_gate_failure(Some("tests")).await;
+    check_run_summary_gate_failure(None).await;
+}
+
+async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
+    let boot = boot().await;
+    let id = seed_gated_task(&boot, "gated-summary", 2).await;
+    request_codex(&boot, &id).await;
+    materialize_worker(&boot, &id).await;
+    complete_run(&boot, &id, "implementation finished").await;
+    let task_id = id.clone();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let result = json!({
+                "passed": false, "failing_step": failing_step, "exit_code": 1,
+                "attempt": 2, "log_tail": "gate failed before evidence was available ".repeat(40),
+                "status_detail": "test suite failed",
+            });
+            assert_eq!(
+                calm_server::db::sqlite::task_apply_gate_result_tx(
+                    tx,
+                    &task_id,
+                    2,
+                    false,
+                    Some("test suite failed"),
+                    &result.to_string(),
+                    now_ms(),
+                )
+                .await?,
+                1
+            );
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    let out = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({"path":format!("runs/{id}/summary.json")}),
+    )
+    .await
+    .unwrap();
+    let refused = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        worker_identity(&boot),
+        json!({"path":format!("runs/{id}/summary.json")}),
+    )
+    .await
+    .expect_err("execution summary requires a Planner");
+    assert_eq!(refused.code, -32403);
+    let summary = content_json(&out);
+    assert_eq!(summary["worker"]["status"], "completed");
+    assert_eq!(summary["task"]["status"], "failed");
+    assert_eq!(summary["gate"]["passed"], false);
+    assert_eq!(summary["gate"]["failing_step"], json!(failing_step));
+    assert_eq!(summary["gate"]["log"], format!("runs/{id}/gates/2.log"));
+    if failing_step.is_some() {
+        std::fs::create_dir_all(&boot.gate_logs_dir).unwrap();
+        std::fs::write(
+            boot.gate_logs_dir.join(format!("{id}-g2.log")),
+            "gate evidence",
+        )
+        .unwrap();
+        let log = call_tool(
+            &boot,
+            TOOL_TRACK_CAT,
+            planner_identity(&boot),
+            json!({"path": summary["gate"]["log"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(log["content"], "gate evidence");
+        assert!(summary["gate"]["diagnostic"].is_null());
+    } else {
+        let diagnostic = summary["gate"]["diagnostic"].as_str().unwrap();
+        assert!(diagnostic.starts_with("gate failed before evidence was available"));
+        assert!(diagnostic.ends_with('…'));
+        assert_eq!(diagnostic.chars().count(), 513);
+    }
+    let result = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        planner_identity(&boot),
+        json!({"path": summary["worker"]["result_ref"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(content_json(&result)["summary"], "implementation finished");
+    assert!(summary["planner_verdict"].is_null());
 }
 
 #[tokio::test]
