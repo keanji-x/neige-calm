@@ -41,8 +41,8 @@ use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
 };
 use calm_server::operation::{
-    OperationCompletionBus, OperationKey, OperationOutcome, OperationResult, OperationRuntime,
-    ProviderAdapter, RecoveryItem, SpawnCtx, SqlxOperationRepo,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationResult,
+    OperationRuntime, ProviderAdapter, RecoveryItem, SpawnCtx, SqlxOperationRepo,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::session_projection_repo::{
@@ -779,7 +779,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
         plan.items
     );
     recovery.apply_recovery(plan).await.expect("apply recovery");
-    let result = wait_for_recovery_result(&recovery, &op_id).await;
+    let result = wait_for_recovery_result(&recovery, &fx.repo, &op_id, None).await;
     assert!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         "merge recovery should succeed: {:?}",
@@ -945,7 +945,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
         plan.items
     );
     recovery.apply_recovery(plan).await.expect("apply recovery");
-    let result = wait_for_recovery_result(&recovery, &op_id).await;
+    let result = wait_for_recovery_result(&recovery, &fx.repo, &op_id, None).await;
     match result.outcome {
         OperationOutcome::Failed {
             last_error_class, ..
@@ -1013,7 +1013,7 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
         plan.items
     );
     recovery.apply_recovery(plan).await.expect("apply recovery");
-    let result = wait_for_recovery_result(&recovery, &op_id).await;
+    let result = wait_for_recovery_result(&recovery, &fx.repo, &op_id, None).await;
     assert!(
         matches!(result.outcome, OperationOutcome::Succeeded { .. }),
         "issue close recovery should succeed: {:?}",
@@ -2361,12 +2361,40 @@ async fn operation_phase(repo: &SqlxRepo, op_id: &str) -> String {
         .expect("operation phase")
 }
 
-async fn wait_for_recovery_result(recovery: &OperationRuntime, op_id: &str) -> OperationResult {
+async fn wait_for_recovery_result(
+    recovery: &OperationRuntime,
+    repo: &SqlxRepo,
+    op_id: &str,
+    outage: Option<bool>,
+) -> OperationResult {
     let owned_op_id = op_id.to_owned();
-    timeout(RECOVERY_WAIT_TIMEOUT, recovery.wait(&owned_op_id))
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for recovered operation {op_id} within 5s"))
-        .expect("recovered op result")
+    match timeout(RECOVERY_WAIT_TIMEOUT, recovery.wait(&owned_op_id)).await {
+        Ok(result) => result.expect("recovered op result"),
+        Err(_) => {
+            // Sequential post-timeout reads, not a snapshot at the original deadline.
+            // Keep the read budget independent of the original five-second oracle.
+            let diagnostics = timeout(Duration::from_millis(250), async {
+                let operations = SqlxOperationRepo::new(repo.db().clone());
+                let phase = match operations.get_operation(op_id).await {
+                    Ok(Some(op)) => op.phase.tag().as_str(),
+                    Ok(None) => "missing",
+                    Err(_) => "unavailable",
+                };
+                let result = match recovery.operation_result(&owned_op_id).await {
+                    Ok(Some(_)) => "present",
+                    Ok(None) => "absent",
+                    Err(_) => "unavailable",
+                };
+                format!("phase={phase} result={result}")
+            })
+            .await
+            .unwrap_or_else(|_| "diagnostics=unavailable_budget".into());
+            panic!(
+                "timed out waiting for recovered operation {op_id} within 5s; \
+                 post-timeout outage={outage:?} {diagnostics}"
+            );
+        }
+    }
 }
 
 async fn wait_for_operation_phase(repo: &SqlxRepo, op_id: &str, expected: &str) {

@@ -50,7 +50,7 @@ async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
     let runtime = boot_recovery_runtime(fx).await;
     let plan = runtime.recover_on_boot().await.unwrap();
     runtime.apply_recovery(plan).await.unwrap();
-    let result = wait_for_recovery_result(&runtime, op).await;
+    let result = wait_for_recovery_result(&runtime, &fx.repo, op, None).await;
     // Boot reclaims the stale lease. Give the authenticated caller a fresh lease
     // before asking the MCP entry point to replay the durable outcome.
     let (card, track, path): (String, String, String) =

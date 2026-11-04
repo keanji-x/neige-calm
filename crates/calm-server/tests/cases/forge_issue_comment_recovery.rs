@@ -50,7 +50,7 @@ async fn git_forge_issue_comment_crash_recovers_without_reposting() {
         let recovery = boot_recovery_runtime(&fx).await;
         let plan = recovery.recover_on_boot().await.unwrap();
         recovery.apply_recovery(plan).await.unwrap();
-        let result = wait_for_recovery_result(&recovery, &op_id).await;
+        let result = wait_for_recovery_result(&recovery, &fx.repo, &op_id, Some(outage)).await;
         if outage {
             // Unknown is the existing runtime's gate-infra failure, never a repost.
             assert!(
@@ -126,7 +126,7 @@ async fn git_forge_issue_comment_recovery_does_not_borrow_another_caller() {
     let recovery = boot_recovery_runtime(&second).await;
     let plan = recovery.recover_on_boot().await.unwrap();
     recovery.apply_recovery(plan).await.unwrap();
-    let result = wait_for_recovery_result(&recovery, &op_id).await;
+    let result = wait_for_recovery_result(&recovery, &second.repo, &op_id, None).await;
     assert!(
         matches!(result.outcome, OperationOutcome::Failed { ref last_error_class, .. }
         if last_error_class.as_deref() == Some("action-not-landed")),
