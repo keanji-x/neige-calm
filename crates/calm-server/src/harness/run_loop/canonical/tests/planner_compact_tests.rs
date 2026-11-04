@@ -303,6 +303,8 @@ async fn canonical_planner_compact_settlement_and_wake_roll_back_together() {
         .await
         .unwrap();
     drop(issuance);
+    // Notify the owner after restoring the fixture dependency that blocked settlement.
+    fx.harness.request_progress();
     fx.wait_phase(HarnessPhaseTag::TurnCompleted).await;
     assert_terminal(&fx, TaskStatus::Done, None).await;
     shutdown(&fx.harness, &mut peer).await;
