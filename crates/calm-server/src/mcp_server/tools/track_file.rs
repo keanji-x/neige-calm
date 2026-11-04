@@ -253,6 +253,18 @@ pub(crate) const GUIDES: &[(&str, &str)] = &[
         "outputs.md",
         include_str!("../../../prompts/guides/outputs.md"),
     ),
+    (
+        "operations.md",
+        include_str!("../../../../../docs/operations/README.md"),
+    ),
+    (
+        "database.md",
+        include_str!("../../../../../docs/operations/database.md"),
+    ),
+    (
+        "stalled-work.md",
+        include_str!("../../../../../docs/operations/stalled-work.md"),
+    ),
 ];
 
 fn guide_ls() -> Result<Value, RpcError> {

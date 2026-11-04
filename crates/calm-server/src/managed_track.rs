@@ -103,21 +103,22 @@ pub(crate) async fn bind_tx(
 pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
 /// Shared by authorization and capability teaching. Neither a title nor a template grants access.
-async fn workspace_report_zone(
+async fn workspace_report_grant(
     repo: &dyn RouteRepo,
     pool: Option<crate::db::sqlite::SqliteDb>,
     card_id: &str,
     track_id: &str,
-) -> Result<Option<Tz>> {
+) -> Result<Option<(Tz, CardRole)>> {
     let Some(card) = repo.card_get(card_id).await? else {
         return Ok(None);
     };
-    if card.track_id.as_str() != track_id
-        || !repo
-            .card_role_get(card_id)
-            .await?
-            .is_some_and(|role| WORKSPACE_REPORT_ROLES.contains(&role))
-    {
+    if card.track_id.as_str() != track_id {
+        return Ok(None);
+    }
+    let Some(role) = repo.card_role_get(card_id).await? else {
+        return Ok(None);
+    };
+    if !WORKSPACE_REPORT_ROLES.contains(&role) {
         return Ok(None);
     }
     let Some(pool) = pool else {
@@ -128,6 +129,7 @@ async fn workspace_report_zone(
     ).bind(track_id).fetch_optional(pool.read_pool()).await?;
     zone.map(|zone| {
         zone.parse()
+            .map(|zone| (zone, role))
             .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))
     })
     .transpose()
@@ -139,10 +141,19 @@ pub(crate) async fn workspace_report_instructions(
     card_id: &str,
     track_id: &str,
 ) -> Result<Option<&'static str>> {
+    const REPORTS: &str = include_str!("../prompts/workspace-reports.md");
+    const PLANNER_REPORTS: &str = concat!(
+        include_str!("../prompts/workspace-reports.md"),
+        "\n",
+        include_str!("../prompts/workspace-operations.md")
+    );
     Ok(
-        workspace_report_zone(repo, repo.sqlite_db(), card_id, track_id)
+        workspace_report_grant(repo, repo.sqlite_db(), card_id, track_id)
             .await?
-            .map(|_| include_str!("../prompts/workspace-reports.md")),
+            .map(|(_, role)| match role {
+                CardRole::Planner => PLANNER_REPORTS,
+                _ => REPORTS,
+            }),
     )
 }
 
@@ -178,7 +189,7 @@ pub(crate) async fn require_workspace_reports(
     if track.area_id.as_str() != identity.area_id {
         return Err(denied());
     }
-    workspace_report_zone(
+    workspace_report_grant(
         ctx.repo.as_ref(),
         ctx.sqlite_db.clone(),
         &identity.card_id,
@@ -186,6 +197,7 @@ pub(crate) async fn require_workspace_reports(
     )
     .await
     .map_err(crate::mcp_server::framing::calm_error)?
+    .map(|(zone, _)| zone)
     .ok_or_else(denied)
 }
 

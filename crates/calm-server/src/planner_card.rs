@@ -406,7 +406,8 @@ mod tests {
     fn planner_diagnostics_regression_every_guide_fits_its_byte_budget() {
         use crate::mcp_server::tools::track_file::GUIDES;
         const GUIDE_MAX_BYTES: usize = 6_144;
-        const GUIDES_TOTAL_MAX_BYTES: usize = 7_500;
+        // The shared catalog includes three on-demand operations documents.
+        const GUIDES_TOTAL_MAX_BYTES: usize = 14_000;
 
         assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
         for (name, text) in GUIDES {

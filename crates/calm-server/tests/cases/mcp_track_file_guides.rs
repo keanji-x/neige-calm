@@ -69,9 +69,9 @@ async fn planner_diagnostics_regression_guides_render_shared_task_rules() {
         .iter()
         .map(|entry| entry["name"].as_str().expect("entry name").to_string())
         .collect();
-    assert_eq!(
-        listed, named,
-        "guide/ must list exactly the guides the prompt names"
+    assert!(
+        named.is_subset(&listed),
+        "guide/ must list every guide named by the base prompt"
     );
     let on_disk: BTreeSet<String> = std::fs::read_dir(&dir)
         .expect("read prompts/guides")

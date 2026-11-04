@@ -14,6 +14,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 | Choose Planners, use Recipes and @ references, supervise work, publish PRs, view previews, add plugins | [Using Neige Calm](using-neige-calm.md) |
 | Write Planner instructions and Report formats in a Recipe | [Recipe body format](recipe-body-format.md) |
 | Build or install a Linux Alpha archive | [Alpha release runbook](alpha-release.md) |
+| Diagnose instance state, locate SQLite, or investigate stalled work | [Operations index](operations/README.md) |
 | Deploy, back up, upgrade, or recover an installation | [Deploy & Upgrade Guide](deploy-and-upgrade.md) |
 | Configure the supervisor and child server | [neige-app configuration](neige-app-config.md) |
 | Understand local plugin execution and credentials | [Plugin host security](plugin-security.md) |
