@@ -1,10 +1,11 @@
 use super::*;
 use axum::extract::FromRef;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Scenario {
     Resume,
     Append,
+    AppendAfterFreeze,
     RevokeGate,
     RevokeRead,
     RemoteActive,
@@ -15,6 +16,11 @@ pub(super) enum Scenario {
 #[tokio::test]
 async fn production_http_cold_recovery_preserves_appended_pending() {
     original_input_flow(true, Some(Scenario::Append)).await;
+}
+
+#[tokio::test]
+async fn production_http_cold_recovery_append_after_selection_waits_for_next_turn() {
+    original_input_flow(true, Some(Scenario::AppendAfterFreeze)).await;
 }
 
 #[tokio::test]
@@ -59,6 +65,27 @@ pub(super) async fn second_turn(
     eprintln!(
         "stage: original execution completed, database reopened, original receipt/carrier verified"
     );
+    if scenario == Scenario::AppendAfterFreeze {
+        // A never-selected card resolves from its payload without metadata I/O.
+        // Use the actual HTTP settings transition to select, then follow the
+        // installation model default. Keep effort explicit to isolate config/read.
+        for model in [json!("fixture-private-model"), Value::Null] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::put(format!("/api/cards/{card}/planner/model"))
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({"model":model,"reasoning_effort":"medium"}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+    }
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
     let gate = if scenario == Scenario::RevokeGate {
         Some(
@@ -137,6 +164,8 @@ pub(super) async fn second_turn(
     drop(gate);
     let mut reads = 0;
     let mut resumes = 0;
+    let mut metadata_reads = 0;
+    let mut tail_input = None;
     let call = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let call = request(&mut peer).await;
@@ -145,14 +174,11 @@ pub(super) async fn second_turn(
                 "thread/read" => {
                     reads += 1;
                     if scenario == Scenario::Append {
-                        post(
-                            app,
-                            cookie,
-                            &format!("/api/cards/{card}/planner/input"),
-                            "tail",
-                            json!({"text":"Keep this newer pending input"}),
-                        )
-                        .await;
+                        // Recovery read/resume precedes canonical selection: this
+                        // accepted tail belongs to the same complete Human prefix.
+                        tail_input = Some(post(app, cookie, &format!("/api/cards/{card}/planner/input"),
+                            "tail", json!({"text":"Keep this newer pending input"})).await);
+                        eprintln!("cold append accepted during thread/read, before prefix freeze");
                     } else if scenario == Scenario::RevokeRead {
                         post(app, cookie, "/api/auth/logout", "logout", json!({})).await;
                     }
@@ -164,7 +190,22 @@ pub(super) async fn second_turn(
                     assert_eq!(call["params"]["threadId"], THREAD);
                     json!({"thread":{"id":THREAD,"status":{"type":"idle"},"turns":[]}})
                 }
-                "config/read" => json!({"config":{}}),
+                "config/read" => {
+                    if scenario == Scenario::AppendAfterFreeze && metadata_reads == 0 {
+                        assert_eq!((reads, resumes), (1, 1));
+                        // This is advance_once's real metadata read after its
+                        // SelectionReadAdmission froze the pending prefix.
+                        tail_input = Some(post(app, cookie, &format!("/api/cards/{card}/planner/input"),
+                            "tail", json!({"text":"Keep this newer pending input"})).await);
+                        eprintln!("cold append accepted during config/read, after prefix freeze");
+                    }
+                    metadata_reads += 1;
+                    if scenario == Scenario::AppendAfterFreeze {
+                        json!({"config":{"model":"fixture-private-model"}})
+                    } else {
+                        json!({"config":{}})
+                    }
+                },
                 "turn/start" => break Some(call),
                 method => panic!("cold recovery must not mint a new thread: {method}"),
             };
@@ -182,66 +223,184 @@ pub(super) async fn second_turn(
         return;
     };
     assert_eq!((reads, resumes), (1, 1));
+    if scenario == Scenario::AppendAfterFreeze {
+        assert_eq!(
+            metadata_reads, 1,
+            "the real post-freeze model read must have occurred"
+        );
+    }
     assert_eq!(call["params"]["threadId"], THREAD);
-    let body = call["params"]["input"].to_string();
-    assert!(body.contains("A genuinely new input after reopening"));
+    use crate::test_support::canonical_batch::{
+        assert_native_text, assert_submission, human_ref, native_text,
+    };
+    let second_ref = human_ref(input["entry_id"].as_str().unwrap());
+    let tail_ref = tail_input
+        .as_ref()
+        .map(|input| human_ref(input["entry_id"].as_str().unwrap()));
+    let mut expected = vec![(second_ref.clone(), "A genuinely new input after reopening")];
+    if scenario == Scenario::Append {
+        expected.push((tail_ref.clone().unwrap(), "Keep this newer pending input"));
+    }
+    let body = native_text(&call["params"]["input"]);
+    assert_native_text(
+        &body,
+        &expected.iter().map(|(_, body)| *body).collect::<Vec<_>>(),
+        "jian",
+    );
     assert!(
         !body.contains(FIRST_BODY),
         "completed input must not be replayed"
     );
+    if scenario == Scenario::AppendAfterFreeze {
+        assert!(!body.contains("Keep this newer pending input"));
+    }
     let crossing = fixture.carrier(track).await;
     assert_eq!((crossing.0.as_str(), crossing.1.as_str()), (card, worker));
     assert_eq!(crossing.2.canonical_inputs.attempts.len(), 2);
-    assert_eq!(
-        crossing.2.canonical_inputs.pending.len(),
-        usize::from(scenario == Scenario::Append)
-    );
-    send(
-        &mut peer,
-        json!({"id":call["id"],"result":{"turn":{"id":"cold-second-turn"}}}),
+    let attempt = &crossing.2.canonical_inputs.attempts[1];
+    assert_submission(
+        &fixture.repo,
+        card,
+        &attempt.attempt.submission_id,
+        &expected,
+        (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
     )
     .await;
+    let pending = crossing
+        .2
+        .canonical_inputs
+        .pending
+        .iter()
+        .map(|input| input.accepted_input_ref().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pending,
+        if scenario == Scenario::AppendAfterFreeze {
+            vec![tail_ref.clone().unwrap()]
+        } else {
+            vec![]
+        }
+    );
+    let running = acknowledge(fixture, state, &mut peer, track, &call, "cold-second-turn").await;
+    assert!(matches!(
+        running.canonical_inputs.attempts[1].delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
     notify_thread(
         &state.shared_codex_appserver,
         &mut peer,
         THREAD,
-        "turn/started",
-        json!({"id":"cold-second-turn","status":"inProgress"}),
+        "turn/completed",
+        json!({"id":"cold-second-turn","status":"completed"}),
     )
     .await;
-    fixture
-        .wait_phase(track, HarnessPhaseTag::TurnRunning)
+    let last_turn = if scenario == Scenario::AppendAfterFreeze {
+        // END of the selected input frees the actual scheduler to claim only
+        // the later HTTP input, on the same recovered worker/native thread.
+        let next = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let call = request(&mut peer).await;
+                match call["method"].as_str().unwrap() {
+                    "config/read" => {
+                        send(&mut peer, json!({"id":call["id"],"result":{"config":{"model":"fixture-private-model"}}})).await
+                    }
+                    "turn/start" => break call,
+                    method => panic!("unexpected next-turn cold RPC: {method}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(next["params"]["threadId"], THREAD);
+        let text = native_text(&next["params"]["input"]);
+        assert_native_text(&text, &["Keep this newer pending input"], "jian");
+        assert!(!text.contains(FIRST_BODY));
+        assert!(!text.contains("A genuinely new input after reopening"));
+        let next_crossing = fixture.carrier(track).await;
+        assert_eq!(next_crossing.2.canonical_inputs.attempts.len(), 3);
+        assert!(next_crossing.2.canonical_inputs.pending.is_empty());
+        assert_submission(
+            &fixture.repo,
+            card,
+            &next_crossing.2.canonical_inputs.attempts[2]
+                .attempt
+                .submission_id,
+            &[(tail_ref.unwrap(), "Keep this newer pending input")],
+            (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+        )
         .await;
-    if scenario != Scenario::Append {
+        let next_running =
+            acknowledge(fixture, state, &mut peer, track, &next, "cold-tail-turn").await;
+        assert!(matches!(
+            next_running.canonical_inputs.attempts[2].delivery,
+            InputDeliveryFact::Accepted { .. }
+        ));
+        assert_eq!(
+            &next_running.canonical_inputs.attempts[..2],
+            running.canonical_inputs.attempts.as_slice()
+        );
         notify_thread(
             &state.shared_codex_appserver,
             &mut peer,
             THREAD,
             "turn/completed",
-            json!({"id":"cold-second-turn","status":"completed"}),
+            json!({"id":"cold-tail-turn","status":"completed"}),
         )
         .await;
-        fixture
-            .wait_phase(track, HarnessPhaseTag::TurnCompleted)
-            .await;
-        assert_eq!(fixture.counts(card).await, (2, 2, 1, 2, 1));
+        "cold-tail-turn"
     } else {
-        assert_eq!(fixture.counts(card).await, (3, 3, 1, 2, 1));
-        assert_eq!(
-            fixture
-                .carrier(track)
-                .await
-                .2
-                .canonical_inputs
-                .pending
-                .len(),
+        "cold-second-turn"
+    };
+    let done = fixture
+        .wait_phase(track, HarnessPhaseTag::TurnCompleted)
+        .await;
+    assert_eq!(done.header.last_turn_id.as_deref(), Some(last_turn));
+    assert_eq!(done.header.last_thread_id.as_deref(), Some(THREAD));
+    assert!(done.canonical_inputs.pending.is_empty());
+    assert!(done.canonical_inputs.active.is_none());
+    assert!(
+        done.canonical_inputs
+            .attempts
+            .iter()
+            .all(|a| matches!(a.delivery, InputDeliveryFact::Accepted { .. })
+                && a.correlation.thread_id == THREAD)
+    );
+    assert_eq!(
+        done.canonical_inputs.attempts.len(),
+        if scenario == Scenario::AppendAfterFreeze {
+            3
+        } else {
+            2
+        }
+    );
+    assert_eq!(
+        fixture
+            .transcript_count(card, Some(worker), Some("turn/completed"), None)
+            .await,
+        done.canonical_inputs.attempts.len() as i64
+    );
+    assert_eq!(
+        fixture.counts(card).await,
+        (
+            if tail_input.is_some() { 3 } else { 2 },
+            if tail_input.is_some() { 3 } else { 2 },
+            1,
+            done.canonical_inputs.attempts.len() as i64,
             1
-        );
-    }
-    // The accepted tail can still be finishing its source observation. Fence
-    // the temporary handle removal against that real background wake.
+        )
+    );
+    let current = fixture.carrier(track).await;
+    assert_eq!((current.0.as_str(), current.1.as_str()), (card, worker));
+    eprintln!(
+        "cold completed {scenario:?}: attempts={}, no pending/active, END={}, original worker/native",
+        done.canonical_inputs.attempts.len(),
+        done.canonical_inputs.attempts.len()
+    );
+    // Fence removal against the real background wake, then flush the native
+    // connection so an accidental additional submission cannot hide in the sink.
     let lifecycle_locks = crate::state::RouteState::from_ref(state).planner_recovery_locks;
     let _lifecycle = crate::per_card_lock::lock_card(&lifecycle_locks, card).await;
+    crate::shared_codex_appserver::native_owner_tests::assert_no_request(&mut peer).await;
     let handle = state
         .harness
         .remove(worker)
@@ -289,4 +448,26 @@ async fn assert_recovery_held(
     assert_eq!(token, old_token);
     assert_eq!(fixture.counts(card).await, (2, 2, 1, 1, 1));
     assert!(state.harness.get(&worker.to_owned()).is_none());
+}
+
+async fn acknowledge(
+    fixture: &Fixture,
+    state: &AppState,
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+    track: &str,
+    call: &Value,
+    turn: &str,
+) -> CanonicalHarnessSnapshot {
+    send(peer, json!({"id":call["id"],"result":{"turn":{"id":turn}}})).await;
+    notify_thread(
+        &state.shared_codex_appserver,
+        peer,
+        THREAD,
+        "turn/started",
+        json!({"id":turn,"status":"inProgress"}),
+    )
+    .await;
+    fixture
+        .wait_phase(track, HarnessPhaseTag::TurnRunning)
+        .await
 }

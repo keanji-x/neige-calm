@@ -115,7 +115,7 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
         0,
         "receipt replay cannot wake accepted work"
     );
-    post(
+    let later = post(
         &app,
         &cookie,
         &format!("/api/cards/{card}/planner/input"),
@@ -123,18 +123,77 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
         json!({"text":"retained activation"}),
     )
     .await;
-    wait_idle(&fixture, card, 2).await;
+    let batch = wait_idle(&fixture, card, 1).await;
+    use crate::test_support::canonical_batch::{
+        assert_native_text, assert_submission, human_ref, native_text,
+    };
+    assert_eq!(batch.header.phase, HarnessPhaseTag::TurnCompleted);
+    assert!(batch.canonical_inputs.active.is_none());
+    assert!(matches!(
+        batch.canonical_inputs.attempts[0].delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
+    assert_eq!(fixture.counts(card).await, (2, 2, 1, 1, 0));
+    assert_submission(
+        &fixture.repo,
+        card,
+        &batch.canonical_inputs.attempts[0].attempt.submission_id,
+        &[
+            (
+                human_ref(
+                    created["initialInput"]["receipt"]["entryId"]
+                        .as_str()
+                        .unwrap(),
+                ),
+                FIRST_BODY,
+            ),
+            (
+                human_ref(later["entry_id"].as_str().unwrap()),
+                "retained activation",
+            ),
+        ],
+        (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+    )
+    .await;
+    let sent: Vec<_> = requests(&fixture)
+        .into_iter()
+        .filter(|call| call["method"] == "session/prompt")
+        .collect();
+    assert_eq!(sent.len(), 1);
+    assert_native_text(
+        &native_text(&sent[0]["params"]["prompt"]),
+        &[FIRST_BODY, "retained activation"],
+        "jian",
+    );
+    assert_eq!(
+        fixture
+            .transcript_count(card, Some(&worker), Some("turn/completed"), None)
+            .await,
+        1
+    );
     assert_eq!(carrier(&fixture, card).await.0, worker);
-    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 2);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 1);
     let identity: (String, String) =
         sqlx::query_as("SELECT thread_id,agent_session_id FROM worker_sessions WHERE id=?1")
             .bind(&worker)
             .fetch_one(fixture.repo.pool())
             .await
             .unwrap();
+    assert_eq!(
+        batch.header.last_thread_id.as_deref(),
+        Some(identity.0.as_str())
+    );
+    assert_eq!(
+        batch.canonical_inputs.attempts[0]
+            .correlation
+            .native_session_id
+            .as_deref(),
+        Some(identity.1.as_str())
+    );
+    assert_eq!(sent[0]["params"]["sessionId"], identity.1);
     // A second activation must load the original native session on the same carrier.
     state.harness.shutdown_and_remove(&worker).await.unwrap();
-    post(
+    let continuation = post(
         &app,
         &cookie,
         &format!("/api/cards/{card}/planner/input"),
@@ -142,18 +201,97 @@ async fn acp_assistant_outage_acceptance_replay_and_retained_activation() {
         json!({"text":"load original worker"}),
     )
     .await;
-    wait_idle(&fixture, card, 3).await;
-    let loaded = requests(&fixture)
+    let continued = wait_idle(&fixture, card, 2).await;
+    assert_eq!(continued.header.phase, HarnessPhaseTag::TurnCompleted);
+    assert!(continued.canonical_inputs.active.is_none());
+    assert_eq!(
+        continued.canonical_inputs.attempts[0],
+        batch.canonical_inputs.attempts[0]
+    );
+    let next = &continued.canonical_inputs.attempts[1];
+    assert!(matches!(next.delivery, InputDeliveryFact::Accepted { .. }));
+    assert_eq!(
+        next.correlation.native_session_id.as_deref(),
+        Some(identity.1.as_str())
+    );
+    assert_eq!(
+        continued.header.last_thread_id.as_deref(),
+        Some(identity.0.as_str())
+    );
+    assert_eq!(fixture.counts(card).await, (3, 3, 1, 2, 0));
+    assert_submission(
+        &fixture.repo,
+        card,
+        &next.attempt.submission_id,
+        &[(
+            human_ref(continuation["entry_id"].as_str().unwrap()),
+            "load original worker",
+        )],
+        (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+    )
+    .await;
+    let sent: Vec<_> = requests(&fixture)
         .into_iter()
-        .find(|call| call["method"] == "session/resume")
-        .expect("native load");
-    assert_eq!(loaded["params"]["sessionId"], identity.1);
+        .filter(|call| call["method"] == "session/prompt")
+        .collect();
+    assert_eq!(sent.len(), 2);
+    let text = native_text(&sent[1]["params"]["prompt"]);
+    assert_native_text(&text, &["load original worker"], "jian");
+    assert!(!text.contains(FIRST_BODY));
+    assert!(!text.contains("retained activation"));
+    assert_eq!(sent[1]["params"]["sessionId"], identity.1);
+    assert_eq!(
+        fixture
+            .transcript_count(card, Some(&worker), Some("turn/completed"), None)
+            .await,
+        2
+    );
+    let native_requests = requests(&fixture);
+    let loaded: Vec<_> = native_requests
+        .iter()
+        .filter(|call| call["method"] == "session/resume")
+        .collect();
+    assert_eq!(
+        loaded.len(),
+        1,
+        "one native resume on the subsequent activation"
+    );
+    assert_eq!(loaded[0]["params"]["sessionId"], identity.1);
+    assert_eq!(
+        native_requests
+            .iter()
+            .filter(|call| call["method"] == "session/new")
+            .count(),
+        1
+    );
     assert_eq!(carrier(&fixture, card).await.0, worker);
+    let replay_wake = crate::test_seams::PausePoint::default();
+    crate::test_seams::install_pause_for_test(
+        "canonical-human-wake-finished",
+        card,
+        replay_wake.clone(),
+    );
     assert_eq!(
         post(&app, &cookie, &uri, "assistant", body).await["initialInput"],
         created["initialInput"]
     );
-    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 3);
+    let woke = tokio::time::timeout(Duration::from_secs(1), replay_wake.entered.notified())
+        .await
+        .is_ok();
+    replay_wake.release.notify_one();
+    assert!(!woke, "completed receipt replay must not wake");
+    let current_identity: (String, String) =
+        sqlx::query_as("SELECT thread_id,agent_session_id FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(current_identity, identity);
+    assert_eq!(prompts(&fixture, &AgentProvider::OpenCode), 2);
+    assert_eq!(
+        carrier(&fixture, card).await.1.canonical_inputs,
+        continued.canonical_inputs
+    );
     assert_eq!(
         requests(&fixture)
             .iter()

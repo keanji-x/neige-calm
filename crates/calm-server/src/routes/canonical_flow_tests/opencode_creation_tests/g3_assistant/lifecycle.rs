@@ -61,6 +61,53 @@ async fn outage(auth_failure: bool) {
         frame.canonical_inputs.attempts.len(),
         usize::from(auth_failure)
     );
+    use crate::test_support::canonical_batch::{
+        assert_native_text, assert_submission, human_ref, native_text,
+    };
+    let first_ref = human_ref(
+        created["initialInput"]["receipt"]["entryId"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_eq!(
+        frame.canonical_inputs.pending[0]
+            .accepted_input_ref()
+            .unwrap(),
+        first_ref
+    );
+    assert!(frame.canonical_inputs.active.is_none());
+    if auth_failure {
+        let failed = &frame.canonical_inputs.attempts[0];
+        assert!(matches!(
+            failed.delivery,
+            InputDeliveryFact::NotDispatched { .. }
+        ));
+        assert_submission(
+            &fixture.repo,
+            &card,
+            &failed.attempt.submission_id,
+            &[(first_ref.clone(), FIRST_BODY)],
+            (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+        )
+        .await;
+        let release: Vec<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT effective,released_by_attempt_id,retirement_reason \
+             FROM conversation_submission_inputs \
+             WHERE submission_id=?1 ORDER BY input_position",
+        )
+        .bind(failed.attempt.submission_id.as_str())
+        .fetch_all(fixture.repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            release,
+            vec![(
+                0,
+                Some(failed.attempt.attempt_id.as_str().into()),
+                Some("not_dispatched".into())
+            )]
+        );
+    }
     assert_eq!(prompts(&fixture, &AgentProvider::Grok), 0);
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
@@ -68,14 +115,14 @@ async fn outage(auth_failure: bool) {
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
     configure(&mut fixture);
     let (state, app, cookie) = fixture.application().await;
-    let replay = no_wake(&app, &cookie, &uri, "outage", body, &card).await;
+    let replay = no_wake(&app, &cookie, &uri, "outage", body.clone(), &card).await;
     assert_eq!(replay["initialInput"], created["initialInput"]);
     assert_eq!(prompts(&fixture, &AgentProvider::Grok), 0);
     assert_eq!(
         carrier(&fixture, &card).await.1.canonical_inputs,
         frame.canonical_inputs
     );
-    post(
+    let later = post(
         &app,
         &cookie,
         &format!("/api/cards/{card}/planner/input"),
@@ -83,16 +130,160 @@ async fn outage(auth_failure: bool) {
         json!({"text":"fresh Human activation"}),
     )
     .await;
-    idle(&fixture, &card, frame.canonical_inputs.attempts.len() + 2).await;
-    assert_eq!(carrier(&fixture, &card).await.0, worker);
-    assert_eq!(prompts(&fixture, &AgentProvider::Grok), 2);
+    let prior = frame.canonical_inputs.attempts.len();
+    let batch = idle(&fixture, &card, prior + 1).await;
+    assert_eq!(batch.header.phase, HarnessPhaseTag::TurnCompleted);
+    assert!(batch.canonical_inputs.active.is_none());
+    assert!(batch.canonical_inputs.pending.is_empty());
     assert_eq!(
-        calls(&fixture)
+        &batch.canonical_inputs.attempts[..prior],
+        frame.canonical_inputs.attempts.as_slice()
+    );
+    let delivered = &batch.canonical_inputs.attempts[prior];
+    assert!(matches!(
+        delivered.delivery,
+        InputDeliveryFact::Accepted { .. }
+    ));
+    assert_submission(
+        &fixture.repo,
+        &card,
+        &delivered.attempt.submission_id,
+        &[
+            (first_ref, FIRST_BODY),
+            (
+                human_ref(later["entry_id"].as_str().unwrap()),
+                "fresh Human activation",
+            ),
+        ],
+        (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+    )
+    .await;
+    assert_eq!(carrier(&fixture, &card).await.0, worker);
+    let sent: Vec<_> = calls(&fixture)
+        .into_iter()
+        .filter(|c| c["method"] == "session/prompt")
+        .collect();
+    assert_eq!(sent.len(), 1);
+    assert_native_text(
+        &native_text(&sent[0]["params"]["prompt"]),
+        &[FIRST_BODY, "fresh Human activation"],
+        "jian",
+    );
+    let identity: (String, String) =
+        sqlx::query_as("SELECT thread_id,agent_session_id FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        batch.header.last_thread_id.as_deref(),
+        Some(identity.0.as_str())
+    );
+    assert_eq!(
+        delivered.correlation.native_session_id.as_deref(),
+        Some(identity.1.as_str())
+    );
+    assert_eq!(sent[0]["params"]["sessionId"], identity.1);
+    assert_eq!(
+        fixture.counts(&card).await,
+        (2, 2, 1, (prior + 1) as i64, 0)
+    );
+    assert_eq!(
+        fixture
+            .transcript_count(&card, Some(&worker), Some("turn/completed"), None)
+            .await,
+        1
+    );
+    // A later activation is a distinct turn, loading the original native session.
+    state.harness.shutdown_and_remove(&worker).await.unwrap();
+    let continuation = post(
+        &app,
+        &cookie,
+        &format!("/api/cards/{card}/planner/input"),
+        "load",
+        json!({"text":"continue original Grok session"}),
+    )
+    .await;
+    let continued = idle(&fixture, &card, prior + 2).await;
+    assert_eq!(continued.header.phase, HarnessPhaseTag::TurnCompleted);
+    assert!(continued.canonical_inputs.active.is_none());
+    assert_eq!(
+        &continued.canonical_inputs.attempts[..prior + 1],
+        batch.canonical_inputs.attempts.as_slice()
+    );
+    let next = &continued.canonical_inputs.attempts[prior + 1];
+    assert!(matches!(next.delivery, InputDeliveryFact::Accepted { .. }));
+    assert_eq!(
+        next.correlation.native_session_id.as_deref(),
+        Some(identity.1.as_str())
+    );
+    assert_eq!(
+        continued.header.last_thread_id.as_deref(),
+        Some(identity.0.as_str())
+    );
+    assert_submission(
+        &fixture.repo,
+        &card,
+        &next.attempt.submission_id,
+        &[(
+            human_ref(continuation["entry_id"].as_str().unwrap()),
+            "continue original Grok session",
+        )],
+        (calm_types::organization::LEGACY_OWNER_USER_ID, "jian"),
+    )
+    .await;
+    let requests = calls(&fixture);
+    let loaded: Vec<_> = requests
+        .iter()
+        .filter(|c| c["method"] == "session/load")
+        .collect();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0]["params"]["sessionId"], identity.1);
+    assert_eq!(
+        requests
             .iter()
-            .filter(|c| c["method"] == "session/prompt"
-                && c["params"]["prompt"].to_string().contains(FIRST_BODY))
+            .filter(|call| call["method"] == "session/new")
             .count(),
         1
+    );
+    let sent: Vec<_> = requests
+        .iter()
+        .filter(|c| c["method"] == "session/prompt")
+        .collect();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1]["params"]["sessionId"], identity.1);
+    let text = native_text(&sent[1]["params"]["prompt"]);
+    assert_native_text(&text, &["continue original Grok session"], "jian");
+    assert!(!text.contains(FIRST_BODY));
+    assert!(!text.contains("fresh Human activation"));
+    assert_eq!(
+        fixture
+            .transcript_count(&card, Some(&worker), Some("turn/completed"), None)
+            .await,
+        2
+    );
+    let replay = no_wake(&app, &cookie, &uri, "outage", body, &card).await;
+    assert_eq!(replay["initialInput"], created["initialInput"]);
+    assert_eq!(carrier(&fixture, &card).await.0, worker);
+    assert_eq!(
+        carrier(&fixture, &card).await.1.canonical_inputs,
+        continued.canonical_inputs
+    );
+    assert_eq!(prompts(&fixture, &AgentProvider::Grok), 2);
+    assert_eq!(
+        fixture.counts(&card).await,
+        (3, 3, 1, (prior + 2) as i64, 0)
+    );
+    let current_identity: (String, String) =
+        sqlx::query_as("SELECT thread_id,agent_session_id FROM worker_sessions WHERE id=?1")
+            .bind(&worker)
+            .fetch_one(fixture.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(current_identity, identity);
+    eprintln!(
+        "Grok auth_failure={auth_failure}: historical_attempts={prior}, \
+         batch_inputs=2, native_prompts=2, END=2, receipt replay unchanged"
     );
     fixture.shutdown_process(&state).await;
 }

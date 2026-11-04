@@ -20,6 +20,7 @@ pub(crate) use storage_contract::{
 };
 mod selection_read;
 pub(crate) use selection_read::SelectionReadAdmission;
+mod pending_selection;
 
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;
