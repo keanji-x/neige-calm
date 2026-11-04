@@ -767,6 +767,7 @@ async fn scoped_catalog_respects_builtin_lifecycle_and_track_owner() {
     let fx = Fixture::new().await;
     let identity = fx.identity(CardRole::Planner).await;
     let bound = ConnectionIdentity::CardBound(CardIdentity {
+        mcp_token_hash: None,
         card_id: identity.card_id.clone().into(),
         role: identity.role,
         provider: identity.provider.clone(),

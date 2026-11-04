@@ -7,10 +7,13 @@ mod input;
 mod issuance;
 mod normal_join;
 mod recovery;
+mod server;
 mod setup;
 use cancellation::IssueGuard;
 use driver::drive;
 use input::InputContract;
+pub(super) use server::Server;
+pub(crate) use server::detach_worker;
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
 use crate::db::sqlite::{
@@ -67,7 +70,7 @@ struct Active {
     cancel: watch::Sender<CancelRequest>,
     approvals: std::sync::Weak<Approvals>,
     native_session_id: String,
-    execution_id: workspace_runtime::execution::ExecutionId,
+    execution_id: Option<workspace_runtime::execution::ExecutionId>,
 }
 struct State {
     active: Option<Active>,
@@ -265,10 +268,12 @@ impl AcpPlannerSession {
         let stopped = self
             .stop_execution(crate::provider_execution::StopReason::Shutdown)
             .await;
+        let detached = detach_worker(&params.host, &params.worker_session_id).await;
         // Cleanup errors never detach the writer: recovery waits for all its writes.
         join_driver(&self.shared).await?;
         revoked?;
         stopped?;
+        detached?;
         Ok(())
     }
 }
@@ -359,8 +364,12 @@ async fn mint_token(params: &SessionParams) -> Result<String> {
     .await
 }
 async fn revoke(params: &SessionParams) -> Result<()> {
-    let worker = params.worker_session_id.clone();
-    write_in_tx_typed(params.repo.as_ref(), move |tx| {
+    revoke_worker(params.repo.as_ref(), &params.worker_session_id).await
+}
+
+async fn revoke_worker(repo: &dyn Repo, worker: &str) -> Result<()> {
+    let worker = worker.to_owned();
+    write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             sqlx::query("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id=?1")
                 .bind(worker)
@@ -400,7 +409,12 @@ impl Shared {
     ) {
         let mut state = self.state.lock().expect("ACP state");
         if !state.active.as_ref().is_some_and(|active| {
-            active.execution_id.as_str() == id && active.turn == turn_id && active.thread == thread
+            active
+                .execution_id
+                .as_ref()
+                .is_some_and(|execution| execution.as_str() == id)
+                && active.turn == turn_id
+                && active.thread == thread
         }) {
             return;
         }

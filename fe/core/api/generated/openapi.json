@@ -13988,7 +13988,8 @@
           "opencode",
           "codex",
           "claude",
-          "grok"
+          "grok",
+          "antigravity"
         ]
       },
       "AnswerAskRequest": {

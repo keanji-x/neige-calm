@@ -1,12 +1,13 @@
 use crate::send_boundary::PreSendGate;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
+const INCOMING_LIMIT: usize = 256;
 const FRAME_LIMIT: usize = 8 * 1024 * 1024;
 const PENDING_LIMIT: usize = 64;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(1);
@@ -53,6 +54,45 @@ pub enum Incoming {
     },
 }
 
+impl Incoming {
+    fn session_id(&self) -> Option<&str> {
+        let params = match self {
+            Self::Notification { params, .. } | Self::Request { params, .. } => params,
+        };
+        params.get("sessionId")?.as_str()
+    }
+}
+
+type SessionRoutes = Arc<SyncMutex<HashMap<String, mpsc::Sender<Incoming>>>>;
+
+/// Exclusive inbound stream for one native session on a shared connection.
+pub struct SessionIncoming {
+    session_id: String,
+    routes: SessionRoutes,
+    receiver: mpsc::Receiver<Incoming>,
+}
+impl SessionIncoming {
+    pub fn receiver_mut(&mut self) -> &mut mpsc::Receiver<Incoming> {
+        &mut self.receiver
+    }
+
+    pub async fn recv(&mut self) -> Option<Incoming> {
+        self.receiver.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Result<Incoming, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+impl Drop for SessionIncoming {
+    fn drop(&mut self) {
+        self.routes
+            .lock()
+            .expect("ACP routes")
+            .remove(&self.session_id);
+    }
+}
+
 type Answer = oneshot::Sender<Result<Value, Error>>;
 /// Factual transport failure. Crossing does not establish native acceptance.
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +121,7 @@ struct Inner {
     writer: Arc<Mutex<Option<Writer>>>,
     close: watch::Sender<Option<Error>>,
     next_id: AtomicU64,
+    routes: SessionRoutes,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -125,6 +166,26 @@ impl PendingResponse {
     }
 }
 impl Client {
+    /// Route subsequent frames for an already identified native session to its owner.
+    /// Frames without a registered session still go to the connection owner, including
+    /// setup traffic for a session whose native ID has not been returned yet.
+    pub fn route_session(&self, session_id: &str) -> Result<SessionIncoming, Error> {
+        let mut routes = self.0.routes.lock().expect("ACP routes");
+        if let Some(error) = self.terminal_error() {
+            return Err(error);
+        }
+        if session_id.is_empty() || routes.contains_key(session_id) {
+            return Err(Error::Protocol("invalid or duplicate session route"));
+        }
+        let (sender, receiver) = mpsc::channel(INCOMING_LIMIT);
+        routes.insert(session_id.to_owned(), sender);
+        Ok(SessionIncoming {
+            session_id: session_id.to_owned(),
+            routes: self.0.routes.clone(),
+            receiver,
+        })
+    }
+
     pub async fn submit_gated(
         &self,
         method: &str,
@@ -328,19 +389,22 @@ impl Connection {
     {
         let (registrations, registration_rx) = mpsc::channel(64);
         let writer = Arc::new(Mutex::new(Some(Box::new(writer) as Writer)));
-        let (incoming, incoming_rx) = mpsc::channel(256);
+        let (incoming, incoming_rx) = mpsc::channel(INCOMING_LIMIT);
+        let routes = SessionRoutes::default();
         let (close, close_rx) = watch::channel(None);
         let client = Client(Arc::new(Inner {
             registrations,
             writer: writer.clone(),
             close: close.clone(),
             next_id: AtomicU64::new(1),
+            routes: routes.clone(),
         }));
         tokio::spawn(run(
             reader,
             writer,
             registration_rx,
             incoming,
+            routes,
             close,
             close_rx,
         ));
@@ -361,6 +425,7 @@ async fn run<R>(
     writer: Arc<Mutex<Option<Writer>>>,
     mut registrations: mpsc::Receiver<Registration>,
     incoming: mpsc::Sender<Incoming>,
+    routes: SessionRoutes,
     close: watch::Sender<Option<Error>>,
     mut closed: watch::Receiver<Option<Error>>,
 ) where
@@ -415,11 +480,12 @@ async fn run<R>(
             }
             frame = frame_rx.recv() => {
                 let frame = match frame { Some(Ok(frame)) => frame, Some(Err(error)) => break error, None => break Error::Closed };
-                if let Err(error) = receive(frame, &mut pending, &incoming) { break error; }
+                if let Err(error) = receive(frame, &mut pending, &incoming, &routes) { break error; }
             }
         }
     };
     record_failure(&close, error);
+    routes.lock().expect("ACP routes").clear();
     let error = close.borrow().clone().expect("terminal error published");
     tracing::debug!(error = %error, pending_requests = pending.len(), "ACP transport stopped");
     for (_, answer) in pending {
@@ -432,6 +498,7 @@ fn receive(
     frame: Value,
     pending: &mut HashMap<u64, Answer>,
     incoming: &mpsc::Sender<Incoming>,
+    routes: &SessionRoutes,
 ) -> Result<(), Error> {
     if !frame.is_object() || frame["jsonrpc"] != "2.0" {
         return Err(Error::Protocol("invalid JSON-RPC envelope"));
@@ -454,7 +521,12 @@ fn receive(
             Some(_) => return Err(Error::Protocol("invalid request id")),
             None => Incoming::Notification { method, params },
         };
-        return incoming.try_send(message).map_err(|error| match error {
+        let routes = routes.lock().expect("ACP routes");
+        let target = message
+            .session_id()
+            .and_then(|session| routes.get(session))
+            .unwrap_or(incoming);
+        return target.try_send(message).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => Error::Protocol("incoming event queue full"),
             mpsc::error::TrySendError::Closed(_) => {
                 Error::Protocol("incoming event consumer dropped")

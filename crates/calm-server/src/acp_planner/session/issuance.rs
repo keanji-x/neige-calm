@@ -106,7 +106,6 @@ impl AcpPlannerSession {
             Some(&params.host.provider_execution),
         )
         .await?;
-        let engine = crate::provider_execution::engine(params.engine.as_ref())?;
         input.check_source().await?;
         if shared.state.lock().expect("ACP state").active.is_some()
             || acp_submission_unresolved(pool.read_pool(), &params.worker_session_id)
@@ -162,6 +161,32 @@ impl AcpPlannerSession {
         )
         .await
         .map_err(|error| input.registration_failure(error))?;
+        if registration.profile.shared_server {
+            blocks.insert(
+                0,
+                protocol::ContentBlock::text(
+                    include_str!("../../../prompts/antigravity-tools.md").to_owned(),
+                ),
+            );
+            return super::server::issue(
+                shared,
+                registration,
+                row.agent_session_id,
+                thread,
+                client,
+                &input,
+                items,
+                blocks,
+                selection,
+                permission,
+                held,
+                asks,
+                receipt_turn,
+                track_fence,
+            )
+            .await;
+        }
+        let engine = crate::provider_execution::engine(params.engine.as_ref())?;
         let mut guard = IssueGuard::new(shared);
         #[cfg(all(test, feature = "fixtures"))]
         super::super::test_seams::wait_issue(
@@ -343,7 +368,7 @@ impl AcpPlannerSession {
             cancel,
             approvals: Arc::downgrade(&approvals),
             native_session_id: native.clone(),
-            execution_id: execution_id.clone(),
+            execution_id: Some(execution_id.clone()),
         });
         let translator = TurnTranslator::new(TurnContext {
             thread_id: thread.into(),

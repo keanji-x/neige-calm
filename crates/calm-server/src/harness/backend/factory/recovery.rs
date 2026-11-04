@@ -77,9 +77,13 @@ impl RecoveryTarget {
         use crate::session_projection_repo::{AgentProvider, WorkerSessionState};
         match runtime.agent_provider.as_ref() {
             Some(AgentProvider::Codex) => runtime.status == WorkerSessionState::Failed,
-            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
-                false
-            }
+            Some(
+                AgentProvider::Claude
+                | AgentProvider::OpenCode
+                | AgentProvider::Grok
+                | AgentProvider::Antigravity,
+            )
+            | None => false,
         }
     }
 
@@ -164,7 +168,10 @@ impl PlannerFactory<'_> {
                     .await?;
             }
             Some(
-                provider @ (AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok),
+                provider @ (AgentProvider::Claude
+                | AgentProvider::OpenCode
+                | AgentProvider::Grok
+                | AgentProvider::Antigravity),
             ) => {
                 self.ready(provider, super::ReadinessFor::RestoreOrSend)
                     .await?;
@@ -191,11 +198,15 @@ impl PlannerFactory<'_> {
                     .await?;
                 RecoveryTarget::failed(runtime)
             }
-            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
-                Err(CalmError::Conflict(
-                    "card is not a Codex harness conversation".into(),
-                ))
-            }
+            Some(
+                AgentProvider::Claude
+                | AgentProvider::OpenCode
+                | AgentProvider::Grok
+                | AgentProvider::Antigravity,
+            )
+            | None => Err(CalmError::Conflict(
+                "card is not a Codex harness conversation".into(),
+            )),
         }
     }
 

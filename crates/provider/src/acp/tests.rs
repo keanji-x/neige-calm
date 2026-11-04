@@ -701,3 +701,33 @@ fn invalid_usage_update_is_ignored_without_failing_the_turn() {
 
 #[path = "disconnect_tests.rs"]
 mod disconnect_tests;
+
+#[tokio::test]
+async fn shared_routes_isolate_session_requests_and_updates() {
+    let (mut connection, _, mut writer) = peer();
+    let mut a = connection.client.route_session("a").unwrap();
+    let mut b = connection.client.route_session("b").unwrap();
+    assert!(matches!(
+        connection.client.route_session("a"),
+        Err(Error::Protocol(_))
+    ));
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","id":"approval","method":"session/request_permission","params":{"sessionId":"b"}}),
+    )
+    .await;
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"a"}}),
+    )
+    .await;
+    assert!(matches!(
+        tokio::time::timeout(BUDGET, a.recv()).await.unwrap(),
+        Some(Incoming::Notification { params, .. }) if params["sessionId"] == "a"
+    ));
+    assert!(matches!(
+        tokio::time::timeout(BUDGET, b.recv()).await.unwrap(),
+        Some(Incoming::Request { id, params, .. }) if id == "approval" && params["sessionId"] == "b"
+    ));
+    assert!(connection.incoming.try_recv().is_err());
+}

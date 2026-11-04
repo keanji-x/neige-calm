@@ -67,7 +67,9 @@ impl AcpPlannerSession {
                 .expect("ACP state")
                 .active
                 .as_ref()
-                .is_some_and(|active| active.execution_id != *id || active.turn != turn)
+                .is_some_and(|active| {
+                    active.execution_id.as_ref() != Some(id) || active.turn != turn
+                })
         {
             return Err(CalmError::Conflict(
                 "ACP completion identity changed".into(),
@@ -124,11 +126,9 @@ impl AcpPlannerSession {
         drop(accepted);
         if maintenance {
             let mut state = shared.state.lock().expect("ACP state");
-            if state
-                .active
-                .as_ref()
-                .is_some_and(|active| active.execution_id == *id && active.turn == turn)
-            {
+            if state.active.as_ref().is_some_and(|active| {
+                active.execution_id.as_ref() == Some(id) && active.turn == turn
+            }) {
                 state.active = None;
             }
         } else {
@@ -138,7 +138,7 @@ impl AcpPlannerSession {
                 .expect("ACP state")
                 .active
                 .as_ref()
-                .filter(|active| active.execution_id == *id && active.turn == turn)
+                .filter(|active| active.execution_id.as_ref() == Some(id) && active.turn == turn)
                 .map(|active| active.thread.clone());
             if let Some(thread) = thread {
                 shared.finish_execution(id.as_str(), turn, &thread, Vec::new(), outcome);

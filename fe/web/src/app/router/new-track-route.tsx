@@ -55,6 +55,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
   const opencodeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'opencode' }, unauthorized));
   const grokCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'grok' }, unauthorized));
+  const antigravityCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'antigravity' }, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
@@ -175,6 +176,8 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
             acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'opencode')?.accepts_unavailable_blank_track },
           { provider: 'grok', catalog: grokCatalog.data ?? null, availability: availabilityOf(availability.data, 'grok'),
             acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'grok')?.accepts_unavailable_blank_track },
+          { provider: 'antigravity', catalog: antigravityCatalog.data ?? null, availability: availabilityOf(availability.data, 'antigravity'),
+            acceptsUnavailableBlankTrack: providers.data?.find((entry) => entry.availability.provider === 'antigravity')?.accepts_unavailable_blank_track },
         ]}
         provider={session.provider}
         effortControl={compactViewport ? 'in-menu' : 'separate'}

@@ -596,6 +596,17 @@ impl Stack {
         .await
     }
 
+    #[allow(dead_code)] // The shared ACP regression opens a production MCP connection.
+    pub fn mcp_socket(&self) -> &std::path::Path {
+        &self
+            .state
+            .mcp_server
+            .as_ref()
+            .expect("MCP server")
+            .shim_config
+            .socket_path
+    }
+
     /// Whether `token` completes the production MCP handshake right now.
     pub async fn token_authenticates(&self, token: &str) -> bool {
         calm_server::mcp_server::handshake::handle_initialize(

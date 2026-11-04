@@ -190,6 +190,7 @@ impl PlannerFactory<'_> {
             WorkerProviderKind::Claude
             | WorkerProviderKind::OpenCode
             | WorkerProviderKind::Grok
+            | WorkerProviderKind::Antigravity
             | WorkerProviderKind::Terminal => return,
         }
         let Some(thread_id) = session.thread_id.as_deref() else {
@@ -225,7 +226,13 @@ impl PlannerFactory<'_> {
         use crate::session_projection_repo::AgentProvider;
         match runtime.agent_provider {
             Some(AgentProvider::Codex) => {}
-            Some(AgentProvider::Claude | AgentProvider::OpenCode | AgentProvider::Grok) | None => {
+            Some(
+                AgentProvider::Claude
+                | AgentProvider::OpenCode
+                | AgentProvider::Grok
+                | AgentProvider::Antigravity,
+            )
+            | None => {
                 return Ok(());
             }
         }

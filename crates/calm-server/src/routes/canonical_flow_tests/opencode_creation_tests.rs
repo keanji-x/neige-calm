@@ -10,7 +10,9 @@ pub(super) fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::pat
     match provider {
         AgentProvider::OpenCode => fixture.root.path().into(),
         AgentProvider::Grok => fixture.root.path().join("grok"),
-        AgentProvider::Codex | AgentProvider::Claude => panic!("{provider:?} has no ACP spy"),
+        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+            panic!("{provider:?} has no ACP spy")
+        }
     }
 }
 
@@ -19,7 +21,9 @@ fn other(provider: &AgentProvider) -> AgentProvider {
     match provider {
         AgentProvider::OpenCode => AgentProvider::Grok,
         AgentProvider::Grok => AgentProvider::OpenCode,
-        AgentProvider::Codex | AgentProvider::Claude => panic!("{provider:?} has no ACP spy"),
+        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+            panic!("{provider:?} has no ACP spy")
+        }
     }
 }
 

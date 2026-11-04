@@ -200,6 +200,7 @@ pub struct AcpPlannerHost {
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
     /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
     /// next launch.
+    pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
     pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
     pub(super) discovery: super::catalog::DiscoveryCache,
@@ -230,6 +231,7 @@ impl AcpPlannerHost {
             mcp_shim,
             mcp_socket,
             tool_names: None,
+            shared_server: Default::default(),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
             discovery: Default::default(),
@@ -394,6 +396,9 @@ pub async fn sweep_track(
         })
     })
     .await?;
+    for worker in &ids {
+        super::session::detach_worker(host, worker).await?;
+    }
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();

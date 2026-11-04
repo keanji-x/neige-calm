@@ -210,6 +210,7 @@ pub enum WorkerProviderKind {
     Codex,
     Claude,
     Grok,
+    Antigravity,
     Terminal,
 }
 
@@ -221,6 +222,7 @@ impl WorkerProviderKind {
             WorkerProviderKind::Claude => "claude",
             WorkerProviderKind::OpenCode => "opencode",
             WorkerProviderKind::Grok => "grok",
+            WorkerProviderKind::Antigravity => "antigravity",
             WorkerProviderKind::Terminal => "terminal",
         }
     }
@@ -240,6 +242,7 @@ impl From<&crate::runtime::AgentProvider> for WorkerProviderKind {
             crate::runtime::AgentProvider::Claude => Self::Claude,
             crate::runtime::AgentProvider::OpenCode => Self::OpenCode,
             crate::runtime::AgentProvider::Grok => Self::Grok,
+            crate::runtime::AgentProvider::Antigravity => Self::Antigravity,
         }
     }
 }
@@ -252,6 +255,7 @@ impl TryFrom<WorkerProviderKind> for crate::runtime::AgentProvider {
             WorkerProviderKind::Claude => Ok(Self::Claude),
             WorkerProviderKind::OpenCode => Ok(Self::OpenCode),
             WorkerProviderKind::Grok => Ok(Self::Grok),
+            WorkerProviderKind::Antigravity => Ok(Self::Antigravity),
             WorkerProviderKind::Terminal => Err("terminal is not an agent provider"),
         }
     }
@@ -273,6 +277,7 @@ impl TryFrom<String> for WorkerProviderKind {
             "claude" => Ok(WorkerProviderKind::Claude),
             "opencode" => Ok(WorkerProviderKind::OpenCode),
             "grok" => Ok(WorkerProviderKind::Grok),
+            "antigravity" => Ok(WorkerProviderKind::Antigravity),
             "terminal" => Ok(WorkerProviderKind::Terminal),
             other => Err(WorkerProviderDecodeError::UnknownProvider(other.to_owned())),
         }

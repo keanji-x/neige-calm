@@ -45,7 +45,7 @@ impl super::backend::PlannerBackend {
         let (steer, images, manual_compact, history_replacement, discovery) = match provider {
             AgentProvider::Codex => (true, true, true, true, ToolDiscovery::DeferredSearch),
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
-            AgentProvider::OpenCode => (
+            AgentProvider::OpenCode | AgentProvider::Antigravity => (
                 false,
                 false,
                 crate::acp_planner::wiring::manual_compaction(provider),
@@ -69,7 +69,7 @@ impl super::backend::PlannerBackend {
         };
         let interactive_pty = match provider {
             AgentProvider::Codex | AgentProvider::Claude => true,
-            AgentProvider::OpenCode | AgentProvider::Grok => false,
+            AgentProvider::OpenCode | AgentProvider::Grok | AgentProvider::Antigravity => false,
         };
         BackendMetadata {
             steer,

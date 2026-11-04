@@ -136,6 +136,9 @@ pub(crate) async fn set_conversation_archive(
         .await?;
         return Ok(StatusCode::NO_CONTENT);
     }
+    if let Some(runtime) = &runtime {
+        crate::acp_planner::session::detach_worker(&s.acp_planner, &runtime.id).await?;
+    }
     let track = s
         .repo
         .track_get(&track_id)
