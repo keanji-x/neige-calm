@@ -888,12 +888,12 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
     )
     .await;
     let (first_track, first) = stack
-        .create_claude_track_with(json!({
+        .create_historical_track_with(json!({
             "planner_provider": "antigravity", "title": "First AGY card",
         }))
         .await;
     let (_, second) = stack
-        .create_claude_track_with(json!({
+        .create_historical_track_with(json!({
             "planner_provider": "antigravity", "title": "Second AGY card",
         }))
         .await;
