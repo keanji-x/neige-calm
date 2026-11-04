@@ -71,6 +71,21 @@ mod resolution_tests;
 mod system_assistant_tests;
 mod title_lookup_tests;
 
+fn canonical_planner_providers() -> impl Iterator<Item = calm_types::runtime::AgentProvider> {
+    use crate::harness::{
+        backend::factory::PlannerFactory,
+        profile::{HarnessProfile, PlannerBinding},
+    };
+    calm_types::runtime::AgentProvider::ALL
+        .into_iter()
+        .filter(|provider| {
+            PlannerFactory::canonical_inputs(&PlannerBinding {
+                profile: HarnessProfile::Planner,
+                provider: provider.clone(),
+            })
+        })
+}
+
 struct Fixture {
     repo: Arc<SqlxRepo>,
     root: tempfile::TempDir,

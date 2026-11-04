@@ -21,7 +21,7 @@ pub(super) async fn area(app: &axum::Router, cookie: &str, name: &str) -> Value 
 
 #[tokio::test]
 async fn u8_canonical_managed_admin_commits_empty_and_human_carriers() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         for human in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
@@ -168,7 +168,7 @@ pub(super) async fn create(
 
 #[tokio::test]
 async fn u8_canonical_receipt_abort_rolls_back_carrier_and_admin() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let a = area(&app, &cookie, "atomic").await;
@@ -212,7 +212,7 @@ async fn u8_canonical_receipt_abort_rolls_back_carrier_and_admin() {
 
 #[tokio::test]
 async fn u8_canonical_empty_and_pending_repoint_preserves_original_identity() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         for human in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
@@ -270,7 +270,7 @@ async fn u8_canonical_empty_and_pending_repoint_preserves_original_identity() {
 
 #[tokio::test]
 async fn u8_canonical_admin_requires_original_rest_user_actor() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let a = area(&app, &cookie, "authority").await;
@@ -305,7 +305,7 @@ async fn u8_canonical_admin_requires_original_rest_user_actor() {
 #[tokio::test]
 async fn u8_canonical_managed_admin_rechecks_target_and_live_auth_before_commit() {
     use crate::test_seams::{PausePoint, install_pause_for_test};
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         for revoke_auth in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie, auth) = fixture.application_with_auth(false).await;
@@ -360,7 +360,7 @@ async fn u8_canonical_managed_admin_rechecks_target_and_live_auth_before_commit(
 
 #[tokio::test]
 async fn u8_canonical_managed_admin_same_key_across_instances_keeps_original_ack() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         for human in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;

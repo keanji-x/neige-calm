@@ -995,6 +995,9 @@
       "additionalProperties": false,
       "properties": {
         "artifacts": {
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "attempt_id": {

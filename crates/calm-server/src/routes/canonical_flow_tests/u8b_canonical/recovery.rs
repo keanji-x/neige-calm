@@ -40,12 +40,9 @@ async fn phase(
 
 #[tokio::test]
 async fn u8b_canonical_workspace_failure_holds_v2_and_repairs_once() {
-    for (provider_id, isolation) in calm_types::runtime::AgentProvider::ALL
-        .into_iter()
-        .flat_map(|provider| {
-            ["default", "none"].map(move |isolation| (provider.clone(), isolation))
-        })
-    {
+    for (provider_id, isolation) in canonical_planner_providers().flat_map(|provider| {
+        ["default", "none"].map(move |isolation| (provider.clone(), isolation))
+    }) {
         let provider = provider_id.wire_name();
         eprintln!("cold repair scenario {provider} {isolation}");
         let mut fixture = Fixture::new().await;

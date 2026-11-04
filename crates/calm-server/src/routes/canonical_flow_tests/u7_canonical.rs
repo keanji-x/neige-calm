@@ -4,7 +4,7 @@ use super::*;
 #[cfg(test)]
 #[tokio::test]
 async fn u7_canonical_named_sources_commit_original_human_acceptance() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         state.plugin.enable("gitforge").await.unwrap();
@@ -164,7 +164,7 @@ async fn u7_canonical_named_sources_commit_original_human_acceptance() {
 
 #[tokio::test]
 async fn u7_canonical_empty_template_retains_first_send_without_starting_provider() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = post(
@@ -240,7 +240,7 @@ async fn http(
 
 #[tokio::test]
 async fn u7_canonical_original_recipe_receipt_replays_after_source_deletion() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         let area = post(
@@ -310,7 +310,7 @@ async fn u7_canonical_original_recipe_receipt_replays_after_source_deletion() {
 #[allow(deprecated)] // Exercise the existing leaf deletion owner and its cache contract.
 async fn u7_canonical_fork_source_deletion_and_access_revocation_races_rollback() {
     use crate::test_seams::{PausePoint, install_pause_for_test};
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         for revoke in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
@@ -628,7 +628,7 @@ async fn complete(
 
 #[tokio::test]
 async fn u7_canonical_original_template_key_survives_catalog_removal_after_reopen() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let mut fixture = Fixture::new().await;
         let templates = fixture.root.path().join("templates");
         std::fs::create_dir(&templates).unwrap();
@@ -678,7 +678,7 @@ async fn u7_canonical_original_template_key_survives_catalog_removal_after_reope
 
 #[tokio::test]
 async fn u7_canonical_receipt_failure_rolls_back_all_named_allocations() {
-    for provider in calm_types::runtime::AgentProvider::ALL.map(|provider| provider.wire_name()) {
+    for provider in canonical_planner_providers().map(|provider| provider.wire_name()) {
         let fixture = Fixture::new().await;
         let (state, app, cookie) = fixture.application().await;
         state.plugin.enable("gitforge").await.unwrap();

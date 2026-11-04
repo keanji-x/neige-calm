@@ -9,8 +9,7 @@ async fn system(app: &axum::Router, cookie: &str) -> Value {
 
 #[tokio::test]
 async fn g4_empty_creation_is_canonical_keyed_and_unkeyed() {
-    for (provider, named) in calm_types::runtime::AgentProvider::ALL
-        .into_iter()
+    for (provider, named) in canonical_planner_providers()
         .flat_map(|provider| [false, true].map(move |named| (provider.clone(), named)))
     {
         let fixture = Fixture::new().await;
@@ -52,8 +51,7 @@ async fn g4_empty_creation_is_canonical_keyed_and_unkeyed() {
 
 #[tokio::test]
 async fn g4_first_message_preserves_human_receipt_without_provider() {
-    for (provider, named) in calm_types::runtime::AgentProvider::ALL
-        .into_iter()
+    for (provider, named) in canonical_planner_providers()
         .flat_map(|provider| [false, true].map(move |named| (provider.clone(), named)))
     {
         let fixture = Fixture::new().await;
@@ -119,8 +117,7 @@ async fn g4_first_message_preserves_human_receipt_without_provider() {
 
 #[tokio::test]
 async fn g4_borrowed_system_target_keeps_folder_claim_exemption() {
-    for (provider, human) in calm_types::runtime::AgentProvider::ALL
-        .into_iter()
+    for (provider, human) in canonical_planner_providers()
         .flat_map(|provider| [false, true].map(move |human| (provider.clone(), human)))
     {
         let fixture = Fixture::new().await;
@@ -363,7 +360,7 @@ async fn g4_canonical_storage_failure_rolls_back_without_historical_fallback() {
 
 #[tokio::test]
 async fn g4_attached_named_and_admin_without_cwd_use_managed_canonical_creation() {
-    for provider in calm_types::runtime::AgentProvider::ALL {
+    for provider in canonical_planner_providers() {
         for system_area in [false, true] {
             let fixture = Fixture::new().await;
             let (state, app, cookie) = fixture.application().await;
