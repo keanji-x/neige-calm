@@ -137,7 +137,13 @@ pub(crate) async fn set_conversation_archive(
         return Ok(StatusCode::NO_CONTENT);
     }
     if let Some(runtime) = &runtime {
-        crate::acp_planner::session::detach_worker(&s.acp_planner, &runtime.id).await?;
+        crate::harness::backend::factory::PlannerFactory::new(
+            std::sync::Arc::downgrade(&s.shared_codex_appserver),
+            &s.claude_planner,
+            &s.acp_planner,
+        )
+        .prepare_archive(runtime)
+        .await?;
     }
     let track = s
         .repo

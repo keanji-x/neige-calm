@@ -2,6 +2,26 @@
 use super::*;
 use crate::harness::native_admission::NativePromptAdmission;
 
+pub(super) fn attachment_request(
+    capabilities: &protocol::AgentCapabilities,
+    cwd: &std::path::Path,
+    native: Option<&str>,
+    mcp: &[protocol::McpServer],
+) -> std::result::Result<(&'static str, Value), StartFailure> {
+    Ok(match native {
+        Some(native) if capabilities.session_capabilities.resume.is_some() => (
+            "session/resume",
+            protocol::encode_resume_session(native, cwd, mcp),
+        ),
+        Some(native) if capabilities.load_session => (
+            "session/load",
+            protocol::encode_load_session(native, cwd, mcp),
+        ),
+        Some(_) => return Err(super::start::ContinuationRefusal::LoadUnsupported.into()),
+        None => ("session/new", protocol::encode_new_session(cwd, mcp)),
+    })
+}
+
 pub(super) async fn attach(
     process: &mut Process,
     params: &SessionParams,
@@ -11,67 +31,67 @@ pub(super) async fn attach(
     admission: &NativePromptAdmission<'_>,
     usage: &mut provider::acp::usage::UsageTracker,
 ) -> std::result::Result<(String, provider::acp::configuration::Configuration), StartFailure> {
-    let (native, configuration) = match original_native {
-        Some(native) => {
-            // We retain our own transcript: prefer a declared attach without replay.
-            // An existing binding is never replaced, including after a native refusal.
-            let (method, request) = if process.capabilities.session_capabilities.resume.is_some() {
-                (
-                    "session/resume",
-                    protocol::encode_resume_session(&native, &params.cwd, mcp),
-                )
-            } else if process.capabilities.load_session {
-                (
-                    "session/load",
-                    protocol::encode_load_session(&native, &params.cwd, mcp),
-                )
-            } else {
-                return Err(super::start::ContinuationRefusal::LoadUnsupported.into());
-            };
-            let result = setup_request(
-                &mut process.connection,
-                &mut process.commands,
-                method,
-                request,
-                admission.gate(),
-            )
-            .await?;
-            usage.configure(&result);
-            (
-                native,
-                provider::acp::configuration::Configuration::from_response(&result)
-                    .map_err(|error| StartFailure::Failed(wire_error(error)))?,
-            )
-        }
+    let (method, request) = attachment_request(
+        &process.capabilities,
+        &params.cwd,
+        original_native.as_deref(),
+        mcp,
+    )?;
+    let result = setup_request(
+        &mut process.connection,
+        &mut process.commands,
+        method,
+        request,
+        admission.gate(),
+    )
+    .await?;
+    usage.configure(&result);
+    let configuration = provider::acp::configuration::Configuration::from_response(&result)
+        .map_err(|error| StartFailure::Failed(wire_error(error)))?;
+    let native = match original_native {
+        Some(native) => native,
         None => {
-            let result = setup_request(
-                &mut process.connection,
-                &mut process.commands,
-                "session/new",
-                protocol::encode_new_session(&params.cwd, mcp),
-                admission.gate(),
-            )
-            .await?;
-            usage.configure(&result);
-            let configuration = provider::acp::configuration::Configuration::from_response(&result)
-                .map_err(|error| StartFailure::Failed(wire_error(error)))?;
-            let native: protocol::NewSessionResponse = protocol::decode(result)
-                .map_err(|error| StartFailure::Failed(wire_error(error)))?;
+            let native: protocol::NewSessionResponse =
+                protocol::decode(result).map_err(wire_error)?;
             if native.session_id.is_empty() {
                 return Err(refused("ACP agent returned an empty native identity"));
             }
             bind_native(params, thread, &native.session_id).await?;
-            (native.session_id, configuration)
+            native.session_id
         }
     };
     Ok((native, configuration))
 }
+
 impl Shared {
     pub(super) async fn configure(
         &self,
         process: &mut Process,
         native: &str,
         mut configuration: provider::acp::configuration::Configuration,
+        selection: &provider::TurnModelSelection,
+        admission: &NativePromptAdmission<'_>,
+        usage: &mut provider::acp::usage::UsageTracker,
+    ) -> std::result::Result<(), StartFailure> {
+        self.configure_connection(
+            &mut process.connection,
+            &mut process.commands,
+            native,
+            &mut configuration,
+            selection,
+            admission,
+            usage,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn configure_connection(
+        &self,
+        connection: &mut provider::acp::Connection,
+        commands: &mut Vec<(String, String)>,
+        native: &str,
+        configuration: &mut provider::acp::configuration::Configuration,
         selection: &provider::TurnModelSelection,
         admission: &NativePromptAdmission<'_>,
         usage: &mut provider::acp::usage::UsageTracker,
@@ -94,15 +114,15 @@ impl Shared {
                     refused("The ACP agent did not declare that model or effort choice")
                 })?;
             let result = setup_request(
-                &mut process.connection,
-                &mut process.commands,
+                connection,
+                commands,
                 "session/set_config_option",
                 protocol::encode_set_config_option(native, &option.id, value),
                 admission.gate(),
             )
             .await?;
             usage.configure(&result);
-            configuration = provider::acp::configuration::Configuration::from_response(&result)
+            *configuration = provider::acp::configuration::Configuration::from_response(&result)
                 .map_err(|error| StartFailure::Failed(wire_error(error)))?;
             if configuration
                 .category(category)

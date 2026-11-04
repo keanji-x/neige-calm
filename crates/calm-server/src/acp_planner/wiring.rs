@@ -62,19 +62,3 @@ pub(crate) fn canonical_inputs(
     super::profile::AcpAgentProfile::of(provider)
         .is_some_and(|profile| profile.canonical_inputs(contract))
 }
-
-/// Shared ACP agents receive these read-only CLI equivalents through their session MCP catalog.
-pub(crate) fn session_read_tools(
-    provider: &calm_types::runtime::AgentProvider,
-) -> &'static [&'static str] {
-    use crate::mcp_server::tools::{track_file, track_state};
-    if super::profile::AcpAgentProfile::of(provider).is_some_and(|profile| profile.shared_server) {
-        &[
-            track_state::TOOL_TRACK_STATUS,
-            track_file::TOOL_TRACK_LS,
-            track_file::TOOL_TRACK_CAT,
-        ]
-    } else {
-        &[]
-    }
-}

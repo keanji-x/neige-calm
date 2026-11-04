@@ -1,7 +1,7 @@
 use crate::send_boundary::PreSendGate;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -63,15 +63,24 @@ impl Incoming {
     }
 }
 
-type SessionRoutes = Arc<SyncMutex<HashMap<String, mpsc::Sender<Incoming>>>>;
+struct SessionRoute {
+    sender: mpsc::Sender<Incoming>,
+    overflow: watch::Sender<bool>,
+}
+type SessionRoutes = Arc<SyncMutex<HashMap<String, SessionRoute>>>;
 
 /// Exclusive inbound stream for one native session on a shared connection.
 pub struct SessionIncoming {
     session_id: String,
     routes: SessionRoutes,
     receiver: mpsc::Receiver<Incoming>,
+    overflow: watch::Receiver<bool>,
 }
 impl SessionIncoming {
+    pub fn overflow(&self) -> watch::Receiver<bool> {
+        self.overflow.clone()
+    }
+
     pub fn receiver_mut(&mut self) -> &mut mpsc::Receiver<Incoming> {
         &mut self.receiver
     }
@@ -112,8 +121,15 @@ impl WriteFailure {
 }
 struct Registration {
     id: u64,
-    answer: Answer,
+    pending: RegisteredResponse,
     registered: oneshot::Sender<Result<(), Error>>,
+}
+struct RegisteredResponse {
+    answer: Answer,
+    // A scoped request that reached the wire must keep its ID until the peer
+    // responds, even if its owner no longer waits.
+    retain_late: Option<Arc<AtomicBool>>,
+    prompt: bool,
 }
 type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 struct Inner {
@@ -121,6 +137,9 @@ struct Inner {
     writer: Arc<Mutex<Option<Writer>>>,
     close: watch::Sender<Option<Error>>,
     next_id: AtomicU64,
+    shared: bool,
+    overloaded: Arc<AtomicBool>,
+    retiring: Arc<AtomicBool>,
     routes: SessionRoutes,
 }
 impl Drop for Inner {
@@ -142,10 +161,11 @@ pub struct PendingResponse {
     response: oneshot::Receiver<Result<Value, Error>>,
     close: watch::Sender<Option<Error>>,
     settled: bool,
+    scoped: bool,
 }
 impl Drop for PendingResponse {
     fn drop(&mut self) {
-        if !self.settled {
+        if !self.settled && !self.scoped {
             record_failure(&self.close, Error::Abandoned("response wait"));
         }
     }
@@ -156,6 +176,7 @@ impl PendingResponse {
             Ok(answer) => {
                 answer.unwrap_or_else(|_| Err(self.close.borrow().clone().unwrap_or(Error::Closed)))
             }
+            Err(_) if self.scoped => Err(Error::Timeout),
             Err(_) => {
                 record_failure(&self.close, Error::Timeout);
                 Err(self.close.borrow().clone().expect("timeout published"))
@@ -166,6 +187,25 @@ impl PendingResponse {
     }
 }
 impl Client {
+    pub fn is_shared(&self) -> bool {
+        self.0.shared
+    }
+
+    pub fn retire_shared_when_idle(&self) {
+        self.0.retiring.store(true, Ordering::Release);
+    }
+
+    pub fn shared_retiring(&self) -> bool {
+        self.0.retiring.load(Ordering::Acquire)
+    }
+
+    /// A saturated or quarantined generation can be retired without interrupting any routed turn.
+    pub fn can_recycle_shared(&self) -> bool {
+        self.0.shared
+            && (self.shared_retiring() || self.0.overloaded.load(Ordering::Acquire))
+            && self.0.routes.lock().expect("ACP routes").is_empty()
+    }
+
     /// Route subsequent frames for an already identified native session to its owner.
     /// Frames without a registered session still go to the connection owner, including
     /// setup traffic for a session whose native ID has not been returned yet.
@@ -178,11 +218,13 @@ impl Client {
             return Err(Error::Protocol("invalid or duplicate session route"));
         }
         let (sender, receiver) = mpsc::channel(INCOMING_LIMIT);
-        routes.insert(session_id.to_owned(), sender);
+        let (overflow, overflow_rx) = watch::channel(false);
+        routes.insert(session_id.to_owned(), SessionRoute { sender, overflow });
         Ok(SessionIncoming {
             session_id: session_id.to_owned(),
             routes: self.0.routes.clone(),
             receiver,
+            overflow: overflow_rx,
         })
     }
 
@@ -192,11 +234,22 @@ impl Client {
         params: Value,
         gate: &PreSendGate<'_>,
     ) -> Result<PendingResponse, WriteFailure> {
+        let scoped = self.0.shared
+            || params["sessionId"]
+                .as_str()
+                .is_some_and(|id| self.0.routes.lock().expect("ACP routes").contains_key(id));
         let id = self.0.next_id.fetch_add(1, Ordering::Relaxed);
         let (answer, response) = oneshot::channel();
         self.write_gated(
             json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
-            Some((id, answer)),
+            Some((
+                id,
+                RegisteredResponse {
+                    answer,
+                    retain_late: scoped.then(|| Arc::new(AtomicBool::new(false))),
+                    prompt: method == "session/prompt",
+                },
+            )),
             gate,
         )
         .await?;
@@ -204,6 +257,7 @@ impl Client {
             response,
             close: self.0.close.clone(),
             settled: false,
+            scoped,
         })
     }
     pub(super) async fn request(
@@ -250,12 +304,12 @@ impl Client {
         .await
     }
     async fn write_reply(&self, frame: Value) -> Result<(), Error> {
-        // A taken peer request has no retry owner. Fence on every failure,
-        // including cancellation or timeout before writer ownership, so pending
-        // prompts cannot keep waiting on an answer that was consumed here.
+        // An exclusive connection can fence on any abandoned reply. Shared
+        // reply owners quarantine the affected session after a pre-write
+        // failure; write_gated still fences partial frames in either mode.
         let mut failure = CloseOnDrop {
             close: &self.0.close,
-            armed: true,
+            armed: !self.0.shared,
         };
         self.write_gated(frame, None, &allow())
             .await
@@ -267,14 +321,19 @@ impl Client {
     async fn write_gated(
         &self,
         frame: Value,
-        response: Option<(u64, Answer)>,
+        response: Option<(u64, RegisteredResponse)>,
         gate: &PreSendGate<'_>,
     ) -> Result<(), WriteFailure> {
         let before = |error: String| WriteFailure::BeforeWrite(Error::Refused(error));
+        let prompt_session = (frame["method"] == "session/prompt")
+            .then(|| frame["params"]["sessionId"].as_str())
+            .flatten();
         let mut bytes = serde_json::to_vec(&frame).map_err(|error| before(error.to_string()))?;
         if bytes.len() >= FRAME_LIMIT {
             let error = Error::Protocol("outgoing frame exceeds byte limit");
-            record_failure(&self.0.close, error.clone());
+            if !self.0.shared {
+                record_failure(&self.0.close, error.clone());
+            }
             return Err(WriteFailure::BeforeWrite(error));
         }
         bytes.push(b'\n');
@@ -287,14 +346,17 @@ impl Client {
         }
         // The incoming owner registers before any possible write and preserves the
         // pending bound. This queue carries no frames or permission decisions.
-        if let Some((id, answer)) = response {
+        let retain_late = response
+            .as_ref()
+            .and_then(|(_, response)| response.retain_late.clone());
+        if let Some((id, pending)) = response {
             let (registered, receipt) = oneshot::channel();
             tokio::time::timeout_at(deadline, async {
                 self.0
                     .registrations
                     .send(Registration {
                         id,
-                        answer,
+                        pending,
                         registered,
                     })
                     .await
@@ -316,6 +378,26 @@ impl Client {
         let write = async {
             if closed.borrow().is_some() {
                 return Err(WriteFailure::BeforeWrite(self.closed_error()));
+            }
+            if self.0.shared
+                && let Some(session) = prompt_session
+            {
+                if self.shared_retiring() {
+                    return Err(before("shared ACP generation is retiring".into()));
+                }
+                if self
+                    .0
+                    .routes
+                    .lock()
+                    .expect("ACP routes")
+                    .get(session)
+                    .is_none_or(|route| *route.overflow.borrow())
+                {
+                    return Err(before("shared ACP prompt route is unavailable".into()));
+                }
+            }
+            if let Some(retain) = retain_late {
+                retain.store(true, Ordering::Release);
             }
             crossing.armed = true;
             let mut writer = guard.take().expect("writer owned under lock");
@@ -387,16 +469,37 @@ impl Connection {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        Self::with_scope(reader, writer, false)
+    }
+
+    pub fn new_shared<R, W>(reader: R, writer: W) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::with_scope(reader, writer, true)
+    }
+
+    fn with_scope<R, W>(reader: R, writer: W, shared: bool) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (registrations, registration_rx) = mpsc::channel(64);
         let writer = Arc::new(Mutex::new(Some(Box::new(writer) as Writer)));
         let (incoming, incoming_rx) = mpsc::channel(INCOMING_LIMIT);
         let routes = SessionRoutes::default();
         let (close, close_rx) = watch::channel(None);
+        let overloaded = Arc::new(AtomicBool::new(false));
+        let retiring = Arc::new(AtomicBool::new(false));
         let client = Client(Arc::new(Inner {
             registrations,
             writer: writer.clone(),
             close: close.clone(),
             next_id: AtomicU64::new(1),
+            shared,
+            overloaded: overloaded.clone(),
+            retiring: retiring.clone(),
             routes: routes.clone(),
         }));
         tokio::spawn(run(
@@ -405,6 +508,9 @@ impl Connection {
             registration_rx,
             incoming,
             routes,
+            shared,
+            overloaded,
+            retiring,
             close,
             close_rx,
         ));
@@ -420,12 +526,16 @@ impl Drop for ReaderGuard {
         self.0.abort();
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn run<R>(
     reader: R,
     writer: Arc<Mutex<Option<Writer>>>,
     mut registrations: mpsc::Receiver<Registration>,
     incoming: mpsc::Sender<Incoming>,
     routes: SessionRoutes,
+    shared: bool,
+    overloaded: Arc<AtomicBool>,
+    retiring: Arc<AtomicBool>,
     close: watch::Sender<Option<Error>>,
     mut closed: watch::Receiver<Option<Error>>,
 ) where
@@ -459,28 +569,40 @@ async fn run<R>(
             }
         }
     }));
-    let mut pending = HashMap::<u64, Answer>::new();
+    let mut pending = HashMap::<u64, RegisteredResponse>::new();
     let error = loop {
         tokio::select! {
             biased;
             _ = closed.changed() => break closed.borrow().clone().unwrap_or(Error::Closed),
             registration = registrations.recv() => {
                 let Some(registration) = registration else { break Error::Closed; };
-                pending.retain(|_, answer| !answer.is_closed());
+                pending.retain(|_, response| !response.answer.is_closed() || response.retain_late.as_ref().is_some_and(|retain| retain.load(Ordering::Acquire)));
                 if registration.registered.is_closed() { continue; }
-                if pending.len() >= PENDING_LIMIT {
+                let limit = if shared && registration.pending.prompt {
+                    PENDING_LIMIT - 8
+                } else {
+                    PENDING_LIMIT
+                };
+                if pending.len() >= limit {
+                    overloaded.store(true, Ordering::Release);
                     let error = Error::Protocol("too many pending requests");
                     let _ = registration.registered.send(Err(error.clone()));
+                    if shared || registration.pending.retain_late.is_some() {
+                        continue;
+                    }
                     break error;
                 }
-                pending.insert(registration.id, registration.answer);
+                pending.insert(registration.id, registration.pending);
                 if registration.registered.send(Ok(())).is_err() {
                     pending.remove(&registration.id);
                 }
             }
             frame = frame_rx.recv() => {
                 let frame = match frame { Some(Ok(frame)) => frame, Some(Err(error)) => break error, None => break Error::Closed };
-                if let Err(error) = receive(frame, &mut pending, &incoming, &routes) { break error; }
+                if let Err(error) = receive(frame, &mut pending, &incoming, &routes, shared.then_some(retiring.as_ref())) { break error; }
+                if pending.len() < PENDING_LIMIT - 8 {
+                    overloaded.store(false, Ordering::Release);
+                }
             }
         }
     };
@@ -489,16 +611,17 @@ async fn run<R>(
     let error = close.borrow().clone().expect("terminal error published");
     tracing::debug!(error = %error, pending_requests = pending.len(), "ACP transport stopped");
     for (_, answer) in pending {
-        let _ = answer.send(Err(error.clone()));
+        let _ = answer.answer.send(Err(error.clone()));
     }
     // The caller observes close while holding the writer, then releases it.
     writer.lock().await.take();
 }
 fn receive(
     frame: Value,
-    pending: &mut HashMap<u64, Answer>,
+    pending: &mut HashMap<u64, RegisteredResponse>,
     incoming: &mpsc::Sender<Incoming>,
     routes: &SessionRoutes,
+    retiring: Option<&AtomicBool>,
 ) -> Result<(), Error> {
     if !frame.is_object() || frame["jsonrpc"] != "2.0" {
         return Err(Error::Protocol("invalid JSON-RPC envelope"));
@@ -522,16 +645,40 @@ fn receive(
             None => Incoming::Notification { method, params },
         };
         let routes = routes.lock().expect("ACP routes");
-        let target = message
-            .session_id()
-            .and_then(|session| routes.get(session))
-            .unwrap_or(incoming);
-        return target.try_send(message).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => Error::Protocol("incoming event queue full"),
-            mpsc::error::TrySendError::Closed(_) => {
-                Error::Protocol("incoming event consumer dropped")
+        if let Some(route) = message.session_id().and_then(|session| routes.get(session)) {
+            match route.sender.try_send(message) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    route.overflow.send_replace(true);
+                    // Quarantine closes this native session, including any request
+                    // whose answer can no longer be associated with a live turn.
+                    return Ok(());
+                }
             }
-        });
+        }
+        let notification = matches!(message, Incoming::Notification { .. });
+        return incoming
+            .try_send(message)
+            .or_else(|error| {
+                if let Some(retiring) = retiring
+                    && matches!(error, mpsc::error::TrySendError::Full(_))
+                {
+                    // A shared setup or orphan request overflow cannot be assigned
+                    // to a live turn. Drain and recycle after routed turns finish.
+                    if !notification {
+                        retiring.store(true, Ordering::Release);
+                    }
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => Error::Protocol("incoming event queue full"),
+                mpsc::error::TrySendError::Closed(_) => {
+                    Error::Protocol("incoming event consumer dropped")
+                }
+            });
     }
     let id = frame["id"]
         .as_u64()
@@ -557,7 +704,7 @@ fn receive(
     let answer = pending
         .remove(&id)
         .ok_or(Error::Protocol("unsolicited or duplicate response"))?;
-    let _ = answer.send(response);
+    let _ = answer.answer.send(response);
     Ok(())
 }
 fn valid_id(value: &Value) -> bool {

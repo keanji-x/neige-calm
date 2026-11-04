@@ -324,6 +324,11 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
             if !row.state.is_active_authority() || row.thread_id.as_deref() != Some(&thread) {
                 return Err(CalmError::Conflict("ACP native owner changed".into()));
             }
+            if super::profile::AcpAgentProfile::of(&provider)
+                .is_some_and(|profile| profile.shared_server)
+            {
+                server::ensure_native_owner(&mut **tx, &provider, &worker, &native).await?;
+            }
             crate::db::sqlite::session_bind_attribution_tx(
                 tx,
                 &worker,

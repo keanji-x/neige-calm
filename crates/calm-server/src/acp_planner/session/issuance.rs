@@ -145,14 +145,6 @@ impl AcpPlannerSession {
             .map_err(|error| refused(&error.to_string()))?;
         super::super::execution::validate_registration(registration)?;
         let digest = registration.config.native_session_digest(&params.cwd)?;
-        // Neige's server under this launch's own key and, for an agent that asks before its
-        // tools, the tools it lists the session now.
-        let server = registration.profile.mcp_server_key();
-        let tools = match registration.profile.mcp_tool_request {
-            Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
-            None => Vec::new(),
-        };
-        let asks = registration.profile.asks(&server, tools);
         crate::db::sqlite::acp_registration_claim(
             &pool,
             &params.worker_session_id,
@@ -162,12 +154,6 @@ impl AcpPlannerSession {
         .await
         .map_err(|error| input.registration_failure(error))?;
         if registration.profile.shared_server {
-            blocks.insert(
-                0,
-                protocol::ContentBlock::text(
-                    include_str!("../../../prompts/antigravity-tools.md").to_owned(),
-                ),
-            );
             return super::server::issue(
                 shared,
                 registration,
@@ -180,12 +166,19 @@ impl AcpPlannerSession {
                 selection,
                 permission,
                 held,
-                asks,
                 receipt_turn,
                 track_fence,
             )
             .await;
         }
+        // Neige's server under this launch's own key and, for an agent that asks before its
+        // tools, the tools it lists the session now.
+        let server = registration.profile.mcp_server_key();
+        let tools = match registration.profile.mcp_tool_request {
+            Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
+            None => Vec::new(),
+        };
+        let asks = registration.profile.asks(&server, tools);
         let engine = crate::provider_execution::engine(params.engine.as_ref())?;
         let mut guard = IssueGuard::new(shared);
         #[cfg(all(test, feature = "fixtures"))]

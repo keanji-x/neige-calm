@@ -437,15 +437,27 @@ pub(crate) fn profile_mints_its_own_card(profile: HarnessProfile) -> bool {
 /// Read by `plain_chat::card_is_track_assistant` and the track conversation list predicate; those three places are the whole contract.
 pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = crate::harness::profile::ASSISTANT_MARKER;
 
+#[cfg(any(test, feature = "fixtures"))]
 pub(crate) fn render_planner_developer_instructions(
     track_id: &str,
     template_descriptor: Option<&TemplateDescriptor>,
     template_input: Option<&serde_json::Value>,
 ) -> String {
-    let mut instructions = crate::planner_card::render_system_prompt(
-        crate::planner_card::SeededCardRole::Planner.prompt_template(),
+    render_planner_template(
         track_id,
-    );
+        template_descriptor,
+        template_input,
+        crate::planner_card::SeededCardRole::Planner.prompt_template(),
+    )
+}
+
+fn render_planner_template(
+    track_id: &str,
+    template_descriptor: Option<&TemplateDescriptor>,
+    template_input: Option<&serde_json::Value>,
+    prompt: &str,
+) -> String {
+    let mut instructions = crate::planner_card::render_system_prompt(prompt, track_id);
     // The plugin descriptor is an id handle, not the working method. The
     // creation-time method is appended from the Planner card's snapshot at
     // thread/start. Plugin input still requires a currently resolved binding.
@@ -477,13 +489,23 @@ pub(crate) async fn planner_instructions(
         .payload
         .get(crate::validation::TRACK_CREATION_CONTEXT_PAYLOAD_KEY)
         .is_some();
-    let mut instructions = render_planner_developer_instructions(
+    let prompt = crate::planner_card::SeededCardRole::Planner.prompt_template();
+    let discovery =
+        crate::harness::profile::PlannerBinding::from_card(&card, crate::model::CardRole::Planner)
+            .map(|binding| {
+                crate::harness::backend::PlannerBackend::metadata(&binding.provider).discovery
+            });
+    let rendered_prompt = discovery
+        .filter(|discovery| discovery.lists_track_reads())
+        .map(|discovery| discovery.render_planner(prompt));
+    let mut instructions = render_planner_template(
         track_id,
         bound_template.as_ref().map(|bound| &bound.descriptor),
         bound_template
             .as_ref()
             .and_then(|bound| bound.input.as_ref())
             .filter(|_| !canonical_context),
+        rendered_prompt.as_deref().unwrap_or(prompt),
     );
     let track = repo
         .track_get(track_id)

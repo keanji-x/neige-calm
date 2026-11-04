@@ -102,7 +102,7 @@ impl SessionToolNames {
 pub(crate) struct SessionCatalog {
     pub(crate) role: CardRole,
     track_is_admin: bool,
-    session_read_tools: &'static [&'static str],
+    lists_track_reads: bool,
     /// Every tool this caller may call, the managed-track restriction applied.
     callable: Vec<ToolDescriptor>,
     /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
@@ -129,7 +129,11 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
-            session_read_tools: crate::acp_planner::wiring::session_read_tools(&identity.provider),
+            lists_track_reads: crate::harness::backend::PlannerBackend::metadata(
+                &identity.provider,
+            )
+            .discovery
+            .lists_track_reads(),
             track_is_admin: match ctx.sqlite_db.as_ref() {
                 Some(pool) => crate::area_admin::card_is_admin(pool.read_pool(), &identity.card_id)
                     .await
@@ -147,7 +151,13 @@ impl SessionCatalog {
             .iter()
             .filter(|descriptor| {
                 descriptor.listed_for.contains(&self.role)
-                    || self.session_read_tools.contains(&descriptor.name.as_str())
+                    || (self.lists_track_reads
+                        && matches!(
+                            descriptor.name.as_str(),
+                            crate::mcp_server::tools::track_state::TOOL_TRACK_STATUS
+                                | crate::mcp_server::tools::track_file::TOOL_TRACK_LS
+                                | crate::mcp_server::tools::track_file::TOOL_TRACK_CAT
+                        ))
             })
             .filter(|descriptor| {
                 self.track_is_admin
