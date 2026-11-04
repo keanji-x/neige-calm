@@ -153,6 +153,14 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
     })
     .await
     .unwrap();
+    // This retry requires the real native init binding to commit before shutdown.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while identity_recovery::binding(&fx).await.as_deref() != Some(fx.owner.thread.as_str()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact original native binding before shutdown");
     let target = fx.target().await;
     let before = fx.checkpoint().await;
     assert!(
