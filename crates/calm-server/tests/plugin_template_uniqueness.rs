@@ -5,6 +5,7 @@
 mod support;
 
 use calm_truth::db::RepoOutOfDomain as _;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -228,10 +229,13 @@ async fn aborted_spawn_releases_admission_reservation() {
     );
     let host = boot_host(&repo, tmp.path(), EventBus::new()).await;
 
-    // `cat` holds stdin open and never answers `initialize`, so `spawn` parks inside the handshake.
+    // Drain stdin without replying so spawn stays in the initialize handshake.
     let stub = tmp.path().join("plugins").join(TRUSTED_A).join("bin/stub");
     std::fs::remove_file(&stub).expect("remove echo stub symlink");
-    std::os::unix::fs::symlink("/bin/cat", &stub).expect("symlink cat stub");
+    std::fs::write(&stub, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n")
+        .expect("write silent stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+        .expect("make silent stub executable");
 
     let mut hanging_spawn = tokio::spawn({
         let host = Arc::clone(&host);
@@ -288,10 +292,9 @@ async fn aborted_spawn_releases_admission_reservation() {
         sleep(Duration::from_millis(10)).await;
     }
     hanging_spawn.abort();
-    let join = hanging_spawn.await;
     assert!(
-        join.is_err() || join.as_ref().is_ok_and(|r| r.is_err()),
-        "hanging spawn must not have completed successfully: {join:?}"
+        matches!(hanging_spawn.await, Err(error) if error.is_cancelled()),
+        "spawn task must be cancelled while the reservation is held"
     );
 
     assert!(
@@ -305,7 +308,7 @@ async fn aborted_spawn_releases_admission_reservation() {
     wait_for_running(&host, TRUSTED_B).await;
     host.stop(TRUSTED_B).await.expect("stop second trusted");
 
-    std::fs::remove_file(&stub).expect("remove cat stub symlink");
+    std::fs::remove_file(&stub).expect("remove silent stub");
     std::os::unix::fs::symlink(Path::new(ECHO_BIN), &stub).expect("restore echo stub");
     host.spawn(TRUSTED_A)
         .await
