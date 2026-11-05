@@ -99,8 +99,11 @@ fn operation_observation(result: crate::error::Result<Option<Operation>>) -> Str
         None => "missing",
     };
     format!(
-        "phase={} from_phase={from_phase} activation_marker={activation}",
-        operation.phase.tag().as_str()
+        "phase={} attempt={} lease_owner_recorded={} \
+         from_phase={from_phase} activation_marker={activation}",
+        operation.phase.tag().as_str(),
+        operation.attempt,
+        operation.lease_owner.is_some()
     )
 }
 
