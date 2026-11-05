@@ -81,7 +81,11 @@ async fn canonical_antigravity_compact_preserves_inputs_receipts_and_session_gra
         let human = human_state(&stack, card).await;
         let journal = receipts(&stack, &runtime.id).await;
         let (status, run) = stack
-            .send("GET", &format!("/api/cards/{card}/planner/run?contract=conversation_v1"), None)
+            .send(
+                "GET",
+                &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+                None,
+            )
             .await;
         assert_eq!(status, StatusCode::OK, "{run}");
         assert_eq!(run["manual_compact_supported"], true);
