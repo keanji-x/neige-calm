@@ -49,7 +49,7 @@ impl super::backend::PlannerBackend {
             AgentProvider::Antigravity => (
                 false,
                 true,
-                false,
+                crate::acp_planner::wiring::manual_compaction(provider),
                 false,
                 ToolDiscovery::SessionToolListWithTrackReads,
             ),

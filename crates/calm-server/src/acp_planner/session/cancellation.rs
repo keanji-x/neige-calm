@@ -85,7 +85,7 @@ impl IssueGuard {
         self.process = Some(Process {
             connection,
             capabilities: Default::default(),
-            commands: Vec::new(),
+            commands: super::super::process::Commands::default(),
             io,
         });
         Ok(())

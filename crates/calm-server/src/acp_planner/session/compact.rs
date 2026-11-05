@@ -130,9 +130,22 @@ impl AcpPlannerSession {
         crate::db::sqlite::acp_registration_claim(&pool, &params.worker_session_id, &digest, true)
             .await
             .map_err(|e| CompactFailure::Before(start::registration_error(e).into()))?;
-        let engine = crate::provider_execution::engine(params.engine.as_ref())
-            .map_err(CompactFailure::Before)?;
         super::super::execution::validate_registration(registration)
+            .map_err(CompactFailure::Before)?;
+        if registration.profile.shared_server {
+            return server::compact(
+                shared,
+                registration,
+                &native,
+                wire,
+                target,
+                selection,
+                admission,
+                track_fence,
+            )
+            .await;
+        }
+        let engine = crate::provider_execution::engine(params.engine.as_ref())
             .map_err(CompactFailure::Before)?;
         let turn = uuid::Uuid::new_v4().to_string();
         let server = registration.profile.mcp_server_key();
@@ -199,11 +212,7 @@ impl AcpPlannerSession {
                     &mut usage,
                 )
                 .await?;
-            if !process
-                .commands
-                .iter()
-                .any(|(session, command)| session == &native && command == "compact")
-            {
+            if !process.commands.contains(&native, "compact") {
                 return Err(refused("ACP did not declare the compact command"));
             }
             Ok::<_, StartFailure>(())
@@ -277,7 +286,7 @@ impl AcpPlannerSession {
         let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
         let combined = admission.combined(&owner);
         let result = match wire {
-            CompactionWire::StandardPrompt => {
+            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt => {
                 protocol::prompt(
                     &client,
                     &capabilities,
@@ -351,11 +360,11 @@ impl AcpPlannerSession {
     }
 }
 #[derive(Debug)]
-enum CompactFailure {
+pub(super) enum CompactFailure {
     Before(CalmError),
     Crossed(CalmError),
 }
-fn before(message: &str) -> CompactFailure {
+pub(super) fn before(message: &str) -> CompactFailure {
     CompactFailure::Before(CalmError::Conflict(message.into()))
 }
 fn not_submitted(error: CalmError) -> CompactSubmission<CalmError> {
@@ -366,12 +375,30 @@ fn not_submitted(error: CalmError) -> CompactSubmission<CalmError> {
 }
 
 #[derive(Default)]
-struct Correlation {
+pub(super) struct Correlation {
     native_id: Option<String>,
     settled: Option<bool>,
 }
 impl Correlation {
-    fn observe(
+    pub(super) fn confirmed(&self, wire: CompactionWire, result: Value) -> Result<bool> {
+        let ended = match wire {
+            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt => {
+                let result: protocol::PromptResponse =
+                    protocol::decode(result).map_err(wire_error)?;
+                matches!(result.stop_reason, protocol::StopReason::EndTurn)
+            }
+            CompactionWire::XaiExtension => grok_compaction::empty_response(&result),
+        };
+        Ok(ended
+            && match wire {
+                CompactionWire::CommandPrompt => self.settled != Some(false),
+                CompactionWire::StandardPrompt | CompactionWire::XaiExtension => {
+                    self.settled == Some(true)
+                }
+            })
+    }
+
+    pub(super) fn observe(
         &mut self,
         wire: CompactionWire,
         method: &str,
@@ -379,7 +406,9 @@ impl Correlation {
         native: &str,
     ) -> Result<()> {
         match wire {
-            CompactionWire::StandardPrompt if method == "session/update" => {
+            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt
+                if method == "session/update" =>
+            {
                 self.update(params, native)
             }
             CompactionWire::XaiExtension => {
@@ -466,14 +495,7 @@ async fn drive_compact(
                     }
                 }
                 let result = result.map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
-                let confirmed = match wire {
-                    CompactionWire::StandardPrompt => {
-                        let result: protocol::PromptResponse = protocol::decode(result).map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
-                        matches!(result.stop_reason, protocol::StopReason::EndTurn)
-                    },
-                    CompactionWire::XaiExtension => grok_compaction::empty_response(&result),
-                };
-                return Ok(confirmed && correlation.settled == Some(true));
+                return correlation.confirmed(wire, result).map_err(CompactFailure::Crossed);
             },
             _ = cancelled.changed() => return Err(before("ACP compact interrupted")),
             frame = process.connection.incoming.recv(), if incoming_open => match frame {

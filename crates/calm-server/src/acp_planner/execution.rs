@@ -203,7 +203,7 @@ impl ProviderExecutionOwner for Owner {
 }
 
 pub(super) struct Process {
-    pub commands: Vec<(String, String)>,
+    pub commands: super::process::Commands,
     pub io: Arc<crate::provider_execution::stdio::WriteProgress>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,

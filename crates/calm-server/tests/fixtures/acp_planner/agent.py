@@ -451,6 +451,33 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         write_native(state)
         scenario = (root / 'scenario').read_text().strip()
+        if scenario == 'shared-menu-empty':
+            update({'sessionUpdate':'available_commands_update', 'availableCommands':[]})
+        if texts == ['/compact'] and scenario.startswith('shared-compact-'):
+            if scenario == 'shared-compact-wait':
+                import threading
+                def release_compact(saved=request, session=current):
+                    while not (root / ('release-' + session)).exists():
+                        time.sleep(0.01)
+                    result(saved, {'stopReason':'end_turn'})
+                threading.Thread(target=release_compact, daemon=True).start()
+            elif scenario == 'shared-compact-hold':
+                shared_pending[current] = request
+            elif scenario == 'shared-compact-error':
+                emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32603, 'message':'compact failed'}})
+            elif scenario == 'shared-compact-invalid':
+                result(request, {'unexpected': True})
+            elif scenario == 'shared-compact-client-request':
+                pending, permission = request, 'compact-unexpected'
+                ask_permission(permission)
+            elif scenario == 'shared-compact-wrong-session':
+                emit({'jsonrpc':'2.0', 'method':'session/update', 'params':{
+                    'sessionId':'another-session', 'update':{'sessionUpdate':'compaction_update',
+                    'compactionId':'other', 'status':'completed'}}})
+                result(request, {'stopReason':'refusal'})
+            else:
+                result(request, {'stopReason': 'refusal' if scenario == 'shared-compact-refusal' else 'end_turn'})
+            continue
         if texts == ['/compact']:
             assert compaction, 'standard compaction capability must be negotiated'
             if scenario.startswith('compact-review-'):

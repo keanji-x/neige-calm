@@ -39,7 +39,7 @@ pub(super) async fn attach(
     )?;
     let result = setup_request(
         &mut process.connection,
-        &mut process.commands,
+        &process.commands,
         method,
         request,
         admission.gate(),
@@ -75,7 +75,7 @@ impl Shared {
     ) -> std::result::Result<(), StartFailure> {
         self.configure_connection(
             &mut process.connection,
-            &mut process.commands,
+            &process.commands,
             native,
             &mut configuration,
             selection,
@@ -89,7 +89,7 @@ impl Shared {
     pub(super) async fn configure_connection(
         &self,
         connection: &mut provider::acp::Connection,
-        commands: &mut Vec<(String, String)>,
+        commands: &super::super::process::Commands,
         native: &str,
         configuration: &mut provider::acp::configuration::Configuration,
         selection: &provider::TurnModelSelection,
