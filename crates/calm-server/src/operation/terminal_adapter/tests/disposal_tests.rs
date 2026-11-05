@@ -216,6 +216,9 @@ async fn exercise(history: History, disposal: Disposal) {
         ),
     ));
     let state = state.with_operation_runtime(runtime.clone());
+    // This fixture claims tasks itself. Stop the listener before track creation
+    // can queue a TrackUpdated scheduling pass that competes for the claim.
+    state.dispatcher.abort_event_listener_for_test();
     let app = crate::routes::router()
         .layer(axum::middleware::from_fn_with_state(
             crate::auth::AuthState::new(crate::auth::AuthConfig {
@@ -253,15 +256,12 @@ async fn exercise(history: History, disposal: Disposal) {
         .await
         .unwrap();
     let declaration = json!({"key":"launch","kind":"terminal","command":"printf late-start > started; sleep 120","cwd":execution,"ready":true,"declared_by":"user"});
-    // Use the production authoring and claim paths; a separate bus avoids
-    // racing this controlled manual driver with the fixture's dispatcher.
-    let quiet = EventBus::new();
     let target = ReportEditTarget::resolve(repo.as_ref(), &track_id)
         .await
         .unwrap();
     crate::track_report::write::rest_user_block_op(
         repo.as_ref(),
-        &quiet,
+        &state.events,
         &write,
         target,
         ReportDocOp::UpsertBlock {
@@ -280,7 +280,8 @@ async fn exercise(history: History, disposal: Disposal) {
         .await
         .unwrap()
         .unwrap();
-    let monitor = crate::task_context::TaskContextMonitor::new(repo.clone(), quiet, write);
+    let monitor =
+        crate::task_context::TaskContextMonitor::new(repo.clone(), state.events.clone(), write);
     let closure = monitor
         .resolve_task_closure(&track_id, "launch")
         .await
