@@ -47,6 +47,8 @@ async fn no_child_launch_failure(posix_spawn_error: bool) {
     // A later owner takes the alias by the normal handoff contract. Its successful
     // spawn then fails setup, retaining an unsettled reservation even after cleanup.
     let (mut next, next_held) = private(&executor, &source);
+    next.specification.program = "/bin/sh".into();
+    next.specification.args = vec!["-c".into(), "exit 0".into()];
     next.identity.process_alias = request.identity.process_alias.clone();
     next.handoff = Some(AliasHandoff {
         previous_execution: request.identity.execution_id.clone(),
@@ -55,8 +57,9 @@ async fn no_child_launch_failure(posix_spawn_error: bool) {
     prepare(&executor, &next, &next_held).await;
     {
         let _fault = FaultGuard::set(Fault::Setup);
+        let reply = executor.launch(consume(&next)).await.unwrap();
         assert!(matches!(
-            executor.launch(consume(&next)).await.unwrap(),
+            reply,
             ExecutionReply::Receipt {
                 state: ExecutionState::Unknown { .. },
                 ..
