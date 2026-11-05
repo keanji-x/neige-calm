@@ -32,8 +32,7 @@ mod human;
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SendPlannerInputRequest {
     pub text: String,
-    /// Uploaded image IDs. Assistant canonical input binds them before acceptance;
-    /// canonical Planner attachment input retains its existing refusal.
+    /// Uploaded image IDs. Canonical Planner and Assistant input binds them before acceptance.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
     /// Historical replacement intent. Canonical history replacement requires

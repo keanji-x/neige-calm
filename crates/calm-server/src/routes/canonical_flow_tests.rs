@@ -63,6 +63,7 @@ mod maintenance_completion_tests;
 #[cfg(feature = "fixtures")]
 mod opencode_creation_tests;
 mod pending_controls_tests;
+mod planner_attachment_tests;
 #[cfg(feature = "fixtures")]
 mod planner_switch_tests;
 mod presentation_capability_tests;

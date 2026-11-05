@@ -237,8 +237,13 @@ pub(super) async fn read(
                     )
                     .0,
                     pending_overflow: 0,
-                    // Canonical HTTP input admits ordinary text only (planner_input_send::human).
-                    attachments_supported: false,
+                    attachments_supported: crate::planner_attachments::image_input_supported(
+                        s.repo.as_ref(),
+                        &binding.provider,
+                        &card.track_id,
+                        &s.workspace_root,
+                    )
+                    .await?,
                     manual_compact_supported:
                         crate::harness::PlannerBackend::manual_compact_supported(&binding),
                     // Persisted native identity does not prove a monotonic running clock after reopen.

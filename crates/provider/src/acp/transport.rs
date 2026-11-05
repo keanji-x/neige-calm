@@ -186,7 +186,23 @@ impl PendingResponse {
         result
     }
 }
+/// The same wire-size check serves preflight and the final write boundary.
+fn frame_bytes(frame: &Value) -> Result<Vec<u8>, Error> {
+    let bytes = serde_json::to_vec(frame).map_err(|_| Error::Protocol("cannot encode frame"))?;
+    if bytes.len() >= FRAME_LIMIT {
+        return Err(Error::Protocol("outgoing frame exceeds byte limit"));
+    }
+    Ok(bytes)
+}
+
 impl Client {
+    /// Validate an outgoing request without reserving an id or touching the connection.
+    /// The widest request id conservatively covers every id the writer can allocate.
+    pub fn validate_request(method: &str, params: Value) -> Result<(), Error> {
+        frame_bytes(&json!({"jsonrpc":"2.0", "id":u64::MAX, "method":method, "params":params}))
+            .map(drop)
+    }
+
     pub fn is_shared(&self) -> bool {
         self.0.shared
     }
@@ -328,14 +344,12 @@ impl Client {
         let prompt_session = (frame["method"] == "session/prompt")
             .then(|| frame["params"]["sessionId"].as_str())
             .flatten();
-        let mut bytes = serde_json::to_vec(&frame).map_err(|error| before(error.to_string()))?;
-        if bytes.len() >= FRAME_LIMIT {
-            let error = Error::Protocol("outgoing frame exceeds byte limit");
+        let mut bytes = frame_bytes(&frame).map_err(|error| {
             if !self.0.shared {
                 record_failure(&self.0.close, error.clone());
             }
-            return Err(WriteFailure::BeforeWrite(error));
-        }
+            WriteFailure::BeforeWrite(error)
+        })?;
         bytes.push(b'\n');
         let deadline = tokio::time::Instant::now() + TRANSPORT_WAIT_TIMEOUT;
         let mut guard = tokio::time::timeout_at(deadline, self.0.writer.lock())

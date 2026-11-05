@@ -11,8 +11,8 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         planner: None,
         assistant: None,
     },
-    canonical_planner_inputs: false,
-    canonical_assistant_inputs: false,
+    canonical_planner_inputs: true,
+    canonical_assistant_inputs: true,
     entry: AgentEntry {
         before_options: &[],
         after_options: &["acp"],

@@ -3,6 +3,7 @@ use super::super::{config::Registration, process};
 use super::*;
 use provider::acp::{configuration::Configuration, usage::UsageTracker};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug)]
 struct Binding {
@@ -10,13 +11,33 @@ struct Binding {
     configuration: Configuration,
     closing: bool,
     mcp_key: String,
+    closed: Arc<AtomicBool>,
+}
+
+struct Generation {
+    id: uuid::Uuid,
+    /// Set only after revoking this generation's grants, confirming the ACP
+    /// service process exited, and executing the existing process-group cleanup.
+    /// This is not the execution owner's descendants-complete quiescence proof.
+    stopped: AtomicBool,
+}
+
+struct CleanupWitness {
+    generation: Arc<Generation>,
+    /// One attachment instance; resuming the same native id gets a fresh witness.
+    closed: Arc<AtomicBool>,
+}
+impl CleanupWitness {
+    fn confirmed(&self) -> bool {
+        self.closed.load(Ordering::Acquire) || self.generation.stopped.load(Ordering::Acquire)
+    }
 }
 
 pub(in crate::acp_planner) struct Server {
     process: process::Process,
     bindings: HashMap<String, Binding>,
     credential_owners: HashSet<String>,
-    generation: uuid::Uuid,
+    generation: Arc<Generation>,
     provider: AgentProvider,
 }
 impl std::fmt::Debug for Server {
@@ -80,7 +101,10 @@ pub(super) async fn issue(
             process,
             bindings: HashMap::new(),
             credential_owners: HashSet::new(),
-            generation,
+            generation: Arc::new(Generation {
+                id: generation,
+                stopped: AtomicBool::new(false),
+            }),
             provider: registration.config.provider.clone(),
         });
         tokio::spawn(supervise(Arc::downgrade(&params.host), generation));
@@ -223,6 +247,7 @@ pub(super) async fn issue(
                                 configuration: Configuration::default(),
                                 closing: true,
                                 mcp_key: key,
+                                closed: Arc::new(AtomicBool::new(false)),
                             },
                         );
                     }
@@ -239,6 +264,7 @@ pub(super) async fn issue(
                 configuration: configuration.clone(),
                 closing: false,
                 mcp_key: key,
+                closed: Arc::new(AtomicBool::new(false)),
             },
         );
         (native, configuration)
@@ -287,6 +313,10 @@ pub(super) async fn issue(
         .get(&params.worker_session_id)
         .expect("attached ACP session");
     let asks = registration.profile.asks(&binding.mcp_key, tools);
+    let cleanup = CleanupWitness {
+        generation: server.generation.clone(),
+        closed: binding.closed.clone(),
+    };
     let client = server.process.connection.client.clone();
     if client.shared_retiring() {
         return Err(refused(
@@ -294,6 +324,8 @@ pub(super) async fn issue(
         ));
     }
     let capabilities = server.process.capabilities.clone();
+    protocol::validate_prompt(&capabilities, &native, &blocks)
+        .map_err(|error| refused(&error.to_string()))?;
     let mut incoming = client.route_session(&native).map_err(wire_error)?;
     let turn = uuid::Uuid::new_v4().to_string();
     let receipt = AcpSubmission {
@@ -362,20 +394,15 @@ pub(super) async fn issue(
             },
         };
         approvals.close().await;
-        if outcome.is_err() {
-            // A lost terminal response leaves the agent able to act until its
-            // credential is revoked and the native session is closed.
-            if let Err(error) = revoke(&task.params).await {
-                tracing::error!(%error, "Shared ACP unknown-turn credential revocation failed");
-            }
-            if let Err(error) =
-                detach_worker(&task.params.host, &task.params.worker_session_id).await
-            {
-                tracing::error!(%error, "Shared ACP unknown-turn detach failed");
-            }
-        }
+        let cleaned = if outcome.is_err() {
+            // A lost terminal response may leave native work running. Evidence
+            // belongs to this exact attachment, never to a sibling's cleanup.
+            cleanup_unknown(&task.params, &receipt, &cleanup).await
+        } else {
+            false
+        };
         drop(incoming);
-        settle(&task, &receipt, retained, outcome).await
+        settle(&task, &receipt, retained, outcome, &cleanup, cleaned).await
     });
     execution_end::install(
         shared,
@@ -396,6 +423,8 @@ async fn settle(
     receipt: &AcpSubmission,
     mut retained: Vec<Value>,
     outcome: Result<Vec<PlannerEvent>>,
+    cleanup: &CleanupWitness,
+    mut cleaned: bool,
 ) -> execution_end::Settlement {
     let mut events = outcome.unwrap_or_default();
     let terminal = events.iter().find_map(|event| match &event.kind {
@@ -417,6 +446,11 @@ async fn settle(
         false
     };
     let known = persisted && durable.is_some();
+    if !known && !cleaned {
+        // A failed terminal receipt write also needs cleanup before canonical
+        // Keep can consume the exact original attempt.
+        cleaned = cleanup_unknown(&shared.params, receipt, cleanup).await;
+    }
     let params = &shared.params;
     let projection = events
         .iter()
@@ -464,6 +498,8 @@ async fn settle(
     }
     if known {
         execution_end::Settlement::Completed
+    } else if cleaned {
+        execution_end::Settlement::CleanUnknown
     } else {
         execution_end::Settlement::Unconfirmed
     }
@@ -491,11 +527,64 @@ pub(super) async fn ensure_native_owner<'e>(
     Ok(())
 }
 
+async fn cleanup_unknown(
+    params: &SessionParams,
+    receipt: &AcpSubmission,
+    witness: &CleanupWitness,
+) -> bool {
+    match detach_worker_with_witness(
+        &params.host,
+        &params.worker_session_id,
+        Some((&receipt.native_session_id, witness)),
+    )
+    .await
+    {
+        Ok(()) => witness.confirmed(),
+        Err(error) => {
+            tracing::error!(%error, "Shared ACP original attachment cleanup is unconfirmed");
+            false
+        }
+    }
+}
+
 pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result<()> {
-    let mut server = host.shared_server.lock().await;
-    let Some(server) = server.as_mut() else {
+    detach_worker_with_witness(host, worker, None).await
+}
+
+async fn detach_worker_with_witness(
+    host: &AcpPlannerHost,
+    worker: &str,
+    expected: Option<(&str, &CleanupWitness)>,
+) -> Result<()> {
+    let mut owned = host.shared_server.lock().await;
+    if expected.is_some_and(|(_, witness)| witness.confirmed()) {
         return Ok(());
+    }
+    let Some(server) = owned.as_mut() else {
+        return if expected.is_none() {
+            Ok(())
+        } else {
+            Err(CalmError::Conflict(
+                "Original ACP generation stop is unconfirmed".into(),
+            ))
+        };
     };
+    if let Some((native, witness)) = expected {
+        let matches = server.generation.id == witness.generation.id
+            && server.bindings.get(worker).is_some_and(|binding| {
+                binding.native == native && Arc::ptr_eq(&binding.closed, &witness.closed)
+            });
+        if !matches {
+            return Err(CalmError::Conflict(
+                "Original ACP attachment changed before cleanup".into(),
+            ));
+        }
+    }
+    if server.process.connection.client.terminal_error().is_some() {
+        // EOF is not process-stop evidence. Retire and confirm the original
+        // process before any driver may claim the generation is quiescent.
+        return retire(host, &mut owned).await;
+    }
     if let Some(binding) = server.bindings.get_mut(worker) {
         binding.closing = true;
     }
@@ -506,21 +595,21 @@ pub(crate) async fn detach_worker(host: &AcpPlannerHost, worker: &str) -> Result
     let Some(binding) = server.bindings.get(worker) else {
         return Ok(());
     };
-    if server.process.connection.client.terminal_error().is_none() {
-        let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
-        if let Err(error) = setup_request(
-            &mut server.process.connection,
-            &mut server.process.commands,
-            "session/close",
-            protocol::encode_close_session(&binding.native),
-            &gate,
-        )
-        .await
-        {
-            server.process.connection.client.retire_shared_when_idle();
-            return Err(error.into());
-        }
+    let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
+    if let Err(error) = setup_request(
+        &mut server.process.connection,
+        &mut server.process.commands,
+        "session/close",
+        protocol::encode_close_session(&binding.native),
+        &gate,
+    )
+    .await
+    {
+        server.process.connection.client.retire_shared_when_idle();
+        return Err(error.into());
     }
+    // Credential revocation and the matching native close both succeeded.
+    binding.closed.store(true, Ordering::Release);
     server.bindings.remove(worker);
     Ok(())
 }
@@ -536,7 +625,7 @@ async fn supervise(host: std::sync::Weak<AcpPlannerHost>, generation: uuid::Uuid
         };
         let Some(server) = owned
             .as_mut()
-            .filter(|server| server.generation == generation)
+            .filter(|server| server.generation.id == generation)
         else {
             return;
         };
@@ -594,7 +683,9 @@ async fn retire(host: &AcpPlannerHost, owned: &mut Option<Server>) -> Result<()>
         }
     }
     if let Some(server) = owned.take() {
+        let generation = server.generation.clone();
         server.process.stop().await?;
+        generation.stopped.store(true, Ordering::Release);
     }
     Ok(())
 }

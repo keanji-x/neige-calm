@@ -5,6 +5,7 @@ mod carrier;
 mod cleanup;
 mod compact;
 mod completion;
+mod shared;
 
 mod continuation;
 mod control;

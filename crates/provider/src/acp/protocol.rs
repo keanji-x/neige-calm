@@ -184,6 +184,34 @@ pub fn encode_set_config_option(session: &str, config_id: &str, value: &str) -> 
 pub fn encode_close_session(session: &str) -> Value {
     json!({"sessionId":session})
 }
+/// Local encoding and capability refusal must be known before a host stores a send receipt.
+pub fn validate_prompt(
+    capabilities: &AgentCapabilities,
+    session: &str,
+    blocks: &[ContentBlock],
+) -> Result<(), Error> {
+    Client::validate_request(
+        "session/prompt",
+        prompt_params(capabilities, session, blocks)?,
+    )
+}
+fn prompt_params(
+    capabilities: &AgentCapabilities,
+    session: &str,
+    blocks: &[ContentBlock],
+) -> Result<Value, Error> {
+    if blocks.is_empty() {
+        return Err(Error::Protocol("empty prompt"));
+    }
+    if !capabilities.prompt_capabilities.image
+        && blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        return Err(Error::Protocol("agent does not support image prompts"));
+    }
+    Ok(json!({"sessionId":session,"prompt":blocks}))
+}
 pub async fn prompt(
     client: &Client,
     capabilities: &AgentCapabilities,
@@ -191,25 +219,8 @@ pub async fn prompt(
     blocks: &[ContentBlock],
     gate: &PreSendGate<'_>,
 ) -> Result<PendingResponse, WriteFailure> {
-    if blocks.is_empty() {
-        return Err(WriteFailure::BeforeWrite(Error::Protocol("empty prompt")));
-    }
-    if !capabilities.prompt_capabilities.image
-        && blocks
-            .iter()
-            .any(|block| matches!(block, ContentBlock::Image { .. }))
-    {
-        return Err(WriteFailure::BeforeWrite(Error::Protocol(
-            "agent does not support image prompts",
-        )));
-    }
-    client
-        .submit_gated(
-            "session/prompt",
-            json!({"sessionId":session,"prompt":blocks}),
-            gate,
-        )
-        .await
+    let params = prompt_params(capabilities, session, blocks).map_err(WriteFailure::BeforeWrite)?;
+    client.submit_gated("session/prompt", params, gate).await
 }
 pub async fn cancel(
     client: &Client,

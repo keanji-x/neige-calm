@@ -1,5 +1,6 @@
 //! One issue lock owns admission, setup, receipt preparation and driver handoff.
 use super::*;
+use base64::Engine as _;
 
 impl AcpPlannerSession {
     pub(super) async fn issue(
@@ -132,10 +133,25 @@ impl AcpPlannerSession {
         for item in &items {
             match item {
                 InputItem::Text { text } => blocks.push(protocol::ContentBlock::text(text.clone())),
-                InputItem::LocalImage { .. } => {
-                    return Err(refused(
-                        "ACP image input is not enabled for this managed Planner",
-                    ));
+                InputItem::LocalImage { path } => {
+                    if !crate::harness::PlannerBackend::metadata(&params.provider)
+                        .capabilities
+                        .images
+                    {
+                        return Err(refused(
+                            "ACP image input is not enabled for this managed Planner",
+                        ));
+                    }
+                    let (format, bytes) = crate::planner_attachments::read_bound_image(
+                        &params.cwd,
+                        &crate::ids::CardId::from(params.card_id.clone()),
+                        std::path::Path::new(path),
+                    )
+                    .await?;
+                    blocks.push(protocol::ContentBlock::Image {
+                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                        mime_type: format.mime().into(),
+                    });
                 }
             }
         }

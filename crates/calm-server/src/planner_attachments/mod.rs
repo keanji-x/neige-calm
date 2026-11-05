@@ -90,6 +90,20 @@ pub(crate) fn image_input_root(
     attachment_root(workspace, workspace_root)
 }
 
+/// Project the same provider/workspace admission used by uploads for either
+/// historical or canonical conversation reads. This is advisory, never a grant.
+pub(crate) async fn image_input_supported(
+    repo: &dyn crate::db::RepoRead,
+    provider: &crate::session_projection_repo::AgentProvider,
+    track_id: &crate::ids::TrackId,
+    workspace_root: &Path,
+) -> Result<bool> {
+    Ok(match repo.track_get(track_id.as_str()).await? {
+        Some(track) => image_input_root(provider, &track.workspace, workspace_root).is_ok(),
+        None => false,
+    })
+}
+
 const STAGING: &str = "staging";
 const BOUND: &str = "bound";
 
@@ -166,6 +180,54 @@ pub async fn open_attachment(
     Err(CalmError::BadRequest(format!(
         "attachment `{id}` does not belong to card {card_id}"
     )))
+}
+
+/// Read a dispatch input through the same card fence as attachment downloads.
+/// A path supplied by persisted input is only a claim: require the exact bound
+/// path, then open by card/id without following symlinks and read that descriptor.
+pub(crate) async fn read_bound_image(
+    workspace: &Path,
+    card_id: &CardId,
+    path: &Path,
+) -> Result<(AttachmentFormat, Vec<u8>)> {
+    use tokio::io::AsyncReadExt;
+    let invalid =
+        || CalmError::BadRequest("Image input is not a bound attachment of this card".into());
+    let id = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| AttachmentId::parse(name).ok())
+        .ok_or_else(invalid)?;
+    let root = workspace.join(NEIGE_DIR).join("attachments");
+    if path != bound_file_path(&root, card_id, &id) {
+        return Err(invalid());
+    }
+    let opened = open_attachment(&root, card_id, &id).await?;
+    if opened.location != AttachmentLocation::Bound {
+        return Err(invalid());
+    }
+    if opened.size > MAX_ATTACHMENT_BYTES {
+        return Err(CalmError::BadRequest(
+            "Image exceeds the attachment byte limit".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    opened
+        .file
+        .take(MAX_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(CalmError::BadRequest(
+            "Image exceeds the attachment byte limit".into(),
+        ));
+    }
+    if sniff::sniff(&bytes) != Some(opened.format) {
+        return Err(CalmError::BadRequest(
+            "Image bytes do not match the attachment format".into(),
+        ));
+    }
+    Ok((opened.format, bytes))
 }
 
 /// Bytes already spent by this card, across both directories. A missing directory is zero (a fresh card); a broken filesystem is an error, but entries that are not ours (symlinks, sockets, subdirectories) contribute zero rather than latching every later upload.

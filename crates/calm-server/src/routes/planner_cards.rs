@@ -495,17 +495,13 @@ pub(super) async fn historical_planner_run(
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
     let permission_mode = crate::planner_permission_mode::card_has_permission_mode(&card, role)
         .then(|| crate::planner_permission_mode::shown_for_planner(&card));
-    // The same predicate the upload endpoint enforces, so the answer cannot drift from the refusal.
-    let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
-        Some(track) => crate::planner_attachments::image_input_root(
-            &binding.provider,
-            &track.workspace,
-            &s.workspace_root,
-        )
-        .is_ok(),
-        // No track means no workspace to write into; this field is not the place to raise it, and 'supported' would be the wrong guess.
-        None => false,
-    };
+    let attachments_supported = crate::planner_attachments::image_input_supported(
+        s.repo.as_ref(),
+        &binding.provider,
+        &card.track_id,
+        &s.workspace_root,
+    )
+    .await?;
     let mut dormant = GetPlannerRunResponse {
         card_id: card.id.clone(),
         worker_session_id: None,

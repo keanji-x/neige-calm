@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# #3540 bounded forward-migration exception: spec/crates +1, runtime_id/crates
+# +2, harness_item/crates +2 preserve the released profile value and physical
+# initiating_runtime_id/harness_items identifiers in 0213. No domain name,
+# scan pattern or exclusion changes. Later schema migrations update their own
+# fixed contract references and this baseline; ordinary tests/files need no
+# roster entry. The existing scan and its selftest still run once each in CI lint.
 # #3363 bounded storage-contract exception: runtime_id/crates +1 reads the
 # frozen initiating_runtime_id column to bind an ended turn to its original
 # Initial. harness_item/crates +2 reads its persisted failed terminal and removes

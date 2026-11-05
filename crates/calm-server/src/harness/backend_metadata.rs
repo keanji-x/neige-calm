@@ -48,7 +48,7 @@ impl super::backend::PlannerBackend {
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
             AgentProvider::Antigravity => (
                 false,
-                false,
+                true,
                 false,
                 false,
                 ToolDiscovery::SessionToolListWithTrackReads,

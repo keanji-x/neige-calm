@@ -273,6 +273,8 @@ for line in sys.stdin:
         if not xai and (root / 'scenario').read_text().strip() not in ['unsupported-load', 'load-only', 'load-error', 'load-replay-lost']:
             capabilities.setdefault('sessionCapabilities', {})['resume'] = {}
         version = 'wrong' if wrong else os.environ.get('ACP_FIXTURE_VERSION', '2.1.3')
+        if os.environ.get('ACP_FIXTURE_IMAGES') == '1':
+            capabilities['promptCapabilities'] = {'image': True}
         if xai:
             capabilities['promptCapabilities'] = {'image': False, 'audio': False, 'embeddedContext': True}
             capabilities['_meta'] = {'x.ai/fs_notify': True}
@@ -326,6 +328,9 @@ for line in sys.stdin:
         attach_updates()
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
+        if (root / 'scenario').read_text().strip() == 'shared-close-error':
+            emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32603, 'message':'close failed'}})
+            continue
         if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
             current = params['sessionId']
         assert params['sessionId'] == current
@@ -442,7 +447,7 @@ for line in sys.stdin:
             current = params['sessionId']
         assert params['sessionId'] == current
         state = json.loads(native_path().read_text())
-        texts = [part['text'] for part in params['prompt']]
+        texts = [part['text'] for part in params['prompt'] if part['type'] == 'text']
         state['inputs'].extend(texts)
         write_native(state)
         scenario = (root / 'scenario').read_text().strip()
@@ -520,6 +525,8 @@ for line in sys.stdin:
                 update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
                         'cost': {'amount': 0.012, 'currency': 'USD'}})
             finish(request, 'usage reported')
+        elif scenario in ['shared-unknown', 'shared-close-error']:
+            result(request, {'unexpected': True})
         elif scenario == 'shared-hold':
             shared_pending[current] = request
         elif scenario in ['hold', 'server-drain']:

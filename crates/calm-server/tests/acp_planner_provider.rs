@@ -1,7 +1,11 @@
+#[path = "cases/acp_canonical.rs"]
+mod acp_canonical;
 #[path = "cases/acp_compact.rs"]
 mod acp_compact;
 #[path = "cases/acp_grok_compact.rs"]
 mod acp_grok_compact;
+#[path = "cases/acp_images.rs"]
+mod acp_images;
 // Managed ACP acceptance through the production boot, REST routes and Harness.
 #[path = "cases/acp_grok_provider.rs"]
 mod acp_grok_provider;
@@ -1045,7 +1049,7 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
         "completed"
     );
     let runtime = stack.runtime(assistant).await;
-    stack.wait_phase(&runtime.id, "turn_completed").await;
+    acp_compact::wait_phase(&stack, &runtime.id, "turn_completed").await;
     let native = runtime.session_id.unwrap();
     let token = std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap();
     assert!(stack.token_authenticates(&token).await);

@@ -1,5 +1,4 @@
-//! Populated forward upgrade from 0189 to exactly 0190: the canonical graph survives byte for
-//! byte, and the Turn provider CHECK admits Grok and nothing else new.
+//! Populated provider upgrades retain the canonical graph and widen only its provider CHECK.
 use super::*;
 
 const TABLES: [&str; 5] = [
@@ -135,10 +134,47 @@ async fn assistant_trigger_sql(repo: &SqlxRepo) -> String {
 
 #[tokio::test]
 async fn canonical_grok_turns_migration_preserves_populated_graph() {
+    provider_upgrade(
+        189,
+        190,
+        SeedContract::BeforeRetirement,
+        "grok",
+        "('codex','claude','opencode')",
+        "('codex','claude','opencode','grok')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn canonical_antigravity_turns_migration_preserves_populated_graph() {
+    provider_upgrade(
+        212,
+        213,
+        SeedContract::Current,
+        "antigravity",
+        "('codex','claude','opencode','grok')",
+        "('codex','claude','opencode','grok','antigravity')",
+    )
+    .await;
+}
+
+enum SeedContract {
+    BeforeRetirement,
+    Current,
+}
+
+async fn provider_upgrade(
+    from: i64,
+    to: i64,
+    seed_contract: SeedContract,
+    added: &str,
+    old_providers: &str,
+    new_providers: &str,
+) {
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite://{}/upgrade.db?mode=rwc", dir.path().display());
     let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-    let old = through(189);
+    let old = through(from);
     {
         let migrator = &(old);
         (db).writer()
@@ -159,7 +195,12 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     }
     .unwrap();
     let repo = repo_on(db);
-    let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
+    let (_, card) = match seed_contract {
+        SeedContract::BeforeRetirement => {
+            crate::db::sqlite::historical_fixtures::conversation_card(&repo).await
+        }
+        SeedContract::Current => super::super::tests::fixture_card(&repo).await,
+    };
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
     // successor: every member and deferred edge of the rebuilt graph holds a row.
     let s = seed_repo(repo, card, false).await;
@@ -169,7 +210,7 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
         successor(&mut tx, &s).await;
         tx.commit().await.unwrap();
         assert!(turn_admits(&s.repo, &s.card, "codex").await);
-        assert!(!turn_admits(&s.repo, &s.card, "grok").await);
+        assert!(!turn_admits(&s.repo, &s.card, added).await);
         assert!(
             assistant_creation_refusal(&s.repo, &s.card)
                 .await
@@ -198,13 +239,13 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
         let Seed { repo, card, .. } = s;
         drop(repo);
 
-        // Apply exactly 0190 through the shipped migrator path, not HEAD with its later migrations.
+        // Apply exactly this forward migration through the shipped migrator, not a later HEAD.
         let db = super::super::super::SqliteDb::connect(&url).await.unwrap();
-        let with_0190 = through(190);
-        super::super::super::infra::check_no_unknown_future_migrations(db.read_pool(), &with_0190)
+        let up_to_target = through(to);
+        super::super::super::infra::check_no_unknown_future_migrations(db.read_pool(), &up_to_target)
             .await
             .unwrap();
-        { let migrator = &(with_0190);
+        { let migrator = &(up_to_target);
     (db).writer().with_writer(|write_session| Box::pin(async move {
         write_session.autocommit(|connection| Box::pin(async move {
             Ok::<_, sqlx::Error>(migrator.run_direct(&mut **connection).await)
@@ -240,8 +281,8 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
                 let sql = if (kind.as_str(), name.as_str()) == ("table", "conversation_turns") {
                     sql.map(|sql| {
                         sql.replace(
-                            "CHECK(provider IN ('codex','claude','opencode'))",
-                            "CHECK(provider IN ('codex','claude','opencode','grok'))",
+                            &format!("CHECK(provider IN {old_providers})"),
+                            &format!("CHECK(provider IN {new_providers})"),
                         )
                     })
                 } else {
@@ -254,7 +295,7 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
         assert_eq!(assistant_trigger_sql(&upgraded).await, assistant_trigger);
         let refusal = assistant_creation_refusal(&upgraded, &card).await;
         assert!(refusal.contains(ASSISTANT_REFUSAL), "{refusal}");
-        assert!(turn_admits(&upgraded, &card, "grok").await);
+        assert!(turn_admits(&upgraded, &card, added).await);
         assert!(
             !turn_admits(&upgraded, &card, "terminal").await,
             "the CHECK still bounds providers"

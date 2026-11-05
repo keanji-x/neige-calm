@@ -731,3 +731,6 @@ fn attachment_root_faults_name_no_host_path() {
         }
     }
 }
+
+#[path = "tests/image.rs"]
+mod image;
