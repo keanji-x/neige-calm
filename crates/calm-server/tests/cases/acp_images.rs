@@ -48,7 +48,7 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
         "completed"
     );
     assert_eq!(
-        requests(&root, "session/new")
+        requests(&root, "session/prompt")
             .iter()
             .map(|r| r["_pid"].clone())
             .collect::<std::collections::HashSet<_>>()
