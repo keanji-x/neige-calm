@@ -3,7 +3,7 @@ use super::*;
 use crate::agent_providers::{Freshness, ProviderAvailabilityCache};
 use crate::claude_planner::models::ClaudeCatalog;
 
-/// Sampling and enforcing are separate: historical receipts win over readiness.
+/// Sampling and enforcing are separate: callers own their admission policy.
 pub(crate) enum CatalogReadiness {
     Native,
     Claude(std::result::Result<Arc<ClaudeCatalog>, String>),
@@ -11,20 +11,6 @@ pub(crate) enum CatalogReadiness {
 }
 
 impl CatalogReadiness {
-    pub(crate) fn historical_catalog(&self) -> Result<Option<&ClaudeCatalog>> {
-        match self {
-            Self::Native => Ok(None),
-            Self::Claude(Ok(catalog)) => Ok(Some(catalog)),
-            Self::Claude(Err(reason)) => Err(CalmError::BadRequest(format!(
-                "track create: `planner_provider` {reason}"
-            ))),
-            Self::Acp(ready) => ready
-                .as_ref()
-                .map(|()| None)
-                .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}"))),
-        }
-    }
-
     pub(crate) fn require_added_track(&self) -> std::result::Result<(), String> {
         match self {
             Self::Native | Self::Claude(Ok(_)) | Self::Acp(Ok(())) => Ok(()),

@@ -181,14 +181,12 @@ async fn canonical_claude_creation_selection_uses_actual_provider_catalog() {
 }
 
 #[tokio::test]
-async fn canonical_acp_creation_shapes_follow_registration_capability() {
+async fn registered_providers_create_canonically_with_or_without_first_input() {
     use crate::routes::tracks::create::{CreatePlan, creation_plan};
     let fx = Fixture::new().await;
     let mut headers = HeaderMap::new();
     headers.insert("idempotency-key", "capability".parse().unwrap());
-    for provider in crate::harness::PlannerBackend::registered_providers()
-        .filter(|provider| provider.protocol() == calm_types::runtime::AgentProtocol::Acp)
-    {
+    for provider in crate::harness::PlannerBackend::registered_providers() {
         for first in [true, false] {
             let mut request = fx.request(FIRST);
             request.planner_provider = provider.clone();
@@ -196,12 +194,8 @@ async fn canonical_acp_creation_shapes_follow_registration_capability() {
             let plan = creation_plan(&fx.route, Some(&fx.source), &headers, request)
                 .await
                 .unwrap();
-            assert_eq!(
+            assert!(
                 matches!(plan, CreatePlan::Canonical(_)),
-                crate::acp_planner::wiring::canonical_inputs(
-                    &provider,
-                    calm_types::worker::WorkerContract::Planner
-                ),
                 "{provider:?}, first={first}"
             );
         }
@@ -247,4 +241,75 @@ async fn u7_canonical_preparation_does_not_reacquire_reader_pool() {
     );
     accepted.unwrap().unwrap();
     assert_eq!(fx.counts().await, (1, 2, 1, 1, 1, 0));
+}
+
+#[tokio::test]
+async fn creation_plan_rejects_orphaned_start_before_allocating() {
+    use crate::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+    use crate::routes::tracks::create::creation_plan;
+    let fx = Fixture::new().await;
+    let operations = SqlxOperationRepo::new(fx.repo.db().clone());
+    let mut occupied = 0;
+    for provider in crate::harness::PlannerBackend::registered_providers() {
+        for first in [true, false] {
+            for attempt in [0, 1] {
+                let key = format!("orphan-{provider:?}-{first}-{attempt}");
+                let base = derive_track_create_operation_key(&fx.area, &key);
+                let operation_key =
+                    crate::routes::conversations_shared::operation_key_attempts(&base)
+                        .nth(attempt)
+                        .unwrap();
+                let payload = serde_json::json!({});
+                operations
+                    .insert_operation(
+                        crate::routes::conversations_shared::PLANNER_HARNESS_START,
+                        OperationKey {
+                            operation_key: operation_key.clone(),
+                            idempotency_key: Some(operation_key),
+                            payload_hash: stable_payload_hash(&payload).unwrap(),
+                        },
+                        payload,
+                    )
+                    .await
+                    .unwrap();
+                occupied += 1;
+                let mut headers = HeaderMap::new();
+                headers.insert("idempotency-key", key.parse().unwrap());
+                let mut request = fx.request(FIRST);
+                request.planner_provider = provider.clone();
+                request.first_message = first.then(|| FIRST.to_owned());
+                assert!(
+                    matches!(
+                        creation_plan(&fx.route, Some(&fx.source), &headers, request).await,
+                        Err(CalmError::Internal(_))
+                    ),
+                    "{provider:?}, first={first}, attempt={attempt}"
+                );
+                assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, occupied));
+            }
+        }
+    }
+    assert!(!fx.root.exists());
+    assert!(!fx.state.shared_codex_appserver.is_running());
+}
+
+#[tokio::test]
+async fn creation_plan_requires_human_source_for_every_provider() {
+    use crate::routes::tracks::create::creation_plan;
+    let fx = Fixture::new().await;
+    for provider in crate::harness::PlannerBackend::registered_providers() {
+        for first in [true, false] {
+            let mut request = fx.request(FIRST);
+            request.planner_provider = provider.clone();
+            request.first_message = first.then(|| FIRST.to_owned());
+            assert!(
+                matches!(
+                    creation_plan(&fx.route, None, &HeaderMap::new(), request).await,
+                    Err(CalmError::Unauthorized)
+                ),
+                "{provider:?}, first={first}"
+            );
+        }
+    }
+    assert_eq!(fx.counts().await, (0, 0, 0, 0, 0, 0));
 }

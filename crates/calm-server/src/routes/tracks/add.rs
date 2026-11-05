@@ -328,6 +328,7 @@ impl TrackCreator for RouteTrackCreator {
                 drop(same_key);
                 let actor = KeyedActor {
                     human_source: None,
+                    #[cfg(any(test, feature = "fixtures"))]
                     create: create_actor,
                     start_label: start_actor.to_string(),
                     start: start_actor,
@@ -466,7 +467,7 @@ impl RouteTrackCreator {
         let request = match request.into() {
             crate::test_seams::HistoricalReceiptForTest::Creator(request) => request,
             crate::test_seams::HistoricalReceiptForTest::Released { request, key } => {
-                return self.released_receipt_for_test(request, key).await;
+                return self.released_receipt_for_test(request, key, None).await;
             }
         };
         let s = &self.route;
@@ -570,10 +571,11 @@ impl RouteTrackCreator {
 impl RouteTrackCreator {
     /// Reconstruct released REST resources through their allocation and delivery owners.
     /// No fresh HTTP request can select this fixture path.
-    async fn released_receipt_for_test(
+    pub(super) async fn released_receipt_for_test(
         &self,
         mut request: super::CreateTrackRequest,
         key: Option<String>,
+        source: Option<crate::conversation_inputs::HistoricalHumanSource>,
     ) -> Result<Track> {
         use super::create::CreateShape;
         use axum::http::HeaderMap;
@@ -600,13 +602,14 @@ impl RouteTrackCreator {
             CreateShape::WithFirstMessage(KeyedPlan::Resume(resume)) => {
                 return create::resume_prior_attempt(
                     s.clone(),
-                    &KeyedActor::rest(&actor, None),
+                    &KeyedActor::rest(&actor, source.clone()),
                     resume,
                 )
                 .await;
             }
             CreateShape::MessageLess(KeyedPlan::Resume(resume)) => {
-                let response = create::resume_message_less(s.clone(), actor, resume, None).await?;
+                let response =
+                    create::resume_message_less(s.clone(), actor, resume, source).await?;
                 let bytes = response.into_body().collect().await.unwrap().to_bytes();
                 return Ok(serde_json::from_slice(&bytes)?);
             }
@@ -622,7 +625,7 @@ impl RouteTrackCreator {
         let (p, named, _) = request.into_parts()?;
         let prepared = preparation::prepare(s, p, named, isolation, cross).await?;
         let options = CreateTrackOptions {
-            human_source: None,
+            human_source: source.clone(),
             admin,
             managed_identity: None,
             creator: None,
@@ -640,7 +643,7 @@ impl RouteTrackCreator {
         if let Some(plan) = first {
             return create::create_track_with_first_message(
                 s.clone(),
-                &KeyedActor::rest(&actor, None),
+                &KeyedActor::rest(&actor, source.clone()),
                 prepared.p,
                 options,
                 plan,

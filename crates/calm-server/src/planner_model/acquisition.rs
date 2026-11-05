@@ -1,4 +1,4 @@
-//! Catalog acquisition and advice for the five selection entry contracts.
+//! Catalog acquisition and advice for the selection entry contracts.
 use std::sync::Arc;
 
 use super::catalog::*;
@@ -21,7 +21,6 @@ enum EntryContext<'a> {
     ModelWrite {
         card: &'a str,
     },
-    HistoricalMint(&'a CatalogReadiness),
     CanonicalMint,
     DelegatedChild {
         cwd: &'a str,
@@ -63,32 +62,18 @@ impl<'a> CatalogAccess<'a> {
                 EntryContext::CatalogRead { card: _, cwd } => {
                     Ok(Acquired::Discovered(codex_catalog(self.codex, cwd).await))
                 }
-                EntryContext::HistoricalMint(readiness) => {
-                    readiness.historical_catalog()?;
-                    Ok(Acquired::Codex)
-                }
                 EntryContext::ModelWrite { card: _ }
                 | EntryContext::CanonicalMint
                 | EntryContext::DelegatedChild { cwd: _ } => Ok(Acquired::Codex),
             },
             AgentProtocol::Claude => {
-                let sampled;
-                let readiness = match &entry {
-                    EntryContext::HistoricalMint(readiness) => *readiness,
-                    EntryContext::CatalogRead { card: _, cwd: _ }
-                    | EntryContext::ModelWrite { card: _ }
-                    | EntryContext::CanonicalMint
-                    | EntryContext::DelegatedChild { cwd: _ } => {
-                        sampled =
-                            PlannerFactory::new(Arc::downgrade(self.codex), self.claude, self.acp)
-                                .catalog_readiness(provider, self.availability)
-                                .await;
-                        &sampled
-                    }
-                };
+                let readiness =
+                    PlannerFactory::new(Arc::downgrade(self.codex), self.claude, self.acp)
+                        .catalog_readiness(provider, self.availability)
+                        .await;
                 // Factory selected the readiness mechanism; this owner converts its
                 // factual result according to the entry's refusal/advisory contract.
-                let catalog = match readiness {
+                let catalog = match &readiness {
                     CatalogReadiness::Claude(catalog) => catalog,
                     CatalogReadiness::Native | CatalogReadiness::Acp(_) => {
                         return Err(CalmError::Internal(
@@ -101,7 +86,6 @@ impl<'a> CatalogAccess<'a> {
                         Ok(catalog),
                         EntryContext::CatalogRead { card: _, cwd: _ }
                         | EntryContext::ModelWrite { card: _ }
-                        | EntryContext::HistoricalMint(_)
                         | EntryContext::CanonicalMint
                         | EntryContext::DelegatedChild { cwd: _ },
                     ) => Ok(Acquired::Claude(Arc::clone(catalog))),
@@ -111,9 +95,6 @@ impl<'a> CatalogAccess<'a> {
                     (Err(_), EntryContext::CanonicalMint) => Ok(Acquired::Unjudged),
                     (Err(reason), EntryContext::ModelWrite { card }) => Err(CalmError::BadRequest(
                         format!("card {card}: `planner_provider` {reason}"),
-                    )),
-                    (Err(reason), EntryContext::HistoricalMint(_)) => Err(CalmError::BadRequest(
-                        format!("track create: `planner_provider` {reason}"),
                     )),
                     (Err(reason), EntryContext::DelegatedChild { cwd: _ }) => Err(
                         CalmError::BadRequest(format!("child_track.provider: {reason}")),
@@ -134,10 +115,6 @@ impl<'a> CatalogAccess<'a> {
                 }
                 EntryContext::ModelWrite { card: _ } => {
                     self.acp.configured(provider)?;
-                    Ok(Acquired::Unjudged)
-                }
-                EntryContext::HistoricalMint(readiness) => {
-                    readiness.historical_catalog()?;
                     Ok(Acquired::Unjudged)
                 }
                 EntryContext::CanonicalMint => Ok(Acquired::Discovered(
@@ -229,22 +206,6 @@ impl<'a> CatalogAccess<'a> {
     ) -> Result<CatalogAdvice> {
         self.advice(provider, EntryContext::CanonicalMint, model, effort)
             .await
-    }
-
-    pub(crate) async fn historical_mint(
-        &self,
-        provider: &AgentProvider,
-        readiness: &CatalogReadiness,
-        model: Option<&str>,
-        effort: Option<&str>,
-    ) -> Result<CatalogAdvice> {
-        self.advice(
-            provider,
-            EntryContext::HistoricalMint(readiness),
-            model,
-            effort,
-        )
-        .await
     }
 
     pub(crate) async fn child(

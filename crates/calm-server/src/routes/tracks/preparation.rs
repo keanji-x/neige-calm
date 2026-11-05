@@ -123,7 +123,6 @@ pub(super) struct PreparedCreate {
     pub(super) normalized_cwd: String,
     pub(super) init: TrackInit,
     pub(super) workspace_plan: TrackWorkspacePlan,
-    pub(super) conflict: FolderConflictSlot,
 }
 
 pub(super) async fn prepare(
@@ -238,7 +237,6 @@ async fn prepare_with_area(
 
     // The cwd-vs-claim decision runs inside the track-create transaction: a pre-tx scan let
     // two concurrent creates for `/a` and `/a/b` commit overlapping claims.
-    let conflict = FolderConflictSlot::default();
     let folder_claim = if area_kind.is_none() {
         FolderClaim::MissingArea
     } else if is_system_area || cwd_omitted {
@@ -247,7 +245,7 @@ async fn prepare_with_area(
         FolderClaim::Enforce {
             attach: attach_folder,
             allow_cross_area_cwd,
-            conflict: conflict.clone(),
+            conflict: FolderConflictSlot::default(),
         }
     };
 
@@ -286,7 +284,6 @@ async fn prepare_with_area(
         normalized_cwd,
         init,
         workspace_plan,
-        conflict,
     })
 }
 

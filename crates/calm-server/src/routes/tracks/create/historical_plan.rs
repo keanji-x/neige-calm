@@ -1,8 +1,9 @@
-//! Historical receipt planning and creation for excluded kinds.
+//! Historical receipt replay and shared keyed planning for existing creation owners.
 use super::*;
 
 /// Parse and validate the first-message half of the request, and pick the arm — before
-/// `create_track` validates, let alone mints, anything.
+/// released-receipt fixtures validate, let alone mint, anything.
+#[cfg(any(test, feature = "fixtures"))]
 pub(in crate::routes::tracks) async fn plan_first_message(
     s: &RouteState,
     headers: &HeaderMap,
@@ -45,7 +46,7 @@ pub(in crate::routes::tracks) async fn plan_first_message(
 }
 
 /// The keyed create's decision, before anything is validated or minted: the binding lookup,
-/// the fingerprint check and the arm. `POST /api/tracks` and `neige_track_add` both run it.
+/// the fingerprint check and the arm. Historical creator replay and receipt fixtures use it.
 pub(in crate::routes::tracks) async fn plan_keyed_create(
     s: &RouteState,
     request: KeyedCreate,
@@ -113,6 +114,7 @@ pub(super) fn binding_lost(operation_key: &str) -> CalmError {
 /// The message-less twin of [`plan_first_message`]'s keyed half: one lookup, a two-cell
 /// table. The lock is taken on the SAME derived key, so the two shapes serialize
 /// against each other on the one binding row.
+#[cfg(any(test, feature = "fixtures"))]
 async fn plan_message_less(
     s: &RouteState,
     area_id: &str,
