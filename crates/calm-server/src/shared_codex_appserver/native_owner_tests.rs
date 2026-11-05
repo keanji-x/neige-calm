@@ -139,7 +139,9 @@ async fn daemon() -> Arc<SharedCodexAppServer> {
     SharedCodexAppServer::new_stub(repo)
 }
 
-pub(crate) async fn request(peer: &mut Peer) -> Value {
+pub(crate) async fn try_request(
+    peer: &mut Peer,
+) -> std::result::Result<Value, tokio::time::error::Elapsed> {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Message::Text(frame) = peer.next().await.unwrap().unwrap() {
@@ -148,7 +150,10 @@ pub(crate) async fn request(peer: &mut Peer) -> Value {
         }
     })
     .await
-    .unwrap()
+}
+
+pub(crate) async fn request(peer: &mut Peer) -> Value {
+    try_request(peer).await.unwrap()
 }
 
 pub(crate) async fn send(peer: &mut Peer, value: Value) {
