@@ -7,14 +7,17 @@
 
 mod environment;
 mod role;
+// Until WA2-D wires the sink, only its Linux protocol tests exercise it.
+#[cfg_attr(all(test, target_os = "macos"), expect(dead_code))]
 mod sink;
 
 pub(crate) use environment::{WorkerEnvironment, WorkerLaunch, WorkerMcpToken, kernel_proxy};
 pub(crate) use role::{WorkerArgs, WorkerStart};
 pub use sink::WorkerEnd;
+pub(crate) use sink::WorkerInitRecord;
+#[cfg(target_os = "linux")]
 pub(crate) use sink::{
-    WorkerInitRecord, WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome,
-    WorkerTurnRecord,
+    WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome, WorkerTurnRecord,
 };
 
 #[cfg(test)]

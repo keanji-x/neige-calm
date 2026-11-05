@@ -22,7 +22,7 @@ pub use watch::ExecutionWatcher;
 pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
 pub const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(1000);
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 11;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 12;
 
 /// Persisted registration receipt contract; independent of bincode wire ordinals.
 pub const PERSISTED_RECEIPT_CONTRACT_VERSION: u32 = 4;

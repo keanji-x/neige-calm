@@ -169,3 +169,60 @@ fn w_owned_none_journal_matches_released_bytes() {
         bytes
     );
 }
+
+#[test]
+fn recovery_3450_interruption_scope_and_receipt_bindings_roundtrip() {
+    use workspace::execution::{
+        ExecutionInterruption, InterruptedQuiescenceProof, InterruptedScope,
+    };
+    let mut record = legacy();
+    record.version = RECOVERY_JOURNAL_VERSION;
+    let receipt = mac_receipt(&record);
+    record.phase = Phase::InterruptedQuiescent {
+        proof: InterruptedQuiescenceProof {
+            host_boot_id: record.host_boot_id.clone(),
+            helper_process: receipt.process.clone(),
+            mechanism: receipt.scope_mechanism.clone(),
+            scope: InterruptedScope::MacOriginalGroupEmpty,
+        },
+        receipt,
+        reason: ExecutionInterruption::ExecutorInterrupted,
+    };
+    record.validate().unwrap();
+    let decoded: Journal = serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded.phase.state(), record.phase.state());
+    assert!(record.durably_settled());
+    assert!(
+        !workspace::execution::Settlement::Journal(record.phase.state()).descendants_complete()
+    );
+    for mismatch in 0..7 {
+        let mut bad = record.clone();
+        let Phase::InterruptedQuiescent { proof, receipt, .. } = &mut bad.phase else {
+            unreachable!()
+        };
+        match mismatch {
+            0 => proof.scope = InterruptedScope::LinuxOriginalGroupAndSessionEmpty,
+            1 => proof.host_boot_id.clear(),
+            2 => bad.version = JOURNAL_VERSION,
+            3 => {
+                if let NativeProcessIdentity::MacOwnedGroup(p) = &mut proof.helper_process {
+                    p.birth_seconds += 1;
+                }
+            }
+            4 => {
+                proof.mechanism = ScopeMechanismIdentity::MacOwnedGroup {
+                    protocol_version: 2,
+                }
+            }
+            5 => receipt.identity.execution_id = ExecutionId::fresh().unwrap(),
+            _ => {
+                if let NativeProcessIdentity::MacOwnedGroup(p) = &mut receipt.process {
+                    p.birth_microseconds = 1_000_000;
+                }
+                proof.helper_process = receipt.process.clone();
+            }
+        }
+        assert!(bad.validate().is_err(), "mismatch {mismatch}");
+    }
+}

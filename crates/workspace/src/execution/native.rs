@@ -153,6 +153,9 @@ pub struct InterruptedQuiescenceProof {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterruptedScope {
     LinuxOriginalGroupAndSessionEmpty,
+    /// Original identity is gone and the original Darwin process group is empty.
+    /// Does not establish session or escaped-descendant quiescence.
+    MacOriginalGroupEmpty,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionInterruption {

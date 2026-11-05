@@ -147,6 +147,25 @@ fn native_macos_supervisor_pin_cleanup_on_panic_and_timeout() {
         .spawn()
         .unwrap();
     let mut owned = SupervisorChild::with_timeout(child, root.path(), Duration::from_millis(20));
-    std::thread::sleep(Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "supervisor watchdog did not finish within the observation budget"
+        );
+        if owned.watchdog.as_ref().unwrap().is_finished() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Check the watchdog's reap before try_wait could reap on its behalf.
+    assert_eq!(
+        unsafe { libc::waitpid(owned.id() as i32, std::ptr::null_mut(), libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
     assert!(owned.try_wait().unwrap().is_some());
 }

@@ -79,6 +79,8 @@ impl Executor {
         let id = &control.capability.identity.execution_id;
         let first = self.record(id)?;
         let gate = self.gate(scope_resource(&first.request.identity.scope))?;
+        // Only Linux retries after waiting for its helper startup notification.
+        #[cfg_attr(target_os = "macos", expect(clippy::never_loop))]
         loop {
             let _fence = gate.lock().await;
             let record = self.record(id)?;

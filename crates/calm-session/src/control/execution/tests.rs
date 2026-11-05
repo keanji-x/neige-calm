@@ -193,7 +193,7 @@ fn retired_cleanup_does_not_move_stop_wire_ordinal() {
 
 #[tokio::test]
 async fn c2a_registered_negotiates_current_and_rejects_old_typed_peers() {
-    for version in [8, 9, EXECUTION_ENVELOPE_VERSION] {
+    for version in [8, 9, 10, 11, EXECUTION_ENVELOPE_VERSION] {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("typed-version.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -224,7 +224,7 @@ async fn c2a_registered_negotiates_current_and_rejects_old_typed_peers() {
 
 #[test]
 fn c2a_close_stdin_appends_wire_ordinal_and_preserves_persisted_contract() {
-    assert_eq!(EXECUTION_ENVELOPE_VERSION, 11);
+    assert_eq!(EXECUTION_ENVELOPE_VERSION, 12);
     assert_eq!(PERSISTED_RECEIPT_CONTRACT_VERSION, 4);
     assert_eq!(
         bincode::serde::encode_to_vec(ProcessAction::CloseStdin, bincode::config::standard())

@@ -41,7 +41,7 @@ pub enum ExecutionState {
     Unknown {
         reason: String,
     },
-    /// Original identity is gone and its original group and session are empty after restart.
+    /// Original identity is gone and the platform scope in the proof is empty after restart.
     /// No child exit status or descendant-wide drain proof is implied.
     InterruptedQuiescent {
         reason: ExecutionInterruption,
