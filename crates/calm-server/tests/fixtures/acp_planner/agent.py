@@ -328,6 +328,9 @@ for line in sys.stdin:
         attach_updates()
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
+        if (root / 'scenario').read_text().strip() == 'shared-close-error':
+            emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32603, 'message':'close failed'}})
+            continue
         if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
             current = params['sessionId']
         assert params['sessionId'] == current
@@ -522,6 +525,8 @@ for line in sys.stdin:
                 update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
                         'cost': {'amount': 0.012, 'currency': 'USD'}})
             finish(request, 'usage reported')
+        elif scenario in ['shared-unknown', 'shared-close-error']:
+            result(request, {'unexpected': True})
         elif scenario == 'shared-hold':
             shared_pending[current] = request
         elif scenario in ['hold', 'server-drain']:

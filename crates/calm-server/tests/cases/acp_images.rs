@@ -1,3 +1,4 @@
+use super::acp_compact::turn;
 use super::*;
 use crate::support::planner_queue_fixture::{post_input_with_attachments, upload_png};
 use base64::Engine as _;
@@ -12,7 +13,7 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
         "1.5.0",
     ).await;
     let (_, card) = stack
-        .create_historical_track_with(json!({"planner_provider":"antigravity"}))
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     let bytes = b"\x89PNG\r\n\x1a\nimage payload";
     let (status, uploaded) = upload_png(stack.app.clone(), &card, &bytes[8..]).await;
@@ -37,6 +38,23 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
         .find(|block| block["type"] == "image")
         .unwrap();
     assert_eq!(image["mimeType"], "image/png");
+    let stored: String =
+        sqlx::query_scalar("SELECT input_json FROM acp_submissions WHERE worker_session_id=?")
+            .bind(stack.runtime(&card).await.id)
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+            .await
+            .unwrap();
+    assert!(matches!(
+        calm_server::db::sqlite::AcpSubmissionInput::decode(&stored).unwrap(),
+        calm_server::db::sqlite::AcpSubmissionInput::Canonical(_)
+    ));
+    let messages: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM conversation_messages WHERE card_id=?")
+            .bind(&card)
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+            .await
+            .unwrap();
+    assert_eq!(messages, 1);
     assert_eq!(
         base64::engine::general_purpose::STANDARD
             .decode(image["data"].as_str().unwrap())
@@ -65,7 +83,7 @@ async fn rejected_image_does_not_create_a_receipt(images: bool, sizes: &[usize])
         "ACP_FIXTURE_IMAGES": if images { "1" } else { "0" }, "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1",
     }), "1.5.0").await;
     let (_, card) = stack
-        .create_historical_track_with(json!({"planner_provider":"antigravity"}))
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     let mut attachments = Vec::new();
     for size in sizes {
@@ -77,15 +95,38 @@ async fn rejected_image_does_not_create_a_receipt(images: bool, sizes: &[usize])
         post_input_with_attachments(stack.app.clone(), &card, "look", &attachments).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let entry = body["entry_id"].as_str().unwrap();
-    let runtime = stack.runtime(&card).await;
-    let harness = stack.harness(&runtime.id);
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while harness.refused_issuances_for_test() == 0 {
+    let (runtime, frame) = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let runtime = stack.runtime(&card).await;
+            let frame: calm_types::harness::snapshot::CanonicalHarnessSnapshot =
+                serde_json::from_value(runtime.handle_state_json.clone().unwrap()).unwrap();
+            if frame.canonical_inputs.attempts.iter().any(|attempt| {
+                matches!(
+                    attempt.delivery,
+                    calm_types::conversation::InputDeliveryFact::NotDispatched { .. }
+                )
+            }) {
+                break (runtime, frame);
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
     .await
-    .expect("local prompt refusal");
+    .expect("canonical NotDispatched fact");
+    assert!(frame.canonical_inputs.active.is_none());
+    let revision = frame
+        .canonical_inputs
+        .pending
+        .iter()
+        .find_map(|pending| match pending {
+            calm_types::conversation::PendingInput::Human { message, .. }
+                if message.message_id.as_str() == entry =>
+            {
+                Some(message.revision.get())
+            }
+            _ => None,
+        })
+        .expect("original Human input remains editable");
     let native = stack
         .runtime(&card)
         .await
@@ -99,17 +140,16 @@ async fn rejected_image_does_not_create_a_receipt(images: bool, sizes: &[usize])
             .await
             .unwrap();
     assert_eq!(receipts, 0);
-    assert!(harness.issuance_block().await.is_some());
     let (status, body) = stack
         .send(
             "DELETE",
-            &format!("/api/cards/{card}/planner/input/{entry}"),
-            Some(json!({"if_entry_rev":0})),
+            &format!("/api/cards/{card}/conversation/messages/{entry}"),
+            Some(json!({"carrier_id":runtime.id,"if_revision":revision})),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (_, sibling) = stack
-        .create_historical_track_with(json!({"planner_provider":"antigravity"}))
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     assert_eq!(
         turn(&stack, &sibling, "sibling continues", 1).await["status"],

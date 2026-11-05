@@ -162,6 +162,11 @@ async fn canonical_acp_kept_unknown_loads_same_native_on_new_process_and_fences_
     kept_unknown_loads_same_native_on_new_process(AgentProvider::OpenCode).await;
 }
 
+#[tokio::test]
+async fn canonical_antigravity_kept_unknown_resumes_original_native_without_resend() {
+    kept_unknown_loads_same_native_on_new_process(AgentProvider::Antigravity).await;
+}
+
 pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: AgentProvider) {
     let fx = Fixture::with_provider(provider, "lost", false).await;
     fx.dispatch().await.unwrap();
@@ -190,7 +195,10 @@ pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: Agen
     assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
     let native = &prompts[0]["params"]["sessionId"];
     assert_eq!(prompts[1]["params"]["sessionId"], *native);
-    let attach = if fx.provider == AgentProvider::OpenCode {
+    let attach = if matches!(
+        fx.provider,
+        AgentProvider::OpenCode | AgentProvider::Antigravity
+    ) {
         "session/resume"
     } else {
         "session/load"
@@ -207,9 +215,9 @@ pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: Agen
     );
     // Each process negotiates afresh before its session operation: Grok authenticates every launch.
     let negotiation: &[&str] = match &fx.provider {
-        AgentProvider::OpenCode => &["initialize"],
+        AgentProvider::OpenCode | AgentProvider::Antigravity => &["initialize"],
         AgentProvider::Grok => &["initialize", "authenticate"],
-        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+        AgentProvider::Codex | AgentProvider::Claude => {
             panic!("fixture requires a per-turn ACP provider")
         }
     };

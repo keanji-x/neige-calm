@@ -123,8 +123,16 @@ fn peer_env(
             ]
             .map(|(key, value)| (key.to_owned(), value.to_owned())),
         ),
-        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
-            panic!("{provider:?} has no per-turn ACP fixture")
+        AgentProvider::Antigravity => env.extend(
+            [
+                ("ACP_FIXTURE_AGENT_NAME", "Antigravity ACP Server"),
+                ("ACP_FIXTURE_VERSION", "1.5.0"),
+                ("ACP_FIXTURE_CAPTURE_SHARED_TOKEN", "1"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        ),
+        AgentProvider::Codex | AgentProvider::Claude => {
+            panic!("{provider:?} has no ACP fixture")
         }
     }
     env

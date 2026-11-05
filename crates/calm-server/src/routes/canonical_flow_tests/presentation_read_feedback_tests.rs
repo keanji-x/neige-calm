@@ -251,11 +251,18 @@ async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
     )
     .await;
     let (card, worker, _) = fixture.carrier(created["id"].as_str().unwrap()).await;
-    for (provider, supported) in [
-        ("codex", true),
-        ("claude", true),
-        ("opencode", true),
-        ("grok", true),
+    super::assistant_canonical::prepare_parent_resource(
+        &fixture,
+        &app,
+        &cookie,
+        created["id"].as_str().unwrap(),
+    )
+    .await;
+    for (provider, supported, images) in [
+        ("codex", true, true),
+        ("claude", true, true),
+        ("opencode", true, false),
+        ("grok", true, false),
     ] {
         (fixture.repo.db()).writer().execute(sqlx::query(
             "UPDATE cards SET payload=json_set(payload,'$.planner_provider',?1) WHERE id=?2",
@@ -279,8 +286,8 @@ async fn acp_grok_compact_canonical_run_uses_bound_provider_capability() {
             "{provider}: {run}"
         );
         assert_eq!(
-            run["attachments_supported"], false,
-            "canonical send admits only text"
+            run["attachments_supported"], images,
+            "the prepared managed workspace projects the bound provider's image capability"
         );
     }
     fixture.shutdown_process(&state).await;

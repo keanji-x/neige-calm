@@ -13,6 +13,8 @@ pub(super) struct Process {
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Vec<(String, String)>,
+    #[cfg(all(test, feature = "fixtures"))]
+    stop_scope: String,
 }
 impl Process {
     pub async fn spawn(
@@ -83,20 +85,23 @@ impl Process {
                 connection,
                 capabilities,
                 commands: Vec::new(),
+                #[cfg(all(test, feature = "fixtures"))]
+                stop_scope: host.agent_logs.to_string_lossy().into_owned(),
             }),
             Err(refusal) => {
                 connection.client.close();
                 let _ = child.start_kill();
-                reap(&mut child).await;
+                let _ = reap(&mut child).await;
                 Err(StartFailure::Failed(CalmError::Conflict(refusal)))
             }
         }
     }
     pub async fn stop(mut self) -> Result<()> {
         self.connection.client.close();
-        let _ = self.child.start_kill();
-        reap(&mut self.child).await;
-        Ok(())
+        self.child.start_kill()?;
+        #[cfg(all(test, feature = "fixtures"))]
+        crate::test_seams::operation_fault("acp-control-reap", &self.stop_scope)?;
+        reap(&mut self.child).await
     }
 }
 
@@ -209,13 +214,17 @@ pub(super) async fn negotiate(
     Ok(response.agent_capabilities)
 }
 
-async fn reap(child: &mut GroupChild) {
-    if let Ok((_, group)) =
-        tokio::time::timeout(Duration::from_secs(3), child.wait_and_release_group()).await
-    {
-        group.sweep();
-    }
-    // A cancelled/timed-out wait leaves GroupChild armed; Drop sweeps before reaping.
+async fn reap(child: &mut GroupChild) -> Result<()> {
+    // Cancellation/timeout leaves GroupChild armed. A cleanup attempt alone is
+    // not exit evidence for canonical Keep or generation retirement.
+    let (status, group) =
+        tokio::time::timeout(Duration::from_secs(3), child.wait_and_release_group())
+            .await
+            .map_err(|_| {
+                CalmError::Conflict("ACP process exit is unconfirmed after stop deadline".into())
+            })?;
+    group.sweep();
+    status.map(drop).map_err(Into::into)
 }
 
 pub(super) async fn setup_request(
@@ -303,6 +312,26 @@ mod setup_tests {
     use super::*;
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    #[tokio::test]
+    async fn control_reap_timeout_is_not_confirmed_exit() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30").env_clear().kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        let mut child = spawn_within(
+            command,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            reap(&mut child).await,
+            Err(CalmError::Conflict(_))
+        ));
+        child.kill_group();
+        reap(&mut child).await.unwrap();
+    }
+
     #[tokio::test]
     async fn m1_mapping_setup_native_errors_keep_ordinary_retry_policy() {
         use provider::acp::Error;

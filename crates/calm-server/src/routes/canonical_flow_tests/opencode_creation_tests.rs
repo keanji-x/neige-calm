@@ -10,7 +10,8 @@ pub(super) fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::pat
     match provider {
         AgentProvider::OpenCode => fixture.root.path().into(),
         AgentProvider::Grok => fixture.root.path().join("grok"),
-        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+        AgentProvider::Antigravity => fixture.root.path().join("antigravity"),
+        AgentProvider::Codex | AgentProvider::Claude => {
             panic!("{provider:?} has no ACP spy")
         }
     }
@@ -20,8 +21,8 @@ pub(super) fn peer_root(fixture: &Fixture, provider: &AgentProvider) -> std::pat
 fn other(provider: &AgentProvider) -> AgentProvider {
     match provider {
         AgentProvider::OpenCode => AgentProvider::Grok,
-        AgentProvider::Grok => AgentProvider::OpenCode,
-        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+        AgentProvider::Grok | AgentProvider::Antigravity => AgentProvider::OpenCode,
+        AgentProvider::Codex | AgentProvider::Claude => {
             panic!("{provider:?} has no ACP spy")
         }
     }
@@ -49,13 +50,19 @@ pub(super) fn configure(fixture: &mut Fixture) {
     let grok = fixture.root.path().join("grok");
     std::fs::create_dir_all(&grok).unwrap();
     std::fs::write(grok.join("scenario"), "reply").unwrap();
+    let antigravity = fixture.root.path().join("antigravity");
+    std::fs::create_dir_all(&antigravity).unwrap();
+    std::fs::write(antigravity.join("scenario"), "reply").unwrap();
     std::fs::write(&config, json!({"agents":[
         {"provider":"opencode","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
         "env":{"ACP_FIXTURE_ROOT":fixture.root.path()},"min_agent_version":"1.0.0"},
         {"provider":"grok","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
-        "env":{"ACP_FIXTURE_ROOT":grok,"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VENDOR":"xai","ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_VERSION":"1.0.62"},"min_agent_version":"1.0.0"}
+        "env":{"ACP_FIXTURE_ROOT":grok,"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VENDOR":"xai","ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_VERSION":"1.0.62"},"min_agent_version":"1.0.0"},
+        {"provider":"antigravity","command":"/usr/bin/python3",
+        "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
+        "env":{"ACP_FIXTURE_ROOT":antigravity,"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.0","ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"},"min_agent_version":"1.5.0"}
     ]}).to_string()).unwrap();
     fixture.acp_config = Some(config);
 }
@@ -77,6 +84,11 @@ async fn canonical_opencode_creation_accepts_before_ready_replays_and_wakes_afte
 #[tokio::test]
 async fn canonical_grok_creation_accepts_before_ready_replays_and_wakes_after_restart() {
     accepts_before_ready_replays_and_wakes_after_restart(AgentProvider::Grok).await;
+}
+
+#[tokio::test]
+async fn canonical_antigravity_creation_accepts_before_ready_replays_and_wakes_after_restart() {
+    accepts_before_ready_replays_and_wakes_after_restart(AgentProvider::Antigravity).await;
 }
 
 async fn accepts_before_ready_replays_and_wakes_after_restart(provider: AgentProvider) {
@@ -199,6 +211,11 @@ async fn canonical_opencode_creation_empty_is_lazy() {
 #[tokio::test]
 async fn canonical_grok_creation_empty_is_lazy() {
     empty_is_lazy(AgentProvider::Grok).await;
+}
+
+#[tokio::test]
+async fn canonical_antigravity_creation_empty_is_lazy() {
+    empty_is_lazy(AgentProvider::Antigravity).await;
 }
 
 async fn empty_is_lazy(provider: AgentProvider) {

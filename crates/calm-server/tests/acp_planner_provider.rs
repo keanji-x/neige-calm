@@ -1,3 +1,5 @@
+#[path = "cases/acp_canonical.rs"]
+mod acp_canonical;
 #[path = "cases/acp_compact.rs"]
 mod acp_compact;
 #[path = "cases/acp_grok_compact.rs"]

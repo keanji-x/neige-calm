@@ -397,6 +397,18 @@ fn cancel_outcome(
     }
 }
 
+#[cfg(all(test, feature = "fixtures"))]
+impl AcpPlannerSession {
+    pub(crate) fn stop_fault_scope_for_test(&self) -> String {
+        self.shared
+            .params
+            .host
+            .agent_logs
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 #[cfg(test)]
 mod control_tests;
 

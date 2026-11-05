@@ -20105,7 +20105,7 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentId"
             },
-            "description": "Uploaded image IDs. Assistant canonical input binds them before acceptance;\ncanonical Planner attachment input retains its existing refusal."
+            "description": "Uploaded image IDs. Canonical Planner and Assistant input binds them before acceptance."
           },
           "replaces_turn": {
             "type": [

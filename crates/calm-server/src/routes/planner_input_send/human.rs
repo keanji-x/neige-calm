@@ -42,9 +42,11 @@ pub(super) async fn accept(
                     shape.role,
                     &shape.payload,
                 )
-                .filter(|b| b.profile == crate::harness::profile::HarnessProfile::Assistant)
+                .filter(crate::harness::backend::factory::PlannerFactory::canonical_inputs)
                 .ok_or_else(|| {
-                    CalmError::Conflict("canonical attachments require the Assistant entry".into())
+                    CalmError::Conflict(
+                        "attachments require a canonical conversation binding".into(),
+                    )
                 })?;
                 let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
                     .bind(&card)
@@ -166,7 +168,7 @@ pub(super) async fn accept(
                 .ok_or_else(|| CalmError::Conflict("Planner provider binding is invalid".into()))?;
             if request.replaces_turn.is_some() {
                 return Err(CalmError::Conflict(
-                    "canonical input currently accepts ordinary text; attachment and history operations require their owning admission"
+                    "canonical history replacement requires its owning admission"
                         .into(),
                 ));
             }

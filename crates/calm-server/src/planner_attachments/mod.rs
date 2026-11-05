@@ -90,6 +90,20 @@ pub(crate) fn image_input_root(
     attachment_root(workspace, workspace_root)
 }
 
+/// Project the same provider/workspace admission used by uploads for either
+/// historical or canonical conversation reads. This is advisory, never a grant.
+pub(crate) async fn image_input_supported(
+    repo: &dyn crate::db::RepoRead,
+    provider: &crate::session_projection_repo::AgentProvider,
+    track_id: &crate::ids::TrackId,
+    workspace_root: &Path,
+) -> Result<bool> {
+    Ok(match repo.track_get(track_id.as_str()).await? {
+        Some(track) => image_input_root(provider, &track.workspace, workspace_root).is_ok(),
+        None => false,
+    })
+}
+
 const STAGING: &str = "staging";
 const BOUND: &str = "bound";
 
