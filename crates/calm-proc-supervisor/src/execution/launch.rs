@@ -172,11 +172,14 @@ impl Executor {
         let (process, native, reports) = match result {
             Ok(spawned) => spawned,
             Err(error) => {
-                #[cfg(target_os = "linux")]
                 if error.is::<process::NoChild>() {
+                    #[cfg(target_os = "linux")]
+                    let reason = format!("helper did not start: {error}");
+                    #[cfg(target_os = "macos")]
+                    let reason = format!("native process did not start: {error}");
                     record.phase = Phase::NoChild {
                         slot_version: Some(version),
-                        reason: format!("helper did not start: {error}"),
+                        reason,
                     };
                     record = self.latch(record)?;
                     self.persist(record.clone())?;
@@ -390,7 +393,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn failed_helper_exec_settles_no_child_and_survives_restart() {
-        use crate::execution::protocol_tests::{assert_released, consume, prepare, private};
+        use crate::execution::protocol_test_support::{assert_released, consume, prepare, private};
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let helper = temp.path().join("invalid-helper");

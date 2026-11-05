@@ -28,6 +28,9 @@ mod process;
 #[path = "process_macos.rs"]
 mod process;
 mod protocol;
+#[cfg(test)]
+#[path = "protocol_tests/support.rs"]
+mod protocol_test_support;
 #[cfg(all(test, target_os = "linux"))]
 mod protocol_tests;
 mod recovery;
