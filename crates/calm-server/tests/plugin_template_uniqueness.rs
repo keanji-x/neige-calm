@@ -233,21 +233,57 @@ async fn aborted_spawn_releases_admission_reservation() {
     std::fs::remove_file(&stub).expect("remove echo stub symlink");
     std::os::unix::fs::symlink("/bin/cat", &stub).expect("symlink cat stub");
 
-    let hanging_spawn = tokio::spawn({
+    let mut hanging_spawn = tokio::spawn({
         let host = Arc::clone(&host);
         async move { host.spawn(TRUSTED_A).await }
     });
     // Wait for the synthesized `Spawning` status so the abort lands after the reservation was inserted.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(s) = host.status(TRUSTED_A).await
-            && matches!(s.status, PluginRuntimeStatus::Spawning)
-        {
+        let last_observed = host.status(TRUSTED_A).await.map(|s| s.status);
+        if matches!(last_observed, Some(PluginRuntimeStatus::Spawning)) {
             break;
         }
         assert!(
             Instant::now() <= deadline,
-            "spawn never reached the admission reservation"
+            "spawn never reached the admission reservation; last-observed-status={}; \
+             spawn-result={}; owner-phase=unknown; observations are not a deadline snapshot \
+             or reservation history",
+            last_observed
+                .as_ref()
+                .map_or("None", PluginRuntimeStatus::wire_name),
+            {
+                use futures::FutureExt as _;
+                // Only polled after the original deadline check fails; never wait for completion.
+                match (&mut hanging_spawn).now_or_never() {
+                    None => "pending",
+                    Some(Ok(Ok(()))) => "Ok",
+                    Some(Ok(Err(err))) => match err {
+                        HostError::NotFound(_) => "HostError::NotFound",
+                        HostError::AlreadyRunning(_) => "HostError::AlreadyRunning",
+                        HostError::Disabled(_) => "HostError::Disabled",
+                        HostError::OperatorDisabled(_) => "HostError::OperatorDisabled",
+                        HostError::Spawn(_) => "HostError::Spawn",
+                        HostError::Mcp(_) => "HostError::Mcp",
+                        HostError::InitializeRejected(_) => "HostError::InitializeRejected",
+                        HostError::BadState(_) => "HostError::BadState",
+                        HostError::AuthMismatch(_) => "HostError::AuthMismatch",
+                        HostError::KernelTooOld(_) => "HostError::KernelTooOld",
+                        HostError::TemplateConflict { .. } => "HostError::TemplateConflict",
+                        HostError::MintedNameConflict { .. } => "HostError::MintedNameConflict",
+                        HostError::ConnectorUnavailable { .. } => "HostError::ConnectorUnavailable",
+                        HostError::MissingRequiredConfig { .. } => {
+                            "HostError::MissingRequiredConfig"
+                        }
+                        HostError::ConfigUnreadable { .. } => "HostError::ConfigUnreadable",
+                        HostError::LifecycleBusy(_) => "HostError::LifecycleBusy",
+                        HostError::UnsupportedForKind { .. } => "HostError::UnsupportedForKind",
+                    },
+                    Some(Err(err)) if err.is_cancelled() => "JoinError::cancelled",
+                    Some(Err(err)) if err.is_panic() => "JoinError::panic",
+                    Some(Err(_)) => "JoinError::unknown",
+                }
+            }
         );
         sleep(Duration::from_millis(10)).await;
     }
