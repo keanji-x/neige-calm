@@ -1295,6 +1295,7 @@ async fn create_track_with_planner_harness(
         .into_response())
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 async fn create_track_structure(
     s: RouteState,
     actor: ActorId,
