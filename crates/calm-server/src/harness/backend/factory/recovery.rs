@@ -41,6 +41,7 @@ impl ActiveRecoveryAdmission for HistoricalRecovery {
     }
 
     async fn validate_tx(&self, tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
+        crate::track_close::require_planner_start(&mut **tx, &self.runtime.card_id).await?;
         if let Some(source) = &self.source {
             source.require_card_tx(tx, &self.runtime.card_id).await?;
         }

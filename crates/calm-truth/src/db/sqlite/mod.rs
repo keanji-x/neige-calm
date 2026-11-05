@@ -236,11 +236,11 @@ pub use track_occupancy::{
 pub use track_recipe::{track_recipe_create_tx, track_recipe_get_tx};
 pub use track_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TRACK_TREE_DEPTH, MAX_TREE_TASK_BUDGET, TRACK_BOUNDED_PATH_SQL,
-    TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL, TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL,
-    TRACK_TREE_PLANNER_INVENTORY_SQL, TrackTreeTerm, TrackTreeTermOutcome, TreeShare,
-    can_add_tree_member, deterministic_share, track_tree_budget, track_tree_member_count,
-    track_tree_planner_inventory, track_tree_planner_inventory_by_member, track_tree_term,
-    tree_share_from_member_inventory,
+    TRACK_BOUNDED_SUBTREE_SQL, TRACK_ROOT_DEPTH_SQL, TRACK_TREE_MEMBERS_SQL,
+    TRACK_TREE_MEMBERS_WITH_FIXED_PLANNER_SQL, TRACK_TREE_PLANNER_INVENTORY_SQL, TrackTreeTerm,
+    TrackTreeTermOutcome, TreeShare, can_add_tree_member, deterministic_share, track_tree_budget,
+    track_tree_member_count, track_tree_planner_inventory, track_tree_planner_inventory_by_member,
+    track_tree_term, tree_share_from_member_inventory,
 };
 pub use track_workspace::{
     PlannerCleanEvidence, closed_worktree_candidate, closed_worktree_candidates,

@@ -34,6 +34,7 @@ pub async fn task_bind_child_track_tx(
     let stamped = sqlx::query(
         "UPDATE tasks SET child_track_id=COALESCE(child_track_id,?1),updated_at_ms=?2 \
          WHERE id=?3 AND track_id=?4 AND status='dispatched' AND spawn='sub-track' \
+           AND EXISTS(SELECT 1 FROM tracks parent WHERE parent.id=?4 AND parent.closed_at IS NULL) \
            AND (child_track_id IS NULL OR child_track_id=?1) \
            AND EXISTS(SELECT 1 FROM tracks child WHERE child.id=?1 \
                AND child.parent_track_id=?4 AND child.closed_at IS NULL) \

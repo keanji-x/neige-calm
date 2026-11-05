@@ -52,6 +52,13 @@ pub(super) async fn resolve(inner: &Inner) -> Result<PlannerPermissionMode, Issu
                 "This conversation's provider identity is invalid. Create a new conversation; the queued input and history are retained.".into()));
         }
     }
+    if role == Some(crate::model::CardRole::Planner)
+        && let Some(db) = inner.repo.sqlite_db()
+    {
+        crate::track_close::require_planner_start(db.read_pool(), card_id)
+            .await
+            .map_err(|error| IssuanceRefusal::retryable(error.to_string()))?;
+    }
     let has_mode =
         role.is_some_and(|role| planner_permission_mode::card_has_permission_mode(&card, role));
     if !has_mode {

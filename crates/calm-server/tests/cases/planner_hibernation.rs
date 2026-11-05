@@ -1,6 +1,23 @@
 use super::*;
 use calm_truth::db::RepoRead;
 
+async fn reopen_track(boot: &Boot) {
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tracks/{}", boot.track_id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"closed":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 async fn loaded_planner(boot: &Boot) -> (Card, String, PlannerHarness) {
     use calm_server::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
@@ -206,6 +223,7 @@ async fn planner_hibernat_closed_idle_session_sleeps_and_send_wakes_same_thread(
         .unwrap();
     assert_eq!(row.status, WorkerSessionState::Idle);
     assert_eq!(row.thread_id.as_deref(), Some(thread.as_str()));
+    reopen_track(&boot).await;
     let (status, body) = post_planner_input(
         crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),
@@ -494,12 +512,29 @@ async fn dispatch_wake(settlement: bool) {
         .dispatcher
         .catch_up_push(card.track_id.clone(), event, id)
         .await;
+    assert!(
+        boot.state.harness.get(&runtime).is_none(),
+        "a closed Planner stays stopped"
+    );
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .resumed_threads_for_test()
+            .is_empty()
+    );
+    reopen_track(&boot).await;
     let awakened = boot
         .state
         .harness
         .get(&runtime)
         .expect("Dispatcher restored sleeping Planner");
-    assert!(awakened.snapshot().await.unwrap().push_watermark >= id);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while awakened.snapshot().await.unwrap().push_watermark < id {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         boot.state
             .shared_codex_appserver
@@ -609,6 +644,7 @@ async fn planner_hibernat_send_resubscribes_thread_kept_loaded_by_another_client
     let loaded = json!({"thread":{"id":thread,"status":{"type":"idle"},"turns":[]}}).to_string();
     std::fs::write(sock.with_extension("thread-read"), &loaded).unwrap();
     std::fs::write(sock.with_extension("thread-resume"), &loaded).unwrap();
+    reopen_track(&boot).await;
     let (status, body) = post_planner_input(
         crate::support::authenticated_router::application(boot.state.clone()).await,
         &format!("/api/cards/{}/planner/input", card.id),

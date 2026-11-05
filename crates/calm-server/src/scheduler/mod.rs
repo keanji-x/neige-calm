@@ -3,6 +3,7 @@
 //! never reorders beyond `(priority DESC, created_at ASC, key ASC)`, never edits the plan.
 
 pub(crate) mod card_disposal;
+pub(crate) mod task_cancel;
 mod terminal_completion;
 mod timeout_cleanup;
 pub(crate) use terminal_completion::complete_terminal_task_tx;

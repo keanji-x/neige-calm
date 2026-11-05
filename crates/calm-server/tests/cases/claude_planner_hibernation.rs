@@ -1,22 +1,26 @@
 use super::claude_planner_stack_fixture::{Root, Stack};
 use axum::http::StatusCode;
 use serde_json::json;
+use std::time::Duration;
 
-async fn sleep_and_wake(reopen: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn planner_hibernat_claude_sleep_then_reopen() {
     let root = Root::new("exit");
     let stack = Stack::boot(&root).await;
     let (track, card) = stack.create_claude_track().await;
     let (outcome, _) = stack.run_turn(&root, &card, "exit", "before sleep").await;
     assert_eq!(outcome["status"], "completed");
     let runtime = stack.runtime(&card).await;
-    let (status, body) = stack
-        .send(
-            "PATCH",
-            &format!("/api/tracks/{track}"),
-            Some(json!({"closed":true})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    // A legacy closed row still uses idle hibernation. An explicit close request
+    // now retires the Planner through the strict lifecycle tested below.
+    stack
+        .repo()
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=1 WHERE id=?1").bind(&track))
+        .await
+        .unwrap();
     calm_server::terminal_sweeper::sweep(&stack.state)
         .await
         .unwrap();
@@ -25,17 +29,15 @@ async fn sleep_and_wake(reopen: bool) {
         !remains,
         "provider release failure must not leave an input-closed owner registered"
     );
-    if reopen {
-        let (status, body) = stack
-            .send(
-                "PATCH",
-                &format!("/api/tracks/{track}"),
-                Some(json!({"closed":false})),
-            )
-            .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(stack.state.harness.get(&runtime.id).is_some());
-    }
+    let (status, body) = stack
+        .send(
+            "PATCH",
+            &format!("/api/tracks/{track}"),
+            Some(json!({"closed":false})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(stack.state.harness.get(&runtime.id).is_some());
     let (outcome, _) = stack.run_turn(&root, &card, "exit", "after sleep").await;
     assert_eq!(outcome["status"], "completed");
     let awakened = stack.runtime(&card).await;
@@ -46,10 +48,56 @@ async fn sleep_and_wake(reopen: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn planner_hibernat_claude_sleep_then_send() {
-    sleep_and_wake(false).await;
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn planner_hibernat_claude_sleep_then_reopen() {
-    sleep_and_wake(true).await;
+async fn close_cancels_running_claude_planner_and_reopen_does_not_restart_it() {
+    use super::claude_planner_session_fixture::alive;
+    use super::claude_planner_wiring::wait_file;
+    let root = Root::new("hold");
+    let stack = Stack::boot(&root).await;
+    let (track, card) = stack.create_claude_track().await;
+    assert_eq!(
+        stack.post_input(&card, "keep working").await.0,
+        StatusCode::OK
+    );
+    wait_file(&root, "stdin").await;
+    let pid: i32 = root.read_fake("pid").unwrap().trim().parse().unwrap();
+    assert!(alive(pid));
+    let runtime = stack.runtime(&card).await;
+    let (status, body) = stack
+        .send(
+            "PATCH",
+            &format!("/api/tracks/{track}"),
+            Some(json!({"closed":true})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    stack.wait_provider_clear(&runtime.id).await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM track_close_cleanups WHERE worker_session_id=?1",
+            )
+            .bind(&runtime.id)
+            .fetch_one(stack.repo().sqlite_db().unwrap().read_pool())
+            .await
+            .unwrap();
+            if pending == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!alive(pid));
+    assert!(stack.state.harness.get(&runtime.id).is_none());
+    let (status, body) = stack
+        .send(
+            "PATCH",
+            &format!("/api/tracks/{track}"),
+            Some(json!({"closed":false})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(stack.state.harness.get(&runtime.id).is_none());
+    stack.shutdown().await;
 }

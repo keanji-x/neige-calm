@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-mod cancel_running;
+use crate::scheduler::task_cancel as cancel_running;
 mod list;
 
 pub const TOOL_TASK_CANCEL: &str = "neige_task_cancel";
