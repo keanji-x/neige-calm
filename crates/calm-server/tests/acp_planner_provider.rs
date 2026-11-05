@@ -1049,7 +1049,7 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
         "completed"
     );
     let runtime = stack.runtime(assistant).await;
-    stack.wait_phase(&runtime.id, "turn_completed").await;
+    acp_compact::wait_phase(&stack, &runtime.id, "turn_completed").await;
     let native = runtime.session_id.unwrap();
     let token = std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap();
     assert!(stack.token_authenticates(&token).await);
