@@ -1,10 +1,7 @@
 use super::protocol_test_support::descriptors;
 pub(super) use super::protocol_test_support::{assert_released, consume, prepare, private};
 use super::*;
-use std::{
-    os::{fd::AsFd, unix::fs::MetadataExt},
-    time::Duration,
-};
+use std::{os::unix::fs::MetadataExt, time::Duration};
 use workspace::execution::objects::HeldSourceObjects;
 
 fn executor(temp: &tempfile::TempDir, secret: &CapabilityToken) -> Arc<Executor> {
