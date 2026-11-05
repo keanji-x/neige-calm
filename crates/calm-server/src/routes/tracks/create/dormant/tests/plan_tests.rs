@@ -191,13 +191,24 @@ async fn registered_providers_create_canonically_with_or_without_first_input() {
             let mut request = fx.request(FIRST);
             request.planner_provider = provider.clone();
             request.first_message = first.then(|| FIRST.to_owned());
-            let plan = creation_plan(&fx.route, Some(&fx.source), &headers, request)
-                .await
-                .unwrap();
-            assert!(
-                matches!(plan, CreatePlan::Canonical(_)),
-                "{provider:?}, first={first}"
+            let supported = crate::harness::backend::factory::PlannerFactory::canonical_inputs(
+                &crate::harness::profile::PlannerBinding {
+                    profile: crate::harness::profile::HarnessProfile::Planner,
+                    provider: provider.clone(),
+                },
             );
+            let plan = creation_plan(&fx.route, Some(&fx.source), &headers, request).await;
+            if supported {
+                assert!(
+                    matches!(plan, Ok(CreatePlan::Canonical(_))),
+                    "{provider:?}, first={first}"
+                );
+            } else {
+                assert!(
+                    matches!(plan, Err(CalmError::Conflict(_))),
+                    "{provider:?}, first={first}"
+                );
+            }
         }
     }
 }
