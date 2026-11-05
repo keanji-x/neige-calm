@@ -1,7 +1,7 @@
 //! Bounded sequential observations after reception has already timed out.
 //! `sampling_completed` describes this collector, not operation completion or a deadline snapshot.
 use super::{AppState, CanonicalHarnessSnapshot, Fixture};
-use crate::operation::{Operation, OperationRepo, PhaseTag, SqlxOperationRepo};
+use crate::operation::{Operation, OperationRepo, Phase, PhaseTag, SqlxOperationRepo};
 use calm_truth::session_repo::SessionRepo;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use serde_json::Value;
@@ -69,7 +69,11 @@ fn operation_observation(result: crate::error::Result<Option<Operation>>) -> Str
         Ok(None) => return "missing".to_owned(),
         Err(_) => return "unavailable".to_owned(),
     };
-    let from_phase = match operation.phase_detail.as_ref() {
+    let from_phase_source = match &operation.phase {
+        Phase::Compensating => operation.compensation_state.as_ref(),
+        _ => operation.phase_detail.as_ref(),
+    };
+    let from_phase = match from_phase_source {
         Some(Value::Object(detail)) => match detail.get("from_phase") {
             Some(value) => match serde_json::from_value::<PhaseTag>(value.clone()) {
                 Ok(phase) => phase.as_str(),
