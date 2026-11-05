@@ -137,6 +137,7 @@ async fn canonical_grok_turns_migration_preserves_populated_graph() {
     provider_upgrade(
         189,
         190,
+        SeedContract::BeforeRetirement,
         "grok",
         "('codex','claude','opencode')",
         "('codex','claude','opencode','grok')",
@@ -149,6 +150,7 @@ async fn canonical_antigravity_turns_migration_preserves_populated_graph() {
     provider_upgrade(
         212,
         213,
+        SeedContract::Current,
         "antigravity",
         "('codex','claude','opencode','grok')",
         "('codex','claude','opencode','grok','antigravity')",
@@ -156,9 +158,15 @@ async fn canonical_antigravity_turns_migration_preserves_populated_graph() {
     .await;
 }
 
+enum SeedContract {
+    BeforeRetirement,
+    Current,
+}
+
 async fn provider_upgrade(
     from: i64,
     to: i64,
+    seed_contract: SeedContract,
     added: &str,
     old_providers: &str,
     new_providers: &str,
@@ -187,7 +195,12 @@ async fn provider_upgrade(
     }
     .unwrap();
     let repo = repo_on(db);
-    let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
+    let (_, card) = match seed_contract {
+        SeedContract::BeforeRetirement => {
+            crate::db::sqlite::historical_fixtures::conversation_card(&repo).await
+        }
+        SeedContract::Current => super::super::tests::fixture_card(&repo).await,
+    };
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
     // successor: every member and deferred edge of the rebuilt graph holds a row.
     let s = seed_repo(repo, card, false).await;
