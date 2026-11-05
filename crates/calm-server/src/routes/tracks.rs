@@ -1513,7 +1513,6 @@ pub(crate) async fn historical_managed_track_for_test(
 /// Start the planner harness for a create that carried no `first_message`, under the card's
 /// `fence`, which the caller took. Best-effort: a failed start is a `warn!` and the create still
 /// answers 201.
-#[cfg(any(test, feature = "fixtures"))]
 async fn start_planner_harness(
     fence: &CardStartFence,
     actor: &Actor,
