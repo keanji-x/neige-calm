@@ -611,6 +611,9 @@ jobs:
 
       - name: cargo nextest run --archive-file
         id: rust_nextest
+        env:
+          # Held-directory identity tests require ext4; hosted /tmp can be tmpfs.
+          TMPDIR: ${{ runner.temp }}
         # nextest runs no doctests and this repo has none (every doc fence carries a non-rust tag); add a `cargo test --doc` step if that changes.
         run: |
           scripts/run-ci-rust-nextest.sh \
