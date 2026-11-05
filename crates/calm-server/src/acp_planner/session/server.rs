@@ -294,6 +294,8 @@ pub(super) async fn issue(
         ));
     }
     let capabilities = server.process.capabilities.clone();
+    protocol::validate_prompt(&capabilities, &native, &blocks)
+        .map_err(|error| refused(&error.to_string()))?;
     let mut incoming = client.route_session(&native).map_err(wire_error)?;
     let turn = uuid::Uuid::new_v4().to_string();
     let receipt = AcpSubmission {

@@ -327,6 +327,12 @@ owns `OPENCODE_CONFIG_CONTENT`; registrations must not set it. See the
 [ACP profile guide](docs/architecture/2343-acp-planner.md) for permission precedence.
 
 
+## Antigravity ACP
+
+Antigravity 1.x (tested from 1.5.0) is available for Planner and Assistant cards.
+See the [Antigravity guide](docs/antigravity.md) for one-time sign-in,
+configuration, shared sessions, image inputs, and current capability limits.
+
 ## Project direction
 
 Neige Calm is converging on four user-facing ideas:
