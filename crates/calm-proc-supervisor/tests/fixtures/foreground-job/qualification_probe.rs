@@ -7,7 +7,7 @@ pub(super) fn run(root: &Path, source: &Path, _helper: &Path) -> anyhow::Result<
     let original_qualified = original.qualify_local()?;
     let original_identity = original.live_identity()?;
     let original_pair = qualify_directory_pair(original.root(), original.root())?;
-    super::bind_alias::enter_private_namespace()?;
+    enter_private_namespace()?;
     anyhow::ensure!(
         matches!(
             original_pair.revalidate(),
@@ -107,4 +107,32 @@ fn object_boundary(
     Ok(
         serde_json::json!({ "cwd_cross_mount_unsupported": cwd_cross_mount_unsupported, "changed_mount_unknown": changed_mount_unknown, "lost_mount_unknown": lost_mount_unknown, "no_payload": no_payload }),
     )
+}
+
+fn enter_private_namespace() -> anyhow::Result<()> {
+    // This executable starts before any runtime/worker threads; timeout is confined to this child.
+    unsafe {
+        libc::signal(libc::SIGALRM, libc::SIG_DFL);
+        libc::alarm(15);
+    }
+    anyhow::ensure!(
+        unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } == 0,
+        "private namespace unavailable: {}",
+        std::io::Error::last_os_error()
+    );
+    // Stop propagation before the bind operation, even when the inherited mounts were shared.
+    anyhow::ensure!(
+        unsafe {
+            libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            )
+        } == 0,
+        "make private: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(())
 }

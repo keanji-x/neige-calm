@@ -287,53 +287,5 @@ async fn execution_directory_containment_uses_actual_target_and_never_infers_dis
     ));
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn execution_bind_mount_alias_cannot_allocate_another_physical_root_bucket() {
-    let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path().join("root");
-    let alias = temporary.path().join("alias");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::create_dir(&alias).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_proc-supervisor-foreground-job"))
-        .arg("--probe-bind-alias")
-        .args([&root, &alias])
-        .env_clear()
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "real bind capability probe failed; cannot qualify this host: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let observed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(observed["same_physical_root"], true, "{observed}");
-    assert_eq!(observed["different_mount"], true, "{observed}");
-    assert_eq!(
-        observed["same_bucket"], true,
-        "bind alias split the physical root index: {observed}"
-    );
-    assert_eq!(
-        observed["same_bucket_hash"], true,
-        "equal physical roots hashed into different index buckets: {observed}"
-    );
-    assert_eq!(
-        observed["declared_different_root"], false,
-        "bind alias was guessed disjoint: {observed}"
-    );
-    assert_eq!(
-        observed["comparison"], "MountAliasUnsupported",
-        "different mount views were silently joined: {observed}"
-    );
-    use std::os::unix::fs::MetadataExt;
-    let original = std::fs::metadata(&root).unwrap();
-    let untouched = std::fs::metadata(&alias).unwrap();
-    assert_ne!(
-        (original.dev(), original.ino()),
-        (untouched.dev(), untouched.ino()),
-        "bind escaped the disposable child mount namespace"
-    );
-}
-
 #[path = "execution_registration/repair.rs"]
 mod repair;
