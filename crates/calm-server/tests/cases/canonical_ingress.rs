@@ -415,12 +415,18 @@ async fn unsupported_fresh_shapes_and_historical_keys_never_fall_back_to_v1() {
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let (card, runtime, before) = fixture.carrier(created["id"].as_str().unwrap()).await;
     let uri = format!("/api/cards/{card}/planner/input");
-    for body in [
-        json!({"text":"edit","replaces_turn":"native-turn"}),
-        json!({"text":"image","attachments":["00000000-0000-4000-8000-000000000000.png"]}),
+    for (body, expected) in [
+        (
+            json!({"text":"edit","replaces_turn":"native-turn"}),
+            StatusCode::CONFLICT,
+        ),
+        (
+            json!({"text":"image","attachments":["00000000-0000-4000-8000-000000000000.png"]}),
+            StatusCode::BAD_REQUEST,
+        ),
     ] {
         let (status, answer) = post(&app, &cookie, &uri, "unsupported-send", body).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+        assert_eq!(status, expected, "{answer}");
     }
     (fixture.repo.db())
         .writer()
