@@ -263,6 +263,13 @@ async fn child_flow(window: Window) {
     drop((app, state));
     fixture.repo.pool().close().await;
     fixture.repo = Arc::new(SqlxRepo::open(&fixture.url).await.unwrap());
+    if window == Window::Workspace {
+        crate::test_seams::install_pause_for_test(
+            "u11-child-workspace",
+            &task,
+            workspace_pause.clone(),
+        );
+    }
     let (state, _app, _cookie) = fixture.application().await;
     assert_eq!(identities(&fixture, &task).await, original);
     assert_eq!(
@@ -276,6 +283,10 @@ async fn child_flow(window: Window) {
         frozen_workspace
     );
     if window == Window::Workspace {
+        // Hold the boot retry before it observes the obstruction we are removing.
+        tokio::time::timeout(Duration::from_secs(5), workspace_pause.entered.notified())
+            .await
+            .unwrap();
         std::fs::remove_file(frozen_workspace.worktree.as_ref().unwrap()).unwrap();
     }
     let installed = crate::test_seams::PausePoint::default();
@@ -299,6 +310,9 @@ async fn child_flow(window: Window) {
         None
     };
     let (_client, mut peer) = connect(&state.shared_codex_appserver).await;
+    if window == Window::Workspace {
+        workspace_pause.release.notify_one();
+    }
     let scheduler = state.dispatcher.scheduler();
     let dispatcher = state.dispatcher.clone();
     let bootstrap_card = crate::ids::CardId::from(original.1.clone());
