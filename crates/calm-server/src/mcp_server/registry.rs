@@ -28,6 +28,8 @@ pub struct CardIdentity {
     pub session_id: String,
     pub track_id: Option<String>,
     pub area_id: String,
+    /// Credential identity captured at handshake. Internal catalog identities may be uncredentialed.
+    pub mcp_token_hash: Option<String>,
 }
 
 impl CardIdentity {
@@ -522,6 +524,7 @@ mod tests {
         provider: AgentProvider,
     ) -> CardIdentity {
         CardIdentity {
+            mcp_token_hash: None,
             card_id: CardId::from("card-1"),
             role,
             provider,

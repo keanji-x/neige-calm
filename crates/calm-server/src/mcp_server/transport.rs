@@ -535,6 +535,7 @@ async fn resolve_tools_call_identity(
         ConnectionIdentity::DaemonTrust => resolve_thread_identity(ctx, thread_id, name).await,
         ConnectionIdentity::CardBound(bound) => match thread_id {
             Some(tid) => {
+                ensure_card_bound_session_active(ctx, bound, "tools/call").await?;
                 let identity = resolve_thread_identity(ctx, Some(tid), name).await?;
                 if !same_bound_session(&identity, bound) {
                     warn_cross_session_reject(tid, &identity, bound);
@@ -1688,6 +1689,15 @@ async fn ensure_card_bound_session_active(
         })?;
     if !session.state.is_active_authority() {
         warn_bound_session_reject(method, bound, session.state.as_db_str());
+        return Err(bound_session_auth_error(method, bound));
+    }
+
+    if bound
+        .mcp_token_hash
+        .as_ref()
+        .is_some_and(|original| session.mcp_token_hash.as_ref() != Some(original))
+    {
+        warn_bound_session_reject(method, bound, "credential revoked or replaced");
         return Err(bound_session_auth_error(method, bound));
     }
 

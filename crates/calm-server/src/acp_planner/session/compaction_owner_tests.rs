@@ -278,7 +278,7 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
         cancel,
         approvals: std::sync::Weak::new(),
         native_session_id: "native".into(),
-        execution_id: id.clone(),
+        execution_id: Some(id.clone()),
     });
     let mut events = session.shared.events.subscribe();
     assert_eq!(
@@ -324,7 +324,7 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
         cancel,
         approvals: std::sync::Weak::new(),
         native_session_id: "native".into(),
-        execution_id: successor.clone(),
+        execution_id: Some(successor.clone()),
     });
     session
         .complete_lost_execution(
@@ -347,7 +347,7 @@ async fn acp_compaction_owner_failed_join_is_retired_without_turn_event() {
             .as_ref()
             .unwrap()
             .execution_id,
-        successor
+        Some(successor)
     );
     assert!(events.try_recv().is_err());
 }
@@ -369,7 +369,7 @@ async fn acp_compaction_owner_absence_allows_restart_but_active_successor_refuse
         cancel,
         approvals: std::sync::Weak::new(),
         native_session_id: "native".into(),
-        execution_id: successor,
+        execution_id: Some(successor),
     });
     assert!(session.lost_maintenance_target(&id, &turn).await.is_err());
 }

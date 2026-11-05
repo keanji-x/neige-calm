@@ -507,7 +507,7 @@ async fn stale_worker_session_rejects_initialize_over_transport() {
 }
 
 #[tokio::test]
-async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch() {
+async fn superseded_card_bound_connection_rejects_before_handler_dispatch() {
     let (registry, mut identity_rx) = registry_with_track_cat_identity_capture();
     let b = boot_with_registry(registry, None).await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
@@ -521,8 +521,12 @@ async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch(
     let resp = call_track_cat(&mut rd, &mut wr, 40, Some(&second_thread_id)).await;
     let err = resp
         .get("error")
-        .expect("cross-session threadId must be rejected");
-    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+        .expect("the old credential must be rejected");
+    assert_eq!(
+        err["code"],
+        json!(calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE),
+        "{err:#?}"
+    );
     assert!(
         err["message"]
             .as_str()
@@ -534,7 +538,7 @@ async fn card_bound_cross_session_thread_id_is_rejected_before_handler_dispatch(
         timeout(Duration::from_millis(50), identity_rx.recv())
             .await
             .is_err(),
-        "handler must not run after same_bound_session rejection"
+        "handler must not run after credential rejection"
     );
 
     let _ = (&b.server, &b.repo);

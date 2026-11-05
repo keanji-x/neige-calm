@@ -57,6 +57,7 @@ with (root / 'argv.jsonl').open('a') as output:
     output.write(json.dumps(sys.argv[1:]) + '\n')
 current, pending, permission, cancel_seen = None, None, None, False
 mcp_servers = []
+shared_pending = {}
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
@@ -281,7 +282,7 @@ for line in sys.stdin:
             if xai:
                 initialized['_meta'].update({'defaultAuthMethodId': 'cached_token', 'grokShell': True})
         else:
-            initialized['agentInfo'] = {'name': 'OpenCode', 'version': version}
+            initialized['agentInfo'] = {'name': os.environ.get('ACP_FIXTURE_AGENT_NAME', 'OpenCode'), 'version': version}
         methods = [m for m in os.environ.get('ACP_FIXTURE_AUTH_METHODS', '').split(',') if m]
         if methods:
             initialized['authMethods'] = [{'id': m, 'name': m} for m in methods]
@@ -307,6 +308,12 @@ for line in sys.stdin:
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         mcp_servers = params['mcpServers']
+        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
+            for server in mcp_servers:
+                for variable in server['env']:
+                    if variable['name'] == 'NEIGE_MCP_TOKEN':
+                        with open(root / f'{current}.test-token', 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+                            output.write(variable['value'])
         vendor('mcp/servers_updated')
         vendor('session/setup')
         check_mcp(params['mcpServers'])
@@ -319,6 +326,8 @@ for line in sys.stdin:
         attach_updates()
         result(request, {'sessionId': current, **config()})
     elif method == 'session/close':
+        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
+            current = params['sessionId']
         assert params['sessionId'] == current
         result(request, {})
     elif method in ['session/load', 'session/resume']:
@@ -429,6 +438,8 @@ for line in sys.stdin:
         else:
             result(request, {'unexpected': True} if scenario == 'grok-compact-invalid-response' else {})
     elif method == 'session/prompt':
+        if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
+            current = params['sessionId']
         assert params['sessionId'] == current
         state = json.loads(native_path().read_text())
         texts = [part['text'] for part in params['prompt']]
@@ -509,6 +520,8 @@ for line in sys.stdin:
                 update({'sessionUpdate': 'usage_update', 'used': 24100, 'size': 200000,
                         'cost': {'amount': 0.012, 'currency': 'USD'}})
             finish(request, 'usage reported')
+        elif scenario == 'shared-hold':
+            shared_pending[current] = request
         elif scenario in ['hold', 'server-drain']:
             pending = request
             if (root / 'prompt-consumption.sock').exists():
@@ -535,6 +548,12 @@ for line in sys.stdin:
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
             vendor('session/prompt_complete')
             finish(request, 'reply: ' + texts[-1])
+    elif method == 'session/cancel' and params['sessionId'] in shared_pending:
+        current = params['sessionId']
+        finish(shared_pending.pop(current), 'cancelled', 'cancelled')
+        for current, other in shared_pending.items():
+            finish(other, 'unaffected')
+        shared_pending.clear()
     elif method == 'session/cancel' and pending and permission is not None:
         # ACP: the client answers the pending permission request `cancelled` after the cancel.
         permission_log({'event': 'cancel'})

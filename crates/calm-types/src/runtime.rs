@@ -36,6 +36,8 @@ pub enum AgentProvider {
     /// Grok Build, xAI's agent CLI, served over ACP.
     #[serde(rename = "grok")]
     Grok,
+    #[serde(rename = "antigravity")]
+    Antigravity,
 }
 
 /// The protocol a provider's managed backend speaks. An intentional closed set owned here: each
@@ -60,14 +62,20 @@ impl AgentProtocol {
 impl AgentProvider {
     /// Every provider. A new variant is added here too: the exhaustive matches below do not see
     /// this list, so a test checks it against the enum's derived schema.
-    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Grok];
+    pub const ALL: [Self; 5] = [
+        Self::Codex,
+        Self::Claude,
+        Self::OpenCode,
+        Self::Grok,
+        Self::Antigravity,
+    ];
 
     /// The protocol this provider's managed backend speaks.
     pub fn protocol(&self) -> AgentProtocol {
         match self {
             Self::Codex => AgentProtocol::Codex,
             Self::Claude => AgentProtocol::Claude,
-            Self::OpenCode | Self::Grok => AgentProtocol::Acp,
+            Self::OpenCode | Self::Grok | Self::Antigravity => AgentProtocol::Acp,
         }
     }
 
@@ -78,6 +86,7 @@ impl AgentProvider {
             Self::Claude => "claude",
             Self::OpenCode => "opencode",
             Self::Grok => "grok",
+            Self::Antigravity => "antigravity",
         }
     }
 }

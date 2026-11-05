@@ -11,6 +11,7 @@ use calm_types::runtime::AgentProvider;
 use provider::acp::approvals::{AgentAsks, McpToolRequest, OwnTools};
 use provider::acp::protocol::InitializeResponse;
 
+mod antigravity;
 mod grok;
 mod opencode;
 
@@ -26,6 +27,7 @@ pub(crate) struct ContractCompaction {
 }
 
 pub(crate) struct AcpAgentProfile {
+    pub(crate) shared_server: bool,
     pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
@@ -156,6 +158,7 @@ impl AcpAgentProfile {
         match provider {
             AgentProvider::OpenCode => Some(&opencode::PROFILE),
             AgentProvider::Grok => Some(&grok::PROFILE),
+            AgentProvider::Antigravity => Some(&antigravity::PROFILE),
             AgentProvider::Codex | AgentProvider::Claude => None,
         }
     }

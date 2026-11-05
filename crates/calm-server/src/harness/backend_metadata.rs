@@ -21,6 +21,7 @@ pub(crate) enum ToolDiscovery {
     DeferredSearch,
     DirectMcp,
     SessionToolList,
+    SessionToolListWithTrackReads,
 }
 
 pub(crate) struct BackendMetadata {
@@ -45,6 +46,13 @@ impl super::backend::PlannerBackend {
         let (steer, images, manual_compact, history_replacement, discovery) = match provider {
             AgentProvider::Codex => (true, true, true, true, ToolDiscovery::DeferredSearch),
             AgentProvider::Claude => (false, true, true, true, ToolDiscovery::DirectMcp),
+            AgentProvider::Antigravity => (
+                false,
+                false,
+                false,
+                false,
+                ToolDiscovery::SessionToolListWithTrackReads,
+            ),
             AgentProvider::OpenCode => (
                 false,
                 false,
@@ -69,7 +77,7 @@ impl super::backend::PlannerBackend {
         };
         let interactive_pty = match provider {
             AgentProvider::Codex | AgentProvider::Claude => true,
-            AgentProvider::OpenCode | AgentProvider::Grok => false,
+            AgentProvider::OpenCode | AgentProvider::Grok | AgentProvider::Antigravity => false,
         };
         BackendMetadata {
             steer,
@@ -90,13 +98,43 @@ impl super::backend::PlannerBackend {
 }
 
 impl ToolDiscovery {
+    pub(crate) fn lists_track_reads(self) -> bool {
+        matches!(self, Self::SessionToolListWithTrackReads)
+    }
+
+    pub(crate) fn render_planner(self, template: &str) -> String {
+        if !self.lists_track_reads() {
+            return template.to_owned();
+        }
+        // Only rewrite inline commands from the built-in template, before any
+        // user or plugin content is added to the instructions.
+        template
+            .split('`')
+            .enumerate()
+            .map(|(index, text)| {
+                if index % 2 == 0 {
+                    return text.to_owned();
+                }
+                match text {
+                    "neige track status" => "`neige_track_status`".to_owned(),
+                    "neige track ls" => "`neige_track_ls`".to_owned(),
+                    "neige track cat" => "`neige_track_cat`".to_owned(),
+                    command => match command.strip_prefix("neige track cat ") {
+                        Some(path) => format!("`neige_track_cat` with `path: {path}`"),
+                        None => format!("`{text}`"),
+                    },
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn render_assistant(self, template: &str) -> String {
         let tools = match self {
             Self::DeferredSearch => return template.to_owned(),
             Self::DirectMcp => {
                 "## Report tools\n\nNeige report tools are already in your tool list as `mcp__neige__<name>`; call them directly.\n\n"
             }
-            Self::SessionToolList => {
+            Self::SessionToolList | Self::SessionToolListWithTrackReads => {
                 "## Report tools\n\nUse the Neige MCP report tools in the tool list supplied by this session. Tool listing is not a grant; only Assistant tools are authorized.\n\n"
             }
         };
@@ -127,7 +165,10 @@ mod tests {
         {
             let metadata = super::super::backend::PlannerBackend::metadata(&provider);
             assert!(
-                matches!(metadata.discovery, ToolDiscovery::SessionToolList),
+                matches!(
+                    metadata.discovery,
+                    ToolDiscovery::SessionToolList | ToolDiscovery::SessionToolListWithTrackReads
+                ),
                 "{provider:?}"
             );
             assert!(!metadata.steer, "{provider:?}");

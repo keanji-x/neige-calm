@@ -190,7 +190,8 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
                     provider @ (WorkerProviderKind::Codex
                     | WorkerProviderKind::Claude
                     | WorkerProviderKind::OpenCode
-                    | WorkerProviderKind::Grok),
+                    | WorkerProviderKind::Grok
+                    | WorkerProviderKind::Antigravity),
                 ) => {
                     let agent = crate::session_projection_repo::AgentProvider::try_from(provider)
                         .map_err(|error| crate::error::CalmError::Internal(error.into()))?;

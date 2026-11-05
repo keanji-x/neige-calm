@@ -990,11 +990,14 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "05f0d12d919a8158b7500d019af891eaebf65d9c5badf496e377fd1a2a5a2fa1",
+    "description_sha256": "f9ed95cf85281774ed1621a8aaa4340592975174d197fe9f80a95a2d20f1081f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "artifacts": {
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "attempt_id": {

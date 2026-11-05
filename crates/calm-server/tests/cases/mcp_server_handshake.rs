@@ -710,7 +710,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
 }
 
 #[tokio::test]
-async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
+async fn superseded_card_bound_connection_rejects_before_thread_resolution() {
     let b = boot().await;
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     send_frame(&mut wr, initialize_frame(1, &b.raw_token)).await;
@@ -741,8 +741,12 @@ async fn card_bound_connection_rejects_same_card_cross_session_thread_id() {
     let resp = recv_frame(&mut rd).await;
     let err = resp
         .get("error")
-        .expect("cross-session threadId must be rejected before handler dispatch");
-    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+        .expect("the old credential must be rejected before thread resolution");
+    assert_eq!(
+        err["code"],
+        json!(calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE),
+        "{err:#?}"
+    );
     assert!(
         err["message"]
             .as_str()

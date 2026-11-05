@@ -5,16 +5,26 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 const BUDGET: Duration = Duration::from_secs(2);
-fn peer() -> (
+fn peer() -> Peer {
+    peer_with(false)
+}
+
+type Peer = (
     Connection,
     BufReader<tokio::io::ReadHalf<DuplexStream>>,
     tokio::io::WriteHalf<DuplexStream>,
-) {
+);
+
+fn peer_with(shared: bool) -> Peer {
     let (client, agent) = tokio::io::duplex(64 * 1024);
     let (read, write) = tokio::io::split(client);
     let (agent_read, agent_write) = tokio::io::split(agent);
     (
-        Connection::new(read, write),
+        if shared {
+            Connection::new_shared(read, write)
+        } else {
+            Connection::new(read, write)
+        },
         BufReader::new(agent_read),
         agent_write,
     )
@@ -701,3 +711,129 @@ fn invalid_usage_update_is_ignored_without_failing_the_turn() {
 
 #[path = "disconnect_tests.rs"]
 mod disconnect_tests;
+
+#[tokio::test]
+async fn shared_routes_isolate_session_requests_and_updates() {
+    let (mut connection, _, mut writer) = peer();
+    let mut a = connection.client.route_session("a").unwrap();
+    let mut b = connection.client.route_session("b").unwrap();
+    assert!(matches!(
+        connection.client.route_session("a"),
+        Err(Error::Protocol(_))
+    ));
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","id":"approval","method":"session/request_permission","params":{"sessionId":"b"}}),
+    )
+    .await;
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"a"}}),
+    )
+    .await;
+    assert!(matches!(
+        tokio::time::timeout(BUDGET, a.recv()).await.unwrap(),
+        Some(Incoming::Notification { params, .. }) if params["sessionId"] == "a"
+    ));
+    assert!(matches!(
+        tokio::time::timeout(BUDGET, b.recv()).await.unwrap(),
+        Some(Incoming::Request { id, params, .. }) if id == "approval" && params["sessionId"] == "b"
+    ));
+    assert!(connection.incoming.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn scoped_prompt_timeout_does_not_close_sibling_and_consumes_late_reply() {
+    let (connection, mut reader, mut writer) = peer();
+    let _a = connection.client.route_session("a").unwrap();
+    let _b = connection.client.route_session("b").unwrap();
+    let send_prompt = |session| {
+        let client = connection.client.clone();
+        async move {
+            client
+                .submit_gated("session/prompt", json!({"sessionId":session}), &allow())
+                .await
+                .unwrap()
+        }
+    };
+    let a = send_prompt("a").await;
+    let a_request = read(&mut reader).await;
+    assert_eq!(a.wait(Duration::ZERO).await.unwrap_err(), Error::Timeout);
+    assert!(connection.client.terminal_error().is_none());
+    let b = send_prompt("b").await;
+    let b_request = read(&mut reader).await;
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","id":a_request["id"],"result":{}}),
+    )
+    .await;
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","id":b_request["id"],"result":{"stopReason":"end_turn"}}),
+    )
+    .await;
+    assert_eq!(b.wait(BUDGET).await.unwrap()["stopReason"], "end_turn");
+}
+
+#[tokio::test]
+async fn overflowing_one_session_route_preserves_the_other_route() {
+    let (connection, _, mut writer) = peer_with(true);
+    let a = connection.client.route_session("a").unwrap();
+    let mut overflow = a.overflow();
+    let mut b = connection.client.route_session("b").unwrap();
+    for id in 0..600 {
+        send(
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{"sessionId":"a"}}),
+        )
+        .await;
+    }
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"b"}}),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(BUDGET, b.recv())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        tokio::time::timeout(BUDGET, overflow.wait_for(|failed| *failed))
+            .await
+            .unwrap()
+            .is_ok()
+    );
+    assert!(connection.client.terminal_error().is_none());
+}
+
+#[tokio::test]
+async fn orphan_request_flood_drains_a_shared_generation_without_failing_a_live_prompt() {
+    let (connection, mut reader, mut writer) = peer_with(true);
+    let _live = connection.client.route_session("live").unwrap();
+    let prompt = connection
+        .client
+        .submit_gated("session/prompt", json!({"sessionId":"live"}), &allow())
+        .await
+        .unwrap();
+    let request = read(&mut reader).await;
+    for id in 0..300 {
+        send(&mut writer, json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{"sessionId":"orphan"}})).await;
+    }
+    send(
+        &mut writer,
+        json!({"jsonrpc":"2.0","id":request["id"],"result":{"stopReason":"end_turn"}}),
+    )
+    .await;
+    assert_eq!(prompt.wait(BUDGET).await.unwrap()["stopReason"], "end_turn");
+    assert!(connection.client.shared_retiring());
+    assert!(connection.client.terminal_error().is_none());
+    assert!(matches!(
+        connection
+            .client
+            .submit_gated("session/prompt", json!({"sessionId":"live"}), &allow())
+            .await,
+        Err(WriteFailure::BeforeWrite(Error::Refused(_)))
+    ));
+}

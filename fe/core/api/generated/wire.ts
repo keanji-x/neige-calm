@@ -9,7 +9,7 @@ export type AbandonConversationResult = { card_id: string, old_carrier_id: strin
  */
 export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiPlanner", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiPlannerSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId } | { "kind": "AiManagedSession", "id": WorkerSessionId };
 
-export type AgentProvider = "opencode" | "codex" | "claude" | "grok";
+export type AgentProvider = "opencode" | "codex" | "claude" | "grok" | "antigravity";
 
 export type Area = { id: AreaId, name: string, color: string, sort: number, kind: AreaKind, 
 /**

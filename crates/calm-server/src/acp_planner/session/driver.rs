@@ -17,59 +17,17 @@ pub(super) async fn drive(
 ) -> super::execution_end::Settlement {
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
-    let outcome=async {
-        let pending=pending.await.map_err(|_|CalmError::Conflict("ACP prompt handoff was cancelled".into()))?.map_err(|error| wire_error(error.into_error()))?;
-        let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
-        let mut stop_at=None;
-        let mut incoming_open=true;
-        loop {tokio::select! {
-            result=&mut response=>{
-                while let Ok(incoming)=process.connection.incoming.try_recv() {
-                    match incoming {
-                        Incoming::Notification{method,params:frame} if method=="session/update"=>{
-                            for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
-                        },
-                        Incoming::Request{..}=>return Err(CalmError::Conflict("ACP completed while a client request was still pending".into())),
-                        _=>{},
-                    }
-                }
-                let response=match result {
-                    // The agent answered: the turn is over, so its outcome is known.
-                    Err(provider::acp::Error::Remote{message,..})=>return Ok(translator.fail(&message,crate::model::now_ms())),
-                    result=>result.map_err(wire_error)?,
-                };
-                let response:protocol::PromptResponse=protocol::decode(response).map_err(wire_error)?;
-                // A turn the agent ended itself after the turn declined one of its requests ends
-                // with that reason, not as one the person interrupted.
-                if matches!(response.stop_reason,protocol::StopReason::Cancelled) && stop_at.is_none()
-                    && let Some(reason)=approvals.declined() {
-                    return Ok(translator.fail(&reason,crate::model::now_ms()));
-                }
-                return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
-            },
-            changed=cancelled.changed(),if stop_at.is_none()=>{
-                if changed.is_err() || !matches!(*cancelled.borrow(), CancelRequest::Running) {
-                    stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
-                    if !matches!(*cancelled.borrow(), CancelRequest::Attempted) {
-                    tokio::time::timeout(Duration::from_secs(3),async {
-                        approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
-                    }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
-                    }
-                }
-            },
-            _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
-            incoming=process.connection.incoming.recv(),if incoming_open=>match incoming {
-                Some(Incoming::Notification{method,params}) if method=="session/update"=>{
-                    for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
-                },
-                Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
-                Some(Incoming::Notification{..})=>{},
-                // The RPC owner publishes its exact result before dropping this sender.
-                // EOF can race with an already queued success or protocol failure.
-                None=>incoming_open=false,
-            }
-        }}
-    }.await;
+    let outcome = collect_turn(
+        &shared,
+        &receipt,
+        &mut process.connection.incoming,
+        &mut translator,
+        pending,
+        &mut cancelled,
+        &approvals,
+        &mut retained,
+    )
+    .await;
     // Preserve the cause before any cleanup can close pipes or terminate the process.
     // Execution output observations use this same execution identity.
     if let Err(error) = &outcome {
@@ -229,7 +187,80 @@ pub(super) async fn drive(
         super::execution_end::Settlement::Unconfirmed
     }
 }
-fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
+/// Read a single turn's wire events and terminal response. The caller owns
+/// cleanup and persistence for its execution mode.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn collect_turn(
+    shared: &Shared,
+    receipt: &AcpSubmission,
+    incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
+    translator: &mut TurnTranslator,
+    pending: tokio::sync::oneshot::Receiver<
+        std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
+    >,
+    cancelled: &mut watch::Receiver<CancelRequest>,
+    approvals: &Approvals,
+    retained: &mut Vec<Value>,
+) -> Result<Vec<PlannerEvent>> {
+    let pending = pending
+        .await
+        .map_err(|_| CalmError::Conflict("ACP prompt handoff was cancelled".into()))?
+        .map_err(|error| wire_error(error.into_error()))?;
+    let response = pending.wait(Duration::from_secs(3600));
+    tokio::pin!(response);
+    let mut stop_at = None;
+    let mut incoming_open = true;
+    loop {
+        tokio::select! {
+            result=&mut response=>{
+                while let Ok(incoming)=incoming.try_recv() {
+                    match incoming {
+                        Incoming::Notification{method,params:frame} if method=="session/update"=>{
+                            for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {retain_item(retained,&event);let _=shared.events.send(event);}
+                        },
+                        Incoming::Request{..}=>return Err(CalmError::Conflict("ACP completed while a client request was still pending".into())),
+                        _=>{},
+                    }
+                }
+                let response=match result {
+                    // The agent answered: the turn is over, so its outcome is known.
+                    Err(provider::acp::Error::Remote{message,..})=>return Ok(translator.fail(&message,crate::model::now_ms())),
+                    result=>result.map_err(wire_error)?,
+                };
+                let response:protocol::PromptResponse=protocol::decode(response).map_err(wire_error)?;
+                // A turn the agent ended itself after the turn declined one of its requests ends
+                // with that reason, not as one the person interrupted.
+                if matches!(response.stop_reason,protocol::StopReason::Cancelled) && stop_at.is_none()
+                    && let Some(reason)=approvals.declined() {
+                    return Ok(translator.fail(&reason,crate::model::now_ms()));
+                }
+                return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
+            },
+            changed=cancelled.changed(),if stop_at.is_none()=>{
+                if changed.is_err() || !matches!(*cancelled.borrow(), CancelRequest::Running) {
+                    stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
+                    if !matches!(*cancelled.borrow(), CancelRequest::Attempted) {
+                    tokio::time::timeout(Duration::from_secs(3),async {
+                        approvals.cancel(&receipt.native_session_id, shared.admission(&receipt.thread_id, None, Some(&receipt.native_session_id), Some(&receipt.turn_id)).gate()).await.map_err(wire_error)
+                    }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
+                    }
+                }
+            },
+            _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
+            message=incoming.recv(),if incoming_open=>match message {
+                Some(Incoming::Notification{method,params}) if method=="session/update"=>{
+                    for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(retained,&event);let _=shared.events.send(event);}
+                },
+                Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
+                Some(Incoming::Notification{..})=>{},
+                // The RPC owner publishes its exact result before dropping this sender.
+                // EOF can race with an already queued success or protocol failure.
+                None=>incoming_open=false,
+            }
+        }
+    }
+}
+pub(super) fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
     if let PlannerEventKind::Item { params, phase, .. } = &event.kind
         && let Some(id) = params["item"]["id"].as_str()
     {
@@ -246,7 +277,7 @@ fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
 }
 
 /// Persistence pending is not execution unknown. This function has no provider access.
-async fn settle_receipt(
+pub(super) async fn settle_receipt(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     outcome_json: Option<&str>,

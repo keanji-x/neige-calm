@@ -123,7 +123,9 @@ fn peer_env(
             ]
             .map(|(key, value)| (key.to_owned(), value.to_owned())),
         ),
-        AgentProvider::Codex | AgentProvider::Claude => panic!("{provider:?} does not speak ACP"),
+        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+            panic!("{provider:?} has no per-turn ACP fixture")
+        }
     }
     env
 }

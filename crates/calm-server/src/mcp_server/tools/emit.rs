@@ -51,7 +51,7 @@ fn task_done_descriptor() -> ToolDescriptor {
             "properties": {
                 "attempt_id": { "type": "string", "minLength": 1 },
                 "result": {},
-                "artifacts": { "type": "array" },
+                "artifacts": { "type": "array", "items": { "type": "string" } },
                 "commit_message": { "type": "string" }
             }
         }),

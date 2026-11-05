@@ -23,19 +23,22 @@ pub(crate) async fn tool_descriptors_for_connection(
             None => bootstrap_tool_descriptors(ctx, registry).await,
         },
         ConnectionIdentity::CardBound(bound) => match thread_id {
-            Some(tid) => match resolve_thread_identity(ctx, Some(tid), "tools/list")
-                .await
-                .ok()
-            {
-                Some(identity) if same_bound_session(&identity, bound) => {
-                    tool_descriptors_for_identity(ctx, registry, &identity).await?
+            Some(tid) => {
+                ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
+                match resolve_thread_identity(ctx, Some(tid), "tools/list")
+                    .await
+                    .ok()
+                {
+                    Some(identity) if same_bound_session(&identity, bound) => {
+                        tool_descriptors_for_identity(ctx, registry, &identity).await?
+                    }
+                    Some(identity) => {
+                        warn_cross_session_reject(tid, &identity, bound);
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
                 }
-                Some(identity) => {
-                    warn_cross_session_reject(tid, &identity, bound);
-                    Vec::new()
-                }
-                _ => Vec::new(),
-            },
+            }
             None => {
                 let identity = card_bound_identity(ctx, bound, "tools/list").await?;
                 tool_descriptors_for_identity(ctx, registry, &identity).await?
@@ -99,6 +102,7 @@ impl SessionToolNames {
 pub(crate) struct SessionCatalog {
     pub(crate) role: CardRole,
     track_is_admin: bool,
+    lists_track_reads: bool,
     /// Every tool this caller may call, the managed-track restriction applied.
     callable: Vec<ToolDescriptor>,
     /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
@@ -125,6 +129,11 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
+            lists_track_reads: crate::harness::backend::PlannerBackend::metadata(
+                &identity.provider,
+            )
+            .discovery
+            .lists_track_reads(),
             track_is_admin: match ctx.sqlite_db.as_ref() {
                 Some(pool) => crate::area_admin::card_is_admin(pool.read_pool(), &identity.card_id)
                     .await
@@ -140,7 +149,16 @@ impl SessionCatalog {
     pub(crate) fn listed(&self) -> impl Iterator<Item = &ToolDescriptor> {
         self.callable
             .iter()
-            .filter(|descriptor| descriptor.listed_for.contains(&self.role))
+            .filter(|descriptor| {
+                descriptor.listed_for.contains(&self.role)
+                    || (self.lists_track_reads
+                        && matches!(
+                            descriptor.name.as_str(),
+                            crate::mcp_server::tools::track_state::TOOL_TRACK_STATUS
+                                | crate::mcp_server::tools::track_file::TOOL_TRACK_LS
+                                | crate::mcp_server::tools::track_file::TOOL_TRACK_CAT
+                        ))
+            })
             .filter(|descriptor| {
                 self.track_is_admin
                     || !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())

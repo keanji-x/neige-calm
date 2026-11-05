@@ -349,6 +349,7 @@ async fn tool_call_vs_fence(straddle: Option<&'static str>) {
         root.path().into(),
     );
     let identity = ConnectionIdentity::CardBound(CardIdentity {
+        mcp_token_hash: None,
         card_id: row.card.clone().into(),
         role: CardRole::Planner,
         provider: AgentProvider::Codex,

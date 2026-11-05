@@ -152,6 +152,7 @@ pub(crate) fn card_identity_of(session: &WorkerSession, card: SessionCardIdentit
         session_id: session.id.as_str().to_string(),
         track_id: Some(session.track_id.as_str().to_string()),
         area_id: card.area_id.as_str().to_string(),
+        mcp_token_hash: session.mcp_token_hash.clone(),
     }
 }
 

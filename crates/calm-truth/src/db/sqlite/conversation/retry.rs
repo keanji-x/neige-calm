@@ -71,7 +71,7 @@ pub(in crate::db::sqlite) async fn retry_availability_tx(
         AgentProvider::Claude => thread
             .as_deref()
             .is_some_and(|thread| uuid::Uuid::try_parse(thread).is_ok()),
-        AgentProvider::OpenCode | AgentProvider::Grok => false,
+        AgentProvider::OpenCode | AgentProvider::Grok | AgentProvider::Antigravity => false,
     };
     let original = submission_identity_tx(tx, predecessor).await?;
     let ConversationExecutionProvenance::LegacySingleUserDeployment {

@@ -209,7 +209,9 @@ pub(super) async fn kept_unknown_loads_same_native_on_new_process(provider: Agen
     let negotiation: &[&str] = match &fx.provider {
         AgentProvider::OpenCode => &["initialize"],
         AgentProvider::Grok => &["initialize", "authenticate"],
-        AgentProvider::Codex | AgentProvider::Claude => panic!("not an ACP provider"),
+        AgentProvider::Codex | AgentProvider::Claude | AgentProvider::Antigravity => {
+            panic!("fixture requires a per-turn ACP provider")
+        }
     };
     for (prompt, operation) in [(prompts[0], "session/new"), (prompts[1], attach)] {
         let methods: Vec<_> = requests

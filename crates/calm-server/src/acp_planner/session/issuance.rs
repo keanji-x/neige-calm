@@ -106,7 +106,6 @@ impl AcpPlannerSession {
             Some(&params.host.provider_execution),
         )
         .await?;
-        let engine = crate::provider_execution::engine(params.engine.as_ref())?;
         input.check_source().await?;
         if shared.state.lock().expect("ACP state").active.is_some()
             || acp_submission_unresolved(pool.read_pool(), &params.worker_session_id)
@@ -146,14 +145,6 @@ impl AcpPlannerSession {
             .map_err(|error| refused(&error.to_string()))?;
         super::super::execution::validate_registration(registration)?;
         let digest = registration.config.native_session_digest(&params.cwd)?;
-        // Neige's server under this launch's own key and, for an agent that asks before its
-        // tools, the tools it lists the session now.
-        let server = registration.profile.mcp_server_key();
-        let tools = match registration.profile.mcp_tool_request {
-            Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
-            None => Vec::new(),
-        };
-        let asks = registration.profile.asks(&server, tools);
         crate::db::sqlite::acp_registration_claim(
             &pool,
             &params.worker_session_id,
@@ -162,6 +153,33 @@ impl AcpPlannerSession {
         )
         .await
         .map_err(|error| input.registration_failure(error))?;
+        if registration.profile.shared_server {
+            return super::server::issue(
+                shared,
+                registration,
+                row.agent_session_id,
+                thread,
+                client,
+                &input,
+                items,
+                blocks,
+                selection,
+                permission,
+                held,
+                receipt_turn,
+                track_fence,
+            )
+            .await;
+        }
+        // Neige's server under this launch's own key and, for an agent that asks before its
+        // tools, the tools it lists the session now.
+        let server = registration.profile.mcp_server_key();
+        let tools = match registration.profile.mcp_tool_request {
+            Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
+            None => Vec::new(),
+        };
+        let asks = registration.profile.asks(&server, tools);
+        let engine = crate::provider_execution::engine(params.engine.as_ref())?;
         let mut guard = IssueGuard::new(shared);
         #[cfg(all(test, feature = "fixtures"))]
         super::super::test_seams::wait_issue(
@@ -343,7 +361,7 @@ impl AcpPlannerSession {
             cancel,
             approvals: Arc::downgrade(&approvals),
             native_session_id: native.clone(),
-            execution_id: execution_id.clone(),
+            execution_id: Some(execution_id.clone()),
         });
         let translator = TurnTranslator::new(TurnContext {
             thread_id: thread.into(),

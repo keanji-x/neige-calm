@@ -64,7 +64,12 @@ impl Process {
         })?
         .map_err(|error| StartFailure::Failed(error.into()))?;
         keep_stderr(child.stderr(), stderr_log(host, worker));
-        let connection = Connection::new(
+        let connect = if profile.shared_server {
+            Connection::new_shared
+        } else {
+            Connection::new
+        };
+        let connection = connect(
             child
                 .stdout()
                 .ok_or_else(|| CalmError::Internal("ACP stdout missing".into()))?,
@@ -233,7 +238,8 @@ pub(super) async fn setup_request(
             result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,result).await,
             incoming=connection.incoming.recv(),if incoming_open=>match incoming {
                 Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
-                Some(frame @ Incoming::Notification{..})=>observe_commands(commands, &frame), // Replay is setup only.
+                Some(frame @ Incoming::Notification{..}) if !connection.client.is_shared()=>observe_commands(commands, &frame), // Replay is setup only.
+                Some(Incoming::Notification{..})=>{},
 
                 None=>incoming_open=false,
             }
@@ -271,8 +277,18 @@ async fn finish_setup(
 ) -> std::result::Result<Value, StartFailure> {
     // The transport delivered these frames before the response. Drain replay at this boundary,
     // even when select chooses the ready response before the incoming branch.
-    while let Ok(frame) = incoming.try_recv() {
-        observe_commands(commands, &frame);
+    let limit = if client.is_shared() {
+        incoming.max_capacity()
+    } else {
+        usize::MAX
+    };
+    for _ in 0..limit {
+        let Ok(frame) = incoming.try_recv() else {
+            break;
+        };
+        if !client.is_shared() {
+            observe_commands(commands, &frame);
+        }
         if let Incoming::Request { id, method, .. } = frame {
             refuse(client, id, &method)
                 .await

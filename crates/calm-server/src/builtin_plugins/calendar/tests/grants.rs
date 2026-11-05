@@ -74,6 +74,7 @@ async fn answer(
 }
 async fn visible(fx: &Fixture, who: &ToolCallIdentity) -> Vec<String> {
     let bound = ConnectionIdentity::CardBound(CardIdentity {
+        mcp_token_hash: None,
         card_id: who.card_id.clone().into(),
         role: who.role,
         provider: who.provider.clone(),
@@ -386,6 +387,7 @@ async fn track_plugin_access_materialized_cli_connector_uses_declared_identity()
         "real connector materializes live tools"
     );
     let bound = ConnectionIdentity::CardBound(CardIdentity {
+        mcp_token_hash: None,
         card_id: who.card_id.clone().into(),
         role: who.role,
         provider: who.provider.clone(),
