@@ -30,6 +30,7 @@ use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
 use crate::report_backlinks;
 use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
+#[cfg(any(test, feature = "fixtures"))]
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
@@ -81,6 +82,7 @@ mod deletion_observation;
 use deletion_observation::{DeletionObservation, Stage};
 mod fork_guard;
 mod preparation;
+#[cfg(any(test, feature = "fixtures"))]
 use preparation::NamedSource;
 
 pub(crate) use add::RouteTrackCreator;
@@ -350,6 +352,7 @@ pub struct CrossAreaCwdAuthorization {
     pub area_id: crate::ids::AreaId,
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 impl CreateTrackRequest {
     /// `(body, named source, cwd_omitted)`. `cwd_omitted` is true when the client sent no
     /// `cwd` / `null`; an explicit empty string still 400s. Provenance columns stay `None` here.
@@ -786,11 +789,8 @@ pub(crate) async fn create_track(
         request.reasoning_effort.clone(),
     );
     let plan = create::creation_plan(&s, source.as_ref(), &headers, request).await?;
-    let historical = match plan {
-        create::CreatePlan::HistoricalReceipt { binding, request } => {
-            create::KeyedPlan::Resume((binding, request))
-        }
-        create::CreatePlan::Historical(request) => create::KeyedPlan::Mint(request),
+    let (binding, request) = match plan {
+        create::CreatePlan::HistoricalReceipt { binding, request } => (binding, request),
         create::CreatePlan::Canonical(plan) => {
             if admin {
                 super::track_report_blocks::require_rest_user_actor_for(
@@ -883,42 +883,6 @@ pub(crate) async fn create_track(
                 .into_response());
         }
     };
-    create_historical_track(s, source, actor, headers, codex, historical).await
-}
-
-#[cfg(test)]
-pub(super) async fn create_historical_track_with_source_for_test(
-    state: &AppState,
-    source: crate::auth::HumanInputSource,
-    headers: HeaderMap,
-    request: CreateTrackRequest,
-) -> Result<Response> {
-    use axum::extract::FromRef;
-    create_historical_track(
-        RouteState::from_ref(state),
-        Some(source),
-        Actor::server_send(),
-        headers,
-        CodexShellState::from_ref(state),
-        create::KeyedPlan::Mint(request),
-    )
-    .await
-}
-
-async fn create_historical_track(
-    s: RouteState,
-    source: Option<crate::auth::HumanInputSource>,
-    actor: Actor,
-    headers: HeaderMap,
-    codex: CodexShellState,
-    historical: create::KeyedPlan<
-        CreateTrackRequest,
-        (crate::db::sqlite::TrackCreateBinding, CreateTrackRequest),
-    >,
-) -> Result<Response> {
-    let request = match &historical {
-        create::KeyedPlan::Mint(request) | create::KeyedPlan::Resume((_, request)) => request,
-    };
     let isolation = CreateIsolation::decode(&request.cwd, request.isolation)?;
     let historical_source = source.map(crate::conversation_inputs::HistoricalHumanSource::new);
     if let Some(source) = &historical_source
@@ -961,178 +925,52 @@ async fn create_historical_track(
             "Only the user grants Area admin.",
         )?;
     }
-    let admin = request.admin;
-    // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
-    // of up to ~28 s) is read before the area lock below, which it must not hold; it and the
-    // model list it caches (#1822) gate only a new mint, after the replay arms.
-    let readiness = crate::harness::backend::factory::PlannerFactory::new(
-        std::sync::Arc::downgrade(&codex.shared_codex_appserver),
-        &s.claude_planner,
-        &s.acp_planner,
-    )
-    .catalog_readiness(&request.planner_provider, &s.provider_availability)
-    .await;
-    // Common area lifecycle fence for legacy mint, first-message mint, and
-    // idempotent replay. Holding it through workspace materialization and
-    // operation submission makes area deletion snapshot a closed member set.
-    let create_area_id = request.area_id.clone();
+    // Replay keeps the Area lifecycle fence but performs no fresh preparation
+    // or provider readiness probe.
     let _area_delete_guard =
-        crate::per_card_lock::lock_key(&s.area_delete_locks, create_area_id.as_str()).await;
-    // First, before every other check: a rejected first message must leave no track,
-    // no cards, no folder claim and no materialized workspace behind.
-    let (mut request, plan) = match historical {
-        create::KeyedPlan::Mint(mut request) => {
-            let plan = create::plan_first_message(
-                &s,
-                &headers,
-                request.first_message.take(),
-                request.area_id.as_str(),
-                // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
-                // must not depend on `admit_template`, so a replay whose template left the roster still replays.
-                create::CreateRequestShape::from_request(&request)?,
-            )
-            .await?;
-            (request, plan)
-        }
-        create::KeyedPlan::Resume((binding, request)) => {
-            match create::plan_historical_receipt(&s, &headers, &request, binding).await? {
-                create::CreateShape::WithFirstMessage(resume) => {
-                    let track = create::resume_prior_attempt(
-                        s,
-                        &create::KeyedActor::rest(&actor, historical_source),
-                        resume,
-                    )
-                    .await?;
-                    return Ok((
-                        StatusCode::CREATED,
-                        Json(calm_types::track_wire::TrackWire(track)),
-                    )
-                        .into_response());
-                }
-                create::CreateShape::MessageLess(resume) => {
-                    return create::resume_message_less(s, actor, resume, historical_source).await;
-                }
-            }
-        }
-    };
-    // The arm decision comes BEFORE the create path's request validation: the resuming arms
-    // mint nothing, and re-running checks against mutable state would fail a byte-identical replay.
-    // `message_less` carries the per-key claim guard that must be held until after the mint.
-    let (plan, message_less) = match plan {
-        create::CreateShape::WithFirstMessage(create::KeyedPlan::Resume(resume)) => {
+        crate::per_card_lock::lock_key(&s.area_delete_locks, request.area_id.as_str()).await;
+    match create::plan_historical_receipt(&s, &headers, &request, binding).await? {
+        create::CreateShape::WithFirstMessage(resume) => {
             let track = create::resume_prior_attempt(
                 s,
-                &create::KeyedActor::rest(&actor, historical_source.clone()),
+                &create::KeyedActor::rest(&actor, historical_source),
                 resume,
             )
             .await?;
-            return Ok((
+            Ok((
                 StatusCode::CREATED,
                 Json(calm_types::track_wire::TrackWire(track)),
             )
-                .into_response());
+                .into_response())
         }
-        create::CreateShape::MessageLess(create::KeyedPlan::Resume(resume)) => {
-            return create::resume_message_less(s, actor, resume, historical_source).await;
+        create::CreateShape::MessageLess(resume) => {
+            create::resume_message_less(s, actor, resume, historical_source).await
         }
-        create::CreateShape::WithFirstMessage(create::KeyedPlan::Mint(plan)) => (Some(plan), None),
-        create::CreateShape::MessageLess(create::KeyedPlan::Mint(plan)) => (None, plan),
-    };
-    // Historical Claude creation needs its provider ready, which also puts the CLI's model list
-    // in hand (#1822); fresh blank managed creation and replays are handled above. A Codex create
-    // is not gated: without a first message it still answers 201 during a daemon outage (#293).
-    let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
-    // Resolve mutable catalog advice only for a new mint, never on replay; one advice for both
-    // providers (#1822 6′), only the catalog's source differs.
-    let model = request.model.take();
-    let reasoning_effort = request.reasoning_effort.take();
-    let advice = crate::planner_model::acquisition::CatalogAccess::new(
-        &s.provider_availability,
-        &s.claude_planner,
-        &s.acp_planner,
-        &codex.shared_codex_appserver,
-    )
-    .historical_mint(
-        &request.planner_provider,
-        &readiness,
-        model.as_deref(),
-        reasoning_effort.as_deref(),
-    )
-    .await?;
-    advice.require_create_selection(model.as_deref(), reasoning_effort.as_deref())?;
-    let planner_provider = request.planner_provider.clone();
-    let (p, named_source, _cwd_omitted) = request.into_parts()?;
+    }
+}
 
-    if let Some(source) = &historical_source {
-        if let NamedSource::Fork(source_track_id) = &named_source {
-            source
-                .require_track(s.repo.as_ref(), source_track_id)
-                .await
-                .map_err(|error| allocation::fork_source_error(error, source_track_id))?;
-        }
-        if let Some(cross) = &allow_cross_area_cwd {
-            source
-                .require_area(s.repo.as_ref(), cross.area_id.as_str())
-                .await?;
-        }
-    }
-    let preparation::PreparedCreate {
-        p,
-        folder_claim,
-        body_area_id,
-        normalized_cwd,
-        init,
-        workspace_plan,
-        conflict,
-    } = preparation::prepare(&s, p, named_source, isolation, allow_cross_area_cwd).await?;
-    let options = CreateTrackOptions {
-        human_source: historical_source.clone(),
-        admin,
-        planner_provider,
-        model,
-        reasoning_effort,
-        folder_claim,
-        body_area_id,
-        normalized_cwd,
-        init,
-        workspace_plan,
-        // Conditioned on the plan: `Mint` sets it later inside `create_track_with_first_message`;
-        // `Legacy` has nothing to bind.
-        idempotency_claim: message_less.as_ref().map(create::MessageLessPlan::claim),
-        managed_identity: None,
-        creator: None,
-        creation_message: None,
-    };
-    // The resuming arms returned above, so `Some` here is always a mint.
-    let created = match plan {
-        None => create_track_with_planner_harness(s, actor, p, options).await,
-        Some(plan) => create::create_track_with_first_message(
-            s,
-            &create::KeyedActor::rest(&actor, historical_source),
-            p,
-            options,
-            plan,
+#[cfg(test)]
+pub(super) async fn create_historical_track_with_source_for_test(
+    state: &AppState,
+    source: crate::auth::HumanInputSource,
+    headers: HeaderMap,
+    request: CreateTrackRequest,
+) -> Result<Response> {
+    use axum::extract::FromRef;
+    let track = RouteTrackCreator::new(RouteState::from_ref(state), 0)
+        .released_receipt_for_test(
+            request,
+            create::track_create_key(&headers)?,
+            Some(crate::conversation_inputs::HistoricalHumanSource::new(
+                source,
+            )),
         )
-        .await
-        .map(|track| {
-            (
-                StatusCode::CREATED,
-                Json(calm_types::track_wire::TrackWire(track)),
-            )
-                .into_response()
-        }),
-    };
-    // The per-key claim guard rides here so two same-key message-less creates in
-    // one process cannot both read "no binding" and each mint a track. Dropped
-    // after the mint settles, exactly as the `first_message` arms drop theirs.
-    drop(message_less);
-    match created {
-        Err(error) => match conflict.take() {
-            Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
-            None => Err(error),
-        },
-        ok => ok,
-    }
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(calm_types::track_wire::TrackWire(track)),
+    )
+        .into_response())
 }
 
 /// The single answer to "may this id create a track", plus the optional plugin binding
@@ -1421,6 +1259,7 @@ pub(super) struct TrackCreateIdempotencyClaim {
 
 #[allow(deprecated)]
 /// The message-less create, end to end. A harness start failure is a `warn!` + 201.
+#[cfg(any(test, feature = "fixtures"))]
 async fn create_track_with_planner_harness(
     s: RouteState,
     actor: Actor,
@@ -1456,6 +1295,7 @@ async fn create_track_with_planner_harness(
         .into_response())
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 async fn create_track_structure(
     s: RouteState,
     actor: ActorId,

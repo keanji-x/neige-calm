@@ -22,13 +22,17 @@ use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payloa
 use crate::session_projection_repo::CardConversation;
 use crate::state::RouteState;
 
-use super::{CreateTrackOptions, TrackCreateIdempotencyClaim, create_track_structure};
+#[cfg(any(test, feature = "fixtures"))]
+use super::create_track_structure;
+use super::{CreateTrackOptions, TrackCreateIdempotencyClaim};
 
 mod creation_plan;
 pub(crate) use creation_plan::accepts_unavailable_blank_track;
 pub(super) use creation_plan::creation_plan;
 mod historical_plan;
-pub(super) use historical_plan::{plan_first_message, plan_historical_receipt, plan_keyed_create};
+#[cfg(any(test, feature = "fixtures"))]
+pub(super) use historical_plan::plan_first_message;
+pub(super) use historical_plan::{plan_historical_receipt, plan_keyed_create};
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
@@ -62,19 +66,13 @@ struct PriorAttempt {
 type CanonicalCreation =
     CreateShape<creation_plan::HumanTrackCreationPlan, creation_plan::EmptyTrackCreationPlan>;
 
-/// Creation ownership is decided before historical preparation. A historical
-/// receipt carries its binding; a raw request leaves planning to that owner.
+/// New allocations are canonical; historical receipts retain their bound identity.
 pub(super) enum CreatePlan {
     Canonical(KeyedPlan<CanonicalCreation, CanonicalCreation>),
     HistoricalReceipt {
         binding: crate::db::sqlite::TrackCreateBinding,
         request: super::CreateTrackRequest,
     },
-    /// Hand the raw request to historical planning for shapes outside the canonical
-    /// cutover or operation-only retries routed to that owner.
-    /// Historical planning retains retry selection and error ordering; this arm
-    /// does not imply a fresh mint.
-    Historical(super::CreateTrackRequest),
 }
 
 /// A [`KeyedPlan::Resume`]'s payload: the shared plan plus the prior attempt
@@ -105,6 +103,7 @@ pub(super) struct CreateRequestShape {
 }
 
 /// What a keyed message-less create needs: no text, no message digest, no operation key.
+#[cfg(any(test, feature = "fixtures"))]
 pub(super) struct MessageLessPlan {
     /// The caller's `Idempotency-Key`, verbatim — half of the binding row's
     /// primary key.
@@ -116,6 +115,7 @@ pub(super) struct MessageLessPlan {
     _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
+#[cfg(any(test, feature = "fixtures"))]
 impl MessageLessPlan {
     /// `first_message_sha256: None` is the fact that this create carried no message; it
     /// makes the binding row fingerprint version 2.
@@ -134,8 +134,8 @@ pub(super) struct MessageLessResume {
     track_id: String,
     planner_card_id: String,
     report_card_id: String,
-    /// See [`MessageLessPlan::_same_key_claim`]. Held through the resume too,
-    /// so a resume and a concurrent mint under one key cannot interleave.
+    /// Held through replay so a resume and a concurrent creation under one key
+    /// cannot interleave.
     _same_key_claim: crate::per_card_lock::PerCardLockGuard,
 }
 
@@ -171,6 +171,7 @@ pub(super) const TRACK_ADD_KEY_PREFIX: &str = "track-add/";
 /// outlive the session.
 pub(super) struct KeyedActor {
     pub(super) human_source: Option<crate::conversation_inputs::HistoricalHumanSource>,
+    #[cfg(any(test, feature = "fixtures"))]
     pub(super) create: ActorId,
     pub(super) start: ActorId,
     /// The `actor` the delivery's payload hash binds; a REST create keeps the header's spelling.
@@ -186,6 +187,7 @@ impl KeyedActor {
     ) -> Self {
         Self {
             human_source,
+            #[cfg(any(test, feature = "fixtures"))]
             create: actor.to_actor_id(),
             start: actor.to_actor_id(),
             start_label: actor.as_str().to_string(),
@@ -227,7 +229,7 @@ fn derive_track_create_operation_key(area_id: &str, idempotency_key: &str) -> St
     format!("track-create-{}", hex::encode(hasher.finalize()))
 }
 
-fn track_create_key(headers: &HeaderMap) -> Result<Option<String>> {
+pub(super) fn track_create_key(headers: &HeaderMap) -> Result<Option<String>> {
     let idempotency_key = parse_idempotency_key_header(headers)?;
     if let Some(key) = &idempotency_key
         && key.starts_with(TRACK_ADD_KEY_PREFIX)
@@ -431,6 +433,7 @@ fn ensure_replay_message_matches(
 }
 
 /// The `first_message` twin of `create_track_with_planner_harness`, for the arm that mints.
+#[cfg(any(test, feature = "fixtures"))]
 pub(super) async fn create_track_with_first_message(
     s: RouteState,
     actor: &KeyedActor,

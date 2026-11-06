@@ -15,16 +15,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
     headers: &HeaderMap,
     request: CreateTrackRequest,
 ) -> Result<CreatePlan> {
-    let Some(source) = source else {
-        if request.first_message.is_some() {
-            return Err(CalmError::Unauthorized);
-        }
-        let shape = CreateRequestShape::from_request(&request)?;
-        if canonical_creation_supported(&shape) {
-            return Err(CalmError::Unauthorized);
-        }
-        return Ok(CreatePlan::Historical(request));
-    };
+    let source = source.ok_or(CalmError::Unauthorized)?;
     let key = track_create_key(headers)?;
     if let Some(text) = &request.first_message {
         if key.is_none() {
@@ -74,35 +65,20 @@ pub(in crate::routes::tracks) async fn creation_plan(
                         },
                     );
                 }
-                if canonical_creation_supported(&shape)
-                    && super::dormant::prior_start_attempt_tx(tx, &area_id, key).await?
-                {
-                    // Preserve the historical owner's retry selection and error
-                    // ordering for native-thread creation. Local canonical creation
-                    // cannot mint through that owner; a lost binding is a server error.
-                    return match PlannerFactory::retained_identity(
-                        &crate::harness::profile::PlannerBinding {
-                            profile: crate::harness::profile::HarnessProfile::Planner,
-                            provider: shape.planner_provider.clone(),
-                        },
-                    )? {
-                        RetainedIdentityPreparation::NativeThread => {
-                            Ok(CreatePlan::Historical(request))
-                        }
-                        RetainedIdentityPreparation::LocalSession => {
-                            Err(super::historical_plan::binding_lost(
-                                &derive_track_create_operation_key(&area_id, key),
-                            ))
-                        }
-                    };
+                if super::dormant::prior_start_attempt_tx(tx, &area_id, key).await? {
+                    // An occupied historical key without its allocation binding can
+                    // never become a fresh canonical intent, for any provider.
+                    return Err(super::historical_plan::binding_lost(
+                        &derive_track_create_operation_key(&area_id, key),
+                    ));
                 }
             }
-            // A storage decision grants no resource access. The immutable
-            // replay and historical owners recheck their own admission; fresh
-            // excluded shapes must retain that owner's error ordering too.
-            if !canonical_creation_supported(&shape) {
-                return Ok(CreatePlan::Historical(request));
-            }
+            // Fresh creation requires the registered canonical contract. A future
+            // unsupported binding must refuse rather than mint historical storage.
+            PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
+                profile: crate::harness::profile::HarnessProfile::Planner,
+                provider: shape.planner_provider.clone(),
+            })?;
             let access = crate::organization_access::require_area_access_tx(
                 tx,
                 &area_id,
@@ -164,7 +140,7 @@ pub(in crate::routes::tracks) async fn creation_plan(
 /// Fresh blank managed creation accepts unavailable providers with a retained
 /// Planner identity. Both local sessions and native threads allocate canonically
 /// without native work; first input owns activation.
-/// This says nothing about excluded creation shapes or live model writes.
+/// Live model writes retain their own readiness contract.
 pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool {
     match PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
         profile: crate::harness::profile::HarnessProfile::Planner,
@@ -175,24 +151,6 @@ pub(crate) fn accepts_unavailable_blank_track(provider: &AgentProvider) -> bool 
         ) => true,
         Err(_) => false,
     }
-}
-
-// The creation owner admits qualified canonical shapes here. Excluded
-// creation kinds retain historical preparation; receipts retain their own storage.
-fn canonical_creation_supported(request: &CreateRequestShape) -> bool {
-    // The activation owner queries ACP registration policy. Local bindings are
-    // process-free: native session/new waits for the first prompt, so an empty
-    // conversation is valid. Native threads likewise wait for first input; named
-    // creation retains its frozen context in the same empty carrier.
-    // Storage follows the binding's declared retained-input contract. Source,
-    // admin and borrowed-resource admission remain with preparation/allocation.
-    // Attachment without cwd selects Managed preparation and borrows nothing,
-    // including named sources and admin requests.
-    PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
-        profile: crate::harness::profile::HarnessProfile::Planner,
-        provider: request.planner_provider.clone(),
-    })
-    .is_ok()
 }
 
 impl CreateRequestShape {
@@ -419,11 +377,10 @@ async fn blank_allocation(
     allocation: BlankAllocation,
     claim: Option<TrackCreateIdempotencyClaim>,
 ) -> Result<(NewTrack, CreateTrackOptions)> {
-    if !canonical_creation_supported(&allocation.shape) {
-        return Err(CalmError::BadRequest(
-            "dormant acceptance requires an admitted Track Planner".into(),
-        ));
-    }
+    PlannerFactory::retained_identity(&crate::harness::profile::PlannerBinding {
+        profile: crate::harness::profile::HarnessProfile::Planner,
+        provider: allocation.shape.planner_provider.clone(),
+    })?;
     let mut allocation = allocation;
     if matches!(allocation.preparation, ResourcePreparation::Deferred) {
         if allocation.shape.cwd.is_some() {

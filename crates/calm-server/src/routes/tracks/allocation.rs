@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 /// The admitted entry decides where its frozen material is consumed.
 pub(super) enum CreationContext {
+    #[cfg(any(test, feature = "fixtures"))]
     Historical,
     /// Trusted managed admission; no Human input or borrowed resource authority.
     ManagedCanonical,
@@ -295,12 +296,11 @@ pub(super) async fn allocate_track_structure_tx(
         planner_provider.clone(),
         init_snapshot.as_ref(),
     )?;
-    if matches!(
-        context,
-        CreationContext::Canonical(_)
-            | CreationContext::ManagedCanonical
-            | CreationContext::CreatorCanonical
-    ) {
+    #[cfg(any(test, feature = "fixtures"))]
+    let historical = matches!(context, CreationContext::Historical);
+    #[cfg(not(any(test, feature = "fixtures")))]
+    let historical = false;
+    if !historical {
         super::creation_context::freeze(
             &mut planner_payload,
             &track,
