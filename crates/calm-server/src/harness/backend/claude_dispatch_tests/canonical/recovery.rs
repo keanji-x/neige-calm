@@ -154,13 +154,7 @@ async fn canonical_claude_recovery_synthetic_outcome_holds_until_owner_sweep_the
     .await
     .unwrap();
     // This retry requires the real native init binding to commit before shutdown.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while identity_recovery::binding(&fx).await.as_deref() != Some(fx.owner.thread.as_str()) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("exact original native binding before shutdown");
+    wait_for_native_binding(&fx).await;
     let target = fx.target().await;
     let before = fx.checkpoint().await;
     assert!(
@@ -497,4 +491,15 @@ async fn canonical_claude_recovery_without_boot_proof_holds_but_live_provenance_
     );
     session.shutdown().await.unwrap();
     fx.session.shutdown().await.unwrap();
+}
+
+/// A restart that must resume the original session needs its committed native identity.
+pub(super) async fn wait_for_native_binding(fx: &Fixture) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while identity_recovery::binding(fx).await.as_deref() != Some(fx.owner.thread.as_str()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact original native binding before shutdown");
 }
