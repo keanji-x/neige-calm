@@ -1,5 +1,7 @@
 //! Execution identity and sealed executor inputs. Kernel policy supplies authorization.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod native;
 pub mod objects;
 mod settlement;

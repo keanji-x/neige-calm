@@ -126,7 +126,8 @@ async fn boot_inner(
         .await
         .unwrap();
     let tmp = tempfile::TempDir::new().unwrap();
-    let workspace_root = tmp.path().join("workspaces");
+    // Managed preparation rejects ancestor links; Darwin temp_dir may use the /var alias.
+    let workspace_root = tmp.path().canonicalize().unwrap().join("workspaces");
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     let write_db = (repo.db()).clone();

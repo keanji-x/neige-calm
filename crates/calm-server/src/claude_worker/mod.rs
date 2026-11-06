@@ -7,14 +7,17 @@
 
 mod environment;
 mod role;
+// The sink suite requires Linux strong qualification; other owner tests still run on Darwin.
+#[cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 mod sink;
 
 pub(crate) use environment::{WorkerEnvironment, WorkerLaunch, WorkerMcpToken, kernel_proxy};
 pub(crate) use role::{WorkerArgs, WorkerStart};
 pub use sink::WorkerEnd;
+pub(crate) use sink::WorkerInitRecord;
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) use sink::{
-    WorkerInitRecord, WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome,
-    WorkerTurnRecord,
+    WorkerSink, WorkerTurnKey, WorkerTurnLedger, WorkerTurnOutcome, WorkerTurnRecord,
 };
 
 #[cfg(test)]

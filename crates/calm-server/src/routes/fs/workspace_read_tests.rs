@@ -261,26 +261,28 @@ async fn track_readers_keep_utf8_caps_and_raw_extension_contracts() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn macos_track_read_capability_does_not_enable_attachments_or_writes() {
+async fn macos_shared_capability_opens_attachment_files_and_directories() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("file.txt"), "readable").unwrap();
+    std::fs::create_dir(workspace.path().join("subdir")).unwrap();
     for policy in [
         WorkspaceSymlinks::Refused,
         WorkspaceSymlinks::FollowedInsideRoot,
     ] {
-        let error = open_workspace_regular_file(workspace.path(), "file.txt", policy)
+        let opened = open_workspace_regular_file(workspace.path(), "file.txt", policy)
             .await
-            .unwrap_err();
-        assert!(matches!(error, CalmError::Internal(_)));
-        let error = open_workspace_directory(workspace.path(), "subdir", policy)
+            .unwrap();
+        assert_eq!(
+            read_workspace_file_response(opened).await.unwrap().text,
+            "readable"
+        );
+        let directory = open_workspace_directory(workspace.path(), "subdir", policy)
             .await
-            .unwrap_err();
-        assert!(matches!(error, CalmError::Internal(_)));
+            .unwrap();
+        assert!(std::fs::File::from(directory).metadata().unwrap().is_dir());
     }
-    assert!(matches!(
-        open_workspace_root_directory(workspace.path())
-            .await
-            .unwrap_err(),
-        CalmError::Internal(_)
-    ));
+    let root = open_workspace_root_directory(workspace.path())
+        .await
+        .unwrap();
+    assert!(std::fs::File::from(root).metadata().unwrap().is_dir());
 }
