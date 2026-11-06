@@ -3,7 +3,7 @@
 
 #![cfg(unix)]
 
-use calm_truth::db::RepoRead;
+use calm_truth::db::{RepoOutOfDomain, RepoRead};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,6 +15,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
+use calm_server::model::{NewCard, NewTerminal};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
@@ -235,6 +236,65 @@ async fn delete_area(b: &Boot, area_id: &str) -> (StatusCode, String) {
         None,
     )
     .await
+}
+
+async fn seed_legacy_terminal(b: &Boot, track_id: &str) -> String {
+    let card = b
+        .repo
+        .card_create(NewCard {
+            track_id: track_id.into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({"terminal_presentation": {"source": "unrecorded", "in_workbench": false}}),
+        })
+        .await
+        .unwrap();
+    let term = b
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id,
+            program: "/bin/sh".into(),
+            cwd: workspace_path(b, track_id)
+                .await
+                .to_string_lossy()
+                .into_owned(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    term.id
+}
+
+#[tokio::test]
+async fn legacy_terminal_pid_blocks_track_and_area_delete_with_a_reason() {
+    let b = boot().await;
+    let area = create_area(&b, "Unverified terminal PID").await;
+    let (track, _) = managed_track(&b, &area, "Possibly live terminal").await;
+    let mut child = tokio::process::Command::new("/bin/sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let term = seed_legacy_terminal(&b, &track).await;
+    b.repo.terminal_set_pid(&term, child.id()).await.unwrap();
+
+    for (status, body) in [delete_track(&b, &track).await, delete_area(&b, &area).await] {
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let failure = serde_json::from_str::<Value>(&body).unwrap();
+        assert_eq!(failure["code"], "conflict");
+        assert!(
+            failure["error"]
+                .as_str()
+                .unwrap()
+                .contains("old terminal has exited")
+        );
+    }
+    assert!(child.try_wait().unwrap().is_none());
+    assert!(b.repo.area_get(&area).await.unwrap().is_some());
+    assert!(b.repo.track_get(&track).await.unwrap().is_some());
+    assert!(b.repo.terminal_get(&term).await.unwrap().is_some());
 }
 
 async fn workspace_path(b: &Boot, track_id: &str) -> PathBuf {

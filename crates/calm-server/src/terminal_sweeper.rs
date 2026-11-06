@@ -562,9 +562,8 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
         // Quiescence is pre-commit: rollback must retain the renderer and its output reader.
         return Ok(());
     }
-    // A renderer entry gives a supervisor-owned `proc_id` to TERM/KILL. Without the entry, the
-    // legacy row has no `(pid,start_time,boot_id)` ownership proof, so deletion must observe only
-    // and fail closed instead of signaling a possibly recycled pid.
+    // A renderer entry can stop the child by its supervisor-owned proc ID. The legacy row's
+    // numeric PID only permits passive observation.
     let renderer_outcome = match renderer {
         Some(registry) => {
             registry.require_disposal_safe(&term.id).await?;
@@ -577,14 +576,11 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
     }
     if let Some(pid) = term.pid {
         match wait_for_pid_exit_passively(pid, Duration::from_secs(2)).await {
-            PassivePidExit::Exited | PassivePidExit::InvalidPid => {}
-            verdict @ (PassivePidExit::StillAlive | PassivePidExit::Unsupported) => {
-                return Err(crate::error::CalmError::Internal(format!(
-                    "terminal {} did not quiesce before deletion ({verdict:?}; \
-                     renderer_outcome={renderer_outcome:?}); refusing an unverified pid signal",
-                    term.id,
-                )));
-            }
+            PassivePidExit::Exited | PassivePidExit::InvalidPid => return Ok(()),
+            verdict @ (PassivePidExit::StillAlive | PassivePidExit::Unsupported) => tracing::warn!(
+                terminal_id = %term.id, pid, ?verdict, ?renderer_outcome,
+                "could not verify legacy terminal exit before deletion"
+            ),
         }
     } else if let Some(supervisor_sock) = supervisor_sock {
         match tokio::time::timeout(
@@ -593,33 +589,26 @@ pub async fn quiesce_terminal_artifacts_for_deletion(
         )
         .await
         {
-            Ok(Ok(false)) => {}
+            Ok(Ok(false)) => return Ok(()),
             Ok(Ok(true)) => {
-                return Err(crate::error::CalmError::Internal(format!(
-                    "terminal {} is still running in the process supervisor; refusing to move its workspace",
-                    term.id
-                )));
+                return Err(crate::error::CalmError::Conflict(
+                    "Deletion blocked because a terminal is still running.".into(),
+                ));
             }
-            Ok(Err(error)) => {
-                return Err(crate::error::CalmError::Internal(format!(
-                    "terminal {} has no persisted pid and supervisor absence could not be proven: {error}",
-                    term.id
-                )));
-            }
-            Err(_) => {
-                return Err(crate::error::CalmError::Internal(format!(
-                    "terminal {} supervisor absence probe timed out; refusing to move its workspace",
-                    term.id
-                )));
-            }
+            Ok(Err(error)) => tracing::warn!(
+                terminal_id = %term.id, %error, "legacy terminal supervisor probe failed"
+            ),
+            Err(_) => tracing::warn!(
+                terminal_id = %term.id, "legacy terminal supervisor probe timed out"
+            ),
         }
-    } else if renderer_outcome == RendererDropOutcome::Unverified {
-        return Err(crate::error::CalmError::Internal(format!(
-            "terminal {} renderer shutdown was not verified and no persisted pid is available; refusing to move its workspace",
-            term.id
-        )));
+    } else if renderer_outcome != RendererDropOutcome::Unverified {
+        return Ok(());
     }
-    Ok(())
+    Err(crate::error::CalmError::Conflict(
+        "Deletion blocked because the server could not confirm that an old terminal has exited."
+            .into(),
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
