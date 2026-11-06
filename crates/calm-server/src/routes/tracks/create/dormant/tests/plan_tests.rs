@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Single real request preparation never substitutes filesystem preparation or
 //! reruns mutable configuration checks on an already accepted key.
 use super::*;
