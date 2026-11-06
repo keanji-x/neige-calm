@@ -1,20 +1,20 @@
 //! Prompt writer cleanup and durable settlement.
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn drive(
-    shared: Arc<Shared>,
+    driver: super::dispatch::Driver,
     mut process: Process,
-    receipt: AcpSubmission,
-    mut translator: TurnTranslator,
-    pending: tokio::sync::oneshot::Receiver<
-        std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
-    >,
-    mut cancelled: watch::Receiver<CancelRequest>,
-    approvals: Arc<Approvals>,
     claim: crate::provider_execution::Claim,
     _guard: crate::provider_execution::DriverGuard,
 ) -> super::execution_end::Settlement {
+    let super::dispatch::Driver {
+        shared,
+        receipt,
+        mut translator,
+        pending,
+        mut cancelled,
+        approvals,
+    } = driver;
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
     let outcome = collect_turn(

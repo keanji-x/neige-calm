@@ -90,23 +90,9 @@ impl IssueGuard {
         });
         Ok(())
     }
-    pub(super) fn handoff(
-        &mut self,
-    ) -> (
-        Process,
-        AcpSubmission,
-        crate::provider_execution::Claim,
-        crate::provider_execution::DriverGuard,
-    ) {
-        let process = self.process.take().expect("prepared ACP process");
-        let receipt = self.receipt.take().expect("prepared ACP receipt");
-        self.armed = false;
-        (
-            process,
-            receipt,
-            self.claim.take().expect("admitted execution"),
-            self.guard.take().expect("driver guard"),
-        )
+    pub(super) fn execution_id(&self) -> Result<workspace_runtime::execution::ExecutionId> {
+        let claim = self.claim.as_ref().expect("admitted execution");
+        crate::provider_execution::execution_id(claim.record())
     }
     pub(super) fn handoff_process(
         &mut self,
@@ -116,6 +102,7 @@ impl IssueGuard {
         crate::provider_execution::DriverGuard,
     ) {
         self.armed = false;
+        self.receipt = None;
         (
             self.process
                 .take()

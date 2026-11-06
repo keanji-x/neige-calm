@@ -1,5 +1,6 @@
 //! One ACP process per shared backend. Native sessions and turn receipts remain card-owned.
 use super::super::{config::Registration, process};
+use super::dispatch::{self, Carrier, Driver, PreparedTurn, TurnInput};
 use super::*;
 use provider::acp::{configuration::Configuration, usage::UsageTracker};
 use std::collections::{HashMap, HashSet};
@@ -61,41 +62,37 @@ impl Drop for AttachmentGuard {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct Turn {
+    pub client: provider::acp::Client,
+    pub capabilities: protocol::AgentCapabilities,
+    commands: process::Commands,
+    cleanup: CleanupWitness,
+}
+
 pub(super) async fn issue(
     shared: &Arc<Shared>,
     registration: Registration<'_>,
     original_native: Option<String>,
-    thread: &str,
-    correlation: &str,
-    input: &InputContract<'_, '_>,
-    items: Vec<InputItem>,
-    blocks: Vec<protocol::ContentBlock>,
-    selection: provider::TurnModelSelection,
-    permission: PlannerPermissionMode,
-    held: HeldRequestSender,
+    selection: &provider::TurnModelSelection,
+    input: TurnInput<'_, '_, '_>,
     presence: &mut ReceiptPresence,
     track_fence: &crate::provider_execution::TrackFenceHandoff,
 ) -> std::result::Result<ReceiptAttempt, StartFailure> {
     let params = &shared.params;
-    let pool = params
-        .repo
-        .sqlite_db()
-        .ok_or(CalmError::ExecutionUnavailable)?;
     let source = crate::harness::native_admission::NativePromptAdmission::new(
         || Ok(()),
         || Box::pin(async { Ok(()) }),
     );
-    let source = input.admission(&source);
+    let source = input.contract.admission(&source);
     let mut owned = params.host.shared_server.lock().await;
     let (native, usage) = prepare::prepare(
         &mut owned,
         shared,
         registration,
         original_native,
-        thread,
-        &selection,
-        permission,
+        input.thread,
+        selection,
+        input.permission,
         &source,
     )
     .await?;
@@ -119,100 +116,68 @@ pub(super) async fn issue(
             "Shared ACP server is waiting for active sessions before retirement",
         ));
     }
-    let capabilities = server.process.capabilities.clone();
-    let commands = server.process.commands.clone();
-    protocol::validate_prompt(&capabilities, &native, &blocks)
-        .map_err(|error| refused(&error.to_string()))?;
-    let mut incoming = client.route_session(&native).map_err(wire_error)?;
-    let turn = uuid::Uuid::new_v4().to_string();
-    let receipt = AcpSubmission {
-        worker_session_id: params.worker_session_id.clone(),
-        client_id: correlation.into(),
-        turn_id: turn.clone(),
-        thread_id: thread.into(),
-        native_session_id: native.clone(),
-        input_json: input.receipt(&items, &blocks)?,
-        state: crate::db::sqlite::AcpSubmissionState::Sending,
-        kept_cleanup: None,
-        outcome_json: None,
-    };
-    let attempt = || ReceiptAttempt {
-        turn: turn.clone(),
-        native_session_id: native.clone(),
-    };
-    match acp_submission_prepare(&pool, &receipt, crate::model::now_ms()).await {
-        Ok(()) => *presence = ReceiptPresence::Present(attempt()),
-        Err(crate::db::sqlite::AcpPrepareError::BeforeReceipt(error)) => {
-            return Err(CalmError::from(error).into());
-        }
-        Err(crate::db::sqlite::AcpPrepareError::CommitUncertain(error)) => {
-            *presence = ReceiptPresence::Present(attempt());
-            return Err(CalmError::from(error).into());
-        }
-    }
-    let approvals = Arc::new(Approvals::for_turn(permission, &held, &turn, &client, asks));
-    let (cancel, mut cancelled) = watch::channel(CancelRequest::Running);
-    shared.state.lock().expect("ACP state").active = Some(Active {
-        thread: thread.into(),
-        turn: turn.clone(),
-        cancel,
-        approvals: Arc::downgrade(&approvals),
-        native_session_id: native.clone(),
-        execution_id: None,
+    let carrier = Carrier::Resident(Turn {
+        client,
+        capabilities: server.process.capabilities.clone(),
+        commands: server.process.commands.clone(),
+        cleanup,
     });
-    let mut translator = TurnTranslator::new(TurnContext {
-        thread_id: thread.into(),
-        turn_id: turn.clone(),
-        native_session_id: native.clone(),
+    let prepared = PreparedTurn {
+        native,
+        turn: uuid::Uuid::new_v4().to_string(),
         usage,
-    });
-    let _ = shared.events.send(translator.started());
-    let (send_pending, pending) = tokio::sync::oneshot::channel();
-    let task = Arc::clone(shared);
-    let retained_receipt = receipt.clone();
-    let driver = tokio::spawn(async move {
-        let mut retained = Vec::new();
-        let overflow = incoming.overflow();
-        let mut watch_overflow = overflow.clone();
-        let outcome = tokio::select! {
-            biased;
-            _ = async {
-                if watch_overflow.wait_for(|failed| *failed).await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            } => Err(CalmError::Conflict("ACP session event queue overflowed".into())),
-            outcome = driver::collect_turn(
-                &task, &receipt, incoming.receiver_mut(), &commands, &mut translator, pending,
-                &mut cancelled, &approvals, &mut retained,
-            ) => if *overflow.borrow() {
-                Err(CalmError::Conflict("ACP session event queue overflowed".into()))
-            } else {
-                outcome
-            },
-        };
-        approvals.close().await;
-        let cleaned = if outcome.is_err() {
-            // A lost terminal response may leave native work running. Evidence
-            // belongs to this exact attachment, never to a sibling's cleanup.
-            cleanup_unknown(&task.params, &receipt, &cleanup).await
-        } else {
-            false
-        };
-        drop(incoming);
-        settle(&task, &receipt, retained, outcome, &cleanup, cleaned).await
-    });
-    execution_end::install(
-        shared,
-        DriverSlot::new(shared, driver, retained_receipt, input.association()),
-    );
-    // Admission and receipt are installed before any prompt can reach the shared writer.
-    let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
-    let admission = input.admission(&owner);
-    let pending =
-        protocol::prompt(&client, &capabilities, &native, &blocks, admission.gate()).await;
-    let _ = send_pending.send(pending);
+        asks,
+    };
+    let result = dispatch::send(shared, input, prepared, carrier, presence).await?;
     track_fence.release();
-    Ok(attempt())
+    Ok(result)
+}
+
+pub(super) async fn drive(
+    driver: Driver,
+    turn: Turn,
+    mut incoming: provider::acp::SessionIncoming,
+) -> execution_end::Settlement {
+    let Driver {
+        shared,
+        receipt,
+        mut translator,
+        pending,
+        mut cancelled,
+        approvals,
+    } = driver;
+    let Turn {
+        commands, cleanup, ..
+    } = turn;
+    let mut retained = Vec::new();
+    let overflow = incoming.overflow();
+    let mut watch_overflow = overflow.clone();
+    let outcome = tokio::select! {
+        biased;
+        _ = async {
+            if watch_overflow.wait_for(|failed| *failed).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        } => Err(CalmError::Conflict("ACP session event queue overflowed".into())),
+        outcome = driver::collect_turn(
+            &shared, &receipt, incoming.receiver_mut(), &commands, &mut translator, pending,
+            &mut cancelled, &approvals, &mut retained,
+        ) => if *overflow.borrow() {
+            Err(CalmError::Conflict("ACP session event queue overflowed".into()))
+        } else {
+            outcome
+        },
+    };
+    approvals.close().await;
+    let cleaned = if outcome.is_err() {
+        // A lost terminal response may leave native work running. Evidence
+        // belongs to this exact attachment, never to a sibling's cleanup.
+        cleanup_unknown(&shared.params, &receipt, &cleanup).await
+    } else {
+        false
+    };
+    drop(incoming);
+    settle(&shared, &receipt, retained, outcome, &cleanup, cleaned).await
 }
 
 async fn settle(

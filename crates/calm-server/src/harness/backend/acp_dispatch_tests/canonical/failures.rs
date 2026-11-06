@@ -211,3 +211,34 @@ async fn canonical_acp_invalid_receipted_turn_is_unknown_with_original_correlati
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_acp_oversized_prompt_is_refused_before_receipt_in_both_runtimes() {
+    for provider in [AgentProvider::OpenCode, AgentProvider::Antigravity] {
+        let fx = Fixture::with_instructions(
+            provider.clone(),
+            "reply",
+            false,
+            None,
+            "x".repeat(8 * 1024 * 1024),
+        )
+        .await;
+        let report = fx.dispatch().await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM acp_submissions")
+            .fetch_one(fx.owner.repo.pool())
+            .await
+            .unwrap();
+        fx.session.shutdown().await.unwrap();
+        assert!(
+            fx.requests()
+                .iter()
+                .any(|request| request["method"] == "session/new")
+        );
+        assert_eq!(fx.prompts(), 0, "{provider:?}");
+        assert_eq!(count, 0, "{provider:?}");
+        assert!(
+            matches!(report.report.delivery(), InputDelivery::NotDispatched(_)),
+            "{provider:?}"
+        );
+    }
+}
