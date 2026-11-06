@@ -354,9 +354,8 @@ pub struct CrossAreaCwdAuthorization {
 
 #[cfg(any(test, feature = "fixtures"))]
 impl CreateTrackRequest {
-    /// `(body, named source, cwd_omitted)`. `cwd_omitted` is true when the client sent no
-    /// `cwd` / `null`; an explicit empty string still 400s. Provenance columns stay `None` here.
-    fn into_parts(self) -> Result<(NewTrack, NamedSource, bool)> {
+    /// Reconstruct the released allocation inputs for receipt fixtures.
+    fn into_parts(self) -> Result<(NewTrack, NamedSource)> {
         let cwd_omitted = self.cwd.is_none();
         let source =
             NamedSource::from_request(self.template_id, self.recipe_id, self.fork_report_from)?;
@@ -377,7 +376,6 @@ impl CreateTrackRequest {
                 theme: self.theme,
             },
             source,
-            cwd_omitted,
         ))
     }
 }
