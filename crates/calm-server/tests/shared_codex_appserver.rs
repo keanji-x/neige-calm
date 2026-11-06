@@ -29,6 +29,10 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+#[cfg(target_os = "linux")]
+#[path = "shared_codex_appserver/stale_listener.rs"]
+mod stale_listener;
+
 /// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

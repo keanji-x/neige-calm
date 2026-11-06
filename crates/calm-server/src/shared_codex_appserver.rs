@@ -7,6 +7,10 @@ use provider::control::NativeInterruptOutcome;
 use std::os::unix::ffi::OsStrExt;
 
 pub mod control;
+#[cfg(target_os = "linux")]
+mod linux_listener;
+#[cfg(target_os = "linux")]
+use linux_listener::reap_listener_if_alive;
 #[cfg(target_os = "macos")]
 mod macos_process;
 
@@ -4483,73 +4487,6 @@ async fn handle_thread_started_notification(
         }
         None => Ok(ThreadStartedHandling::DispatchNormally),
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn reap_listener_if_alive(paths: &VerifiedRuntimePaths, grace: Duration) -> Result<()> {
-    let sock_path = &paths.paths().socket;
-    let Ok(stream) = UnixStream::connect(sock_path).await else {
-        return Ok(());
-    };
-
-    let peer_pid = match stream.peer_cred().and_then(|cred| {
-        cred.pid().filter(|pid| *pid > 0).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "listener peer PID is unavailable",
-            )
-        })
-    }) {
-        Ok(pid) => pid,
-        Err(error) => {
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                %error,
-                sock = %sock_path.display(),
-                "SO_PEERCRED failed; proceeding to unlink listener-bound socket without reap"
-            );
-            return Ok(());
-        }
-    };
-    let pgid = unsafe { libc::getpgid(peer_pid) };
-    if pgid < 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            peer_pid,
-            error = %err,
-            sock = %sock_path.display(),
-            "getpgid failed; falling back to pid-only reap of stale socket listener"
-        );
-        drop(stream);
-        // Graceful pid-fallback reap (exit observed via /proc).
-        terminate_group_with_grace(
-            paths,
-            SignalScope::Pid { pid: peer_pid },
-            ExitWait::ProcPresence { pid: peer_pid },
-            grace,
-        )
-        .await;
-        return Ok(());
-    }
-
-    tracing::warn!(
-        target: "shared_codex_daemon::stop",
-        peer_pid,
-        pgid,
-        sock = %sock_path.display(),
-        "stale socket has live listener; reaping orphaned daemon pgid before unlink"
-    );
-    drop(stream);
-    // Graceful group reap: SIGTERM → exit-driven wait → straggler cleanup.
-    terminate_group_with_grace(
-        paths,
-        SignalScope::Group { pgid },
-        ExitWait::ProcPresence { pid: peer_pid },
-        grace,
-    )
-    .await;
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]

@@ -58,6 +58,15 @@ extern "C" fn on_sigterm(_: libc::c_int) {
 /// launcher-death survival opt out explicitly).
 fn install_signal_fixture() {
     #[cfg(target_os = "linux")]
+    if env_flag("FAKE_CODEX_NON_UTF8_COMM") {
+        // PR_SET_NAME accepts bytes, which procfs returns verbatim inside stat's comm field.
+        // SAFETY: this NUL-terminated name changes only this fixture's calling thread.
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NAME, c"listener-\xff".as_ptr()) },
+            0
+        );
+    }
+    #[cfg(target_os = "linux")]
     if !env_flag("FAKE_CODEX_NO_PDEATHSIG") {
         // SAFETY: prctl(PR_SET_PDEATHSIG) only affects this process.
         unsafe {
