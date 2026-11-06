@@ -47,12 +47,13 @@ async fn fixture_storage_for(
     crate::test_support::execution::Directory,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
-    fixture_storage_for_version(provider, persistent, None).await
+    fixture_storage_with_options(provider, persistent, None, "fixture".into()).await
 }
-async fn fixture_storage_for_version(
+async fn fixture_storage_with_options(
     provider: AgentProvider,
     persistent: bool,
     version: Option<&str>,
+    instructions: String,
 ) -> (
     PlannerBackend,
     Arc<AcpPlannerSession>,
@@ -74,8 +75,14 @@ async fn fixture_storage_for_version(
         _execution: execution,
         directory: dir,
     };
-    let (backend, session, rx) =
-        session_for_command_version(&owner, &dir, provider, "/usr/bin/python3", version);
+    let (backend, session, rx) = session_for_command_with_options(
+        &owner,
+        &dir,
+        provider,
+        "/usr/bin/python3",
+        version,
+        instructions,
+    );
     (backend, session, owner, dir, rx)
 }
 
@@ -148,14 +155,15 @@ fn session_for_command(
     Arc<AcpPlannerSession>,
     crate::harness::held_requests::HeldRequestReceiver,
 ) {
-    session_for_command_version(owner, dir, provider, command, None)
+    session_for_command_with_options(owner, dir, provider, command, None, "fixture".into())
 }
-fn session_for_command_version(
+fn session_for_command_with_options(
     owner: &super::dispatch_fixture::Owner,
     dir: &crate::test_support::execution::Directory,
     provider: AgentProvider,
     command: &str,
     version: Option<&str>,
+    instructions: String,
 ) -> (
     PlannerBackend,
     Arc<AcpPlannerSession>,
@@ -201,7 +209,7 @@ fn session_for_command_version(
         card_id: owner.card.clone(),
         track_id: owner.track.clone(),
         cwd: dir.path().into(),
-        instructions: "fixture".into(),
+        instructions,
     }));
     let (held, rx) = tokio::sync::mpsc::unbounded_channel();
     session.mark_installed(held);

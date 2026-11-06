@@ -57,8 +57,17 @@ impl Fixture {
         persistent: bool,
         version: Option<&str>,
     ) -> Self {
+        Self::with_instructions(provider, scenario, persistent, version, "fixture".into()).await
+    }
+    async fn with_instructions(
+        provider: AgentProvider,
+        scenario: &str,
+        persistent: bool,
+        version: Option<&str>,
+        instructions: String,
+    ) -> Self {
         let (backend, session, owner, dir, _held) =
-            fixture_storage_for_version(provider.clone(), persistent, version).await;
+            fixture_storage_with_options(provider.clone(), persistent, version, instructions).await;
         std::fs::write(dir.path().join("scenario"), scenario).unwrap();
         let auth = AuthState::new(AuthConfig {
             username: Some("Owner".into()),

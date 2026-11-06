@@ -1,4 +1,5 @@
 //! One issue lock owns admission, setup, receipt preparation and driver handoff.
+use super::dispatch::{self, Carrier, PreparedTurn, TurnInput};
 use super::*;
 use base64::Engine as _;
 
@@ -169,19 +170,22 @@ impl AcpPlannerSession {
         )
         .await
         .map_err(|error| input.registration_failure(error))?;
+        let dispatch = TurnInput {
+            thread,
+            correlation: client,
+            contract: &input,
+            items: &items,
+            blocks: &blocks,
+            permission,
+            held,
+        };
         if registration.profile.shared_server {
             return super::server::issue(
                 shared,
                 registration,
                 row.agent_session_id,
-                thread,
-                client,
-                &input,
-                items,
-                blocks,
-                selection,
-                permission,
-                held,
+                &selection,
+                dispatch,
                 receipt_turn,
                 track_fence,
             )
@@ -292,142 +296,30 @@ impl AcpPlannerSession {
                     )
                     .await?;
             }
-            if params.seals.is_sealed(thread) || shared.state.lock().expect("ACP state").closed {
-                return Err(refused("ACP conversation was sealed before dispatch"));
-            }
-            let receipt = AcpSubmission {
-                worker_session_id: params.worker_session_id.clone(),
-                client_id: client.into(),
-                turn_id: turn.clone(),
-                thread_id: thread.into(),
-                native_session_id: native.clone(),
-                input_json: input.receipt(&items, &blocks)?,
-                state: crate::db::sqlite::AcpSubmissionState::Sending,
-                kept_cleanup: None,
-                outcome_json: None,
-            };
-            guard.receipt = Some(receipt.clone());
-            #[cfg(all(test, feature = "fixtures"))]
-            super::super::test_seams::wait_issue(
-                &params.worker_session_id,
-                super::super::test_seams::IssueStage::BeforeReceipt,
-            )
-            .await;
-            match acp_submission_prepare(&pool, &receipt, crate::model::now_ms()).await {
-                Ok(()) => {
-                    *receipt_turn = ReceiptPresence::Present(ReceiptAttempt {
-                        turn: turn.clone(),
-                        native_session_id: native.clone(),
-                    })
-                }
-                Err(crate::db::sqlite::AcpPrepareError::BeforeReceipt(error)) => {
-                    return Err(CalmError::from(error).into());
-                }
-                Err(crate::db::sqlite::AcpPrepareError::CommitUncertain(error)) => {
-                    *receipt_turn = ReceiptPresence::Present(ReceiptAttempt {
-                        turn: turn.clone(),
-                        native_session_id: native.clone(),
-                    });
-                    return Err(CalmError::from(error).into());
-                }
-            }
-            Ok::<_, StartFailure>((native, turn))
+            Ok::<_, StartFailure>(native)
         }
         .await;
-        let (native, turn) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                guard.finish().await?;
-                return Err(error);
+        let result = match prepared {
+            Ok(native) => {
+                dispatch::send(
+                    shared,
+                    dispatch,
+                    PreparedTurn {
+                        native,
+                        turn,
+                        usage,
+                        asks,
+                    },
+                    Carrier::Managed(&mut guard),
+                    receipt_turn,
+                )
+                .await
             }
+            Err(error) => Err(error),
         };
-        #[cfg(all(test, feature = "fixtures"))]
-        super::super::test_seams::wait_issue(
-            &params.worker_session_id,
-            super::super::test_seams::IssueStage::AfterReceipt,
-        )
-        .await;
-        #[cfg(all(test, feature = "fixtures"))]
-        if let Some(connection) =
-            super::super::test_transport::connection(&params.worker_session_id)
-        {
-            guard.process.as_mut().expect("prepared process").connection = connection;
+        if result.is_err() {
+            guard.finish().await?;
         }
-        let (process, receipt, claim, driver_guard) = guard.handoff();
-        let execution_id = crate::provider_execution::execution_id(claim.record())?;
-        #[cfg(feature = "fixtures")]
-        let held = super::super::test_seams::tap_held(&params.worker_session_id, held);
-        let approvals = Arc::new(Approvals::for_turn(
-            permission,
-            &held,
-            &turn,
-            &process.connection.client,
-            asks,
-        ));
-        let (cancel, cancelled) = watch::channel(CancelRequest::Running);
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point(
-            "carrier-quiescence-acp-issuance",
-            &params.worker_session_id,
-        )
-        .await;
-        shared.state.lock().expect("ACP state").active = Some(Active {
-            thread: thread.into(),
-            turn: turn.clone(),
-            cancel,
-            approvals: Arc::downgrade(&approvals),
-            native_session_id: native.clone(),
-            execution_id: Some(execution_id.clone()),
-        });
-        let translator = TurnTranslator::new(TurnContext {
-            thread_id: thread.into(),
-            turn_id: turn.clone(),
-            native_session_id: native.clone(),
-            usage,
-        });
-        let _ = shared.events.send(translator.started());
-        let client = process.connection.client.clone();
-        let capabilities = process.capabilities.clone();
-        let (send_pending, pending) = tokio::sync::oneshot::channel();
-        let retained_receipt = receipt.clone();
-        let association = input.association();
-        let task_shared = Arc::clone(shared);
-        let driver = tokio::spawn(async move {
-            drive(
-                task_shared,
-                process,
-                receipt,
-                translator,
-                pending,
-                cancelled,
-                approvals,
-                claim,
-                driver_guard,
-            )
-            .await
-        });
-        execution_end::install(
-            shared,
-            DriverSlot::new(shared, driver, retained_receipt, association)
-                .with_execution(execution_id),
-        );
-        #[cfg(all(test, feature = "fixtures"))]
-        super::super::test_seams::wait_issue(
-            &params.worker_session_id,
-            super::super::test_seams::IssueStage::DriverInstalled,
-        )
-        .await;
-        let pending = {
-            let owner_admission =
-                shared.admission(thread, Some(permission), Some(&native), Some(&turn));
-            let admission = input.admission(&owner_admission);
-            protocol::prompt(&client, &capabilities, &native, &blocks, admission.gate()).await
-        };
-        let _ = send_pending.send(pending);
-        // A durable dispatch attempt always hands ownership to the Harness, even if its pipe failed.
-        Ok(ReceiptAttempt {
-            turn,
-            native_session_id: native,
-        })
+        result
     }
 }
