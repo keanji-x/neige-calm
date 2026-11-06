@@ -2,7 +2,7 @@
 
 ## Hourly quota (PR #3252)
 
-Deployment owners set **Track mail limit** in **Settings → Planners**. The
+Deployment owners set **Sending limit** in **Settings → Mail**. The
 default is five messages per sending Track in a rolling 60-minute window.
 Enter a rate such as `5/h`. The count can be 1 to 1000, and changes apply
 to subsequent sends as soon as they are saved.

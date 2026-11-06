@@ -90,6 +90,7 @@ glyphs for this.
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |
 | `/settings/plugins` (2nd level) | the install form | `PluginAddPane` (`plugin-add.tsx`) |
 | `/settings/planners` | Planners | `PlannersPane` (`planners.tsx`) |
+| `/settings/mail` | Mail | `MailPane` (`mail.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
 Real routes rather than pane-local state: every pane can be linked to, and Back

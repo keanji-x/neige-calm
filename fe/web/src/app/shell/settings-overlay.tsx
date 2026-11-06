@@ -12,6 +12,7 @@ import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { MAIL_PER_HOUR_KEY, PLANNER_TURN_DURATION_KEY, mailPerHourPatch, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
+import { MailPane } from '../../features/settings/mail.tsx';
 import { PlannersPane } from '../../features/settings/planners.tsx';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
@@ -150,6 +151,7 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
     case 'appearance': return <AppearancePaneHost />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'planners': return <PlannersPaneHost transport={transport} unauthorized={unauthorized} />;
+    case 'mail': return <MailPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
   }
@@ -158,11 +160,7 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
 /** App owns managed query lifetime/recovery; the feature consumes required server facts.
  * Mount/unmount follows the Settings visit. settings-planners.test.tsx pins this injection. */
 function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
-  const client = useQueryClient();
-  // A same-value successful read can withdraw an obsolete save acknowledgement.
-  // Observe query state too, so structural sharing cannot hide its read counter.
-  const settings = useQuery({ ...settingsQueryOptions(transport, unauthorized), notifyOnChangeProps: 'all' });
-  const save = useSettingsMutation(transport, unauthorized);
+  const { settings, settingRead, save } = useSettingEditor({ transport, unauthorized });
   const providers = useQuery(managedProvidersQueryOptions(transport, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   // Availability has one owner. Managed reads supply only static capability facts,
@@ -178,18 +176,10 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
   const recovery = useCodexAuthenticationRetry(transport, unauthorized);
   const go = useGo();
-  const settingRead = {
-    loaded: settings.data !== undefined,
-    readRevision: client.getQueryState(queryKeys.settings())?.dataUpdateCount ?? 0,
-    loadError: settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.'),
-    onRetryLoad: () => { void settings.refetch(); },
-  };
   return (
     <PlannersPane
       turnDuration={{ ...settingRead, value: settings.data?.settings[PLANNER_TURN_DURATION_KEY],
         onSave: (value) => save(plannerTurnDurationPatch(value)).then(() => undefined) }}
-      mailQuota={{ ...settingRead, value: settings.data?.settings[MAIL_PER_HOUR_KEY],
-        onSave: (value) => save(mailPerHourPatch(value)).then(() => undefined) }}
       authenticationRecovery={{ provider: 'codex', pending: recovery.pending, error: recovery.error,
         notices: recovery.notices, onRetry: recovery.retry,
         onOpenConversation: (notice) => go({ name: 'track', trackId: notice.track_id, cardId: notice.card_id, openPlanner: true }) }}
@@ -202,6 +192,26 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       recheckError={recheck.error}
     />
   );
+}
+
+function MailPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+  const { settings, settingRead, save } = useSettingEditor({ transport, unauthorized });
+  return <MailPane {...settingRead} value={settings.data?.settings[MAIL_PER_HOUR_KEY]}
+    onSave={(value) => save(mailPerHourPatch(value)).then(() => undefined)} />;
+}
+
+/** Observe read revisions even when a successful response contains the same value. */
+function useSettingEditor({ transport, unauthorized }: SettingsOverlayProps) {
+  const client = useQueryClient();
+  const settings = useQuery({ ...settingsQueryOptions(transport, unauthorized), notifyOnChangeProps: 'all' });
+  const save = useSettingsMutation(transport, unauthorized);
+  const settingRead = {
+    loaded: settings.data !== undefined,
+    readRevision: client.getQueryState(queryKeys.settings())?.dataUpdateCount ?? 0,
+    loadError: settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.'),
+    onRetryLoad: () => { void settings.refetch(); },
+  };
+  return { settings, settingRead, save };
 }
 
 function AppearancePaneHost() {

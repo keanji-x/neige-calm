@@ -9,6 +9,7 @@ export const SETTINGS_SECTIONS = Object.freeze([
   Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
   Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),
   Object.freeze({ id: 'planners', label: 'Planners', icon: 'checkDouble' }),
+  Object.freeze({ id: 'mail', label: 'Mail', icon: 'clock' }),
   Object.freeze({ id: 'about', label: 'About', icon: 'info' }),
 ] as const);
 

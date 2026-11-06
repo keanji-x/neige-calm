@@ -12,7 +12,7 @@ for (const width of [390]) {
     expect(matchMedia('(pointer: coarse)').matches).toBe(true);
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<SettingsSurface presentation={width === 390 ? 'mobile-detail' : 'desktop'} section="planners" onSelectSection={vi.fn()}>
-      <PlannersPane mailQuota={{ readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn() }} providers={[]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+      <PlannersPane providers={[]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
         rechecking={false} recheckError={null} authenticationRecovery={null}
         turnDuration={{ readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave }} />
     </SettingsSurface>);
@@ -50,7 +50,7 @@ for (const width of [390]) {
 }
 
 it('marks a corrupt stored duration and associates its visible repair message', async () => {
-  render(<PlannersPane mailQuota={{ readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn() }} providers={[]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+  render(<PlannersPane providers={[]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
     rechecking={false} recheckError={null} authenticationRecovery={null}
     turnDuration={{ readRevision: 1, value: 'broken', loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined) }} />);
   const input = page.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });

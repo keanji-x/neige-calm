@@ -6,6 +6,38 @@
     max-inline-size: 100%;
     overflow-wrap: anywhere;
   }
+  .mailCard {
+    display: grid;
+    gap: var(--space-4);
+    box-sizing: border-box;
+    inline-size: 100%;
+    max-inline-size: var(--measure-form);
+    padding: var(--space-5);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    background: var(--surface-card);
+  }
+
+  .mailCardIntro {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .mailActions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: var(--space-3);
+  }
+
+  .mailHint {
+    margin: 0;
+    padding-block-start: var(--space-3);
+    border-block-start: 1px solid var(--hairline);
+    color: var(--text-2);
+    font: var(--type-metadata);
+  }
+
   /*
    * The overlay's two columns. The nav column is fixed at a measure that fits
    * the longest label plus its padding; the pane takes the rest and is the only

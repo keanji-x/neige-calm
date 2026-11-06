@@ -342,7 +342,11 @@ it('edits the Track mail quota through Settings and restores its default', async
     }
     return Promise.resolve({ status: 200, statusText: 'OK', body: { settings } });
   });
-  const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Track mail limit (messages per hour)' });
+  await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  expect(screen.queryByRole('textbox', { name: 'Messages per hour' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Mail' }));
+  const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Messages per hour' });
+  expect(screen.queryByRole('textbox', { name: 'Maximum turn duration (minutes)' })).toBeNull();
   expect(field.value).toBe('5/h');
   const user = userEvent.setup();
   await user.clear(field);
