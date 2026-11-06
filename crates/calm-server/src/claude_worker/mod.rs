@@ -24,5 +24,5 @@ pub(crate) use sink::{
 mod environment_tests;
 #[cfg(test)]
 mod role_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod sink_tests;
