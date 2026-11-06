@@ -1,21 +1,77 @@
 use super::*;
 use crate::agent_backend_pool::codex::codex_route_tests::{bind, pool_for_repo};
+use crate::db::RepoRead;
 use crate::operation::launch_cleanup_test_support::{
     FIXTURE_CONTROL_VERSION, read_legacy_v2_request,
 };
 use crate::shared_codex_appserver::native_owner_tests::{
     assert_no_request, connect_with_reader, request, send,
 };
+use crate::worker_model_defaults::tests::Warnings;
 use calm_session::control::{ControlMsg, ControlReply};
+use calm_types::worker_model::WorkerModelProvider;
 
 #[tokio::test]
 async fn agent_backend_publish_worker_binds_before_thread_start() {
+    publish_worker(false, false).await;
+}
+
+#[tokio::test]
+async fn worker_model_defaults_spawn_and_redrive_keep_selection_and_backend() {
+    publish_worker(true, false).await;
+}
+
+#[tokio::test]
+async fn worker_model_defaults_legacy_operation_without_thread_warns_on_spawn_and_redrive() {
+    publish_worker(false, true).await;
+}
+
+async fn publish_worker(with_defaults: bool, legacy: bool) {
     let mut harness = worker_lease_harness().await;
+    if with_defaults {
+        crate::db::RepoOutOfDomain::settings_upsert(
+            harness.repo.as_ref(),
+            "worker_model_defaults_codex",
+            r#"{"model":"private-a","effort":"high"}"#,
+        )
+        .await
+        .unwrap();
+    }
     let (_root, pool) = pool_for_repo(harness.repo.clone()).await;
     let other = pool.instances()[1].clone();
     let (_b, mut peer, _fb) = connect_with_reader(&other).await;
     harness.adapter.codex_backends = pool.clone();
     let (op_repo, op, mut output) = prepare_worker_app_server_interact(&harness, "a").await;
+    if legacy {
+        // Base could publish this operation before it ever minted a thread.
+        harness.repo.db().writer().execute(sqlx::query(
+            "UPDATE cards SET payload=json_remove(payload,'$.worker_model_selection') WHERE id=?"
+        ).bind(output.data["card_id"].as_str().unwrap())).await.unwrap();
+        output.result["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("worker_model_selection");
+        harness
+            .repo
+            .db()
+            .writer()
+            .execute(
+                sqlx::query("UPDATE operations SET tx_output_json=? WHERE id=?")
+                    .bind(serde_json::to_string(&output).unwrap())
+                    .bind(&op.id),
+            )
+            .await
+            .unwrap();
+    }
+    if with_defaults || legacy {
+        crate::db::RepoOutOfDomain::settings_upsert(
+            harness.repo.as_ref(),
+            "worker_model_defaults_codex",
+            r#"{"model":"private-b","effort":"low"}"#,
+        )
+        .await
+        .unwrap();
+    }
     let session_id = output.output_string("runtime_id", "test").unwrap();
     let binding: (String, Option<String>) = sqlx::query_as(
         "SELECT b.backend_id,s.thread_id FROM worker_session_backends b
@@ -93,10 +149,23 @@ async fn agent_backend_publish_worker_binds_before_thread_start() {
         .into_iter()
         .find(|claimed| claimed.id == op.id)
         .expect("claim the native spawn checkpoint");
-    let spawn = harness.adapter.spawn_side_effect(&output, &op, &ctx);
+    let output = op.tx_output.as_ref().unwrap();
+    let warnings = Warnings::default();
+    let spawn = warnings.run(harness.adapter.spawn_side_effect(output, &op, &ctx));
     let serve = async {
         let start = request(&mut peer).await;
         assert_eq!(start["method"], "thread/start");
+        if with_defaults {
+            assert_eq!(start["params"]["config"]["model"], "private-a");
+            assert_eq!(start["params"]["config"]["model_reasoning_effort"], "high");
+        } else {
+            assert!(start["params"]["config"].get("model").is_none());
+            assert!(
+                start["params"]["config"]
+                    .get("model_reasoning_effort")
+                    .is_none()
+            );
+        }
         send(
             &mut peer,
             json!({"id":start["id"],"result":{"thread":{"id":"bound-thread"}}}),
@@ -105,6 +174,13 @@ async fn agent_backend_publish_worker_binds_before_thread_start() {
         let turn = request(&mut peer).await;
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["threadId"], "bound-thread");
+        if with_defaults {
+            assert_eq!(turn["params"]["model"], "private-a");
+            assert_eq!(turn["params"]["effort"], "high");
+        } else {
+            assert!(turn["params"].get("model").is_none());
+            assert!(turn["params"].get("effort").is_none());
+        }
         send(
             &mut peer,
             json!({"id":turn["id"],"result":{"turn":{"id":"bound-turn"}}}),
@@ -114,11 +190,38 @@ async fn agent_backend_publish_worker_binds_before_thread_start() {
     };
     let (outcome, _) = tokio::join!(spawn, serve);
     outcome.unwrap();
+    let card = output.data["card_id"].as_str().unwrap();
+    if legacy {
+        warnings.assert_legacy(card, WorkerModelProvider::Codex);
+    } else {
+        warnings.assert_no_legacy(card);
+    }
     let command = tokio::time::timeout(Duration::from_secs(5), commands.recv())
         .await
         .unwrap()
         .unwrap();
     assert!(command.args.join(" ").contains(&other.remote_uri()));
+    if with_defaults {
+        let shell = command.args.last().unwrap();
+        let parsed = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!("codex() {{ printf '%s\\0' \"$@\"; }}\n{shell}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(parsed.status.success());
+        let output = String::from_utf8(parsed.stdout).unwrap();
+        let argv: Vec<_> = output.split_terminator('\0').collect();
+        assert!(argv.contains(&"--config=model=\"private-a\""), "{argv:?}");
+        assert!(
+            argv.contains(&"--config=model_reasoning_effort=\"high\""),
+            "{argv:?}"
+        );
+    } else {
+        assert!(!command.args.last().unwrap().contains("--config=model"));
+    }
+
     assert_eq!(
         command
             .envs
@@ -129,11 +232,27 @@ async fn agent_backend_publish_worker_binds_before_thread_start() {
     );
     assert_no_request(&mut default).await;
     // Re-drive the same persisted runtime: it attaches on B without minting another turn.
-    harness
-        .adapter
-        .spawn_side_effect(&output, &op, &ctx)
+    let warnings = Warnings::default();
+    warnings
+        .run(harness.adapter.spawn_side_effect(output, &op, &ctx))
         .await
         .unwrap();
+    if legacy {
+        warnings.assert_legacy(card, WorkerModelProvider::Codex);
+        assert!(
+            harness
+                .repo
+                .card_get(card)
+                .await
+                .unwrap()
+                .unwrap()
+                .payload
+                .get("worker_model_selection")
+                .is_none()
+        );
+    } else {
+        warnings.assert_no_legacy(card);
+    }
     assert_no_request(&mut peer).await;
     assert_no_request(&mut default).await;
     endpoint.abort();

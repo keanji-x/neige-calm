@@ -11,6 +11,7 @@ use tokio::net::UnixListener;
 type Seen = Arc<StdMutex<Vec<(usize, String, String)>>>;
 struct Fixture {
     daemon: Arc<SharedCodexAppServer>,
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
     seen: Seen,
     closed: Arc<StdMutex<HashSet<String>>>,
     listener: JoinHandle<()>,
@@ -35,7 +36,7 @@ async fn fixture() -> Fixture {
     );
     let cfg = Config::parse_from(["calm-server", "--data-dir", root.path().to_str().unwrap()]);
     let home = Arc::new(SharedCodexHome::new(root.path().join("codex-home")));
-    let daemon = SharedCodexAppServer::new(&cfg, home, repo);
+    let daemon = SharedCodexAppServer::new(&cfg, home, repo.clone());
     std::fs::create_dir_all(daemon.paths.socket.parent().unwrap()).unwrap();
     let socket = UnixListener::bind(&daemon.paths.socket).unwrap();
     let seen = Seen::default();
@@ -117,6 +118,7 @@ async fn fixture() -> Fixture {
     native_owner_tests::publish(&daemon, client).await;
     Fixture {
         daemon,
+        repo,
         seen,
         closed,
         listener,
@@ -728,3 +730,5 @@ async fn timeout_interrupt_transport_uncertainty_retries_until_daemon_down() {
         .await
         .unwrap();
 }
+
+mod worker_model_defaults;

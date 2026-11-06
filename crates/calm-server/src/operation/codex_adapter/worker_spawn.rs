@@ -31,6 +31,21 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         .session_projection_by_id(&runtime_id)
         .await?
         .ok_or_else(|| CalmError::Internal(format!("worker runtime {runtime_id} vanished")))?;
+    let model_selection = crate::worker_model_defaults::from_payload(
+        &ctx.card.payload,
+        calm_types::worker_model::WorkerModelProvider::Codex,
+    )?
+    .unwrap_or_else(|| {
+        // A new thread reports at the mint boundary below. Re-drive with an existing
+        // thread must report here instead, without minting or submitting another turn.
+        if TxOutput::non_empty_string(runtime.thread_id.as_deref()).is_some() {
+            crate::worker_model_defaults::warn_legacy_selection(
+                card_id,
+                calm_types::worker_model::WorkerModelProvider::Codex,
+            );
+        }
+        TurnModelSelection::inherit()
+    });
     let persisted_turn_id = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
     let worker_instructions = crate::planner_card::render_system_prompt(
         crate::planner_card::SeededCardRole::WorkerCodex.prompt_template(),
@@ -87,6 +102,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             let shared = Arc::clone(ctx.shared_codex_appserver);
             let launch_thread = thread_id.clone();
             let items = vec![InputItem::text(ctx.rendered_prompt.trim())];
+            let model_selection = model_selection.clone();
             let started = ctx
                 .launch
                 .clone()
@@ -95,7 +111,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                         .turn_start(
                             &launch_thread,
                             items,
-                            &TurnModelSelection::inherit(),
+                            &model_selection,
                             TurnApprovals::Unchanged,
                             None,
                         )
@@ -159,8 +175,12 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         }
     }
 
+    let model_flags: String = provider::codex::selection_args(&model_selection)
+        .into_iter()
+        .map(|arg| format!(" {}", sh_single_quote(&arg)))
+        .collect();
     let command_line = format!(
-        "codex resume {} --remote {}",
+        "codex resume {} --remote {}{model_flags}",
         sh_single_quote(&thread_id),
         sh_single_quote(&remote_uri)
     );

@@ -285,6 +285,14 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             sh_single_quote(&settings_path),
             sh_single_quote(&agent_session_id),
         );
+        if is_worker
+            && let Some(selection) = crate::worker_model_defaults::from_payload(
+                &card.payload,
+                calm_types::worker_model::WorkerModelProvider::Claude,
+            )?
+        {
+            command_line.push_str(&crate::worker_model_defaults::claude_flags(&selection));
+        }
         let mcp_config = if is_worker {
             let path = worker_mcp::mcp_config_path(Path::new(&settings_path))?;
             command_line.push_str(&worker_mcp::mcp_flags(&path));
@@ -427,6 +435,27 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             )),
             None => None,
         };
+
+        let card_id_for_tx = card_id.clone();
+        crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                if card_is_worker_spawn_target_tx(tx, &card_id_for_tx).await? {
+                    let shape =
+                        crate::db::sqlite::card_execution_shape_tx(tx, &card_id_for_tx).await?;
+                    let provider = calm_types::worker_model::WorkerModelProvider::Claude;
+                    if crate::worker_model_defaults::from_payload(&shape.payload, provider)?
+                        .is_none()
+                    {
+                        crate::worker_model_defaults::warn_legacy_selection(
+                            &card_id_for_tx,
+                            provider,
+                        );
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await?;
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         ctx.terminal_renderer.drop_entry(&terminal_id).await;

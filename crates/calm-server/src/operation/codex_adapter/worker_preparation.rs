@@ -14,6 +14,11 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         let input = &op.payload;
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
         crate::operation::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
+        let model_selection = crate::worker_model_defaults::snapshot_tx(
+            tx,
+            calm_types::worker_model::WorkerModelProvider::Codex,
+        )
+        .await?;
         // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title =
             crate::operation::task_key_for_card_title(tx, &payload.idempotency_key).await;
@@ -70,6 +75,10 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
+            merged.insert(
+                calm_types::worker_model::WORKER_MODEL_SELECTION_KEY.into(),
+                serde_json::to_value(&model_selection)?,
+            );
             merged.insert(
                 "idempotency_key".into(),
                 Value::String(payload.idempotency_key.clone()),

@@ -14,6 +14,11 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
         let input = &op.payload;
         let payload: ClaudeWorkerOperationPayload = serde_json::from_value(input.clone())?;
         crate::operation::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
+        let model_selection = crate::worker_model_defaults::snapshot_tx(
+            tx,
+            calm_types::worker_model::WorkerModelProvider::Claude,
+        )
+        .await?;
         // Derived from the `tasks` row inside this tx (never carried on the payload, which would move `stable_payload_hash`); `None` leaves the card untitled.
         let card_title =
             crate::operation::task_key_for_card_title(tx, &payload.idempotency_key).await;
@@ -45,6 +50,7 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
             &claude_session_id,
             track_id.as_str(),
             &rendered_prompt,
+            &crate::worker_model_defaults::selection(&model_selection),
         )?;
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let scope = card_scope(
@@ -80,6 +86,10 @@ impl crate::operation::workspace_lease::worker::preparation::WorkerAdmission
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();
+            merged.insert(
+                calm_types::worker_model::WORKER_MODEL_SELECTION_KEY.into(),
+                serde_json::to_value(&model_selection)?,
+            );
             merged.insert(
                 "idempotency_key".into(),
                 Value::String(payload.idempotency_key.clone()),

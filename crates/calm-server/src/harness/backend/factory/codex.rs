@@ -64,6 +64,7 @@ impl PlannerFactory<'_> {
                     role,
                     socket_path,
                     raw_token,
+                    selection: provider::TurnModelSelection::inherit(),
                 },
                 None => ThreadConfig::NoMcp,
             },
