@@ -42,8 +42,8 @@ pub fn spawn_supervisor_attach_reader(
     repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
-    // Flipped to `true` once the whole `Exited` arm below has run. Teardown waits on this, never
-    // on the task handle: the loop also ends on a read error, which persists nothing.
+    // Flipped only after every required exit write and callback succeeds. Teardown waits on
+    // this, never on task completion: a failed write or read error proves no persisted exit.
     exit_persisted_tx: watch::Sender<bool>,
     output_capture: SharedTerminalOutputCapture,
     // Stamped `now_ms()` on every `Output` frame; a leading edge (a frame after a window of
@@ -125,6 +125,7 @@ pub fn spawn_supervisor_attach_reader(
                                 truncated: true,
                             }
                         });
+                    let mut exit_persisted = true;
                     if let Some(repo) = repo.as_ref()
                         && let Err(e) = repo
                             .terminal_set_exit_with_output(
@@ -136,6 +137,7 @@ pub fn spawn_supervisor_attach_reader(
                             )
                             .await
                     {
+                        exit_persisted = false;
                         tracing::warn!(
                             terminal_id = %terminal_id,
                             exit_code = ?exit_code,
@@ -158,6 +160,7 @@ pub fn spawn_supervisor_attach_reader(
                             )
                             .await
                         {
+                            exit_persisted = false;
                             tracing::warn!(
                                 terminal_id = %terminal_id,
                                 exit_code = ?exit_code,
@@ -167,24 +170,29 @@ pub fn spawn_supervisor_attach_reader(
                             );
                         }
                     }
-                    // Runs AFTER terminal_set_exit so a concurrent sweep that loses the row-flip race still
-                    // observed a persisted exit. Errors are contained inside the hook.
-                    if let Some(hook) = task_hook.as_ref() {
-                        hook.on_terminal_exit(
-                            &terminal_id,
-                            exit_code,
-                            signalled,
-                            &output.text,
-                            output.truncated,
-                        )
-                        .await;
+                    // Keep attempting callbacks after a failure; their owners retain completion
+                    // policy and retry responsibility. A later success cannot erase an earlier error.
+                    if let Some(hook) = task_hook.as_ref()
+                        && let Err(e) = hook
+                            .on_terminal_exit(
+                                &terminal_id,
+                                exit_code,
+                                signalled,
+                                &output.text,
+                                output.truncated,
+                            )
+                            .await
+                    {
+                        exit_persisted = false;
+                        tracing::warn!(terminal_id = %terminal_id, error = %e,
+                            "terminal task hook failed; exit persistence remains unverified");
                     }
-                    // Woken after the exit record is persisted so the recomputation reads `pty_open = 0`,
-                    // and before the persistence signal with no `.await` between, so a teardown that
-                    // observes "persisted" cannot abort this task before the wake.
+                    // Wake after all persistence attempts, including failures. Keep no `.await`
+                    // between this wake and the success signal so teardown cannot skip the wake.
                     wake_projector(&output_wake, &terminal_id);
-                    // Sent last, after every persistence step above, so the signal means "the exit was written".
-                    let _ = exit_persisted_tx.send(true);
+                    if exit_persisted {
+                        let _ = exit_persisted_tx.send(true);
+                    }
                     break;
                 }
                 Ok(ControlReply::Gap {

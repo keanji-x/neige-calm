@@ -1,3 +1,8 @@
+#[path = "in_process_renderer_e2e/fd_persistence.rs"]
+mod fd_persistence;
+#[path = "in_process_renderer_e2e/fd_resources.rs"]
+mod fd_resources;
+
 use calm_truth::db::RepoOutOfDomain as _;
 use calm_truth::db::RepoRead;
 use calm_types::organization::LEGACY_OWNER_USER_ID;

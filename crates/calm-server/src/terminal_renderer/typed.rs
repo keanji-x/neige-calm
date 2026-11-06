@@ -195,7 +195,7 @@ async fn before_spawn(
                 });
             }
         }
-        SupervisorControl::Signal(_) => {
+        SupervisorControl::Stop => {
             if let Err(error) = control_writer::request_typed_stop(engine, id, repo).await {
                 tracing::warn!(%error, "typed terminal stop request failed");
             }

@@ -40,7 +40,8 @@ async fn w_terminal_worker_sweep_ignores_pipe_shape() {
     scheduler.sweep_all().await;
     TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
         .on_terminal_exit(&terminal_id, Some(0), false, "stale", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(
         task_row(&boot, "pipe-shape").await.status,
         TaskStatus::Running

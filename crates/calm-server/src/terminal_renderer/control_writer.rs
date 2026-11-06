@@ -1,5 +1,5 @@
 use calm_session::control::{
-    ControlMsg, ControlReply, ResizePtyRequest, SignalRequest, WriteStdinRequest,
+    ControlMsg, ControlReply, ProcSignal, ResizePtyRequest, SignalRequest, WriteStdinRequest,
 };
 use calm_session::{DaemonMsg, read_frame, write_frame};
 use std::time::Duration;
@@ -58,14 +58,37 @@ enum Connection {
     },
 }
 impl Connection {
+    async fn stop(&mut self, proc_id: &str) -> anyhow::Result<()> {
+        if let Self::Typed { engine, id, repo } = self {
+            return request_typed_stop(engine, id, repo).await;
+        }
+        // The whole escalation belongs to this writer and its existing connection.
+        // Leader Exited is not proof that the original process group is empty.
+        for sig in [ProcSignal::Hup, ProcSignal::Kill] {
+            if sig == ProcSignal::Kill {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            let reply = self
+                .exchange(ControlMsg::Signal(SignalRequest {
+                    proc_id: proc_id.to_owned(),
+                    sig,
+                }))
+                .await?;
+            if !matches!(reply, ControlReply::SignalOk) {
+                tracing::warn!(?reply, "unexpected supervisor stop reply");
+            }
+        }
+        Ok(())
+    }
+
     async fn exchange(&mut self, message: ControlMsg) -> anyhow::Result<ControlReply> {
         use workspace_runtime::execution::{ExecutionReply, ProcessAction};
-        let (engine, id, repo) = match self {
+        let (engine, id) = match self {
             Self::Legacy(stream) => {
                 write_frame(stream, &message).await?;
                 return Ok(read_frame(stream).await?);
             }
-            Self::Typed { engine, id, repo } => (engine, id, repo),
+            Self::Typed { engine, id, .. } => (engine, id),
         };
         match message {
             ControlMsg::WriteStdin(request) => {
@@ -123,10 +146,6 @@ impl Connection {
                 );
                 Ok(ControlReply::ResizeOk)
             }
-            ControlMsg::Signal(_) => {
-                request_typed_stop(engine, id, repo).await?;
-                Ok(ControlReply::SignalOk)
-            }
             _ => anyhow::bail!("unsupported terminal interaction"),
         }
     }
@@ -156,8 +175,18 @@ pub fn spawn_supervisor_control_writer(
     control_conn: UnixStream,
     proc_id: String,
     rx: mpsc::UnboundedReceiver<SupervisorControl>,
+    mut exit_persisted: tokio::sync::watch::Receiver<bool>,
 ) -> JoinHandle<()> {
-    spawn_writer(Connection::Legacy(control_conn), proc_id, rx)
+    spawn_writer(Connection::Legacy(control_conn), proc_id, rx, async move {
+        let exited = exit_persisted
+            .wait_for(|persisted| *persisted)
+            .await
+            .is_ok();
+        if !exited {
+            // A disconnected output reader drops its sender without establishing exit.
+            std::future::pending::<()>().await;
+        }
+    })
 }
 pub(super) fn spawn_typed_control_writer(
     engine: std::sync::Arc<crate::execution_boot::ExecutionEngine>,
@@ -165,16 +194,43 @@ pub(super) fn spawn_typed_control_writer(
     repo: std::sync::Arc<dyn crate::db::RouteRepo>,
     rx: mpsc::UnboundedReceiver<SupervisorControl>,
 ) -> JoinHandle<()> {
-    spawn_writer(Connection::Typed { engine, id, repo }, String::new(), rx)
+    spawn_writer(
+        Connection::Typed { engine, id, repo },
+        String::new(),
+        rx,
+        std::future::pending(),
+    )
 }
 fn spawn_writer(
     mut connection: Connection,
     proc_id: String,
     mut rx: mpsc::UnboundedReceiver<SupervisorControl>,
+    completed: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        tokio::pin!(completed);
         let mut physical_sequence = 0u64;
-        while let Some(item) = rx.recv().await {
+        let mut exited = false;
+        loop {
+            // Only stop between requests: an admitted write keeps its known ACK even
+            // if the child exits before the supervisor replies. Retain the final screen.
+            let item = tokio::select! {
+                biased;
+                () = &mut completed, if !exited => {
+                    exited = true;
+                    // Atomically stop admission, then drain already accepted Stops. A
+                    // send that won the race with close must not lose its escalation.
+                    rx.close();
+                    continue;
+                },
+                item = rx.recv() => item,
+            };
+            let Some(item) = item else { break };
+            if exited && !matches!(item, SupervisorControl::Stop) {
+                // Unstarted writes have no successful ACK. The write already in flight
+                // above completed its original exchange before we observed exit.
+                continue;
+            }
             match item {
                 SupervisorControl::Write(write) => {
                     let PtyWrite {
@@ -273,22 +329,10 @@ fn spawn_writer(
                         }
                     }
                 }
-                SupervisorControl::Signal(sig) => {
-                    let reply = connection
-                        .exchange(ControlMsg::Signal(SignalRequest {
-                            proc_id: proc_id.clone(),
-                            sig,
-                        }))
-                        .await;
-                    match reply {
-                        Ok(ControlReply::SignalOk) => {}
-                        Ok(other) => {
-                            tracing::warn!(reply = ?other, "unexpected supervisor signal reply")
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read supervisor SignalOk");
-                            break;
-                        }
+                SupervisorControl::Stop => {
+                    if let Err(error) = connection.stop(&proc_id).await {
+                        tracing::warn!(%error, "terminal stop failed; closing writer");
+                        break;
                     }
                 }
             }

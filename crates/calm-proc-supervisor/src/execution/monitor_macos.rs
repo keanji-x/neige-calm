@@ -85,7 +85,14 @@ impl Executor {
                                 reason: "native original group empty but output incomplete".into(),
                             }
                         };
+                        let complete = matches!(record.output_end, OutputEnd::Complete { .. });
                         self.persist(record)?;
+                        log.close_writer()?;
+                        // The original group was observed empty and this exact child was reaped.
+                        // Incomplete output remains Unknown, retaining its native owner as before.
+                        if complete {
+                            self.processes.lock().map_err(poison)?.remove(id);
+                        }
                         return Ok(());
                     }
                 }

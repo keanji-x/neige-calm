@@ -91,6 +91,10 @@ impl Executor {
                     let mut record = executor.record(&id)?;
                     record.output_end = end;
                     executor.persist(record)?;
+                    // Reached only after concrete helper wait, reader EOF/error and durable output.
+                    // Drained alone (published above) cannot release these native handles.
+                    log.close_writer()?;
+                    executor.processes.lock().map_err(poison)?.remove(&id);
                 }
             }
             Ok::<(), anyhow::Error>(())

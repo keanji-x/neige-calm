@@ -169,8 +169,10 @@ impl Executor {
             let path = store.output_path(&identity.execution_id);
             if record.phase.receipt().is_some() || path.exists() {
                 // Persisted completion must agree with the actual durable log.
-                let log =
-                    output::OutputLog::open(&path, record.request.specification.replay_bytes)?;
+                let log = output::OutputLog::open_history(
+                    &path,
+                    record.request.specification.replay_bytes,
+                )?;
                 if let OutputEnd::Complete { final_cursor } = record.output_end
                     && log.snapshot(None)?.0 != final_cursor
                 {

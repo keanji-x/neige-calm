@@ -108,7 +108,12 @@ async fn stays_pending<F: Future + Unpin>(future: &mut F, real_time: Duration) {
 async fn split_trailing_cr_sends_the_cr_alone_after_the_gap_and_acks_once() {
     let (control, queue) = mpsc::unbounded_channel();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     let (item, mut acks) = write(
         WriteShape::SplitTrailingCr,
         b"hello\r",
@@ -172,7 +177,12 @@ async fn split_trailing_cr_sends_the_cr_alone_after_the_gap_and_acks_once() {
 async fn verbatim_writes_text_and_cr_in_one_frame() {
     let (control, queue) = mpsc::unbounded_channel();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     let (item, mut acks) = write(
         WriteShape::Verbatim,
         b"hello\r",
@@ -217,7 +227,12 @@ async fn split_trailing_cr_writes_a_lone_cr_or_a_cr_less_payload_verbatim() {
     }));
     let (control, queue) = mpsc::unbounded_channel();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     for (index, (data, warned)) in [(&b"\r"[..], 1), (&b"abc"[..], 2)].into_iter().enumerate() {
         let seq = index as u64 + 1;
         let (item, mut acks) = write(
@@ -251,7 +266,12 @@ async fn supervisor_lost_between_the_two_writes_leaves_the_input_unknown() {
     let barrier = Arc::new(crate::terminal_renderer::InputBarrier::default());
     let (control, queue) = mpsc::unbounded_channel();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     let (item, mut acks) = write(
         WriteShape::SplitTrailingCr,
         b"hello\r",

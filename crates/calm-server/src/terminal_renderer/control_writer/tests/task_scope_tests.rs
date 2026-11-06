@@ -184,7 +184,7 @@ async fn queued_task_change(replace_session: bool) {
         assert!(!scope.control_allowed().await);
         control.send(queued).unwrap();
         let (writer, mut peer) = UnixStream::pair().unwrap();
-        let writer_task = spawn_supervisor_control_writer(writer, "term:queued-task".into(), queue);
+        let writer_task = spawn_supervisor_control_writer(writer, "term:queued-task".into(), queue, tokio::sync::watch::channel(false).1);
         let result = tokio::time::timeout(Duration::from_secs(2),async {
             loop {
                 tokio::select! {

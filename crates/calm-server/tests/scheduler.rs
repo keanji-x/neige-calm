@@ -2333,7 +2333,8 @@ async fn terminal_hook_completes_task_on_exit() {
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false, "compile ok\n", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
 
     let row = task_row(&boot, "term").await;
     assert_eq!(row.status, TaskStatus::Done);
@@ -2356,7 +2357,8 @@ async fn terminal_hook_completes_task_on_exit() {
     );
 
     hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
     assert_eq!(task_row(&boot, "term").await.status, TaskStatus::Done);
 }
@@ -2375,7 +2377,8 @@ async fn terminal_exit_beats_running_stamp() {
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
 
     let row = task_row(&boot, "fast-term").await;
     assert_eq!(
@@ -2437,7 +2440,8 @@ async fn terminal_hook_nonzero_exit_fails_task() {
         "tail of failing output\n",
         true,
     )
-    .await;
+    .await
+    .expect("terminal exit hook succeeds or is a legitimate no-op");
 
     let row = task_row(&boot, "term-fail").await;
     assert_eq!(row.status, TaskStatus::Failed);
@@ -3457,7 +3461,8 @@ async fn codex_task_pty_exit_does_not_complete_task() {
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(
         task_row(&boot, "cx").await.status,
         TaskStatus::Running,
@@ -3466,7 +3471,8 @@ async fn codex_task_pty_exit_does_not_complete_task() {
     assert!(event_rows(&boot, "task.completed").await.is_empty());
 
     hook.on_terminal_exit(&terminal_id, Some(2), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(task_row(&boot, "cx").await.status, TaskStatus::Running);
     assert!(event_rows(&boot, "task.failed").await.is_empty());
 }
@@ -3483,7 +3489,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(
         task_row(&boot, "claude-exit").await.status,
         TaskStatus::Running,
@@ -3492,7 +3499,8 @@ async fn claude_task_pty_exit_does_not_complete_task() {
     assert!(event_rows(&boot, "task.completed").await.is_empty());
 
     hook.on_terminal_exit(&terminal_id, Some(2), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     assert_eq!(
         task_row(&boot, "claude-exit").await.status,
         TaskStatus::Running
@@ -7803,7 +7811,8 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
 
     let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     hook.on_terminal_exit(&forged_terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
 
     let row = task_row(&boot, "forged-term").await;
     assert_eq!(
@@ -7818,7 +7827,8 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
     );
 
     hook.on_terminal_exit(&real_terminal_id, Some(0), false, "", false)
-        .await;
+        .await
+        .expect("terminal exit hook succeeds or is a legitimate no-op");
     let row = task_row(&boot, "forged-term").await;
     assert_eq!(row.status, TaskStatus::Done);
     assert_eq!(row.worker_card_id.as_deref(), Some(real_card_id.as_str()));
@@ -10026,5 +10036,7 @@ mod boot_recovery;
 #[cfg(target_os = "linux")]
 #[path = "scheduler/recovery_3192.rs"]
 mod recovery_3192;
+#[path = "scheduler/terminal_hook_persistence.rs"]
+mod terminal_hook_persistence;
 #[path = "scheduler/terminal_pipe.rs"]
 mod terminal_pipe;

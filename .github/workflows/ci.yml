@@ -492,6 +492,46 @@ jobs:
         if: env.RUN_RUST_CHECKS == 'true'
         run: cargo test --locked -p calm-truth --doc
 
+  terminal-native-macos:
+    name: terminal native lifetime (macOS)
+    needs: changes
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'push') && (needs.changes.result != 'success' || needs.changes.outputs.rust_changed == 'true') }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: "6"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: install pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: terminal-native-macos
+          save-if: ${{ github.event_name == 'push' }}
+      - uses: taiki-e/install-action@nextest
+      - name: native original group lifecycle
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --test integration_suite \
+            -E 'test(/^native_macos::/)' --no-tests fail --test-threads 8
+      - name: retained execution resources
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --test integration_suite \
+            -E 'test(/^execution_resources::/)' --no-tests fail --test-threads 8
+      - name: output completion
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --lib \
+            -E 'test(/^execution::output::/)' --no-tests fail --test-threads 8
+      - name: build real renderer supervisor
+        run: env -u NEIGE_CODEX_BIN cargo build --locked -p calm-proc-supervisor --bin calm-proc-supervisor
+      - name: renderer retained resources
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-server --test api_suite \
+            -E 'test(/^domain_api_suite::in_process_renderer_e2e::/) & test(fd_resources_)' --no-tests fail --test-threads 8
+
   # PRs compile the Rust suite once; the shards below only download and run it. This job also runs
   # hosted on main pushes, because it is the only one that saves the `rust-test` cache PRs restore.
   rust-build:

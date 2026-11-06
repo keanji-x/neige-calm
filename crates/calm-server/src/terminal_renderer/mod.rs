@@ -113,8 +113,12 @@ pub struct PtyWrite {
 
 pub enum SupervisorControl {
     Write(PtyWrite),
-    Resize { cols: u16, rows: u16 },
-    Signal(ProcSignal),
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    /// One complete stop, owned and cancelled with the renderer control task.
+    Stop,
 }
 
 #[derive(Clone)]
@@ -174,8 +178,8 @@ pub struct RendererEntry {
     /// Held apart from `tasks` because teardown must let it finish its exit arm rather than abort
     /// it: this is the task that persists the terminal exit.
     attach_task: StdMutex<Option<JoinHandle<()>>>,
-    /// Flipped by the attach reader once it has run the whole `Exited` arm. A closed channel means
-    /// the reader ended WITHOUT persisting (an attach-stream read error breaks its loop too).
+    /// Flipped only when all required exit persistence and callbacks succeed. A channel closed
+    /// while false means the reader ended without establishing persistence, including write errors.
     exit_persisted: watch::Receiver<bool>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
@@ -266,10 +270,7 @@ impl RendererEntry {
 
     pub async fn shutdown_signal(&self, sig: ProcSignal) {
         if self.control_via_engine {
-            let _ = self
-                .handle
-                .supervisor_tx
-                .send(SupervisorControl::Signal(sig));
+            let _ = self.handle.supervisor_tx.send(SupervisorControl::Stop);
             return;
         }
         signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
@@ -301,6 +302,15 @@ impl RendererEntry {
     #[cfg(feature = "fixtures")]
     pub async fn wait_exit_persisted_for_test(&self, budget: Duration) -> bool {
         self.await_exit_persisted(budget).await == ExitPersistWait::Persisted
+    }
+
+    /// Observe reader completion separately from success, without confusing a timeout with
+    /// ReaderGone. Only the reader owns the sender; its last value records persistence success.
+    #[cfg(feature = "fixtures")]
+    pub async fn wait_exit_reader_closed_for_test(&self) -> bool {
+        let mut rx = self.exit_persisted.clone();
+        while rx.changed().await.is_ok() {}
+        *rx.borrow()
     }
 
     fn abort_tasks(&self) {
@@ -938,10 +948,14 @@ async fn ensure_entry(
     let event_rx = event_tx.subscribe();
     let (supervisor_tx, supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
 
+    // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
+    // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
+    let (exit_persisted_tx, exit_persisted) = watch::channel(false);
     let control_task = control_writer::spawn_supervisor_control_writer(
         control_conn,
         proc_id.clone(),
         supervisor_rx,
+        exit_persisted.clone(),
     );
 
     let mut attach_conn = calm_session::control::execution::connect_legacy(&cfg.supervisor_sock)
@@ -1007,9 +1021,6 @@ async fn ensure_entry(
         };
 
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
-    // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
-    // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
-    let (exit_persisted_tx, exit_persisted) = watch::channel(false);
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
         proc_id.clone(),

@@ -115,18 +115,18 @@ pub(crate) async fn complete_terminal_task_tx(
     }])
 }
 
-pub(super) async fn terminal_task_uses_pipe(repo: &dyn Repo, task_id: &str) -> bool {
+pub(super) async fn terminal_task_uses_pipe(repo: &dyn Repo, task_id: &str) -> Result<bool> {
     let Some(pool) = repo.sqlite_db() else {
-        return true;
+        return Ok(true);
     };
-    let result: std::result::Result<Option<bool>, _> = sqlx::query_scalar(
+    let result: Option<bool> = sqlx::query_scalar(
         "SELECT json_type(tx_output_json,'$.data.terminal_worker_pipe') IS NOT NULL \
          FROM operations WHERE kind='terminal-worker' AND idempotency_key=?1",
     )
     .bind(task_id)
     .fetch_optional(pool.read_pool())
-    .await;
-    result.map(|value| value.unwrap_or(false)).unwrap_or(true)
+    .await?;
+    Ok(result.unwrap_or(false))
 }
 
 impl Scheduler {
