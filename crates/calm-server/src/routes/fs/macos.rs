@@ -1,6 +1,6 @@
-//! Darwin's constrained openat contract, deliberately restricted to Track reads.
+//! Shared Darwin constrained-open authority for workspace reads and attachment directories.
 
-use super::super::{
+use super::{
     CalmError, OpenWorkspaceFile, Result, malformed_path, map_io_err, workspace_relative_path,
 };
 use nix::fcntl::{OFlag, openat};
@@ -8,7 +8,7 @@ use nix::libc;
 use nix::sys::stat::Mode;
 use std::ffi::CStr;
 use std::fs::File;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 // Apple public headers, xnu-12377.121.6 bsd/sys/fcntl.h and bsd/sys/errno.h:
@@ -19,11 +19,7 @@ const O_RESOLVE_BENEATH: OFlag = OFlag::from_bits_retain(0x0000_1000);
 const O_NOFOLLOW_ANY: OFlag = OFlag::from_bits_retain(0x2000_0000);
 const ENOTCAPABLE: libc::c_int = 107;
 
-fn unavailable() -> CalmError {
-    CalmError::Internal(
-        "secure Track workspace reads require macOS 26+ (Darwin 25+) with enforced constrained openat support".into(),
-    )
-}
+use super::capability::unavailable;
 
 fn supported_release(release: &str) -> bool {
     let parts: Vec<_> = release.split('.').collect();
@@ -51,11 +47,16 @@ fn require_supported_kernel() -> Result<()> {
     Ok(())
 }
 
-fn constrained_open(root: &File, relative: &Path) -> std::io::Result<File> {
+fn constrained_open(root: &File, relative: &Path, flags: OFlag) -> std::io::Result<File> {
     let fd = openat(
         Some(root.as_raw_fd()),
         relative,
-        OFlag::O_RDONLY | O_NOFOLLOW_ANY | O_RESOLVE_BENEATH | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+        flags
+            | OFlag::O_RDONLY
+            | O_NOFOLLOW_ANY
+            | O_RESOLVE_BENEATH
+            | OFlag::O_CLOEXEC
+            | OFlag::O_NONBLOCK,
         Mode::empty(),
     )
     .map_err(|error| {
@@ -75,39 +76,71 @@ fn require_enforced_beneath(root: &File) -> Result<()> {
     // An absolute path must be rejected, even if it names the root directory.
     // Probe no contents and close any unexpected successful fd. This detects
     // ignored flags; it is not a proof of concurrent pathname resolution.
-    match constrained_open(root, Path::new("/")) {
+    match constrained_open(root, Path::new("/"), OFlag::O_DIRECTORY) {
         Err(error) if error.raw_os_error() == Some(ENOTCAPABLE) => Ok(()),
         _ => Err(unavailable()),
     }
+}
+
+pub(super) fn require_capability() -> Result<()> {
+    require_supported_kernel()?;
+    let root = File::open("/").map_err(|_| unavailable())?;
+    require_enforced_beneath(&root)
+}
+
+fn open_root(workspace_root: &Path) -> Result<File> {
+    require_supported_kernel()?;
+    // The persisted root is trusted configuration and may itself use aliases.
+    // O_DIRECTORY also rejects a replaced root FIFO without blocking on it.
+    let fd = nix::fcntl::open(
+        workspace_root,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        if error == nix::errno::Errno::ENOTDIR {
+            CalmError::BadRequest(format!(
+                "track workspace {} is not a directory",
+                workspace_root.display()
+            ))
+        } else {
+            map_io_err(workspace_root, error.into())
+        }
+    })?;
+    // SAFETY: open returned a fresh fd with a single owning conversion.
+    let root = unsafe { File::from_raw_fd(fd) };
+    require_enforced_beneath(&root)?;
+    Ok(root)
+}
+
+pub(super) async fn open_root_directory(workspace_root: &Path) -> Result<OwnedFd> {
+    let workspace_root = workspace_root.to_path_buf();
+    tokio::task::spawn_blocking(move || open_root(&workspace_root).map(OwnedFd::from))
+        .await
+        .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
+}
+
+pub(super) async fn open_directory_from_fd(root: OwnedFd, relative_path: &str) -> Result<OwnedFd> {
+    let relative = workspace_relative_path(relative_path)?;
+    tokio::task::spawn_blocking(move || {
+        require_supported_kernel()?;
+        let root = File::from(root);
+        require_enforced_beneath(&root)?;
+        constrained_open(&root, &relative, OFlag::O_DIRECTORY)
+            .map(OwnedFd::from)
+            .map_err(|error| map_open_error(&relative, error))
+    })
+    .await
+    .map_err(|error| CalmError::Internal(format!("workspace open task failed: {error}")))?
 }
 
 pub(super) async fn open(workspace_root: &Path, relative_path: &str) -> Result<OpenWorkspaceFile> {
     let relative = workspace_relative_path(relative_path)?;
     let workspace_root = workspace_root.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        require_supported_kernel()?;
-        // The persisted root is trusted configuration and may itself use aliases.
-        // O_DIRECTORY also rejects a replaced root FIFO without blocking on it.
-        let fd = nix::fcntl::open(
-            &workspace_root,
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
-            Mode::empty(),
-        )
-        .map_err(|error| {
-            if error == nix::errno::Errno::ENOTDIR {
-                CalmError::BadRequest(format!(
-                    "track workspace {} is not a directory",
-                    workspace_root.display()
-                ))
-            } else {
-                map_io_err(&workspace_root, error.into())
-            }
-        })?;
-        // SAFETY: open returned a fresh fd with a single owning conversion.
-        let root = unsafe { File::from_raw_fd(fd) };
-        require_enforced_beneath(&root)?;
+        let root = open_root(&workspace_root)?;
         let requested = workspace_root.join(&relative);
-        let file = constrained_open(&root, &relative)
+        let file = constrained_open(&root, &relative, OFlag::empty())
             .map_err(|error| map_open_error(&requested, error))?;
         let metadata = file
             .metadata()
@@ -131,7 +164,7 @@ pub(super) async fn open(workspace_root: &Path, relative_path: &str) -> Result<O
 fn map_open_error(requested: &Path, error: std::io::Error) -> CalmError {
     match error.raw_os_error() {
         Some(libc::ELOOP) => CalmError::BadRequest(format!(
-            "macOS Track workspace reads do not allow symlinks in the file path: {}",
+            "macOS workspace paths do not allow symlinks in the file path: {}",
             requested.display()
         )),
         Some(ENOTCAPABLE) => CalmError::BadRequest(format!(
@@ -180,7 +213,7 @@ mod tests {
         let root = File::open("/").unwrap();
         require_enforced_beneath(&root).unwrap();
         assert_eq!(
-            constrained_open(&root, Path::new("/"))
+            constrained_open(&root, Path::new("/"), OFlag::O_DIRECTORY)
                 .unwrap_err()
                 .raw_os_error(),
             Some(ENOTCAPABLE)

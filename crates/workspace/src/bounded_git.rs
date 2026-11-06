@@ -57,22 +57,54 @@ impl Group {
     // The only group-signal entry point. Even a previously observed zombie must
     // be proved waitable again here: capture may exit via success or any error.
     fn terminate(&mut self) -> io::Result<()> {
+        let result = self.terminate_owned();
+        // Mark completion only after successful reap or an explicit cleanup failure.
         self.finished = true;
+        result
+    }
+
+    fn terminate_owned(&mut self) -> io::Result<()> {
         if let Err(error) = require_zombie_retention() {
             self.lost = true;
             return Err(error);
         }
         self.observe_exit()?;
-        #[cfg(all(test, target_os = "linux"))]
-        tests::observe_before_kill(self.child.id());
-        // SAFETY: the immediately preceding WNOWAIT probe proves this is still
-        // our live/unreaped child; process_group(0) made its pid the group id.
-        let rc = unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
-        if rc < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-            return Err(io::Error::last_os_error());
+        let result = self.signal_group();
+        if result.is_ok() || matches!(self.observe_exit(), Ok(Some(_))) {
+            // On a failed signal/snapshot, release an exited child only after
+            // revalidating our exact pin. Never block waiting for a live denied child.
+            self.child.wait()?;
         }
-        self.child.wait()?;
-        Ok(())
+        result
+    }
+
+    fn signal_group(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        tests::observe_before_kill(self.child.id());
+        // SAFETY: the preceding WNOWAIT probe proves this is still our owned
+        // live/unreaped child; process_group(0) made its pid the group id.
+        let result = signal_group(self.child.id());
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+                // Observe AFTER denial: even the last live member can exit between
+                // any earlier snapshot and kill. Only a fresh complete observation
+                // of this pinned original group may classify Darwin's zombie EPERM.
+                self.observe_exit()?;
+                #[cfg(test)]
+                tests::snapshot_fault()?;
+                let leader = crate::execution::macos::process_info(self.child.id())?;
+                let members = crate::execution::macos::group_members(&leader)?;
+                if members.iter().all(|p| p.pbi_status == libc::SZOMB) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn finish<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
@@ -89,6 +121,19 @@ impl Drop for Group {
         }
     }
 }
+fn signal_group(pid: u32) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = tests::signal_error() {
+        return Err(io::Error::from_raw_os_error(errno));
+    }
+    // SAFETY: caller retains and just validated the original child/group pin.
+    if unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn pin_lost() -> io::Error {
     io::Error::other("Git leader identity pin lost; refusing group signal and wait")
 }
@@ -255,13 +300,38 @@ impl BoundedOutput for Command {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
 
+    #[test]
+    fn bounded_git_captures_zombie_only_git() {
+        let result = Command::new("git")
+            .arg("--version")
+            .bounded_output(Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        assert!(result.status.success());
+        assert!(result.stdout.starts_with(b"git version "));
+    }
+
     thread_local! {
         static PINNED_BEFORE_KILL: Cell<Option<bool>> = const { Cell::new(None) };
+        static SIGNAL_ERROR: Cell<Option<i32>> = const { Cell::new(None) };
+        #[cfg(target_os = "macos")]
+        static SNAPSHOT_ERROR: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn signal_error() -> Option<i32> {
+        SIGNAL_ERROR.take()
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn snapshot_fault() -> io::Result<()> {
+        if SNAPSHOT_ERROR.replace(false) {
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        } else {
+            Ok(())
+        }
     }
 
     // Observe the real syscall boundary without consuming the zombie or panicking in Drop.
@@ -300,7 +370,9 @@ mod tests {
         let pid_file = dir.path().join("descendant");
         let script = match kind {
             "success" => "sleep 30 >&- 2>&- & echo $! > \"$1\"; exit 7",
-            "cap" => "yes x & echo $! > \"$1\"; exit 7",
+            "cap" => {
+                "sh -c 'trap \"\" PIPE HUP; while :; do printf \"%8192s\" x; done' 2>/dev/null & echo $! > \"$1\"; exit 7"
+            }
             _ => "sleep 30 & echo $! > \"$1\"; exit 7",
         };
         let mut child = Group::new(
@@ -365,8 +437,18 @@ mod tests {
         }
         let cleanup = Instant::now() + Duration::from_secs(5);
         loop {
-            let stat = std::fs::read_to_string(format!("/proc/{descendant}/stat"));
-            if stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z') {
+            #[cfg(target_os = "linux")]
+            let exited = std::fs::read_to_string(format!("/proc/{descendant}/stat"))
+                .map(|stat| stat.split_once(") ").unwrap().1.starts_with('Z'))
+                .unwrap_or(true);
+            #[cfg(target_os = "macos")]
+            let exited = crate::execution::macos::process_info(descendant)
+                .map(|info| info.pbi_status == libc::SZOMB)
+                .unwrap_or_else(|error| {
+                    assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+                    true
+                });
+            if exited {
                 break;
             }
             assert!(
@@ -581,5 +663,102 @@ mod tests {
     #[test]
     fn bounded_git_read_error_pins_leader_and_kills_pipe_holder() {
         run_case("read_error");
+    }
+
+    fn fixture(script: &str) -> Group {
+        Group::new(
+            Command::new("sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        )
+    }
+    fn await_exit(child: &Group) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !exited_unreaped(child.child.id()) {
+            assert!(Instant::now() < end, "fixture did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[test]
+    fn bounded_git_cleanup_denial_reaps_owned_exited_leader() {
+        let mut child = fixture("exit 0");
+        await_exit(&child);
+        let pid = child.child.id();
+        SIGNAL_ERROR.set(Some(libc::EACCES));
+        let result = child.terminate();
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EACCES));
+        assert!(
+            !exited_unreaped(pid),
+            "cleanup error must still reap owned zombie"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bounded_git_eperm_with_live_member_is_denied() {
+        // The exited leader alone cannot certify completion. A finite descendant
+        // bounds this denial fixture without signalling a group after releasing its pin.
+        let mut child = fixture("sleep 2 & exit 0");
+        await_exit(&child);
+        let leader = crate::execution::macos::process_info(child.child.id()).unwrap();
+        assert!(
+            crate::execution::macos::group_members(&leader)
+                .unwrap()
+                .iter()
+                .any(|p| p.pbi_status != libc::SZOMB)
+        );
+        SIGNAL_ERROR.set(Some(libc::EPERM));
+        let result = child.terminate();
+        // Drain the finite descendant before asserting, including under mutation.
+        child
+            .child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut Vec::new())
+            .unwrap();
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EPERM));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bounded_git_eperm_with_incomplete_snapshot_is_denied_and_reaped() {
+        let mut child = fixture("exit 0");
+        await_exit(&child);
+        let pid = child.child.id();
+        SIGNAL_ERROR.set(Some(libc::EPERM));
+        SNAPSHOT_ERROR.set(true);
+        let result = child.terminate();
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+        assert!(
+            !exited_unreaped(pid),
+            "failed observation must release owned zombie"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bounded_git_live_snapshot_then_zombie_only_signal() {
+        let mut child = fixture("read release; exit 19");
+        let pid = child.child.id();
+        let leader = crate::execution::macos::process_info(pid).unwrap();
+        let members = crate::execution::macos::group_members(&leader).unwrap();
+        assert!(members.iter().any(|p| p.pbi_status != libc::SZOMB));
+        drop(child.child.stdin.take());
+        await_exit(&child);
+        // Real Darwin kill now returns EPERM, despite the earlier live snapshot.
+        child.terminate().unwrap();
+        assert!(!exited_unreaped(pid));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bounded_git_group_snapshot_rejects_changed_birth_identity() {
+        let mut child = fixture("read release");
+        let mut leader = crate::execution::macos::process_info(child.child.id()).unwrap();
+        leader.pbi_start_tvusec ^= 1;
+        let result = crate::execution::macos::group_members(&leader);
+        child.terminate().unwrap();
+        assert!(result.is_err());
     }
 }

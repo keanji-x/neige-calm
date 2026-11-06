@@ -3,6 +3,14 @@ use crate::git::*;
 use crate::teardown::remove_workspace_worktree;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Keep cleanup ownership while giving canonical-path contracts a physical root.
+fn physical_tempdir() -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    (temp, root)
+}
+
 fn add_track_worktree(repo: &Path, track_id: &str) -> WorkspaceLeaseTarget {
     let path = crate::worktree::track_worktree_path_for(repo, track_id);
     let target = crate::worktree::track_worktree_target(track_id, path.to_str().unwrap()).unwrap();
@@ -75,6 +83,9 @@ fn init_git_repo(path: &Path) {
     run_git(path, ["init"]);
     run_git(path, ["config", "user.email", "lease@example.test"]);
     run_git(path, ["config", "user.name", "Lease Test"]);
+    // The installed probes must run even when the developer config redirects hooks.
+    let hooks = path.join(".git/hooks");
+    run_git(path, ["config", "core.hooksPath", hooks.to_str().unwrap()]);
     std::fs::write(path.join("README.md"), "initial\n").unwrap();
     run_git(path, ["add", "README.md"]);
     run_git(path, ["commit", "-m", "initial"]);
@@ -119,8 +130,8 @@ fn git_stdout_bytes<const N: usize>(repo: &Path, args: [&str; N]) -> Vec<u8> {
 
 #[test]
 fn remove_workspace_dir_if_exists_treats_missing_as_success() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("already-gone");
+    let (_tmp, tmp) = physical_tempdir();
+    let path = tmp.as_path().join("already-gone");
     std::fs::create_dir_all(&path).unwrap();
     std::fs::remove_dir_all(&path).unwrap();
 
@@ -128,9 +139,9 @@ fn remove_workspace_dir_if_exists_treats_missing_as_success() {
 }
 #[test]
 fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
-    let tmp = tempfile::tempdir().unwrap();
-    init_git_repo(tmp.path());
-    let target = add_track_worktree(tmp.path(), "a");
+    let (_tmp, tmp) = physical_tempdir();
+    init_git_repo(tmp.as_path());
+    let target = add_track_worktree(tmp.as_path(), "a");
     assert!(target.path.is_dir(), "the worktree exists");
 
     assert!(remove_workspace_worktree(&target, |_, _| {}).unwrap());
@@ -147,11 +158,11 @@ fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
 #[test]
 fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
     let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let target = add_track_worktree(&repo, "hook");
-    let probes = install_ref_hook_env_probe(&repo, tmp.path());
+    let probes = install_ref_hook_env_probe(&repo, tmp.as_path());
 
     remove_workspace_worktree(&target, |_, _| {}).unwrap();
 
@@ -161,10 +172,10 @@ fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
 /// checkout too, exactly once.
 #[test]
 fn worktree_root_exclude_resolves_for_a_linked_checkout() {
-    let tmp = tempfile::tempdir().unwrap();
-    let primary = tmp.path().join("primary");
+    let (_tmp, tmp) = physical_tempdir();
+    let primary = tmp.as_path().join("primary");
     init_git_repo(&primary);
-    let linked = tmp.path().join("linked-track");
+    let linked = tmp.as_path().join("linked-track");
     run_git(
         &primary,
         [
@@ -203,10 +214,10 @@ fn worktree_root_exclude_resolves_for_a_linked_checkout() {
 #[test]
 fn removal_of_symlink_leaf_unlinks_only() {
     for registered in [false, true] {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
+        let (_tmp, tmp) = physical_tempdir();
+        let repo = tmp.as_path().join("repo");
         init_git_repo(&repo);
-        let external = tmp.path().join("external");
+        let external = tmp.as_path().join("external");
         let target = WorkspaceLeaseTarget {
             repo_root: repo.clone(),
             path: crate::worktree::track_worktree_path_for(&repo, "rm"),
@@ -274,8 +285,8 @@ fn removal_of_symlink_leaf_unlinks_only() {
 /// alias; B's directory and its uncommitted file are exactly as they were.
 #[test]
 fn foreign_registration_at_the_target_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let a = add_track_worktree(&repo, "al-a");
     let b_path = crate::worktree::track_worktree_path_for(&repo, "al-b");
@@ -303,16 +314,57 @@ fn foreign_registration_at_the_target_is_refused() {
     assert_eq!(std::fs::read_dir(&b_path).unwrap().count(), entries_before);
     assert!(b_path.join("UNCOMMITTED.txt").is_file());
 }
+#[test]
+fn printed_path_preserves_non_utf8_bytes_and_utf8_storage_refuses_them() {
+    use std::os::unix::ffi::OsStrExt;
+
+    for printed in [b"/repo-\xff/.git\n".as_slice(), b"/repo-\xff/.git\r\n"] {
+        let path = crate::base::printed_path(printed);
+        assert_eq!(path.as_os_str().as_bytes(), &printed[..printed.len() - 1]);
+        assert!(matches!(
+            crate::base::utf8_path(&path, "workspace lease git_common_dir"),
+            Err(Error::Internal(_))
+        ));
+    }
+}
+
+#[test]
+fn foreign_non_utf8_registration_bytes_do_not_shadow_a_utf8_target() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (_tmp, root) = physical_tempdir();
+    let target = root.join("wt-\u{FFFD}");
+    std::fs::create_dir(&target).unwrap();
+    let mut listing = b"worktree ".to_vec();
+    listing.extend_from_slice(root.as_os_str().as_bytes());
+    listing.extend_from_slice(b"/wt-\xff\0HEAD abc\0detached\0\0");
+    assert_eq!(
+        crate::base::worktree_registration_in(&listing, &root, &target).unwrap(),
+        GitWorktreeRegistration::Absent
+    );
+    listing.extend_from_slice(b"worktree ");
+    listing.extend_from_slice(target.as_os_str().as_bytes());
+    listing.extend_from_slice(b"\0HEAD abc\0detached\0\0");
+    assert_eq!(
+        crate::base::worktree_registration_in(&listing, &root, &target).unwrap(),
+        GitWorktreeRegistration::Present
+    );
+}
+
 /// A user worktree at a path that is not UTF-8 is someone else's record: the registration parser
 /// compares bytes, so the target reads absent, then present once added, and is removed, all `Ok`,
 /// with the foreign worktree untouched.
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires arbitrary-byte names; APFS returns EILSEQ (#3565); use --ignored on a supporting filesystem"
+)]
 #[test]
 fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
     use std::os::unix::ffi::OsStringExt;
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
-    let mut foreign = tmp.path().as_os_str().to_os_string().into_vec();
+    let mut foreign = tmp.as_path().as_os_str().to_os_string().into_vec();
     foreign.extend_from_slice(b"/wt-\xff");
     let foreign = PathBuf::from(std::ffi::OsString::from_vec(foreign));
     let output = Command::new("git")
@@ -355,15 +407,19 @@ fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
 /// path reader keeps git's bytes, so `canonicalize` resolves the real common
 /// dir and the UTF-8 rule then refuses it — the lease never records the
 /// decoy directory.
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "requires arbitrary-byte names; APFS returns EILSEQ (#3565); use --ignored on a supporting filesystem"
+)]
 #[test]
 fn common_dir_bytes_are_not_decoded_before_canonicalize() {
     use std::os::unix::ffi::OsStringExt;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut raw = tmp.path().as_os_str().to_os_string().into_vec();
+    let (_tmp, tmp) = physical_tempdir();
+    let mut raw = tmp.as_path().as_os_str().to_os_string().into_vec();
     raw.extend_from_slice(b"/wt-\xff");
     let repo = PathBuf::from(std::ffi::OsString::from_vec(raw)).join("repo");
     init_git_repo(&repo);
-    let decoy = tmp.path().join("wt-\u{FFFD}").join("repo").join(".git");
+    let decoy = tmp.as_path().join("wt-\u{FFFD}").join("repo").join(".git");
     std::fs::create_dir_all(&decoy).unwrap();
     assert_eq!(
         PathBuf::from(repo.join(".git").to_string_lossy().into_owned()),
@@ -388,12 +444,12 @@ fn common_dir_bytes_are_not_decoded_before_canonicalize() {
 
 #[test]
 fn detached_worktree_is_independent_and_removed() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
     let revision = revision.trim();
-    let checkout = tmp.path().join("detached");
+    let checkout = tmp.as_path().join("detached");
     crate::worktree::detached_worktree(&repo, &checkout, revision).unwrap();
     crate::worktree::detached_worktree(&repo, &checkout, revision).unwrap();
     std::fs::write(repo.join("README.md"), "changed").unwrap();
@@ -413,21 +469,21 @@ fn detached_worktree_is_independent_and_removed() {
 
 #[test]
 fn detached_worktree_refuses_missing_revision_without_side_effects() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
-    let path = tmp.path().join("missing");
+    let path = tmp.as_path().join("missing");
     assert!(crate::worktree::detached_worktree(&repo, &path, &"a".repeat(40)).is_err());
     assert!(!path.exists());
 }
 
 #[test]
 fn detached_worktree_requires_its_own_registration() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
-    let detached = tmp.path().join("detached");
+    let detached = tmp.as_path().join("detached");
     crate::worktree::detached_worktree(&repo, &detached, revision.trim()).unwrap();
     let nested = detached.join("nested");
     std::fs::create_dir(&nested).unwrap();
@@ -437,12 +493,12 @@ fn detached_worktree_requires_its_own_registration() {
 
 #[test]
 fn detached_worktree_symlinked_parent_reuses_and_removes_registration() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
-    let real = tmp.path().join("real");
+    let real = tmp.as_path().join("real");
     std::fs::create_dir(&real).unwrap();
-    let alias = tmp.path().join("alias");
+    let alias = tmp.as_path().join("alias");
     std::os::unix::fs::symlink(&real, &alias).unwrap();
     let path = alias.join("detached");
     let revision = git_stdout(&repo, ["rev-parse", "HEAD"]);
@@ -455,12 +511,12 @@ fn detached_worktree_symlinked_parent_reuses_and_removes_registration() {
 
 #[test]
 fn track_worktree_post_admission_ancestor_swap_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let path = crate::worktree::track_worktree_path_for(&repo, "swap");
     let target = crate::worktree::track_worktree_target("swap", path.to_str().unwrap()).unwrap();
-    let redirected = tmp.path().join("redirected");
+    let redirected = tmp.as_path().join("redirected");
     std::fs::create_dir(&redirected).unwrap();
     std::fs::create_dir(repo.join(".claude")).unwrap();
     std::os::unix::fs::symlink(&redirected, repo.join(".claude/worktrees")).unwrap();
@@ -476,13 +532,13 @@ fn track_worktree_post_admission_ancestor_swap_is_refused() {
 
 #[test]
 fn track_worktree_redirect_during_add_is_left_intact() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let path = crate::worktree::track_worktree_path_for(&repo, "during-add");
     let target =
         crate::worktree::track_worktree_target("during-add", path.to_str().unwrap()).unwrap();
-    let redirected = tmp.path().join("redirected");
+    let redirected = tmp.as_path().join("redirected");
     std::fs::create_dir(&redirected).unwrap();
     let result = crate::worktree::ensure_track_worktree(
         &target,
@@ -507,16 +563,16 @@ fn track_worktree_redirect_during_add_is_left_intact() {
 fn track_worktree_post_checkout_redirect_preserves_preexisting_directory() {
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
+    let (_tmp, tmp) = physical_tempdir();
+    let repo = tmp.as_path().join("repo");
     init_git_repo(&repo);
     let path = crate::worktree::track_worktree_path_for(&repo, "hook-redirect");
     let target =
         crate::worktree::track_worktree_target("hook-redirect", path.to_str().unwrap()).unwrap();
-    let other = tmp.path().join("preexisting");
+    let other = tmp.as_path().join("preexisting");
     std::fs::create_dir(&other).unwrap();
     std::fs::write(other.join("sentinel"), "keep me\n").unwrap();
-    let moved = tmp.path().join("moved-checkout");
+    let moved = tmp.as_path().join("moved-checkout");
     let hook = repo.join(".git/hooks/post-checkout");
     // Git runs this hook inside the newly added checkout. Its copied pointer still
     // identifies the registration at `path`, despite the directory substitution.
