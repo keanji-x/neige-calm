@@ -178,12 +178,11 @@ impl LaunchRole for PlannerArgs<'_> {
             }
             args.extend(truncation.flags());
         }
-        if let Some(model) = &selection.model {
-            args.push(format!("--model={model}").into());
-        }
-        if let Some(effort) = &selection.effort {
-            args.push(format!("--effort={effort}").into());
-        }
+        args.extend(
+            provider::claude::selection_args(selection)
+                .into_iter()
+                .map(std::ffi::OsString::from),
+        );
         args.push("--setting-sources".into());
         args.push("project".into());
         if purpose == SpawnPurpose::Turn {

@@ -1197,7 +1197,8 @@ mod tests {
                 "permission_mode",
                 "owner_created",
                 "settings_path",
-                "claude_session_id"
+                "claude_session_id",
+                "worker_model_selection"
             ]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];

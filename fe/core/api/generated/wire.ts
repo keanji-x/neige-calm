@@ -1166,6 +1166,17 @@ export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_s
  */
 export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, } | { "kind": "reused", run: string, cwd: string, before: Sample, };
 
+export type WorkerModelChoice = { "kind": "inherit" } | { "kind": "explicit", "value": WorkerModelDefaults };
+
+/**
+ * Both members must be present, including when the provider should inherit one.
+ */
+export type WorkerModelDefaults = { model: string | null, effort: string | null, };
+
+export type WorkerModelProvider = "codex" | "claude";
+
+export type WorkerModelSelection = { provider: WorkerModelProvider, selection: WorkerModelChoice, };
+
 /**
  * Opaque execution-session identifier.
  */

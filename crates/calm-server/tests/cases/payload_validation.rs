@@ -305,7 +305,8 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "permission_mode",
             "owner_created",
             "settings_path",
-            "claude_session_id"
+            "claude_session_id",
+            "worker_model_selection"
         ]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {
@@ -1237,4 +1238,61 @@ async fn track_patch_require_task_gates_persists() {
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(track_require_task_gates(&repo, &track_id).await, 0);
+}
+
+#[tokio::test]
+async fn worker_model_defaults_snapshot_preserved_even_when_corrupt() {
+    let (state, track_id, repo) = boot_with_repo().await;
+    let router = app(state);
+    for value in [
+        Value::Null,
+        json!(42),
+        json!({"provider":"codex","selection":{"kind":"inherit"}}),
+    ] {
+        let card = repo
+            .card_create(NewCard {
+                track_id: track_id.clone().into(),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"worker_model_selection":value}),
+            })
+            .await
+            .unwrap();
+        for payload in [
+            json!({"unrelated":"updated"}),
+            json!({"worker_model_selection":null}),
+        ] {
+            let has_key = payload.get("worker_model_selection").is_some();
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PATCH")
+                        .uri(format!("/api/cards/{}", card.id))
+                        .header("content-type", "application/json")
+                        .body(Body::from(json!({"payload":payload}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if has_key {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::OK
+                }
+            );
+            assert_eq!(
+                repo.card_get(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .payload
+                    .get("worker_model_selection"),
+                Some(&value)
+            );
+        }
+    }
 }

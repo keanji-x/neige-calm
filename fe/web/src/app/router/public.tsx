@@ -274,6 +274,12 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     component: renderNothing,
   });
 
+  const workersRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/workers',
+    component: renderNothing,
+  });
+
   const appearanceRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/appearance',
@@ -291,7 +297,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
     beforeLoad: ({ search }) => redirect({ to: '/', search, replace: true }) });
   return rootRoute.addChildren([
     indexRoute, legacyTodayRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
-    networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
+    networkRoute, pluginsRoute, plannersRoute, workersRoute, appearanceRoute, aboutRoute,
   ]);
 }
 

@@ -194,6 +194,17 @@ impl SharedCodexAppServer {
                     if failed { return Ok(None); }
                     ColdAuthority::NoMcp(None)
                 };
+                let selection = if matches!(&authority, ColdAuthority::Mcp {role: CardRole::Worker, ..}) {
+                    match crate::worker_model_defaults::from_payload(&shape.payload, calm_types::worker_model::WorkerModelProvider::Codex)? {
+                        Some(selection) => selection,
+                        None => {
+                            if crate::db::sqlite::card_is_worker_spawn_target_tx(tx, &card_id).await? {
+                                crate::worker_model_defaults::warn_legacy_selection(&card_id, calm_types::worker_model::WorkerModelProvider::Codex);
+                            }
+                            TurnModelSelection::inherit()
+                        }
+                    }
+                } else { TurnModelSelection::inherit() };
                 // Re-run the owning authorization above on EVERY attempt, including
                 // active/failed state. A changed owner stays unloaded for explicit recovery.
                 if let Some(previous) = previous {
@@ -203,7 +214,7 @@ impl SharedCodexAppServer {
                     ColdAuthority::NoMcp(_) => ThreadConfig::NoMcp,
                     ColdAuthority::Mcp {runtime, role} => {
                         let raw_token = mint_and_persist_card_token(tx, &card_id, &runtime.id).await?;
-                        ThreadConfig::McpShell {role: *role, socket_path, raw_token}
+                        ThreadConfig::McpShell {role: *role, socket_path, raw_token, selection}
                     }
                 };
                 Ok(Some(PreparedColdResume {authority, config}))

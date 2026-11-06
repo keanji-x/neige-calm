@@ -2,7 +2,7 @@
 
 Workspace settings. Every surface here is presentational: it never calls an API.
 The bag, the in-flight flag, the error strings and the callbacks all arrive as
-props; `app/shell/settings-overlay` owns fetching and mutating.
+props; `app/shell/settings-overlay` and its pane hosts own fetching and mutating.
 
 ## Responsive category navigation
 
@@ -90,6 +90,7 @@ glyphs for this.
 | `/settings/plugins` (2nd level) | one plugin's configuration | `PluginConfigPane` (`plugin-config.tsx`) |
 | `/settings/plugins` (2nd level) | the install form | `PluginAddPane` (`plugin-add.tsx`) |
 | `/settings/planners` | Planners | `PlannersPane` (`planners.tsx`) |
+| `/settings/workers` | Workers | `WorkersPane` (`workers.tsx`) |
 | `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
 Real routes rather than pane-local state: every pane can be linked to, and Back
@@ -240,7 +241,7 @@ is asserted on the element the locator finds rather than being used to find it.
 
 ## A setting has no Save button (INV-SETTINGS-003)
 
-A row commits itself. There is no Save and no Reset on a settings pane: a proxy
+A single-value row commits itself. Apart from the Worker pair exception below, there is no Save and no Reset on a settings pane: a proxy
 is one value, and asking the reader to press Save for one value is asking them
 to do the app's bookkeeping. (This is a rule about **a setting**. A plugin's
 configuration is a multi-key document with a restart between storing it and
@@ -376,3 +377,53 @@ mutation invalidates reads and never writes an older PUT response into the cache
 
 See the [implementation design](../../../../../docs/architecture/2618-planner-turn-budget.md)
 for timeout notices, compatibility, test ownership and real preview requirements.
+
+## Worker model defaults (#3542)
+
+Workers is a narrow exception to single-value auto-commit: model and effort are
+one atomic provider pair, confirmed by one explicit **Save**. Codex and Claude
+have independent local drafts. Typing, Enter in a field, blur and catalog picks
+never write. **Clear defaults** sends outer null for that provider's entire key;
+Save sends a complete pair, with null for each blank field. No other Settings
+key is sent. A corrupt stored pair stays visible, with its raw value and a clear
+repair action; it never silently becomes inherited defaults.
+
+The shared category roster drives the desktop entry, mobile index and Workers
+title at `/settings/workers`. The existing app Settings host supplies Back and
+keeps the same React pane across responsive changes. Leaving Workers discards
+visit drafts; returning reads the same shared Settings bag on either device.
+
+Only the verified deployment owner gets an edit capability. No inputs appear
+before the first successful Settings read; a failed later read disables the
+existing fields without losing their draft. `app/shell/settings-workers-host.tsx`
+owns Settings and provider catalog queries, retries and failure classification.
+It uses the existing shared provider catalog query and Settings mutation: PUT
+responses never replace the shared query cache. The feature receives props only.
+The pure `core/domain/worker-model-defaults.ts` codec validates the strict stored
+pair and encodes one-key patches; it imports the generated Worker contract types.
+
+Astryx Selector supplies catalog suggestions and TextInput permits manual slugs,
+even when the catalog is empty or unavailable. Neither models nor efforts are
+hardcoded. The chat ModelPill cannot supply manual entry and carries conversation
+selection/default semantics, so Workers composes Settings-owned rows and existing
+UI primitives instead of importing chat or putting Worker rules into generic UI.
+Changing a model does not silently replace its effort; the owner confirms both.
+The server remains responsible for catalog-specific validation and provider
+refusal. Requested defaults are never presented as a running Worker's actual model.
+
+One write per provider can be pending. Editing during it remains possible, but
+nothing is queued. Draft generations prevent late successes from confirming even
+an edit-away-and-back draft or clearing newer text. Successful-read counters
+withdraw superseded acknowledgements, including unchanged reads under a frozen
+clock. Refused writes and unconfirmed outcomes stay distinct and keep drafts;
+neither refresh nor blur retries a failure. The owner explicitly saves or clears
+again after reviewing the result. These defaults affect only Workers created
+afterwards: existing Workers keep their original selection and need no restart.
+
+Focused contracts live in `core/domain/worker-model-defaults.test.ts`,
+`workers.test.tsx`, and `app/shell/settings-workers.test.tsx`, with the Settings
+public and router contracts covering registration. `app/shell/settings-workers.browser.test.tsx`
+checks keyboard saves and catalog selection, 320/390px layout and responsive draft
+retention through the real host; navigation and shell mobile browser tests cover
+the category roster and Back. These files use the existing automatic test discovery;
+adding a model or effort requires no frontend list, registration or extra CI pass.

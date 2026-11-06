@@ -94,6 +94,7 @@ fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
         "session-1",
         "track-1",
         "Goal:\ndo the work",
+        &provider::TurnModelSelection::inherit(),
     )
     .unwrap();
     let argv = shell_argv(&command);
@@ -331,6 +332,23 @@ enum PreviousEnd {
 /// prepared.
 #[cfg(feature = "fixtures")]
 async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
+    prepared_worker_restart_selection(previous, false).await
+}
+
+#[cfg(feature = "fixtures")]
+async fn prepared_worker_restart_selection(
+    previous: PreviousEnd,
+    with_defaults: bool,
+) -> WorkerRestart {
+    prepared_worker_restart_snapshot(previous, with_defaults, false).await
+}
+
+#[cfg(feature = "fixtures")]
+async fn prepared_worker_restart_snapshot(
+    previous: PreviousEnd,
+    with_defaults: bool,
+    legacy: bool,
+) -> WorkerRestart {
     use crate::operation::claude_restart_adapter::{
         ClaudeRestartAdapter, ClaudeRestartOperationPayload,
     };
@@ -344,7 +362,43 @@ async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
     .bind(&harness.track_id))
     .await
     .unwrap();
+    if with_defaults {
+        crate::db::RepoOutOfDomain::settings_upsert(
+            harness.repo.as_ref(),
+            "worker_model_defaults_claude",
+            r#"{"model":"private-a'$(false)","effort":"high"}"#,
+        )
+        .await
+        .unwrap();
+    }
     let output = prepare_claude_worker_as_scheduled(&harness, "again").await;
+    if legacy {
+        harness.repo.db().writer().execute(sqlx::query(
+            "UPDATE cards SET payload=json_remove(payload,'$.worker_model_selection') WHERE id=?"
+        ).bind(output.data["card_id"].as_str().unwrap())).await.unwrap();
+        crate::db::RepoOutOfDomain::settings_upsert(
+            harness.repo.as_ref(),
+            "worker_model_defaults_claude",
+            r#"{"model":"model-b","effort":"low"}"#,
+        )
+        .await
+        .unwrap();
+    }
+    if with_defaults {
+        let argv = shell_argv(output.data["command_line"].as_str().unwrap());
+        assert!(
+            argv.contains(&"--model=private-a'$(false)".to_string()),
+            "{argv:?}"
+        );
+        assert!(argv.contains(&"--effort=high".to_string()), "{argv:?}");
+        crate::db::RepoOutOfDomain::settings_upsert(
+            harness.repo.as_ref(),
+            "worker_model_defaults_claude",
+            r#"{"model":"private-b","effort":"low"}"#,
+        )
+        .await
+        .unwrap();
+    }
     let card_id = output.output_string("card_id", "test").unwrap();
     let first_session = harness
         .repo
@@ -530,3 +584,25 @@ async fn claude_restart_after_a_reaped_child_without_an_exit_row_spawns() {
     .await;
     release(&r.harness, &r.card_id).await;
 }
+
+#[cfg(feature = "fixtures")]
+#[tokio::test]
+async fn worker_model_defaults_claude_terminal_and_restart_keep_atomic_selection() {
+    let r = prepared_worker_restart_selection(PreviousEnd::Exited, true).await;
+    r.restart
+        .spawn_side_effect(&r.restart_output, &r.restart_op, &spawn_ctx(&r.harness))
+        .await
+        .unwrap();
+    let spawned = r.spawned.lock().await.clone();
+    assert_eq!(spawned.len(), 1);
+    let argv = shell_argv(&spawned[0].0);
+    assert!(
+        argv.contains(&"--model=private-a'$(false)".to_string()),
+        "{argv:?}"
+    );
+    assert!(argv.contains(&"--effort=high".to_string()), "{argv:?}");
+    release(&r.harness, &r.card_id).await;
+}
+
+#[cfg(feature = "fixtures")]
+mod worker_model_defaults;

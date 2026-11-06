@@ -392,6 +392,7 @@ pub enum ThreadConfig {
         role: CardRole,
         socket_path: PathBuf,
         raw_token: String,
+        selection: TurnModelSelection,
     },
 }
 
@@ -406,18 +407,19 @@ impl ThreadConfig {
                 role,
                 socket_path,
                 raw_token,
+                selection,
             } => {
                 let kernel_path = crate::kernel_bin_path::kernel_led_path()
                     .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
                 let path = kernel_path
                     .path_utf8()
                     .map_err(|error| CalmError::Internal(format!("thread PATH: {error}")))?;
-                Ok(Some(card_mcp_thread_start_config(
-                    socket_path,
-                    raw_token,
-                    *role,
-                    path,
-                )))
+                let mut config = card_mcp_thread_start_config(socket_path, raw_token, *role, path);
+                let map = config.as_object_mut().ok_or_else(|| {
+                    CalmError::Internal("MCP thread config must be an object".into())
+                })?;
+                provider::codex::apply_thread_model_selection(map, selection);
+                Ok(Some(config))
             }
         }
     }
@@ -1133,6 +1135,22 @@ impl SharedCodexAppServer {
         socket_path: PathBuf,
         raw_token: String,
     ) -> Result<MintedThread> {
+        let card = self
+            .repo
+            .card_get(card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        let selection = crate::worker_model_defaults::from_payload(
+            &card.payload,
+            calm_types::worker_model::WorkerModelProvider::Codex,
+        )?
+        .unwrap_or_else(|| {
+            crate::worker_model_defaults::warn_legacy_selection(
+                card_id,
+                calm_types::worker_model::WorkerModelProvider::Codex,
+            );
+            TurnModelSelection::inherit()
+        });
         let params = SharedThreadStartParams {
             cwd,
             approval_policy: "never".into(),
@@ -1142,6 +1160,7 @@ impl SharedCodexAppServer {
                 role: CardRole::Worker,
                 socket_path,
                 raw_token,
+                selection,
             },
         };
         let _start_guard = self.kernel_thread_start_serial.lock().await;
@@ -4899,6 +4918,7 @@ mod tests {
                 role: CardRole::Planner,
                 socket_path: PathBuf::from("/tmp/x.sock"),
                 raw_token: "secret-abcdef".into(),
+                selection: TurnModelSelection::inherit(),
             },
         };
 
