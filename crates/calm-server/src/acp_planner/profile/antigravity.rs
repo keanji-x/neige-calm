@@ -1,15 +1,16 @@
 //! Antigravity's native ACP v1 entry point. Authenticate the service account
 //! with `agy acp --login` before registering it.
 use super::{
-    AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, ContractCompaction, NOTHING,
+    AcpAgentProfile, AgentEntry, AgentIdentity, AgentVersions, CompactionWire, ContractCompaction,
+    NOTHING,
 };
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     shared_server: true,
     usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: ContractCompaction {
-        planner: None,
-        assistant: None,
+        planner: Some(CompactionWire::CommandPrompt),
+        assistant: Some(CompactionWire::CommandPrompt),
     },
     canonical_planner_inputs: true,
     canonical_assistant_inputs: true,

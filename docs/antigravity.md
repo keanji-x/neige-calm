@@ -42,7 +42,7 @@ picker. Upgrading Neige does not install or sign in to AGY automatically.
 | Images | Existing upload/attachment controls, in managed workspaces; only this card's bound images are sent |
 | Read/write approval requests | Routed through Neige's existing approval flow when AGY requests approval |
 | Running-turn steer | Not enabled |
-| Manual compaction | Not enabled |
+| Manual compaction | Existing `/compact` command for canonical Planner and Assistant conversations |
 | Canonical input | New Planner and Assistant conversations use canonical messages, original submission receipts and retained execution recovery |
 | History replacement | Not enabled |
 | Per-card OS sandbox | Not provided by this integration |
@@ -56,3 +56,29 @@ creates no ACP send receipt; canonical input remains editable so the person can 
 
 Approval is not an OS sandbox. The shared process runs with the service account's
 access; AGY's own policy can allow an action without emitting an approval request.
+
+## Compact a conversation
+
+Use `/compact` in the existing command menu after a conversation has history and
+its current turn has finished. Neige uses canonical maintenance admission and
+retains the native session; it adds no Human message, input receipt or assistant
+reply. Other cards can continue using the same resident ACP server.
+
+The AGY profile uses the advertised native `compact` command. AGY documents that
+[bare `/compact` summarizes the conversation and ends the turn](https://antigravity.google/docs/changelog/),
+and its [ACP entry preserves CLI behavior](https://antigravity.google/docs/ide/extensions/acp).
+AGY 1.5.0 returns the matching `session/prompt` result with `stopReason: end_turn`
+but does not publish standard ACP compaction lifecycle events. That correlated
+native command result confirms completion; Neige does not invent a checkpoint,
+summary or token-reduction measurement. Standard ACP agents retain their existing
+lifecycle-event requirement.
+
+Errors, cancellation, missing results and overflowing session traffic cannot
+confirm compaction. An uncertain operation is retained and never automatically
+resent. Cleanup closes and revokes only the affected native attachment. Successful
+compaction preserves its session authorization.
+
+Running-turn steer remains unavailable: AGY 1.5.0 returns method-not-found for
+`session/steer`, and overlapping `session/prompt` calls do not provide Neige's
+required acknowledgement bound to the running turn. Cancellation followed by a
+new prompt is not exposed as steer.

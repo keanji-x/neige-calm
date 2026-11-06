@@ -5,6 +5,10 @@ use provider::acp::{configuration::Configuration, usage::UsageTracker};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod maintenance;
+mod prepare;
+pub(super) use maintenance::compact;
+
 #[derive(Debug)]
 struct Binding {
     native: String,
@@ -78,232 +82,24 @@ pub(super) async fn issue(
         .repo
         .sqlite_db()
         .ok_or(CalmError::ExecutionUnavailable)?;
-    let mut server = params.host.shared_server.lock().await;
-    if server.as_ref().is_some_and(|server| {
-        server.process.connection.client.terminal_error().is_some()
-            || server.process.connection.client.can_recycle_shared()
-    }) {
-        retire(&params.host, &mut server).await?;
-    }
-    if server.is_none() {
-        let process = process::Process::spawn_control(
-            &params.host,
-            registration,
-            registration.config.provider.wire_name(),
-            &std::env::temp_dir(),
-        )
-        .await?;
-        if process.capabilities.session_capabilities.close.is_none() {
-            return Err(refused("Shared ACP requires session close"));
-        }
-        let generation = uuid::Uuid::new_v4();
-        *server = Some(Server {
-            process,
-            bindings: HashMap::new(),
-            credential_owners: HashSet::new(),
-            generation: Arc::new(Generation {
-                id: generation,
-                stopped: AtomicBool::new(false),
-            }),
-            provider: registration.config.provider.clone(),
-        });
-        tokio::spawn(supervise(Arc::downgrade(&params.host), generation));
-    }
-    let server = server.as_mut().expect("shared ACP server installed");
-    if server.provider != params.provider {
-        return Err(refused(
-            "The shared ACP host already owns a different provider",
-        ));
-    }
-    if server.process.connection.client.shared_retiring() {
-        return Err(refused(
-            "Shared ACP server is waiting for active sessions before retirement",
-        ));
-    }
-    let owner = shared.admission(thread, Some(permission), original_native.as_deref(), None);
-    let admission = input.admission(&owner);
-    let mut usage = UsageTracker::new(registration.profile.usage);
-    let (native, mut configuration) = if let Some(binding) =
-        server.bindings.get(&params.worker_session_id)
-    {
-        if binding.closing || original_native.as_deref() != Some(binding.native.as_str()) {
-            return Err(refused("Shared ACP binding changed"));
-        }
-        (binding.native.clone(), binding.configuration.clone())
-    } else {
-        if let Some(native) = original_native.as_deref() {
-            if server
-                .bindings
-                .values()
-                .any(|binding| binding.native == native)
-            {
-                return Err(refused(
-                    "Shared ACP native session is owned by another card",
-                ));
-            }
-            ensure_native_owner(
-                pool.read_pool(),
-                &params.provider,
-                &params.worker_session_id,
-                native,
-            )
-            .await?;
-        }
-        server
-            .credential_owners
-            .insert(params.worker_session_id.clone());
-        let mut attachment_guard = AttachmentGuard(Some(server.process.connection.client.clone()));
-        let token = mint_token(params).await?;
-        let mut attached_native = None;
-        let key = format!(
-            "{}-{}",
-            registration.profile.mcp_server_key(),
-            &uuid::Uuid::new_v4().simple().to_string()[..12]
-        );
-        let attachment = async {
-            let mcp = [params.mcp_server(key.clone(), &token)];
-            let (method, request) = setup::attachment_request(
-                &server.process.capabilities,
-                &params.cwd,
-                original_native.as_deref(),
-                &mcp,
-            )?;
-            let response = setup_request(
-                &mut server.process.connection,
-                &mut server.process.commands,
-                method,
-                request,
-                admission.gate(),
-            )
-            .await?;
-            usage.configure(&response);
-            let native = match original_native.as_deref() {
-                Some(native) => native.to_owned(),
-                None => {
-                    let response: protocol::NewSessionResponse =
-                        protocol::decode(response.clone()).map_err(wire_error)?;
-                    if response.session_id.is_empty() {
-                        return Err(refused("ACP agent returned an empty native identity"));
-                    }
-                    if server
-                        .bindings
-                        .values()
-                        .any(|binding| binding.native == response.session_id)
-                    {
-                        return Err(refused(
-                            "Shared ACP returned a session already owned by another card",
-                        ));
-                    }
-                    ensure_native_owner(
-                        pool.read_pool(),
-                        &params.provider,
-                        &params.worker_session_id,
-                        &response.session_id,
-                    )
-                    .await?;
-                    response.session_id
-                }
-            };
-            attached_native = Some(native.clone());
-            let configuration = Configuration::from_response(&response).map_err(wire_error)?;
-            if original_native.is_none() {
-                bind_native(params, thread, &native).await?;
-            }
-            Ok::<_, StartFailure>((native, configuration))
-        }
-        .await;
-        let (native, configuration) = match attachment {
-            Ok(attachment) => attachment,
-            Err(error) => {
-                if matches!(error, StartFailure::Failed(_)) {
-                    // A lost setup reply can leave a native session attached
-                    // whose identity never reached Neige. Drain this generation.
-                    server.process.connection.client.retire_shared_when_idle();
-                }
-                let revoked = revoke(params).await;
-                if revoked.is_ok() {
-                    server.credential_owners.remove(&params.worker_session_id);
-                }
-                if let Some(native) = attached_native {
-                    let gate =
-                        provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
-                    if let Err(close) = setup_request(
-                        &mut server.process.connection,
-                        &mut server.process.commands,
-                        "session/close",
-                        protocol::encode_close_session(&native),
-                        &gate,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            ?close,
-                            "Shared ACP attachment rollback could not close the native session"
-                        );
-                        server.bindings.insert(
-                            params.worker_session_id.clone(),
-                            Binding {
-                                native,
-                                configuration: Configuration::default(),
-                                closing: true,
-                                mcp_key: key,
-                                closed: Arc::new(AtomicBool::new(false)),
-                            },
-                        );
-                    }
-                }
-                revoked?;
-                return Err(error);
-            }
-        };
-        attachment_guard.0 = None;
-        server.bindings.insert(
-            params.worker_session_id.clone(),
-            Binding {
-                native: native.clone(),
-                configuration: configuration.clone(),
-                closing: false,
-                mcp_key: key,
-                closed: Arc::new(AtomicBool::new(false)),
-            },
-        );
-        (native, configuration)
-    };
-    let owner = shared.admission(thread, Some(permission), Some(&native), None);
-    let admission = input.admission(&owner);
-    let mut configuration_guard = AttachmentGuard(Some(server.process.connection.client.clone()));
-    server
-        .bindings
-        .get_mut(&params.worker_session_id)
-        .expect("attached ACP session")
-        .closing = true;
-    let configured = shared
-        .configure_connection(
-            &mut server.process.connection,
-            &mut server.process.commands,
-            &native,
-            &mut configuration,
-            &selection,
-            &admission,
-            &mut usage,
-        )
-        .await;
-    server
-        .bindings
-        .get_mut(&params.worker_session_id)
-        .expect("attached ACP session")
-        .configuration = configuration;
-    if matches!(configured, Err(StartFailure::Failed(_))) {
-        revoke(params).await?;
-    } else {
-        server
-            .bindings
-            .get_mut(&params.worker_session_id)
-            .expect("attached ACP session")
-            .closing = false;
-        configuration_guard.0 = None;
-    }
-    configured?;
+    let source = crate::harness::native_admission::NativePromptAdmission::new(
+        || Ok(()),
+        || Box::pin(async { Ok(()) }),
+    );
+    let source = input.admission(&source);
+    let mut owned = params.host.shared_server.lock().await;
+    let (native, usage) = prepare::prepare(
+        &mut owned,
+        shared,
+        registration,
+        original_native,
+        thread,
+        &selection,
+        permission,
+        &source,
+    )
+    .await?;
+    let server = owned.as_mut().expect("prepared shared ACP server");
     let tools = match registration.profile.mcp_tool_request {
         Some(_) => params.host.listed_tools(&params.worker_session_id).await?,
         None => Vec::new(),
@@ -324,6 +120,7 @@ pub(super) async fn issue(
         ));
     }
     let capabilities = server.process.capabilities.clone();
+    let commands = server.process.commands.clone();
     protocol::validate_prompt(&capabilities, &native, &blocks)
         .map_err(|error| refused(&error.to_string()))?;
     let mut incoming = client.route_session(&native).map_err(wire_error)?;
@@ -385,7 +182,7 @@ pub(super) async fn issue(
                 }
             } => Err(CalmError::Conflict("ACP session event queue overflowed".into())),
             outcome = driver::collect_turn(
-                &task, &receipt, incoming.receiver_mut(), &mut translator, pending,
+                &task, &receipt, incoming.receiver_mut(), &commands, &mut translator, pending,
                 &mut cancelled, &approvals, &mut retained,
             ) => if *overflow.borrow() {
                 Err(CalmError::Conflict("ACP session event queue overflowed".into()))
@@ -598,7 +395,7 @@ async fn detach_worker_with_witness(
     let gate = provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }));
     if let Err(error) = setup_request(
         &mut server.process.connection,
-        &mut server.process.commands,
+        &server.process.commands,
         "session/close",
         protocol::encode_close_session(&binding.native),
         &gate,
@@ -610,6 +407,7 @@ async fn detach_worker_with_witness(
     }
     // Credential revocation and the matching native close both succeeded.
     binding.closed.store(true, Ordering::Release);
+    server.process.commands.forget(&binding.native);
     server.bindings.remove(worker);
     Ok(())
 }
@@ -664,6 +462,14 @@ async fn supervise(host: std::sync::Weak<AcpPlannerHost>, generation: uuid::Uuid
             let Ok(message) = server.process.connection.incoming.try_recv() else {
                 break;
             };
+            if let Incoming::Notification { params, .. } = &message
+                && server
+                    .bindings
+                    .values()
+                    .any(|binding| Some(binding.native.as_str()) == params["sessionId"].as_str())
+            {
+                server.process.commands.observe(&message);
+            }
             if let Incoming::Request { id, method, .. } = message
                 && provider::acp::approvals::refuse(&server.process.connection.client, id, &method)
                     .await

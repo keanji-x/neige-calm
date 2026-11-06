@@ -12,7 +12,7 @@ pub(super) struct Process {
     child: GroupChild,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
-    pub commands: Vec<(String, String)>,
+    pub commands: Commands,
     #[cfg(all(test, feature = "fixtures"))]
     stop_scope: String,
 }
@@ -84,7 +84,7 @@ impl Process {
                 child,
                 connection,
                 capabilities,
-                commands: Vec::new(),
+                commands: Commands::default(),
                 #[cfg(all(test, feature = "fixtures"))]
                 stop_scope: host.agent_logs.to_string_lossy().into_owned(),
             }),
@@ -229,7 +229,7 @@ async fn reap(child: &mut GroupChild) -> Result<()> {
 
 pub(super) async fn setup_request(
     connection: &mut Connection,
-    commands: &mut Vec<(String, String)>,
+    commands: &Commands,
     method: &str,
     params: Value,
     gate: &provider::send_boundary::PreSendGate<'_>,
@@ -247,41 +247,78 @@ pub(super) async fn setup_request(
             result=&mut response=>return finish_setup(&connection.client,&mut connection.incoming,commands,result).await,
             incoming=connection.incoming.recv(),if incoming_open=>match incoming {
                 Some(Incoming::Request{id,method,..})=>refuse(&connection.client,id,&method).await.map_err(|error| StartFailure::Failed(CalmError::Conflict(error.to_string())))?,
-                Some(frame @ Incoming::Notification{..}) if !connection.client.is_shared()=>observe_commands(commands, &frame), // Replay is setup only.
-                Some(Incoming::Notification{..})=>{},
+                Some(frame @ Incoming::Notification{..})=>commands.observe(&frame), // Only the command catalog survives setup.
 
                 None=>incoming_open=false,
             }
         }
     }
 }
-// Catalog declarations survive setup; history and compaction replay do not.
-fn observe_commands(commands: &mut Vec<(String, String)>, frame: &Incoming) {
-    let Incoming::Notification { method, params } = frame else {
-        return;
-    };
-    if method != "session/update"
-        || params["update"]["sessionUpdate"] != "available_commands_update"
-    {
-        return;
+/// Session-scoped declarations observed from setup, idle traffic and the routed driver.
+/// Replacing a menu replaces that session's catalog, including an empty menu.
+#[derive(Clone, Default)]
+pub(super) struct Commands(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>>,
+);
+impl Commands {
+    pub(super) fn contains(&self, session: &str, command: &str) -> bool {
+        self.0
+            .lock()
+            .expect("ACP commands")
+            .get(session)
+            .is_some_and(|names| names.iter().any(|name| name == command))
     }
-    let Some(session) = params["sessionId"].as_str() else {
-        return;
-    };
-    commands.retain(|(id, _)| id != session);
-    if let Some(available) = params["update"]["availableCommands"].as_array() {
-        commands.extend(available.iter().filter_map(|command| {
-            command["name"]
-                .as_str()
-                .map(|name| (session.to_owned(), name.to_owned()))
-        }));
+    pub(super) fn declared(&self, session: &str) -> bool {
+        self.0.lock().expect("ACP commands").contains_key(session)
+    }
+    pub(super) fn retain_sessions(&self, sessions: &std::collections::HashSet<&str>) {
+        self.0
+            .lock()
+            .expect("ACP commands")
+            .retain(|id, _| sessions.contains(id.as_str()));
+    }
+    pub(super) fn observe_for(&self, session: &str, frame: &Incoming) {
+        if let Incoming::Notification { params, .. } = frame
+            && params["sessionId"].as_str() == Some(session)
+        {
+            self.observe(frame);
+        }
+    }
+    pub(super) fn forget(&self, session: &str) {
+        self.0.lock().expect("ACP commands").remove(session);
+    }
+    pub(super) fn observe(&self, frame: &Incoming) {
+        let Incoming::Notification { method, params } = frame else {
+            return;
+        };
+        if method != "session/update"
+            || params["update"]["sessionUpdate"] != "available_commands_update"
+        {
+            return;
+        }
+        let Some(session) = params["sessionId"].as_str() else {
+            return;
+        };
+        let names = params["update"]["availableCommands"]
+            .as_array()
+            .map(|available| {
+                available
+                    .iter()
+                    .filter_map(|command| command["name"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.0
+            .lock()
+            .expect("ACP commands")
+            .insert(session.to_owned(), names);
     }
 }
 
 async fn finish_setup(
     client: &provider::acp::Client,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
-    commands: &mut Vec<(String, String)>,
+    commands: &Commands,
     result: std::result::Result<Value, provider::acp::Error>,
 ) -> std::result::Result<Value, StartFailure> {
     // The transport delivered these frames before the response. Drain replay at this boundary,
@@ -295,9 +332,7 @@ async fn finish_setup(
         let Ok(frame) = incoming.try_recv() else {
             break;
         };
-        if !client.is_shared() {
-            observe_commands(commands, &frame);
-        }
+        commands.observe(&frame);
         if let Incoming::Request { id, method, .. } = frame {
             refuse(client, id, &method)
                 .await
@@ -352,7 +387,7 @@ mod setup_tests {
             let result = finish_setup(
                 &connection.client,
                 &mut connection.incoming,
-                &mut Vec::new(),
+                &Commands::default(),
                 Err(error),
             )
             .await;
@@ -402,7 +437,7 @@ mod setup_tests {
         finish_setup(
             &connection.client,
             &mut connection.incoming,
-            &mut Vec::new(),
+            &Commands::default(),
             result,
         )
         .await
@@ -520,7 +555,7 @@ sys.stdin.read()
 "#).await;
         let result = setup_request(
             &mut process.connection,
-            &mut Vec::new(),
+            &Commands::default(),
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -541,7 +576,7 @@ sys.stdin.read()
 "#).await;
         let result = setup_request(
             &mut process.connection,
-            &mut Vec::new(),
+            &Commands::default(),
             "session/load",
             protocol::encode_load_session("native", std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -568,7 +603,7 @@ sys.stdin.read()
         .await;
         let result = setup_request(
             &mut process.connection,
-            &mut Vec::new(),
+            &Commands::default(),
             "session/new",
             protocol::encode_new_session(std::path::Path::new("/workspace"), &[]),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -588,7 +623,7 @@ sys.stdin.read()
         let mut process = peer("import sys\nsys.stdin.readline()\n").await;
         let result = setup_request(
             &mut process.connection,
-            &mut Vec::new(),
+            &Commands::default(),
             "session/set_config_option",
             protocol::encode_set_config_option("native", "model", "chosen"),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -607,7 +642,7 @@ sys.stdin.read()
                 .await;
         let result = setup_request(
             &mut process.connection,
-            &mut Vec::new(),
+            &Commands::default(),
             "session/load",
             serde_json::json!({"sessionId":"native"}),
             &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),

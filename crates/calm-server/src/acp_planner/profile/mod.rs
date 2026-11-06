@@ -18,6 +18,9 @@ mod opencode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CompactionWire {
     StandardPrompt,
+    /// Bare advertised slash command completes when its matching prompt ends normally.
+    /// The native agent does not publish standard compaction lifecycle updates.
+    CommandPrompt,
     XaiExtension,
 }
 
@@ -253,6 +256,11 @@ mod tests {
         for (profile, planner, assistant) in [
             (&grok::PROFILE, Some(CompactionWire::XaiExtension), None),
             (
+                &antigravity::PROFILE,
+                Some(CompactionWire::CommandPrompt),
+                Some(CompactionWire::CommandPrompt),
+            ),
+            (
                 &opencode::PROFILE,
                 Some(CompactionWire::StandardPrompt),
                 Some(CompactionWire::StandardPrompt),
@@ -275,6 +283,7 @@ mod tests {
         };
         for (provider, planner, assistant) in [
             (AgentProvider::Grok, true, false),
+            (AgentProvider::Antigravity, true, true),
             (AgentProvider::OpenCode, true, true),
         ] {
             for (profile, expected) in [

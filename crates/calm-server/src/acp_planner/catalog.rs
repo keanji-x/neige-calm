@@ -73,7 +73,7 @@ impl AcpPlannerHost {
             let discovered = async {
                 let result = setup_request(
                     &mut process.connection,
-                    &mut process.commands,
+                    &process.commands,
                     "session/new",
                     protocol::encode_new_session(cwd, &[]),
                     &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),
@@ -90,7 +90,7 @@ impl AcpPlannerHost {
                 if process.capabilities.session_capabilities.close.is_some() {
                     setup_request(
                         &mut process.connection,
-                        &mut process.commands,
+                        &process.commands,
                         "session/close",
                         protocol::encode_close_session(&native.session_id),
                         &provider::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) })),

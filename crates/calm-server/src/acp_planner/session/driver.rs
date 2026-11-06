@@ -21,6 +21,7 @@ pub(super) async fn drive(
         &shared,
         &receipt,
         &mut process.connection.incoming,
+        &process.commands,
         &mut translator,
         pending,
         &mut cancelled,
@@ -194,6 +195,7 @@ pub(super) async fn collect_turn(
     shared: &Shared,
     receipt: &AcpSubmission,
     incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
+    commands: &super::super::process::Commands,
     translator: &mut TurnTranslator,
     pending: tokio::sync::oneshot::Receiver<
         std::result::Result<provider::acp::PendingResponse, provider::acp::WriteFailure>,
@@ -214,6 +216,7 @@ pub(super) async fn collect_turn(
         tokio::select! {
             result=&mut response=>{
                 while let Ok(incoming)=incoming.try_recv() {
+                    commands.observe_for(&receipt.native_session_id, &incoming);
                     match incoming {
                         Incoming::Notification{method,params:frame} if method=="session/update"=>{
                             for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {retain_item(retained,&event);let _=shared.events.send(event);}
@@ -248,11 +251,13 @@ pub(super) async fn collect_turn(
             },
             _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
             message=incoming.recv(),if incoming_open=>match message {
-                Some(Incoming::Notification{method,params}) if method=="session/update"=>{
+                Some(frame @ Incoming::Notification{..})=>{
+                    commands.observe_for(&receipt.native_session_id, &frame);
+                    let Incoming::Notification {method,params} = frame else { unreachable!() };
+                    if method != "session/update" { continue; }
                     for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(retained,&event);let _=shared.events.send(event);}
                 },
                 Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
-                Some(Incoming::Notification{..})=>{},
                 // The RPC owner publishes its exact result before dropping this sender.
                 // EOF can race with an already queued success or protocol failure.
                 None=>incoming_open=false,
