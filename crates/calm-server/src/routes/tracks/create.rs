@@ -31,8 +31,8 @@ pub(crate) use creation_plan::accepts_unavailable_blank_track;
 pub(super) use creation_plan::creation_plan;
 mod historical_plan;
 #[cfg(any(test, feature = "fixtures"))]
-pub(super) use historical_plan::plan_first_message;
-pub(super) use historical_plan::{plan_historical_receipt, plan_keyed_create};
+pub(super) use historical_plan::{plan_first_message, plan_keyed_create};
+pub(super) use historical_plan::{plan_historical_receipt, plan_keyed_replay};
 mod delivery;
 pub(super) mod dormant;
 use delivery::{SubmitArm, start_planner_harness_with_first_message};
@@ -214,7 +214,7 @@ pub(super) struct KeyedCreate {
     pub(super) text: String,
 }
 
-/// What [`plan_keyed_create`] decided: mint under a vacant key, or resume what it minted.
+/// Mint under a vacant key, or resume its committed allocation.
 pub(super) enum KeyedPlan<Mint = FirstMessagePlan, Resume = ResumeFirstMessage> {
     Mint(Mint),
     Resume(Resume),

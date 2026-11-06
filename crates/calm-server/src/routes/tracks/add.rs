@@ -18,7 +18,9 @@ use crate::model::{NewTrack, RequestTheme, Track};
 use crate::routes::codex_cards::default_cwd;
 use crate::state::RouteState;
 
-use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
+#[cfg(any(test, feature = "fixtures"))]
+use super::create::KeyedPlan;
+use super::create::{self, KeyedActor, KeyedCreate, SendPath, TRACK_ADD_KEY_PREFIX};
 use super::{CreateTrackOptions, preparation};
 
 enum AdmissionRefusal {
@@ -87,15 +89,6 @@ impl CreatorAdmission {
         else {
             return Ok(None);
         };
-        self.replay_binding_tx(tx, &binding, claim).await.map(Some)
-    }
-
-    async fn replay_binding_tx(
-        &self,
-        tx: &mut Transaction<'_, Sqlite>,
-        binding: &TrackCreateBinding,
-        claim: &super::TrackCreateIdempotencyClaim,
-    ) -> Result<Track> {
         if !crate::db::sqlite::conversation::card_has_canonical_storage(
             tx,
             &binding.planner_card_id,
@@ -106,6 +99,17 @@ impl CreatorAdmission {
                 "historical creator receipt".into(),
             ));
         }
+        self.replay_canonical_binding_tx(tx, &binding, claim)
+            .await
+            .map(Some)
+    }
+
+    async fn replay_canonical_binding_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        binding: &TrackCreateBinding,
+        claim: &super::TrackCreateIdempotencyClaim,
+    ) -> Result<Track> {
         match &binding.request_fingerprint {
             TrackCreateRequestFingerprint::V1 {
                 create_request_sha256,
@@ -313,7 +317,7 @@ impl TrackCreator for RouteTrackCreator {
                     .await?
                     {
                         Ok(Some(Ok(admission
-                            .replay_binding_tx(tx, &binding, &claim)
+                            .replay_canonical_binding_tx(tx, &binding, &claim)
                             .await?)))
                     } else {
                         Ok(Some(Err(())))
@@ -334,7 +338,7 @@ impl TrackCreator for RouteTrackCreator {
                     start: start_actor,
                     send_path: SendPath::Mail,
                 };
-                let plan = create::plan_keyed_create(
+                let resume = create::plan_keyed_replay(
                     s,
                     KeyedCreate {
                         area_id,
@@ -344,15 +348,7 @@ impl TrackCreator for RouteTrackCreator {
                     },
                 )
                 .await?;
-                return match plan {
-                    KeyedPlan::Resume(resume) => {
-                        Ok(create::resume_prior_attempt(s.clone(), &actor, resume).await?)
-                    }
-                    KeyedPlan::Mint(_) => Err(CalmError::IdempotencyKeyExhausted(
-                        "historical receipt disappeared".into(),
-                    )
-                    .into()),
-                };
+                return Ok(create::resume_prior_attempt(s.clone(), &actor, resume).await?);
             }
             None => {}
         }
@@ -622,7 +618,7 @@ impl RouteTrackCreator {
         let isolation = super::CreateIsolation::decode(&request.cwd, request.isolation)?;
         let cross = request.allow_cross_area_cwd.clone();
         let admin = request.admin;
-        let (p, named, _) = request.into_parts()?;
+        let (p, named) = request.into_parts()?;
         let prepared = preparation::prepare(s, p, named, isolation, cross).await?;
         let options = CreateTrackOptions {
             human_source: source.clone(),

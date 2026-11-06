@@ -45,12 +45,46 @@ pub(in crate::routes::tracks) async fn plan_first_message(
     ))
 }
 
-/// The keyed create's decision, before anything is validated or minted: the binding lookup,
-/// the fingerprint check and the arm. Historical creator replay and receipt fixtures use it.
+/// Released receipt fixtures can still create old storage under an unused key.
+#[cfg(any(test, feature = "fixtures"))]
 pub(in crate::routes::tracks) async fn plan_keyed_create(
     s: &RouteState,
     request: KeyedCreate,
 ) -> Result<KeyedPlan> {
+    let (binding, plan, chosen, base_key) = lookup_keyed_attempt(s, request).await?;
+    match (binding, chosen) {
+        (None, None) => Ok(KeyedPlan::Mint(plan)),
+        (None, Some(_)) => Err(binding_lost(&plan.operation_key)),
+        (Some(binding), chosen) => Ok(KeyedPlan::Resume(bound_resume(
+            binding, plan, chosen, &base_key,
+        )?)),
+    }
+}
+
+/// Recheck the creator's receipt under the historical operation key lock.
+pub(in crate::routes::tracks) async fn plan_keyed_replay(
+    s: &RouteState,
+    request: KeyedCreate,
+) -> Result<ResumeFirstMessage> {
+    let (binding, plan, chosen, base_key) = lookup_keyed_attempt(s, request).await?;
+    match (binding, chosen) {
+        (Some(binding), chosen) => bound_resume(binding, plan, chosen, &base_key),
+        (None, Some(_)) => Err(binding_lost(&plan.operation_key)),
+        (None, None) => Err(CalmError::IdempotencyKeyExhausted(
+            "historical receipt disappeared".into(),
+        )),
+    }
+}
+
+async fn lookup_keyed_attempt(
+    s: &RouteState,
+    request: KeyedCreate,
+) -> Result<(
+    Option<crate::db::sqlite::TrackCreateBinding>,
+    FirstMessagePlan,
+    Option<crate::operation::Operation>,
+    String,
+)> {
     let KeyedCreate {
         area_id,
         idempotency_key,
@@ -87,15 +121,7 @@ pub(in crate::routes::tracks) async fn plan_keyed_create(
     }
 
     let (plan, chosen_existing) = first_message_attempt(s, request, same_key_claim).await?;
-    let operation_key = &plan.operation_key;
-
-    match (binding, chosen_existing) {
-        (None, None) => Ok(KeyedPlan::Mint(plan)),
-        (None, Some(_)) => Err(binding_lost(operation_key)),
-        (Some(binding), chosen) => Ok(KeyedPlan::Resume(bound_resume(
-            binding, plan, chosen, &base_key,
-        )?)),
-    }
+    Ok((binding, plan, chosen_existing, base_key))
 }
 
 /// An operation without its creation binding is a server-side inconsistency,
