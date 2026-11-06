@@ -1,7 +1,8 @@
 //! Owned-process identity helpers shared by app-server supervision paths.
 
 pub use plugin::proc_identity::{
-    ProcStatFields, parse_proc_stat_fields, parse_starttime_from_stat, read_proc_start_time,
+    ProcStatFields, ProcessObservation, observe_process, parse_proc_stat_fields,
+    parse_starttime_from_stat, read_proc_start_time,
 };
 
 /// Did a `/proc/<pid>/…` read fail only because the process is gone? A process reaped after the
@@ -80,17 +81,70 @@ pub fn read_boot_id() -> Option<String> {
 /// The caller's verify-then-signal window still exists; a socket probe alone
 /// cannot establish this identity either.
 pub fn verify_owned_pid(pid: i32, expected_start_time: u64, expected_boot_id: &str) -> bool {
-    // Reboot check FIRST: cheapest, and the whole prior boot's pid namespace is dead regardless of stamp.
-    let Some(live_boot) = read_boot_id() else {
-        return false;
-    };
-    if live_boot != expected_boot_id {
-        return false;
+    matches!(
+        observe_owned_pid(pid, expected_start_time, expected_boot_id),
+        OwnedProcessObservation::Matching { .. }
+    )
+}
+
+/// Matching authorizes an identity check; mismatch disproves the old incarnation
+/// without claiming that its numeric PID is physically absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnedProcessObservation {
+    Matching { is_zombie: bool },
+    Mismatch,
+    Absent,
+    Unknown,
+}
+
+impl OwnedProcessObservation {
+    pub(crate) fn proven_gone(self) -> bool {
+        matches!(self, Self::Mismatch | Self::Absent)
     }
-    let Some(live) = read_proc_start_time(pid) else {
-        return false;
-    };
-    live == expected_start_time
+
+    pub(crate) fn leader_exited(self) -> bool {
+        self.proven_gone() || matches!(self, Self::Matching { is_zombie: true })
+    }
+}
+
+pub(crate) fn observe_owned_pid(
+    pid: i32,
+    start_time: u64,
+    boot_id: &str,
+) -> OwnedProcessObservation {
+    classify_owned_process(
+        observe_process(pid),
+        read_boot_id().as_deref(),
+        start_time,
+        boot_id,
+    )
+}
+
+pub(crate) fn classify_owned_process(
+    observation: ProcessObservation,
+    live_boot: Option<&str>,
+    expected_start: u64,
+    expected_boot: &str,
+) -> OwnedProcessObservation {
+    if observation == ProcessObservation::Absent {
+        return OwnedProcessObservation::Absent;
+    }
+    if !expected_boot.is_empty() && live_boot.is_some_and(|boot| boot != expected_boot) {
+        return OwnedProcessObservation::Mismatch;
+    }
+    match observation {
+        ProcessObservation::Present {
+            start_time,
+            is_zombie,
+        } if !expected_boot.is_empty() && live_boot.is_some() => {
+            if start_time == expected_start {
+                OwnedProcessObservation::Matching { is_zombie }
+            } else {
+                OwnedProcessObservation::Mismatch
+            }
+        }
+        _ => OwnedProcessObservation::Unknown,
+    }
 }
 
 #[cfg(unix)]
@@ -285,6 +339,94 @@ pub fn sigkill_verified_members(members: &[GroupMember]) -> GroupSweepOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proc_identity_unknown_is_neither_absence_nor_exit() {
+        for (observation, boot) in [
+            (ProcessObservation::Unknown, Some("boot")),
+            (ProcessObservation::Unknown, None),
+            (
+                ProcessObservation::Present {
+                    start_time: 7,
+                    is_zombie: false,
+                },
+                None,
+            ),
+            (
+                ProcessObservation::Present {
+                    start_time: 7,
+                    is_zombie: true,
+                },
+                None,
+            ),
+        ] {
+            let identity = classify_owned_process(observation, boot, 7, "boot");
+            assert_eq!(identity, OwnedProcessObservation::Unknown);
+            assert!(!identity.proven_gone());
+            assert!(!identity.leader_exited());
+        }
+        let live = ProcessObservation::Present {
+            start_time: 7,
+            is_zombie: false,
+        };
+        assert_eq!(
+            classify_owned_process(live, Some("boot"), 7, ""),
+            OwnedProcessObservation::Unknown
+        );
+    }
+
+    #[test]
+    fn proc_identity_recycled_pid_and_old_boot_differ_from_physical_absence() {
+        let live = ProcessObservation::Present {
+            start_time: 8,
+            is_zombie: false,
+        };
+        assert_eq!(
+            classify_owned_process(live, Some("boot"), 7, "boot"),
+            OwnedProcessObservation::Mismatch
+        );
+        assert_eq!(
+            classify_owned_process(live, Some("boot"), 8, "old"),
+            OwnedProcessObservation::Mismatch
+        );
+        // A confirmed different boot disproves the old incarnation even if PID reads are denied.
+        assert_eq!(
+            classify_owned_process(ProcessObservation::Unknown, Some("boot"), 8, "old"),
+            OwnedProcessObservation::Mismatch
+        );
+        assert_eq!(
+            classify_owned_process(ProcessObservation::Absent, None, 8, "boot"),
+            OwnedProcessObservation::Absent
+        );
+        assert_eq!(
+            classify_owned_process(live, Some("boot"), 8, "boot"),
+            OwnedProcessObservation::Matching { is_zombie: false }
+        );
+        // Linux can report a zero tick token for a process started early in boot.
+        assert_eq!(
+            classify_owned_process(
+                ProcessObservation::Present {
+                    start_time: 0,
+                    is_zombie: false
+                },
+                Some("boot"),
+                0,
+                "boot"
+            ),
+            OwnedProcessObservation::Matching { is_zombie: false }
+        );
+        let zombie = classify_owned_process(
+            ProcessObservation::Present {
+                start_time: 8,
+                is_zombie: true,
+            },
+            Some("boot"),
+            8,
+            "boot",
+        );
+        assert!(!zombie.proven_gone());
+        assert!(zombie.leader_exited());
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]

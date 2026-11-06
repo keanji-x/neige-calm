@@ -1,5 +1,6 @@
 //! Exercise the real termination boundary with only this test's owned children.
 use super::*;
+use crate::proc_identity::verify_owned_pid;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 struct ProtectedChild {
@@ -101,7 +102,14 @@ async fn reject_identity(child: &mut ProtectedChild, pid: i32, start: u64, boot:
     )
     .await;
     child.assert_alive().await;
-    assert_eq!(outcome, LeaderExit::FullyGone);
+    assert_eq!(
+        outcome,
+        if boot.is_empty() {
+            LeaderExit::Unknown
+        } else {
+            LeaderExit::FullyGone
+        }
+    );
 }
 
 #[tokio::test]
@@ -209,4 +217,60 @@ async fn termination_identity_owned_child_reaps_without_boot_identity() {
         child.child.id().is_none(),
         "termination itself must reap owned child"
     );
+}
+
+// Inject the complete identity observation; signals and polling still use the production boundary.
+async fn unknown_during_termination(unknown_at: usize) {
+    // This observer owns the boot/start classification, so its valid identity token
+    // need not come from the host's boot sysctl (which may be denied by a sandbox).
+    let boot = uuid::Uuid::new_v4().to_string();
+    let mut child = ProtectedChild::spawn(0, unknown_at != 1).await;
+    let start = read_proc_start_time(child.pid).expect("native start");
+    let paths = VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+        Path::new("/fixture"),
+        &crate::agent_backend_pool::identity::default_id(),
+        Path::new("/fixture/home"),
+        Path::new("/fixture/logs"),
+    )));
+    let mut observations = 0;
+    let outcome = terminate_group_with_grace_observing(
+        &paths,
+        SignalScope::Group { pgid: child.pid },
+        ExitWait::VerifiedIdentity {
+            pid: child.pid,
+            start_time: start,
+            boot_id: &boot,
+        },
+        Duration::ZERO,
+        |_, _, _| {
+            observations += 1;
+            if observations >= unknown_at {
+                OwnedProcessObservation::Unknown
+            } else {
+                OwnedProcessObservation::Matching { is_zombie: false }
+            }
+        },
+    )
+    .await;
+    child.assert_alive().await;
+    assert_eq!(
+        outcome,
+        LeaderExit::Unknown,
+        "unreadable identity cannot prove termination"
+    );
+}
+
+#[tokio::test]
+async fn termination_identity_unknown_before_signal_preserves_group() {
+    unknown_during_termination(1).await;
+}
+
+#[tokio::test]
+async fn termination_identity_unknown_after_term_preserves_group() {
+    unknown_during_termination(2).await;
+}
+
+#[tokio::test]
+async fn termination_identity_unknown_at_escalation_preserves_group() {
+    unknown_during_termination(3).await;
 }

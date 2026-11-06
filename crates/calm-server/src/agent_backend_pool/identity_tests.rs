@@ -588,6 +588,9 @@ async fn agent_backend_single_0755_preserves_permissions_without_runtime_creatio
     }
 }
 
+// Linux filesystems support this byte-path contract. Native macOS filesystems
+// reject the fixture's invalid UTF-8 names with EILSEQ before BackendIsolation runs.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn agent_backend_non_utf8_single_scope_survives_repeated_prepare() {
     use std::os::unix::ffi::OsStringExt;
@@ -676,4 +679,68 @@ async fn agent_backend_multi_shared_database_rejects_different_data_dir() {
         error.downcast_ref(),
         Some(calm_truth::db::sqlite::backend_registry::RegistryError::Changed(..))
     ));
+}
+
+#[tokio::test]
+async fn persisted_unknown_cannot_skip_default_or_nondefault_path_checks() {
+    use super::identity::RuntimePathError;
+    use calm_truth::db::{SharedCodexDaemonUpdate, SharedDaemonState};
+    // A missing boot token is unprovable, just like a denied native read. The
+    // partial shape must obey the same isolation check on both backend paths.
+    for backend in ["default", "other"] {
+        for complete in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+            let cfg = config(
+                tmp.path(),
+                &[
+                    ("default", tmp.path().join("codex-home")),
+                    ("other", tmp.path().join("other")),
+                ],
+            );
+            let isolation = BackendIsolation::prepare(&cfg, &repo).await.unwrap();
+            let start = crate::proc_identity::read_proc_start_time(std::process::id() as i32)
+                .expect("native start token");
+            repo.shared_daemon_runtime_set(
+                backend,
+                SharedCodexDaemonUpdate {
+                    state: SharedDaemonState::Running,
+                    pid: Some(std::process::id() as i32),
+                    pgid: None,
+                    paths_are_legacy_display: false,
+                    sock_path: Some(
+                        tmp.path()
+                            .join("wrong.sock")
+                            .as_os_str()
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    codex_home_path: None,
+                    process_start_time: complete.then_some(start),
+                    boot_id: complete.then(String::new),
+                    started_at: None,
+                    last_error: None,
+                    increment_restart_count: false,
+                    daemon_env_signature: None,
+                },
+            )
+            .await
+            .unwrap();
+            let before = repo.shared_daemon_runtime_get(backend).await.unwrap();
+            assert!(!crate::shared_codex_appserver::persisted_process_proven_absent(&before));
+            let id = backend.to_owned().try_into().unwrap();
+            let error = isolation
+                .verify_backend(repo.as_ref(), &id)
+                .await
+                .err()
+                .expect("unknown identity must retain path checks");
+            assert!(matches!(
+                error.downcast_ref::<RuntimePathError>(),
+                Some(RuntimePathError::Mismatch)
+            ));
+            let after = repo.shared_daemon_runtime_get(backend).await.unwrap();
+            assert_eq!(after.pid, before.pid);
+            assert_eq!(after.updated_at, before.updated_at);
+        }
+    }
 }
