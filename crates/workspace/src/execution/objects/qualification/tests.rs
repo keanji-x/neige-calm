@@ -6,6 +6,7 @@ use crate::{
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, OwnedFd};
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 #[cfg(target_os = "macos")]
@@ -208,6 +209,8 @@ fn object_qualification_missing_and_invalid_mount_records_are_unknown_only() {
     }
 }
 
+// The separate git directory is on Linux tmpfs; Darwin has its own platform refusal test above.
+#[cfg(target_os = "linux")]
 #[test]
 fn object_qualification_git_directory_requires_its_own_filesystem() {
     let root = tempfile::tempdir().unwrap();

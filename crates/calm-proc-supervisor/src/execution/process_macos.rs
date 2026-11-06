@@ -7,6 +7,7 @@ use std::{
     os::fd::{AsRawFd, FromRawFd},
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+use workspace::execution::macos::{group_members, process_info};
 
 pub(super) struct Process {
     pub ready: AtomicBool,
@@ -59,11 +60,36 @@ impl Ownership {
         Ok((native, status))
     }
     fn members(&mut self) -> anyhow::Result<Vec<libc::proc_bsdinfo>> {
-        self.observe()?;
-        let result = group_members(&self.identity);
-        // A failed snapshot grants no signal authority. Preserve ownership for diagnostics;
-        // a future observation can retry, but this one cannot certify completion.
-        result
+        let (leader, _) = self.observe()?;
+        #[cfg(test)]
+        tests::fault(tests::Fault::Group)?;
+        // A failed snapshot grants no signal authority. Lifecycle stays with this owner.
+        let members = group_members(&leader)?;
+        for member in &members {
+            if member.pbi_pid != self.identity.pid {
+                tracing::trace!(
+                    pid = member.pbi_pid,
+                    group = self.identity.pid,
+                    birth_seconds = member.pbi_start_tvsec,
+                    birth_microseconds = member.pbi_start_tvusec,
+                    "native group member observed"
+                );
+                #[cfg(test)]
+                {
+                    let mut stderr = io::stderr().lock();
+                    let _ = writeln!(
+                        stderr,
+                        "native-member pid={} group={} birth={}.{}",
+                        member.pbi_pid,
+                        self.identity.pid,
+                        member.pbi_start_tvsec,
+                        member.pbi_start_tvusec
+                    );
+                    let _ = stderr.flush();
+                }
+            }
+        }
+        Ok(members)
     }
 }
 impl Process {
@@ -174,97 +200,6 @@ fn wait_status(info: &libc::siginfo_t, pid: u32) -> anyhow::Result<Option<Option
             info.si_code,
             info.si_status
         ),
-    }
-}
-
-fn process_info(pid: u32) -> anyhow::Result<libc::proc_bsdinfo> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    // arg=1 includes zombies: excluding the pinned leader would create a false empty result.
-    let count = unsafe {
-        libc::proc_pidinfo(
-            pid as i32,
-            libc::PROC_PIDTBSDINFO,
-            1,
-            (&mut info as *mut libc::proc_bsdinfo).cast(),
-            std::mem::size_of_val(&info) as i32,
-        )
-    };
-    anyhow::ensure!(
-        count == std::mem::size_of_val(&info) as i32,
-        "native process information unavailable: {}",
-        io::Error::last_os_error()
-    );
-    Ok(info)
-}
-fn group_members(identity: &MacProcessIdentity) -> anyhow::Result<Vec<libc::proc_bsdinfo>> {
-    #[cfg(test)]
-    tests::fault(tests::Fault::Group)?;
-    let mut capacity = 32;
-    loop {
-        anyhow::ensure!(
-            capacity <= 65536,
-            "native group observation capacity exhausted"
-        );
-        let mut pids = vec![0i32; capacity];
-        unsafe {
-            *libc::__error() = 0;
-        }
-        // Darwin returns a PID count, while the buffer size argument is in bytes.
-        let count = unsafe {
-            libc::proc_listpgrppids(
-                identity.pid as i32,
-                pids.as_mut_ptr().cast(),
-                (pids.len() * std::mem::size_of::<i32>()) as i32,
-            )
-        };
-        let errno = io::Error::last_os_error();
-        anyhow::ensure!(count > 0, "native group observation failed/empty: {errno}");
-        if count as usize >= capacity {
-            capacity *= 2;
-            continue;
-        }
-        pids.truncate(count as usize);
-        anyhow::ensure!(
-            pids.contains(&(identity.pid as i32)),
-            "native group observation lost pinned leader"
-        );
-        let mut members = Vec::new();
-        for pid in pids {
-            anyhow::ensure!(pid > 0, "invalid native group member");
-            let info = process_info(pid as u32)?;
-            anyhow::ensure!(
-                info.pbi_pid == pid as u32 && info.pbi_pgid == identity.pid,
-                "native group changed during observation"
-            );
-            if pid as u32 == identity.pid {
-                anyhow::ensure!(
-                    info.pbi_start_tvsec == identity.birth_seconds
-                        && info.pbi_start_tvusec == identity.birth_microseconds,
-                    "native leader birth identity changed"
-                );
-            }
-            if pid as u32 != identity.pid {
-                tracing::trace!(
-                    pid,
-                    group = identity.pid,
-                    birth_seconds = info.pbi_start_tvsec,
-                    birth_microseconds = info.pbi_start_tvusec,
-                    "native group member observed"
-                );
-                #[cfg(test)]
-                {
-                    let mut stderr = io::stderr().lock();
-                    let _ = writeln!(
-                        stderr,
-                        "native-member pid={pid} group={} birth={}.{}",
-                        identity.pid, info.pbi_start_tvsec, info.pbi_start_tvusec
-                    );
-                    let _ = stderr.flush();
-                }
-            }
-            members.push(info);
-        }
-        return Ok(members);
     }
 }
 

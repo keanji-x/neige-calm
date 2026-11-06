@@ -40,7 +40,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path().join("workspaces");
+        let root = tmp.path().canonicalize().unwrap().join("workspaces");
         std::fs::create_dir_all(&root).unwrap();
         Fixture { _tmp: tmp, root }
     }
@@ -393,12 +393,10 @@ fn gc_dates_entries_by_name_not_by_mtime() {
     let f = Fixture::new();
     let now = 100 * DAY_MS;
     let entry = seed_trash_entry(&f.root, &format!("track-1-{now}"));
-    let status = std::process::Command::new("touch")
-        .args(["-d", "@1000"])
-        .arg(&entry)
-        .status()
+    std::fs::File::open(&entry)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000))
         .unwrap();
-    assert!(status.success());
     let mtime = std::fs::metadata(&entry).unwrap().modified().unwrap();
     assert!(
         mtime < std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10_000),

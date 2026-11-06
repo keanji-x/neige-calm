@@ -20,10 +20,14 @@ use std::process::Stdio;
 use tokio::process::Command;
 use utoipa::ToSchema;
 
+mod capability;
 #[cfg(test)]
 pub(crate) mod host_access_tests;
 mod html_page;
 mod track_workspace;
+pub(crate) use capability::require_secure_workspace;
+#[cfg(target_os = "macos")]
+mod macos;
 use track_workspace::open_track_workspace_file;
 
 const MAX_READFILE_BYTES: u64 = 2 * 1024 * 1024;
@@ -446,10 +450,9 @@ pub(crate) struct OpenWorkspaceFile {
     pub(crate) size: u64,
 }
 
-/// Which symlinks `openat2` may follow. `FollowedInsideRoot` permits a symlink whose
+/// Which symlinks the backend may follow. Darwin always refuses symlinks. `FollowedInsideRoot` permits a symlink whose
 /// target stays inside the root; `Refused` adds `RESOLVE_NO_SYMLINKS`, which a root
 /// holding mutually-untrusted subtrees needs.
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceSymlinks {
     FollowedInsideRoot,
@@ -514,13 +517,11 @@ pub(crate) async fn open_workspace_root_directory(
 }
 
 /// Non-Linux placeholder, fail-closed for the same reason as the others.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) async fn open_workspace_root_directory(
     _workspace_root: &Path,
 ) -> Result<std::os::fd::OwnedFd> {
-    Err(CalmError::Internal(
-        "secure workspace writes require Linux openat2 support".into(),
-    ))
+    Err(capability::unavailable())
 }
 
 #[cfg(target_os = "linux")]
@@ -535,14 +536,28 @@ pub(crate) async fn open_workspace_directory(
     relative_path: &str,
     symlinks: WorkspaceSymlinks,
 ) -> Result<std::os::fd::OwnedFd> {
+    let relative = workspace_relative_path(relative_path)?;
+    let root = open_workspace_root_directory(workspace_root).await?;
+    open_workspace_directory_from_fd(
+        root,
+        relative.to_str().expect("validated UTF-8 path"),
+        symlinks,
+    )
+    .await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn open_workspace_directory_from_fd(
+    root: std::os::fd::OwnedFd,
+    relative_path: &str,
+    symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
     use nix::fcntl::{OFlag, OpenHow, openat2};
     use nix::sys::stat::Mode;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-
     let relative = workspace_relative_path(relative_path)?;
-    let root = open_workspace_root(workspace_root).await?;
-    let requested = workspace_root.join(&relative);
-    let workspace_root = workspace_root.to_path_buf();
+    let requested = relative.clone();
+    let workspace_root = PathBuf::from(".");
     let resolve = workspace_resolve_flags(symlinks);
     tokio::task::spawn_blocking(move || {
         let raw_fd = openat2(
@@ -715,45 +730,76 @@ fn map_workspace_open_err(
         Errno::EACCES | Errno::EPERM => {
             CalmError::Forbidden(format!("permission denied reading {}", requested.display()))
         }
-        Errno::ENOSYS => {
-            CalmError::Internal("secure workspace reads require Linux openat2 support".into())
-        }
+        Errno::ENOSYS => capability::unavailable(),
         _ => map_io_err(requested, std::io::Error::from_raw_os_error(error as i32)),
     }
 }
 
-/// Non-Linux placeholder so the parameter type exists for every caller.
-#[cfg(not(target_os = "linux"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WorkspaceSymlinks {
-    #[cfg(any(not(target_os = "macos"), test))]
-    FollowedInsideRoot,
-    Refused,
-}
-
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) async fn open_workspace_regular_file(
     _workspace_root: &Path,
     relative_path: &str,
     _symlinks: WorkspaceSymlinks,
 ) -> Result<OpenWorkspaceFile> {
     workspace_relative_path(relative_path)?;
-    Err(CalmError::Internal(
-        "secure workspace reads require Linux openat2 support".into(),
-    ))
+    Err(capability::unavailable())
 }
 
 /// Same placeholder for the directory opener; fail-closed, no unguarded fallback.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) async fn open_workspace_directory(
     _workspace_root: &Path,
     relative_path: &str,
     _symlinks: WorkspaceSymlinks,
 ) -> Result<std::os::fd::OwnedFd> {
     workspace_relative_path(relative_path)?;
-    Err(CalmError::Internal(
-        "secure workspace writes require Linux openat2 support".into(),
-    ))
+    Err(capability::unavailable())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn open_workspace_regular_file(
+    workspace_root: &Path,
+    relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<OpenWorkspaceFile> {
+    macos::open(workspace_root, relative_path).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn open_workspace_root_directory(
+    workspace_root: &Path,
+) -> Result<std::os::fd::OwnedFd> {
+    macos::open_root_directory(workspace_root).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn open_workspace_directory(
+    workspace_root: &Path,
+    relative_path: &str,
+    symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
+    workspace_relative_path(relative_path)?;
+    let root = open_workspace_root_directory(workspace_root).await?;
+    open_workspace_directory_from_fd(root, relative_path, symlinks).await
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn open_workspace_directory_from_fd(
+    root: std::os::fd::OwnedFd,
+    relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
+    macos::open_directory_from_fd(root, relative_path).await
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn open_workspace_directory_from_fd(
+    _root: std::os::fd::OwnedFd,
+    relative_path: &str,
+    _symlinks: WorkspaceSymlinks,
+) -> Result<std::os::fd::OwnedFd> {
+    workspace_relative_path(relative_path)?;
+    Err(capability::unavailable())
 }
 
 async fn read_workspace_file_response(opened: OpenWorkspaceFile) -> Result<ReadFileResponse> {
@@ -2006,7 +2052,10 @@ mod tests {
         std::fs::write(tmp.path().join("untracked.txt"), "loose\n").unwrap();
 
         let status = git_status_response(tmp.path()).await.unwrap();
-        assert_eq!(status.repo_root, tmp.path().to_string_lossy());
+        assert_eq!(
+            status.repo_root,
+            tmp.path().canonicalize().unwrap().to_string_lossy()
+        );
         assert_status(&status.files, "tracked.txt", "modified");
         assert_status(&status.files, "added.txt", "added");
         assert_status(&status.files, "deleted.txt", "deleted");

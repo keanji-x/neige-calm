@@ -7,9 +7,9 @@ isolation boundary. Two independent final reviews are arranged by the planner.
 
 Report links to `README.md` and `docs/README.md` must reach the selected Track's
 persisted workspace through both existing text and image/raw handlers. Both use
-one Track read owner entry point. Linux delegates to the existing `openat2`
-implementation. The generic attachment opener and directory/write APIs retain
-their Linux-only capability; no global filesystem API is a fallback.
+the shared `routes::fs` secure opener. Linux retains its `openat2` resolution
+policy. Darwin's constrained backend also opens attachment files and directory
+descriptors; the independent owner-only host APIs are unchanged.
 
 The existing relative-path validator runs before root I/O. The trusted persisted
 root may have host aliases (including `/var` on macOS); its opened directory fd
@@ -35,7 +35,7 @@ Before opening any requested descendant, require a valid kernel release and an
 absolute `/` open against the root fd to fail with `ENOTCAPABLE` under the same
 constraints. The probe reads no directory contents; an unexpected successful fd
 is closed. Unknown releases, unsupported flags, and unexpected probe outcomes
-disable this read capability. Never retry with weaker flags. The version floor
+disable this filesystem capability. Never retry with weaker flags. The version floor
 and refusal probe prevent old kernels silently ignoring unknown flag bits.
 
 This design trusts Apple's public pathname-resolution contract, including under
@@ -45,8 +45,8 @@ tests and stress experiments can expose defects; zero observed escapes is not
 a proof. A concrete contract contradiction or reproducible escape stops this
 backend proposal instead of relaxing isolation.
 
-All macOS descendant symlinks, internal or external, leaf or parent, return a
-400 explaining that macOS workspace reads do not allow symlinks. Linux retains
+All macOS descendant symlinks, internal or external, leaf or parent, are refused.
+Track reads return a 400 explaining that macOS workspace paths disallow symlinks. Linux retains
 its existing in-root symlink behavior. Hard links and mount contents remain
 governed by the selected directory boundary, as in the existing Linux contract.
 
@@ -71,8 +71,37 @@ to the planner, and do not claim browser success before they run.
 ## Risk and rollback
 
 The conservative policy intentionally rejects in-root macOS symlinks and older
-macOS releases. Runtime refusal remains an internal error whose details are
-hidden by the UI. Revert the macOS Track read dispatch to disable the capability
-if kernel behavior violates the contract. No persisted schema changes are
+macOS releases. Runtime refusal is a path-free, actionable 400 asking for a supported server
+OS and permitted filesystem operations. Image admission and the run response
+`attachments_supported` consume the same capability as historical attachment
+reads. Revert the shared Darwin dispatch to disable the capability if kernel
+behavior violates the contract. No persisted schema changes are
 needed; keep the independent UI placement correction and earlier menu/prompt
 work. Required gates and two fresh L2 reviews precede acceptance.
+
+
+## Attachment boundary (#3443)
+
+Only the persisted workspace root is trusted to contain host aliases. The
+`.neige/attachments/<card>/{staging,bound}` chain is untrusted. Upload creation
+opens each child beneath its held parent descriptor; bind opens the card through
+the workspace descriptor and then retains that card authority for both child
+directories. Historical reads resolve the entire attachment-relative path under
+the workspace root, including `.neige` and `attachments`. No attachment ancestor
+is reopened as a trusted root. Single-component names, exclusive 0600 temporary
+creation, 0700 directories, atomic rename, sync and dropped-upload cleanup remain
+with the existing attachment owner.
+
+Managed workspace and provider eligibility remain independent requirements;
+attached workspaces still refuse attachments. The runtime capability probe does
+not require the lazy managed workspace to exist. Unsupported kernels refuse
+before attachment I/O with the same stable, path-free upgrade guidance.
+
+Production-router regressions cover upload/readback, private permissions,
+ancestor and leaf links, replacement during streaming, interrupted uploads,
+cross-card refusal, binding and binding retries. The focused worker commands are
+limited to `calm-server` lib filters `planner_attachments::`/`routes::fs::` and
+`planner_harness_suite` filters `planner_attachments_rest::`/`planner_attachments_bind::`.
+The kernel gate owns text, Rust quick and L2 contract checks. CI owns broad suites;
+no real Codex E2E runs on the shared host. No permanent test-name inventory is
+introduced: ordinary added tests are discovered by the existing module filters.

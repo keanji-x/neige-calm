@@ -26,7 +26,8 @@ fn git(repo: &Path, args: &[&str]) -> String {
 impl Fixture {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
+        let root = tmp.path().canonicalize().unwrap();
+        let repo = root.join("repo");
         std::fs::create_dir(&repo).unwrap();
         git(&repo, &["init", "-q"]);
         git(&repo, &["config", "user.email", "reclaim@example.test"]);
@@ -35,7 +36,7 @@ impl Fixture {
         std::fs::write(repo.join(".gitignore"), "ignored\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-qm", "init"]);
-        let path = tmp.path().join("extra");
+        let path = root.join("extra");
         git(
             &repo,
             &["worktree", "add", "-qb", "extra", path.to_str().unwrap()],

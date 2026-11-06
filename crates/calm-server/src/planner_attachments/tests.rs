@@ -20,8 +20,8 @@ fn bound_path(root: &std::path::Path, card: &CardId) -> std::path::PathBuf {
 }
 
 async fn dirs(root: &std::path::Path, card: &CardId) -> CardDirs {
-    // These fixtures use the attachment root itself as the workspace.
-    dir::create_card_dirs(root, root, card)
+    // Use the production subtree beneath a persisted workspace.
+    dir::create_card_dirs(dir::workspace_for_root(root).unwrap(), root, card)
         .await
         .expect("the fixture's card directories open")
 }
@@ -134,40 +134,45 @@ fn a_name_is_always_a_single_component() {
 
 #[tokio::test]
 async fn open_attachment_prefers_bound_then_staging_and_refuses_anything_else() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
     let other_card = CardId::from("card-b");
     let staged = id("01", AttachmentFormat::Png);
     let bound = id("02", AttachmentFormat::Webp);
 
-    std::fs::create_dir_all(staging_path(root.path(), &card)).unwrap();
-    std::fs::create_dir_all(bound_path(root.path(), &card)).unwrap();
+    std::fs::create_dir_all(staging_path(root.as_path(), &card)).unwrap();
+    std::fs::create_dir_all(bound_path(root.as_path(), &card)).unwrap();
     std::fs::write(
-        staging_path(root.path(), &card).join(staged.as_str()),
+        staging_path(root.as_path(), &card).join(staged.as_str()),
         b"staged bytes",
     )
     .unwrap();
     std::fs::write(
-        bound_path(root.path(), &card).join(bound.as_str()),
+        bound_path(root.as_path(), &card).join(bound.as_str()),
         b"bound bytes",
     )
     .unwrap();
 
-    let opened = open_attachment(root.path(), &card, &bound).await.unwrap();
+    let opened = open_attachment(root.as_path(), &card, &bound)
+        .await
+        .unwrap();
     assert_eq!(opened.format, AttachmentFormat::Webp);
     assert_eq!(opened.size, 11);
     assert_eq!(read_all(opened).await, b"bound bytes");
 
-    let opened = open_attachment(root.path(), &card, &staged).await.unwrap();
+    let opened = open_attachment(root.as_path(), &card, &staged)
+        .await
+        .unwrap();
     assert_eq!(opened.format, AttachmentFormat::Png);
     assert_eq!(read_all(opened).await, b"staged bytes");
 
-    let error = open_attachment(root.path(), &other_card, &bound)
+    let error = open_attachment(root.as_path(), &other_card, &bound)
         .await
         .expect_err("another card's id must not open");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
 
-    let error = open_attachment(root.path(), &card, &id("03", AttachmentFormat::Gif))
+    let error = open_attachment(root.as_path(), &card, &id("03", AttachmentFormat::Gif))
         .await
         .expect_err("an id that names nothing must not open");
     assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
@@ -175,46 +180,48 @@ async fn open_attachment_prefers_bound_then_staging_and_refuses_anything_else() 
 
 #[tokio::test]
 async fn used_bytes_sums_the_regular_files_in_both_directories() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
     assert_eq!(
-        used_bytes(&dirs(root.path(), &card).await).unwrap(),
+        used_bytes(&dirs(root.as_path(), &card).await).unwrap(),
         0,
         "a card with no directories yet has spent nothing"
     );
 
-    let staging = staging_path(root.path(), &card);
-    let bound = bound_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
+    let bound = bound_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     std::fs::create_dir_all(bound.as_path()).unwrap();
     std::fs::write(staging.as_path().join("a.png"), vec![0u8; 10]).unwrap();
     std::fs::write(bound.as_path().join("b.png"), vec![0u8; 32]).unwrap();
-    assert_eq!(used_bytes(&dirs(root.path(), &card).await).unwrap(), 42);
+    assert_eq!(used_bytes(&dirs(root.as_path(), &card).await).unwrap(), 42);
 }
 
 #[tokio::test]
 async fn a_planted_symlink_does_not_latch_the_budget_off() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     std::fs::write(staging.as_path().join("real.png"), vec![0u8; 10]).unwrap();
     std::os::unix::fs::symlink(
-        root.path().join("nonexistent"),
+        root.as_path().join("nonexistent"),
         staging.as_path().join("planted.png"),
     )
     .unwrap();
     // A symlink that resolves is equally not ours, and equally uncounted.
-    std::fs::write(root.path().join("elsewhere"), vec![0u8; 4096]).unwrap();
+    std::fs::write(root.as_path().join("elsewhere"), vec![0u8; 4096]).unwrap();
     std::os::unix::fs::symlink(
-        root.path().join("elsewhere"),
+        root.as_path().join("elsewhere"),
         staging.as_path().join("planted2.png"),
     )
     .unwrap();
 
     for attempt in 0..3 {
         assert_eq!(
-            used_bytes(&dirs(root.path(), &card).await).unwrap(),
+            used_bytes(&dirs(root.as_path(), &card).await).unwrap(),
             10,
             "attempt {attempt}: only the regular file this store wrote is counted"
         );
@@ -224,13 +231,14 @@ async fn a_planted_symlink_does_not_latch_the_budget_off() {
 /// Here `staging` is a regular file, so the guarded opener answers `ENOTDIR`.
 #[tokio::test]
 async fn a_directory_that_cannot_be_enumerated_still_refuses() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path().parent().unwrap()).unwrap();
     std::fs::write(staging.as_path(), b"not a directory").unwrap();
 
-    let error = dir::create_card_dirs(root.path(), root.path(), &card)
+    let error = dir::create_card_dirs(workspace.path(), root.as_path(), &card)
         .await
         .expect_err("an unusable staging directory must refuse a write");
     assert!(matches!(error, CalmError::Internal(_)), "{error:?}");
@@ -238,10 +246,11 @@ async fn a_directory_that_cannot_be_enumerated_still_refuses() {
 
 #[tokio::test]
 async fn sweep_removes_expired_staged_files_and_never_touches_bound() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
-    let bound = bound_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
+    let bound = bound_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     std::fs::create_dir_all(bound.as_path()).unwrap();
 
@@ -256,7 +265,7 @@ async fn sweep_removes_expired_staged_files_and_never_touches_bound() {
     set_age(&old_bound, Duration::from_secs(25 * 60 * 60));
 
     let removed = sweep_staging_at(
-        dirs(root.path(), &card).await.staging(),
+        dirs(root.as_path(), &card).await.staging(),
         SystemTime::now(),
         ORPHAN_TTL,
     );
@@ -271,19 +280,20 @@ async fn sweep_removes_expired_staged_files_and_never_touches_bound() {
 
 #[tokio::test]
 async fn a_planted_symlink_is_stepped_over_and_never_deleted() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
 
     let expired = staging.as_path().join("expired.png");
     std::fs::write(&expired, b"x").unwrap();
     set_age(&expired, Duration::from_secs(25 * 60 * 60));
     let planted = staging.as_path().join("planted.png");
-    std::os::unix::fs::symlink(root.path().join("gone"), &planted).unwrap();
+    std::os::unix::fs::symlink(root.as_path().join("gone"), &planted).unwrap();
 
     let removed = sweep_staging_at(
-        dirs(root.path(), &card).await.staging(),
+        dirs(root.as_path(), &card).await.staging(),
         SystemTime::now(),
         ORPHAN_TTL,
     );
@@ -304,9 +314,10 @@ async fn a_planted_symlink_is_stepped_over_and_never_deleted() {
 async fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     let expired = staging.as_path().join("expired.png");
     std::fs::write(&expired, b"x").unwrap();
@@ -322,7 +333,7 @@ async fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
     );
 
     let removed = sweep_staging_at(
-        dirs(root.path(), &card).await.staging(),
+        dirs(root.as_path(), &card).await.staging(),
         SystemTime::now(),
         ORPHAN_TTL,
     );
@@ -339,10 +350,11 @@ async fn a_sweep_that_cannot_stat_an_entry_deletes_nothing_at_all() {
 /// Both spellings are driven; the relative one is what an agent in the workspace would write and what `RESOLVE_NO_SYMLINKS` exists for.
 #[tokio::test]
 async fn a_symlink_under_a_valid_id_does_not_open() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
-    let bound = bound_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
+    let bound = bound_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     std::fs::create_dir_all(bound.as_path()).unwrap();
 
@@ -351,7 +363,7 @@ async fn a_symlink_under_a_valid_id_does_not_open() {
     let secret = outside.path().join("id_rsa");
     std::fs::write(&secret, b"-----BEGIN OPENSSH PRIVATE KEY-----").unwrap();
     // ... and one inside it, reachable relatively, which `RESOLVE_BENEATH` permits and only `RESOLVE_NO_SYMLINKS` refuses.
-    let inside = root.path().join("inside.png");
+    let inside = root.as_path().join("inside.png");
     std::fs::write(&inside, b"in-root bytes").unwrap();
 
     let absolute_staged = id("05", AttachmentFormat::Png);
@@ -382,7 +394,7 @@ async fn a_symlink_under_a_valid_id_does_not_open() {
         &relative_staged,
         &relative_bound,
     ] {
-        let error = open_attachment(root.path(), &card, planted)
+        let error = open_attachment(root.as_path(), &card, planted)
             .await
             .expect_err("a symlink is not an attachment this subtree serves");
         assert!(matches!(error, CalmError::BadRequest(_)), "{error:?}");
@@ -392,12 +404,13 @@ async fn a_symlink_under_a_valid_id_does_not_open() {
 /// `RESOLVE_BENEATH` pins resolution beneath `attachments/`, and every other card is beneath it too, so a relative link is not an escape in `openat2`'s terms.
 #[tokio::test]
 async fn no_relative_symlink_reaches_another_cards_subtree() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card_a = CardId::from("card-a");
     let card_b = CardId::from("card-b");
     let wanted = id("08", AttachmentFormat::Png);
 
-    let b_bound = bound_path(root.path(), &card_b);
+    let b_bound = bound_path(root.as_path(), &card_b);
     std::fs::create_dir_all(b_bound.as_path()).unwrap();
     std::fs::write(
         b_bound.as_path().join(wanted.as_str()),
@@ -406,20 +419,20 @@ async fn no_relative_symlink_reaches_another_cards_subtree() {
     .unwrap();
 
     // Control: card B can read its own file, otherwise the test could pass because nothing opens at all.
-    let opened = open_attachment(root.path(), &card_b, &wanted)
+    let opened = open_attachment(root.as_path(), &card_b, &wanted)
         .await
         .expect("card B's own attachment must still open");
     assert_eq!(read_all(opened).await, b"card B's private image");
 
     // (a) intermediate: card A's `staging` IS a link into card B's subtree.
-    let a_staging = staging_path(root.path(), &card_a);
+    let a_staging = staging_path(root.as_path(), &card_a);
     std::fs::create_dir_all(a_staging.as_path().parent().unwrap()).unwrap();
     std::os::unix::fs::symlink("../card-b/bound", a_staging.as_path()).unwrap();
     assert!(
         a_staging.as_path().join(wanted.as_str()).is_file(),
         "precondition (a): a following resolver really would find card B's file"
     );
-    let error = open_attachment(root.path(), &card_a, &wanted)
+    let error = open_attachment(root.as_path(), &card_a, &wanted)
         .await
         .expect_err("(a) an intermediate link must not reach another card");
     assert!(matches!(error, CalmError::BadRequest(_)), "(a) {error:?}");
@@ -436,7 +449,7 @@ async fn no_relative_symlink_reaches_another_cards_subtree() {
         a_staging.as_path().join(wanted.as_str()).is_file(),
         "precondition (b): a following resolver really would find card B's file"
     );
-    let error = open_attachment(root.path(), &card_a, &wanted)
+    let error = open_attachment(root.as_path(), &card_a, &wanted)
         .await
         .expect_err("(b) a leaf link must not reach another card");
     assert!(matches!(error, CalmError::BadRequest(_)), "(b) {error:?}");
@@ -446,9 +459,10 @@ async fn no_relative_symlink_reaches_another_cards_subtree() {
 /// The assertion is the wall clock: a regression hangs this test rather than failing it, so the call has its own deadline.
 #[tokio::test]
 async fn a_fifo_under_a_valid_id_neither_blocks_nor_serves() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     let planted = id("07", AttachmentFormat::Png);
     nix::unistd::mkfifo(
@@ -466,7 +480,7 @@ async fn a_fifo_under_a_valid_id_neither_blocks_nor_serves() {
 
     let answered = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        open_attachment(root.path(), &card, &planted),
+        open_attachment(root.as_path(), &card, &planted),
     )
     .await
     .expect("the open must return; a FIFO must not park the blocking thread");
@@ -476,18 +490,19 @@ async fn a_fifo_under_a_valid_id_neither_blocks_nor_serves() {
 
 #[tokio::test]
 async fn neither_unlink_nor_rename_follows_a_planted_symlink() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
-    let outside = root.path().join("outside.txt");
+    let outside = root.as_path().join("outside.txt");
 
     // (a) `remove_file` unlinks the link, never the target.
     std::fs::write(&outside, b"still here").unwrap();
     let link = staging.as_path().join("unlink-me.png");
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     dir::unlink_staged(
-        dirs(root.path(), &card).await.staging(),
+        dirs(root.as_path(), &card).await.staging(),
         &dir::Name::parse("unlink-me.png").unwrap(),
     )
     .unwrap();
@@ -536,9 +551,10 @@ fn the_read_back_url_is_built_by_the_server() {
 async fn a_budget_entry_that_cannot_be_stat_d_refuses() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path()).unwrap();
     let entry = staging.as_path().join("real.png");
     std::fs::write(&entry, vec![0u8; 10]).unwrap();
@@ -551,7 +567,7 @@ async fn a_budget_entry_that_cannot_be_stat_d_refuses() {
         "precondition: the entry stat must actually be refused — these tests must not run as root"
     );
 
-    let measured = used_bytes(&dirs(root.path(), &card).await);
+    let measured = used_bytes(&dirs(root.as_path(), &card).await);
     std::fs::set_permissions(staging.as_path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let error = measured.expect_err("an entry that cannot be stat'd must refuse the write");
@@ -560,18 +576,19 @@ async fn a_budget_entry_that_cannot_be_stat_d_refuses() {
 
 #[tokio::test]
 async fn no_budget_refusal_names_a_host_path() {
-    let root = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".neige/attachments");
     let card = CardId::from("card-a");
-    let staging = staging_path(root.path(), &card);
+    let staging = staging_path(root.as_path(), &card);
     std::fs::create_dir_all(staging.as_path().parent().unwrap()).unwrap();
     std::fs::write(staging.as_path(), b"not a directory").unwrap();
 
-    let error = dir::create_card_dirs(root.path(), root.path(), &card)
+    let error = dir::create_card_dirs(workspace.path(), root.as_path(), &card)
         .await
         .expect_err("ENOTDIR must refuse");
     let message = format!("{error}");
     assert!(
-        !message.contains(&root.path().display().to_string()),
+        !message.contains(&root.as_path().display().to_string()),
         "the refusal must not carry the host path: {message}"
     );
     assert!(

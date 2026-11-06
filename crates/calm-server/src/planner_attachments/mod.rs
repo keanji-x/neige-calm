@@ -87,7 +87,9 @@ pub(crate) fn image_input_root(
             "This conversation backend does not support images".into(),
         ));
     }
-    attachment_root(workspace, workspace_root)
+    let root = attachment_root(workspace, workspace_root)?;
+    crate::routes::fs::require_secure_workspace()?;
+    Ok(root)
 }
 
 /// Project the same provider/workspace admission used by uploads for either
@@ -129,20 +131,22 @@ pub fn bound_file_path(root: &Path, card_id: &CardId, id: &AttachmentId) -> Path
     root.join(card_id.as_str()).join(BOUND).join(id.as_str())
 }
 
-/// The one place an [`AttachmentId`] becomes bytes: resolved and opened atomically with `openat2` under `RESOLVE_BENEATH` with every symlink refused — `RESOLVE_BENEATH` alone still follows `card-a/staging -> ../card-b/bound`.
+/// The one place an [`AttachmentId`] becomes bytes: resolved and opened by the secure workspace owner with every descendant symlink refused — `RESOLVE_BENEATH` alone still follows `card-a/staging -> ../card-b/bound`.
 /// `bound/` first, then `staging/`. The opener's errors name host paths, so they are logged and replaced.
 pub async fn open_attachment(
     root: &Path,
     card_id: &CardId,
     id: &AttachmentId,
 ) -> Result<OpenAttachment> {
+    crate::routes::fs::require_secure_workspace()?;
+    let workspace = dir::workspace_for_root(root)?;
     for (dir, location) in [
         (BOUND, AttachmentLocation::Bound),
         (STAGING, AttachmentLocation::Staging),
     ] {
-        let relative = format!("{}/{dir}/{}", card_id.as_str(), id.as_str());
+        let relative = dir::relative_file(card_id, dir, id);
         match crate::routes::fs::open_workspace_regular_file(
-            root,
+            workspace,
             &relative,
             crate::routes::fs::WorkspaceSymlinks::Refused,
         )
@@ -157,6 +161,7 @@ pub async fn open_attachment(
                 });
             }
             // No `openat2` on this platform is not "this card does not have that attachment" and must not be reported as one.
+            Err(error @ CalmError::SecureWorkspaceUnavailable(_)) => return Err(error),
             Err(CalmError::Internal(error)) => {
                 tracing::error!(
                     target: "planner_attachments",

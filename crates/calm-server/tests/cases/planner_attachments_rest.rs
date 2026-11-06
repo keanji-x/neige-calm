@@ -35,7 +35,8 @@ struct Boot {
 /// One managed workspace with a real git repository, one planner card and one worker card; `kind` picks `Managed` (the supported shape) or `Attached`.
 async fn boot_with_kind(kind: TrackWorkspaceKind) -> Boot {
     let tmp = TempDir::new().unwrap();
-    let workspace_root = tmp.path().join("workspaces");
+    // Managed preparation rejects ancestor links; Darwin temp_dir may use the /var alias.
+    let workspace_root = tmp.path().canonicalize().unwrap().join("workspaces");
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(
@@ -1185,3 +1186,6 @@ async fn a_client_that_disappears_mid_body_leaves_no_part() {
         file_names(&b.staging())
     );
 }
+
+#[path = "planner_attachments_rest/confinement.rs"]
+mod confinement;
