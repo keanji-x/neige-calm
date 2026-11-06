@@ -92,6 +92,7 @@ async fn retry_sequence(uncertain: bool, recover: bool, fenced: bool) {
         InputDeliveryFact::Unknown
     ));
     if recover {
+        recovery::wait_for_native_binding(&fx).await;
         // Reopening preserves delivery facts; the boot proof permits END separately.
         fx.session.shutdown().await.unwrap();
         fx.owner.repo.db().close().await;
