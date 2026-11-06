@@ -17,6 +17,7 @@ use calm_server::model::{NewArea, NewCard, NewTerminal, NewTrack};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
+use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -209,6 +210,19 @@ async fn card_delete_reaps_terminal_process() {
     );
 }
 
+async fn assert_unverified_terminal_conflict(response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(failure["code"], "conflict");
+    assert!(
+        failure["error"]
+            .as_str()
+            .unwrap()
+            .contains("old terminal has exited")
+    );
+}
+
 #[tokio::test]
 async fn track_delete_refuses_unowned_live_pid_only_terminals() {
     let state = fresh_state().await;
@@ -311,7 +325,7 @@ async fn track_delete_refuses_unowned_live_pid_only_terminals() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_unverified_terminal_conflict(resp).await;
 
     // Fail closed: no bare-pid TERM/KILL, and no ownership rows disappear.
     assert!(child_a.try_wait().unwrap().is_none());
@@ -501,7 +515,7 @@ async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_unverified_terminal_conflict(resp).await;
     assert!(child.try_wait().unwrap().is_none());
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_some(),
