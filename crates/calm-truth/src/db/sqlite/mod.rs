@@ -417,6 +417,8 @@ impl Repo for SqlxRepo {
 }
 
 #[cfg(test)]
+mod mail_migration_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

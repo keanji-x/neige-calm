@@ -18,6 +18,7 @@ function pane(overrides: Partial<PlannersPaneProps> = {}) {
   const props: PlannersPaneProps = {
     providers: PROVIDERS, loadError: null, onRetryLoad: vi.fn(), onRecheck: vi.fn(), rechecking: false,
     recheckError: null, authenticationRecovery: null,
+    mailQuota: { readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn() },
     turnDuration: { readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined) }, ...overrides,
   };
   const view = render(<PlannersPane {...props} />);

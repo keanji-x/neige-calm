@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
-import { PLANNER_TURN_DURATION_KEY, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
+import { MAIL_PER_HOUR_KEY, PLANNER_TURN_DURATION_KEY, mailPerHourPatch, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PlannersPane } from '../../features/settings/planners.tsx';
@@ -178,13 +178,18 @@ function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
   const recovery = useCodexAuthenticationRetry(transport, unauthorized);
   const go = useGo();
+  const settingRead = {
+    loaded: settings.data !== undefined,
+    readRevision: client.getQueryState(queryKeys.settings())?.dataUpdateCount ?? 0,
+    loadError: settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.'),
+    onRetryLoad: () => { void settings.refetch(); },
+  };
   return (
     <PlannersPane
-      turnDuration={{ value: settings.data?.settings[PLANNER_TURN_DURATION_KEY], loaded: settings.data !== undefined,
-        readRevision: client.getQueryState(queryKeys.settings())?.dataUpdateCount ?? 0,
-        loadError: settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.'),
-        onRetryLoad: () => { void settings.refetch(); },
+      turnDuration={{ ...settingRead, value: settings.data?.settings[PLANNER_TURN_DURATION_KEY],
         onSave: (value) => save(plannerTurnDurationPatch(value)).then(() => undefined) }}
+      mailQuota={{ ...settingRead, value: settings.data?.settings[MAIL_PER_HOUR_KEY],
+        onSave: (value) => save(mailPerHourPatch(value)).then(() => undefined) }}
       authenticationRecovery={{ provider: 'codex', pending: recovery.pending, error: recovery.error,
         notices: recovery.notices, onRetry: recovery.retry,
         onOpenConversation: (notice) => go({ name: 'track', trackId: notice.track_id, cardId: notice.card_id, openPlanner: true }) }}

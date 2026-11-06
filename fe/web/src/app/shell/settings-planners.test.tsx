@@ -332,3 +332,31 @@ it('shares Settings availability with the shell notice through Recheck and Codex
   expect(sent.filter((request) => request.method === 'POST').map((request) => ({ path: request.path, body: request.body })))
     .toEqual([{ path: '/api/agent-providers/codex/retry', body: { expected_revision: '7' } }]);
 });
+
+it('edits the Track mail quota through Settings and restores its default', async () => {
+  let settings: Record<string, string> = {};
+  const { sent } = renderPlanners(undefined, (request) => {
+    if (request.method === 'PUT') {
+      const { mail_per_hour } = (request.body as { settings: { mail_per_hour: string | null } }).settings;
+      settings = mail_per_hour === null ? {} : { mail_per_hour };
+    }
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings } });
+  });
+  const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Track mail limit (messages per hour)' });
+  expect(field.value).toBe('5/h');
+  const user = userEvent.setup();
+  await user.clear(field);
+  await user.type(field, '5/m{Enter}');
+  expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(0);
+  await user.clear(field);
+  await user.type(field, '12/h{Enter}');
+  await waitFor(() => expect(settings).toEqual({ mail_per_hour: '12/h' }));
+  const reset = screen.getByRole('button', { name: 'Restore default mail limit' });
+  await waitFor(() => expect((reset as HTMLButtonElement).disabled).toBe(false));
+  await user.click(reset);
+  await waitFor(() => expect(field.value).toBe('5/h'));
+  expect(sent.filter((request) => request.method === 'PUT').map((request) => request.body)).toEqual([
+    { settings: { mail_per_hour: '12/h' } },
+    { settings: { mail_per_hour: null } },
+  ]);
+});

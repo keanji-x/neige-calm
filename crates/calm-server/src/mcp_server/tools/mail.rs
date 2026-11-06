@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 
 use crate::mail::{
-    self, Recipient, SendRequest, TOOL_MAIL_CAT, TOOL_MAIL_LS, TOOL_MAIL_SEND, hop_label, invalid,
+    self, Recipient, SendRequest, TOOL_MAIL_CAT, TOOL_MAIL_LS, TOOL_MAIL_SEND, invalid,
 };
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -171,7 +171,7 @@ async fn send(
 ) -> Result<Value, RpcError> {
     let request = send_request(&args)?;
     let sent = mail::send(&ctx, &identity, request).await?;
-    Ok(json!({ "mail_id": sent.mail_id, "hop": hop_label(sent.hop) }))
+    Ok(json!({ "mail_id": sent.mail_id, "hop": sent.hop.to_string() }))
 }
 
 async fn ls(

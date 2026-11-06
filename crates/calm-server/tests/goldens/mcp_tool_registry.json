@@ -198,7 +198,7 @@
   },
   {
     "name": "neige_mail_cat",
-    "description_sha256": "92245537f6022ef9ab2a1362ea7515f0a37dc15640c704dd0719fe7f518dccc0",
+    "description_sha256": "4a853b4625d04b2397029ca35f6840fb3e6b7d0ff4644823ac30c24974ebcdd7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -241,7 +241,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "e266afd3e673e694ec958a9fc27fa9205f6589ff3b8f406f3a43f2d1a00d1a8d",
+    "description_sha256": "a57714e04659531b6f5ae6f2f8460440533d2b4c8ed7572f3f23c8010ccaee32",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
