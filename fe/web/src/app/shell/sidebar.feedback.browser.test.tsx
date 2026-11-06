@@ -150,6 +150,21 @@ it('keeps actual Track desktop menu focus return out of an open delete modal', a
   await page.screenshot({ path: 'test-results/dialog-track-delete.png' });
 });
 
+it('explains why terminal cleanup blocked track deletion', async () => {
+  const reason = 'Deletion blocked because the server could not confirm that an old terminal has exited.';
+  renderPage({ onDeleteTrack: () => Promise.reject(new ApiError({
+    kind: 'http', status: 409, code: 'conflict', message: reason,
+  })) });
+
+  await page.getByRole('button', { name: 'Track actions for Alpha' }).click();
+  await page.getByRole('menuitem', { name: 'Delete track' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delete this track?' });
+  await dialog.getByRole('button', { name: 'Delete track' }).click();
+
+  await expect.element(dialog.getByRole('alert')).toHaveTextContent(reason);
+  await expect.element(dialog.getByRole('button', { name: 'Delete track' })).toBeEnabled();
+});
+
 function AreaEntry({ empty }: { empty: boolean }) {
   const areas: Area[] = empty ? [] : [{ id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 }];
