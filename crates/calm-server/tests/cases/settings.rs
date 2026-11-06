@@ -574,3 +574,114 @@ async fn settings_requires_a_live_session_for_reads_and_writes() {
         }
     }
 }
+
+#[tokio::test]
+async fn worker_model_defaults_invalid_patch_writes_nothing() {
+    let (state, repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = routes::application_router(state, super::auth::dev_auth_state());
+    for key in [
+        "worker_model_defaults_codex",
+        "worker_model_defaults_claude",
+    ] {
+        for value in [
+            "broken",
+            "{}",
+            r#"{"model":42,"effort":null}"#,
+            r#"{"model":"","effort":null}"#,
+            r#"{"model":"model","effort":null,"extra":1}"#,
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/api/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"settings": {
+                                "aaa_unknown":"must not write", "http_proxy":"changed",
+                    "worker_model_defaults_codex": r#"{"model":"valid-private","effort":null}"#, key: value
+                            }})
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 400, "{key}: {value}");
+            assert!(repo.settings_get_all().await.unwrap().is_empty());
+            assert!(!shared.needs_respawn_on_next_thread_start_for_test());
+        }
+    }
+}
+
+#[tokio::test]
+async fn worker_model_defaults_nonowner_cannot_read_or_write() {
+    let (app, state, repo, cookie) = area_owner_session().await;
+    repo.settings_upsert(
+        "worker_model_defaults_codex",
+        r#"{"model":"private","effort":"high"}"#,
+    )
+    .await
+    .unwrap();
+    let before = repo.settings_get_all().await.unwrap();
+    for method in ["GET", "PUT"] {
+        let resp = app.clone().oneshot(nonowner_request(method, &cookie, serde_json::json!({"settings": {
+            "worker_model_defaults_codex": null, "worker_model_defaults_claude": r#"{"model":"changed","effort":null}"#
+        }}))).await.unwrap();
+        assert_eq!(resp.status(), 403);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(!String::from_utf8_lossy(&body).contains("private"));
+        assert_eq!(repo.settings_get_all().await.unwrap(), before);
+        assert!(
+            !state
+                .shared_codex_appserver
+                .needs_respawn_on_next_thread_start_for_test()
+        );
+    }
+}
+
+#[tokio::test]
+async fn worker_model_defaults_unknown_pair_and_clear_do_not_respawn() {
+    let (state, repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = routes::application_router(state, super::auth::dev_auth_state());
+    for key in [
+        "worker_model_defaults_codex",
+        "worker_model_defaults_claude",
+    ] {
+        for value in [
+            serde_json::json!(r#"{ "effort": "future-effort", "model": "private-model" }"#),
+            serde_json::Value::Null,
+            serde_json::json!(""),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/api/settings")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"settings": {key: value}}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+            let rows = repo.settings_get_all().await.unwrap();
+            let stored = rows.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+            if value.as_str().is_some_and(|s| !s.is_empty()) {
+                assert_eq!(
+                    stored.map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap()),
+                    Some(serde_json::json!({"model":"private-model","effort":"future-effort"}))
+                );
+            } else {
+                assert!(stored.is_none());
+            }
+            assert!(!shared.needs_respawn_on_next_thread_start_for_test());
+        }
+    }
+}

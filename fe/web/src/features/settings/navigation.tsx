@@ -9,6 +9,8 @@ export const SETTINGS_SECTIONS = Object.freeze([
   Object.freeze({ id: 'appearance', label: 'Appearance', icon: 'viewColumns' }),
   Object.freeze({ id: 'plugins', label: 'Plugins', icon: 'wrench' }),
   Object.freeze({ id: 'planners', label: 'Planners', icon: 'checkDouble' }),
+  // checkDouble: execution defaults, using the existing Astryx semantic registry.
+  Object.freeze({ id: 'workers', label: 'Workers', icon: 'checkDouble' }),
   Object.freeze({ id: 'about', label: 'About', icon: 'info' }),
 ] as const);
 

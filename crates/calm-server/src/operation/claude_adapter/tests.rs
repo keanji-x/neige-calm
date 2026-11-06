@@ -29,6 +29,7 @@ fn claude_worker_command_line_uses_appended_system_prompt() {
         "session-1",
         "track-1",
         "Goal:\ndo the work",
+        &provider::TurnModelSelection::inherit(),
     )
     .unwrap();
 
@@ -794,3 +795,5 @@ async fn worker_lease_is_kernel_policy() {
         .await
         .expect("independent write operation")
 }
+
+mod worker_model_defaults;

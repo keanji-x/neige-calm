@@ -14715,7 +14715,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `terminal_presentation`, `template_context`, `track_creation_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `assistant_opening_context`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`, `worker_model_selection`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -20254,6 +20254,7 @@
         "properties": {
           "settings": {
             "type": "object",
+            "description": "Worker keys `worker_model_defaults_codex` / `worker_model_defaults_claude` encode\na WorkerModelDefaults JSON string with required nullable `model` and `effort`.\nNull or empty outer values clear the whole pair; changes affect only new workers.",
             "additionalProperties": {
               "type": [
                 "string",
@@ -22746,6 +22747,88 @@
             "type": "string"
           }
         }
+      },
+      "WorkerModelChoice": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "inherit"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "value",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "explicit"
+                ]
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkerModelDefaults"
+              }
+            }
+          }
+        ]
+      },
+      "WorkerModelDefaults": {
+        "type": "object",
+        "description": "Both members must be present, including when the provider should inherit one.",
+        "required": [
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "WorkerModelProvider": {
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude"
+        ]
+      },
+      "WorkerModelSelection": {
+        "type": "object",
+        "required": [
+          "provider",
+          "selection"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/WorkerModelProvider"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/WorkerModelChoice"
+          }
+        },
+        "additionalProperties": false
       },
       "WorkerSessionKind": {
         "type": "string",

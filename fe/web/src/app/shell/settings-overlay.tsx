@@ -33,6 +33,7 @@ import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../provide
 import { useCodexAuthenticationRetry } from '../providers/codex-authentication-retry.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
+import { WorkersPaneHost } from './settings-workers-host.tsx';
 import { MobileAccessHost } from './mobile-access-host.tsx';
 
 /** Which pane the path asks for, or `null` when the reader is not in Settings. */
@@ -150,6 +151,7 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
     case 'appearance': return <AppearancePaneHost />;
     case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'planners': return <PlannersPaneHost transport={transport} unauthorized={unauthorized} />;
+    case 'workers': return <WorkersPaneHost transport={transport} unauthorized={unauthorized} />;
     case 'about': return <AboutPane />;
     case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
   }

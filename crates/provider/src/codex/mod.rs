@@ -760,3 +760,6 @@ mod mcp_server_reload_wire_tests;
 mod thread_compact_wire_tests;
 
 pub mod shared;
+
+mod model_selection;
+pub use model_selection::{apply_thread_model_selection, selection_args};

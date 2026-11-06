@@ -397,6 +397,7 @@ impl PlannerFactory<'_> {
                         role: shape.role,
                         socket_path,
                         raw_token,
+                        selection: provider::TurnModelSelection::inherit(),
                     })
                 })
             })
@@ -507,6 +508,7 @@ impl PlannerFactory<'_> {
                 role,
                 socket_path: native.socket_path().to_owned(),
                 raw_token: raw,
+                selection: provider::TurnModelSelection::inherit(),
             }
         } else {
             ThreadConfig::NoMcp

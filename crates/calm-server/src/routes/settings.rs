@@ -23,6 +23,9 @@ pub struct SettingsBag {
 /// Request body for `PUT /api/settings`. `null` and `""` both clear a key.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SettingsPutBody {
+    /// Worker keys `worker_model_defaults_codex` / `worker_model_defaults_claude` encode
+    /// a WorkerModelDefaults JSON string with required nullable `model` and `effort`.
+    /// Null or empty outer values clear the whole pair; changes affect only new workers.
     #[serde(default)]
     pub settings: BTreeMap<String, Option<String>>,
 }
@@ -76,6 +79,7 @@ pub(crate) async fn put_settings(
             .map_err(crate::error::CalmError::BadRequest)?
             .canonical();
     }
+    crate::worker_model_defaults::validate_patch(&mut p.settings, &s, &cs).await?;
     let before = load_settings(s.repo.as_ref()).await?;
     let mut proxy_changed = false;
     for (key, maybe_val) in p.settings.iter() {

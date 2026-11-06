@@ -52,7 +52,7 @@ pub use calm_types::card_presentation::TERMINAL_PRESENTATION_PAYLOAD_KEY;
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 12] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 13] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     TERMINAL_PRESENTATION_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
@@ -65,12 +65,14 @@ pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 12] = [
     OWNER_CREATED_PAYLOAD_KEY,
     CLAUDE_SETTINGS_PATH_PAYLOAD_KEY,
     CLAUDE_SESSION_ID_PAYLOAD_KEY,
+    calm_types::worker_model::WORKER_MODEL_SELECTION_KEY,
 ];
 
 /// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
 /// sticky by `card_update_tx`); the map form of a unit variant was never minted.
 pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
     match key {
+        calm_types::worker_model::WORKER_MODEL_SELECTION_KEY => true,
         // Even corrupt snapshots stay protected: startup must report the
         // corruption, not erase it and silently drop the working method.
         PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY | TRACK_CREATION_CONTEXT_PAYLOAD_KEY => true,
@@ -1637,5 +1639,28 @@ mod tests {
             None
         );
         assert_eq!(max_supported_overlay_schema_version(""), None);
+    }
+}
+
+#[cfg(test)]
+mod worker_model_defaults_tests {
+    use super::*;
+    #[test]
+    fn worker_model_defaults_client_snapshot_is_refused_even_when_corrupt() {
+        for value in [
+            Value::Null,
+            serde_json::json!({"selection":"inherit"}),
+            serde_json::json!(42),
+        ] {
+            let payload = serde_json::json!({"worker_model_selection":value});
+            assert!(matches!(
+                reject_client_supplied_server_owned_keys(&payload),
+                Err(CalmError::Core(calm_types::error::CoreError::BadRequest(_)))
+            ));
+            assert!(server_owned_value_is_sticky(
+                "worker_model_selection",
+                &value
+            ));
+        }
     }
 }

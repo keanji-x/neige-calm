@@ -217,6 +217,10 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::version::get_version,
     ),
     components(schemas(
+        calm_types::worker_model::WorkerModelProvider,
+        calm_types::worker_model::WorkerModelDefaults,
+        calm_types::worker_model::WorkerModelChoice,
+        calm_types::worker_model::WorkerModelSelection,
         crate::mobile_access::MobileStatus,
         calm_types::mobile_access::MobileProvider,
         calm_types::tailnet::TailnetStatus,

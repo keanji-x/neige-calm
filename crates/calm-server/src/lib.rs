@@ -868,3 +868,5 @@ mod child_track_result;
 
 #[cfg(target_os = "linux")]
 pub mod offline_audit;
+
+mod worker_model_defaults;

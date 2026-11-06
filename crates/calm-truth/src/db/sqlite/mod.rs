@@ -523,3 +523,6 @@ pub mod session_backend;
 mod session_backend_tests;
 
 pub mod claude_session_launch;
+
+mod settings;
+pub use settings::settings_get_tx;
