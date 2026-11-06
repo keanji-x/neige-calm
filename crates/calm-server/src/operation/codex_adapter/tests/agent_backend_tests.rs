@@ -402,6 +402,7 @@ async fn agent_backend_worker_compensation_timeout_and_settle_interrupt_bound_in
 // stages use the production checkpoint/claim path; replay also retains a real
 // thread/turn minted through the adapter before reloading its operation.
 async fn rejects_snapshot_without_token_rotation(snapshot: Value, replay: bool) {
+    use calm_truth::session_projection_repo::WorkerSessionProjectionRepo;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Abort(tokio::task::AbortHandle);
@@ -533,7 +534,13 @@ async fn rejects_snapshot_without_token_rotation(snapshot: Value, replay: bool) 
     }
     let output = op.tx_output.as_ref().unwrap();
     let card = output.output_string("card_id", "test").unwrap();
-    let session = output.output_string("runtime_id", "test").unwrap();
+    let session = harness
+        .repo
+        .session_projection_active_for_card(&card)
+        .await
+        .unwrap()
+        .expect("the published worker has its current active session")
+        .id;
     let runtime_query = "SELECT b.backend_id,s.thread_id,s.active_turn_id FROM worker_sessions s \
         JOIN worker_session_backends b ON b.worker_session_id=s.id WHERE s.id=?";
     let before_runtime: (String, Option<String>, Option<String>) = sqlx::query_as(runtime_query)
