@@ -66,6 +66,7 @@ pub(crate) enum SupervisorState {
     Idle,
     Starting,
     Running {
+        recovery: calm_truth::db::DaemonRecovery,
         child: Option<Child>,
         client: Arc<CodexAppServer>,
         runtime: SharedDaemonRuntime,
@@ -102,7 +103,22 @@ pub(crate) struct SupervisorCore {
     pub generation: u64,
 }
 
+impl ReplacePrecondition {
+    pub(crate) fn allows(self, core: &SupervisorCore) -> bool {
+        match self {
+            Self::Always => true,
+            // Generation equality alone does not prove an installed Running incarnation.
+            Self::GenerationIs(generation) => {
+                core.generation == generation
+                    && matches!(core.state, SupervisorState::Running { .. })
+            }
+            Self::NotRunning => !matches!(core.state, SupervisorState::Running { .. }),
+        }
+    }
+}
+
 pub(crate) struct LaunchedSharedDaemon {
+    pub recovery: calm_truth::db::DaemonRecovery,
     pub child: Option<Child>,
     pub client: Arc<CodexAppServer>,
     pub runtime: SharedDaemonRuntime,

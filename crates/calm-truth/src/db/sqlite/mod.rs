@@ -528,3 +528,5 @@ pub mod session_backend;
 mod session_backend_tests;
 
 pub mod claude_session_launch;
+
+mod shared_daemon_runtime;

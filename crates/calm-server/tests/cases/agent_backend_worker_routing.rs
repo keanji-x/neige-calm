@@ -175,7 +175,10 @@ async fn agent_backend_planner_assistant_interactive_and_models_stay_default_und
     .fetch_one(repo.pool())
     .await
     .unwrap();
-    assert_eq!(phase, "succeeded");
+    let failure: Option<String> = sqlx::query_scalar(
+        "SELECT last_error FROM operations WHERE kind='planner-harness-start' AND json_extract(payload_json,'$.card_id')=?1"
+    ).bind(&assistant_card).fetch_one(repo.pool()).await.unwrap();
+    assert_eq!(phase, "succeeded", "planner start error: {failure:?}");
     // Keep the real interactive native start/turn; replace only the PTY viewer.
     let adapter = Arc::new(
         calm_server::operation::codex_adapter::CodexAdapter::new_with_spawn_hook(

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# #3446 adds long Rust literals for recovery SQL, SQLite fault-injection fixtures
+# and daemon diagnostics. Changes to those literals regenerate the aggregate
+# baseline with --update-baseline. Ordinary tests need no inventory entry.
 # #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
 # Five SQL statements describe real storage contracts:
 # 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.

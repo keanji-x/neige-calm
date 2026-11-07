@@ -64,6 +64,13 @@ fn cfg(root: &tempfile::TempDir) -> Config {
     ])
 }
 
+fn quiet_heal_cfg(root: &tempfile::TempDir) -> Config {
+    let mut cfg = cfg(root);
+    cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    cfg
+}
+
 async fn repo() -> Arc<SqlxRepo> {
     Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap())
 }
@@ -234,6 +241,14 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
 
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
+    #[cfg(target_os = "macos")]
+    let dump = root.path().join("spawned-environment");
+    #[cfg(target_os = "macos")]
+    unsafe {
+        std::env::set_var("FAKE_CODEX_ENV_DUMP", &dump);
+    }
+    #[cfg(target_os = "macos")]
+    let _dump_guard = EnvGuard("FAKE_CODEX_ENV_DUMP");
     let daemon = server(&root, repo).await;
     daemon.start_or_takeover().await.unwrap();
 
@@ -244,7 +259,13 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
         .runtime
         .expect("running spawned daemon")
         .pid;
+    #[cfg(not(target_os = "macos"))]
     let raw = std::fs::read(format!("/proc/{pid}/environ")).expect("read child /proc environ");
+    #[cfg(target_os = "macos")]
+    let raw = {
+        assert!(!pid_gone_or_zombie(pid));
+        std::fs::read(dump).expect("read actual child environment")
+    };
     let child_env = raw
         .split(|byte| *byte == 0)
         .filter(|chunk| !chunk.is_empty())
@@ -534,10 +555,6 @@ async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_nev
         .start_or_takeover()
         .await
         .expect_err("boot guard must still refuse the polluted CODEX_HOME");
-    assert!(
-        err.to_string().contains("evil"),
-        "refusal must name the offender; got: {err}"
-    );
 
     // Any (buggy) reap is fully awaited inside `start_or_takeover`; add a
     // short grace for signal delivery, then probe liveness.
@@ -547,8 +564,12 @@ async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_nev
     let launcher_alive = unsafe { libc::kill(pgid, 0) } == 0;
     let record = repo.shared_daemon_runtime_get("default").await.unwrap();
 
-    force_cleanup_process_group(launcher, pgid);
+    force_cleanup_process_group(launcher, pgid).await;
 
+    assert!(
+        err.to_string().contains("evil"),
+        "refusal must name the offender; got: {err}"
+    );
     assert!(
         peer_alive && launcher_alive,
         "guard refusal must NOT signal a corrupt (pgid != pid) persisted record; \
@@ -622,6 +643,7 @@ async fn persist_running_daemon_with_signature(
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Running,
             pid: Some(pid),
             pgid: Some(pgid),
@@ -770,11 +792,112 @@ async fn spawn_launcher_with_fake_appserver(
     (launcher, pgid, peer_pid)
 }
 
-fn force_cleanup_process_group(child: tokio::process::Child, pgid: i32) {
+fn group_diagnostics(pgid: i32, peer_pid: i32) -> String {
+    #[cfg(target_os = "macos")]
+    return format!(
+        "group={:?}, leader={:?}, peer={:?}",
+        plugin::proc_identity::observe_macos_group(pgid),
+        plugin::proc_identity::read_macos_process(pgid),
+        plugin::proc_identity::read_macos_process(peer_pid),
+    );
+    #[cfg(not(target_os = "macos"))]
+    format!(
+        "leader_pgid={}, leader_birth={:?}, peer_pgid={}, peer_birth={:?}",
+        unsafe { libc::getpgid(pgid) },
+        read_proc_start_time(pgid),
+        unsafe { libc::getpgid(peer_pid) },
+        read_proc_start_time(peer_pid),
+    )
+}
+
+async fn force_cleanup_process_group(mut child: tokio::process::Child, pgid: i32) {
+    eprintln!(
+        "owned group cleanup before kill: unawaited Child={:?}; {}",
+        child.id(),
+        group_diagnostics(pgid, pgid),
+    );
+    // SAFETY: the fixture owns this group and has not reaped its launcher.
     unsafe {
         libc::kill(-pgid, libc::SIGKILL);
     }
-    drop(child);
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "owned launcher wait timed out: {}",
+                group_diagnostics(pgid, pgid)
+            )
+        })
+        .expect("reap owned launcher");
+    eprintln!(
+        "owned group cleanup after launcher wait: status={status}, Child={:?}; {}",
+        child.id(),
+        group_diagnostics(pgid, pgid),
+    );
+    // Waiting for our Child is not an emptiness proof. Consumers that need reuse
+    // must still pass the production reconciliation entry point below.
+}
+
+fn assert_daemon_identity_retained(
+    before: &calm_truth::db::SharedCodexDaemonRecord,
+    after: &calm_truth::db::SharedCodexDaemonRecord,
+) {
+    assert_eq!(after.pid, before.pid);
+    assert_eq!(after.pgid, before.pgid);
+    assert_eq!(after.process_start_time, before.process_start_time);
+    assert_eq!(after.boot_id, before.boot_id);
+    assert_eq!(after.sock_path, before.sock_path);
+    assert_eq!(after.codex_home_path, before.codex_home_path);
+}
+
+async fn ensure_running_after_owned_group_exit(
+    daemon: &Arc<SharedCodexAppServer>,
+    repo: &SqlxRepo,
+    retained: &calm_truth::db::SharedCodexDaemonRecord,
+) {
+    use std::os::unix::fs::MetadataExt;
+    let pid = retained.pid.unwrap();
+    let pgid = retained.pgid.unwrap();
+    let socket = Path::new(std::ffi::OsStr::from_bytes(
+        retained.sock_path.as_ref().unwrap(),
+    ));
+    let socket_identity = || {
+        std::fs::symlink_metadata(socket)
+            .ok()
+            .map(|m| (m.dev(), m.ino()))
+    };
+    let original_socket = socket_identity();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        eprintln!("before ensure_running: {}", group_diagnostics(pgid, pid));
+        let result = daemon.ensure_running().await;
+        eprintln!(
+            "after ensure_running: {result:?}; {}",
+            group_diagnostics(pgid, pid)
+        );
+        match result {
+            Ok(()) => return,
+            Err(error) => {
+                assert!(error.to_string().contains("unreconciled"), "{error}");
+                let after = repo.shared_daemon_runtime_get("default").await.unwrap();
+                assert_daemon_identity_retained(retained, &after);
+                assert_eq!(after.recovery, retained.recovery);
+                assert_eq!(
+                    socket_identity(),
+                    original_socket,
+                    "Unknown must retain the socket"
+                );
+                assert_ne!(daemon.status_snapshot().state, SharedDaemonState::Running);
+                assert!(!daemon.readiness_receiver().borrow().running);
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "owned children exited but reconciliation stayed fenced: {error}; {}",
+                    group_diagnostics(pgid, pid)
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
@@ -936,49 +1059,68 @@ fn thread_resume_token(req: &Value) -> &str {
 async fn stale_daemon_detected_by_boot_id_mismatch() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    repo.shared_daemon_runtime_set(
-        "default",
-        SharedCodexDaemonUpdate {
-            state: SharedDaemonState::Running,
-            pid: Some(999_999),
-            pgid: Some(999_999),
-            paths_are_legacy_display: false,
-            sock_path: Some(root.path().join("old.sock").as_os_str().as_bytes().to_vec()),
-            codex_home_path: Some(root.path().join("old-home").as_os_str().as_bytes().to_vec()),
-            process_start_time: Some(1),
-            boot_id: Some("definitely-not-this-boot".into()),
-            started_at: Some(1),
-            last_error: None,
-            increment_restart_count: false,
-            daemon_env_signature: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-    let snapshot = daemon.status_snapshot();
-    assert_eq!(snapshot.state, SharedDaemonState::Running);
-    assert_ne!(snapshot.runtime.unwrap().pid, 999_999);
+    let child = persist_stale_owned_daemon(&repo, &root, true).await;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(root.path().join("codex-home"));
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&quiet_heal_cfg(&root), Arc::new(home), repo.clone());
+    assert_stale_owned_daemon_recovers(&daemon, &repo, child, true).await;
 }
 
 #[tokio::test]
 async fn stale_daemon_detected_by_start_time_mismatch() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    let live_boot = calm_server::proc_identity::read_boot_id().unwrap_or_default();
+    let child = persist_stale_owned_daemon(&repo, &root, false).await;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(root.path().join("codex-home"));
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&quiet_heal_cfg(&root), Arc::new(home), repo.clone());
+    assert_stale_owned_daemon_recovers(&daemon, &repo, child, false).await;
+}
+
+async fn persist_stale_owned_daemon(
+    repo: &SqlxRepo,
+    root: &tempfile::TempDir,
+    old_boot: bool,
+) -> tokio::process::Child {
+    let child = Command::new("sleep")
+        .arg("120")
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pid = i32::try_from(child.id().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+    let actual_birth = read_proc_start_time(pid).expect("owned child's real birth identity");
+    let current_boot = read_boot_id().expect("real current boot identity");
+    let historical_boot = "d7ba1cda-413b-42ce-b891-577b99f25174";
+    assert_ne!(
+        uuid::Uuid::parse_str(&current_boot).unwrap(),
+        uuid::Uuid::parse_str(historical_boot).unwrap()
+    );
+    std::fs::write(root.path().join("old.sock"), b"retained stale socket").unwrap();
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Running,
-            pid: Some(999_998),
-            pgid: Some(999_998),
+            pid: Some(pid),
+            pgid: Some(pid),
             paths_are_legacy_display: false,
             sock_path: Some(root.path().join("old.sock").as_os_str().as_bytes().to_vec()),
-            codex_home_path: Some(root.path().join("old-home").as_os_str().as_bytes().to_vec()),
-            process_start_time: Some(1),
-            boot_id: Some(live_boot),
+            codex_home_path: Some(
+                root.path()
+                    .join("codex-home")
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            // Deliberately stale input to reject, not this live child's birth.
+            process_start_time: Some(actual_birth + u64::from(!old_boot)),
+            boot_id: Some(if old_boot {
+                historical_boot.into()
+            } else {
+                current_boot
+            }),
             started_at: Some(1),
             last_error: None,
             increment_restart_count: false,
@@ -987,12 +1129,61 @@ async fn stale_daemon_detected_by_start_time_mismatch() {
     )
     .await
     .unwrap();
+    child
+}
 
-    let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
-    let snapshot = daemon.status_snapshot();
-    assert_eq!(snapshot.state, SharedDaemonState::Running);
-    assert_ne!(snapshot.runtime.unwrap().pid, 999_998);
+async fn assert_stale_owned_daemon_recovers(
+    daemon: &Arc<SharedCodexAppServer>,
+    repo: &SqlxRepo,
+    mut child: tokio::process::Child,
+    old_boot: bool,
+) {
+    let pid = i32::try_from(child.id().unwrap()).unwrap();
+    let before = repo.shared_daemon_runtime_get("default").await.unwrap();
+    if cfg!(target_os = "macos") && !old_boot {
+        let error = daemon
+            .start_or_takeover()
+            .await
+            .expect_err("a birth mismatch cannot prove the original group empty");
+        assert!(error.to_string().contains("unreconciled"), "{error}");
+        let fenced = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_daemon_identity_retained(&before, &fenced);
+        assert_eq!(
+            std::fs::read(Path::new(std::ffi::OsStr::from_bytes(
+                before.sock_path.as_ref().unwrap()
+            )))
+            .unwrap(),
+            b"retained stale socket"
+        );
+        assert_ne!(daemon.status_snapshot().state, SharedDaemonState::Running);
+        assert!(!daemon.readiness_receiver().borrow().running);
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "stale birth must never authorize a signal"
+        );
+        force_cleanup_process_group(child, pid).await;
+        ensure_running_after_owned_group_exit(daemon, repo, &fenced).await;
+    } else {
+        // A valid different boot proves expiry. Linux also retains its existing
+        // birth-mismatch policy, without signaling the unrelated current child.
+        daemon.start_or_takeover().await.unwrap();
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "unrelated current child must remain alive"
+        );
+        force_cleanup_process_group(child, pid).await;
+    }
+    let running = daemon.status_snapshot().runtime.unwrap();
+    let _cleanup = agent_backend_upgrade::DaemonGroup(running.pid);
+    assert_ne!(running.pid, pid);
+    assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
+    assert_eq!(
+        repo.shared_daemon_runtime_get("default")
+            .await
+            .unwrap()
+            .sock_path,
+        Some(daemon.sock_path().as_os_str().as_bytes().to_vec())
+    );
 }
 
 #[tokio::test]
@@ -1383,10 +1574,11 @@ async fn takeover_handshake_fail_kills_group_descendants_even_after_launcher_exi
     persist_running_daemon(&repo, &root, pgid, pgid, &sock, process_start_time).await;
 
     let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
+    let result = daemon.start_or_takeover().await;
 
-    let native_gone = wait_proc_gone(native_pid).await;
-    force_cleanup_process_group(launcher, pgid);
+    let native_gone = result.is_ok() && wait_proc_gone(native_pid).await;
+    force_cleanup_process_group(launcher, pgid).await;
+    result.unwrap();
     assert!(
         native_gone,
         "takeover reap must SIGKILL the pgid even after launcher pid exits"
@@ -1416,9 +1608,21 @@ wait
     .unwrap();
     // The trailing `; exit $?` keeps the intermediate sh from exec-ing
     // setsid: it must stay alive as the leader's reaping parent.
-    let parent = Command::new("sh")
-        .arg("-c")
-        .arg(r#"setsid sh "$LEADER_SCRIPT"; exit $?"#)
+    #[cfg(not(target_os = "macos"))]
+    let mut parent_command = {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(r#"setsid sh "$LEADER_SCRIPT"; exit $?"#);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut parent_command = {
+        let mut command = Command::new("/usr/bin/python3");
+        command.args(["-c", "import os,subprocess; p=subprocess.Popen(['/bin/sh',os.environ['LEADER_SCRIPT']],start_new_session=True); p.wait()"]);
+        command
+    };
+    let parent = parent_command
         .env("LEADER_SCRIPT", &leader_script)
         .env("LEADER_PID_FILE", &leader_pid_file)
         .env("SURVIVOR_PID_FILE", &survivor_pid_file)
@@ -1534,10 +1738,11 @@ async fn reap_listener_uses_getpgid_to_derive_pgid_from_peer_pid() {
 
     let repo = repo().await;
     let daemon = server(&root, repo.clone()).await;
-    daemon.start_or_takeover().await.unwrap();
+    let result = daemon.start_or_takeover().await;
 
-    let peer_gone = wait_proc_gone(peer_pid).await;
-    force_cleanup_process_group(launcher, pgid);
+    let peer_gone = result.is_ok() && wait_proc_gone(peer_pid).await;
+    force_cleanup_process_group(launcher, pgid).await;
+    result.unwrap();
     assert!(
         peer_gone,
         "stale listener reap must kill peer_pid's real pgid, not kill(-peer_pid)"
@@ -2829,6 +3034,7 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
 
 /// `/proc/<pid>` liveness for reap assertions: gone entirely, or already
 /// reaped into a zombie (state `Z`) — either way the process stopped working.
+#[cfg(not(target_os = "macos"))]
 fn pid_gone_or_zombie(pid: i32) -> bool {
     let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => stat,
@@ -2840,6 +3046,13 @@ fn pid_gone_or_zombie(pid: i32) -> bool {
         .and_then(|rest| rest.chars().next())
         .map(|state| state == 'Z')
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn pid_gone_or_zombie(pid: i32) -> bool {
+    plugin::proc_identity::read_macos_process(pid)
+        .expect("observe owned fixture process")
+        .is_none_or(|process| process.is_zombie)
 }
 
 /// codex may spend minutes rebuilding its state db before it binds the listen socket; the fake delays BIND past 10s.
@@ -3494,8 +3707,13 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
     let repo = repo().await;
     persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
 
-    let daemon =
-        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    // This test drives reconciliation explicitly; keep the background lane from
+    // racing the assertions for each Unknown result.
+    let daemon = SharedCodexAppServer::new(
+        &quiet_heal_cfg(&root),
+        Arc::new(polluted_home(&root)),
+        repo.clone(),
+    );
     daemon
         .start_or_takeover()
         .await
@@ -3538,15 +3756,16 @@ async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
         "no spawn may happen while unreconciled"
     );
 
-    force_cleanup_process_group(launcher, pgid);
+    eprintln!(
+        "before fixture cleanup: {}",
+        group_diagnostics(pgid, peer_pid)
+    );
+    force_cleanup_process_group(launcher, pgid).await;
     assert!(
         wait_proc_gone(peer_pid).await,
         "test survivor must terminate"
     );
-    daemon
-        .ensure_running()
-        .await
-        .expect("proven absence must reopen the spawn path");
+    ensure_running_after_owned_group_exit(&daemon, &repo, &record).await;
     let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(peer_pid), "a fresh daemon must be spawned");
@@ -3566,9 +3785,7 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
 
     // Instance A's heal loop is quieted (long delays) so it cannot race instance B.
-    let mut cfg_a = cfg(&root);
-    cfg_a.shared_codex_appserver_restart_initial_delay_ms = 60_000;
-    cfg_a.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let cfg_a = quiet_heal_cfg(&root);
     let instance_a =
         SharedCodexAppServer::new(&cfg_a, Arc::new(polluted_home(&root)), repo.clone());
     instance_a
@@ -3582,7 +3799,8 @@ async fn unreconciled_classification_survives_supervisor_restart() {
     repair_polluted_home(&root);
     let home_b =
         calm_server::shared_codex_home::SharedCodexHome::new(root.path().join("codex-home"));
-    let instance_b = SharedCodexAppServer::new(&cfg(&root), Arc::new(home_b), repo.clone());
+    let instance_b =
+        SharedCodexAppServer::new(&quiet_heal_cfg(&root), Arc::new(home_b), repo.clone());
     let err = instance_b
         .start_or_takeover()
         .await
@@ -3602,12 +3820,14 @@ async fn unreconciled_classification_survives_supervisor_restart() {
         SharedDaemonState::Running
     );
 
-    force_cleanup_process_group(launcher, pgid);
+    let retained = repo.shared_daemon_runtime_get("default").await.unwrap();
+    eprintln!(
+        "before fixture cleanup after owner restart: {}",
+        group_diagnostics(pgid, peer_pid)
+    );
+    force_cleanup_process_group(launcher, pgid).await;
     assert!(wait_proc_gone(peer_pid).await);
-    instance_b
-        .ensure_running()
-        .await
-        .expect("proven absence must reopen the spawn path after the restart");
+    ensure_running_after_owned_group_exit(&instance_b, &repo, &retained).await;
     let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(peer_pid));
@@ -3773,6 +3993,7 @@ async fn takeover_restamps_starting_row_to_running() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Starting,
             pid: Some(old_pid),
             pgid: Some(old_pid),
@@ -3870,6 +4091,7 @@ async fn persist_starting_daemon(
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Starting,
             pid: Some(pid),
             pgid: Some(pid),
@@ -4156,6 +4378,7 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Failed,
             pid: Some(survivor_pid),
             pgid: None,
@@ -4192,7 +4415,7 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
             .last_error
             .as_deref()
             .unwrap_or_default()
-            .starts_with("unreconciled: "),
+            .starts_with("unreconciled"),
         "row must carry the unreconciled prefix; got {:?}",
         record.last_error
     );
@@ -4205,13 +4428,26 @@ async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
 
     survivor.kill().await.expect("stop test survivor");
     let _ = survivor.wait().await;
-    daemon
-        .ensure_running()
-        .await
-        .expect("proven absence must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
-    assert_eq!(record.state, SharedDaemonState::Running);
-    assert_ne!(record.pid, Some(survivor_pid));
+    #[cfg(not(target_os = "macos"))]
+    {
+        daemon
+            .ensure_running()
+            .await
+            .expect("proven absence must reopen the spawn path");
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_eq!(record.state, SharedDaemonState::Running);
+        assert_ne!(record.pid, Some(survivor_pid));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        daemon
+            .ensure_running()
+            .await
+            .expect_err("unknown group scope requires operator recovery");
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_eq!(record.pid, Some(survivor_pid));
+        assert_eq!(record.pgid, None);
+    }
 }
 
 #[tokio::test]
@@ -4221,6 +4457,7 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Failed,
             pid: None,
             pgid: None,
@@ -4282,10 +4519,15 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
         "operator-shape rounds must not rewrite the row"
     );
 
-    // Operator remediation: clear the identity columns (manual DB fix).
+    // Explicit repair of this fixture-owned, investigated scope; this is not
+    // CancelReserved and cannot be inferred from a rebuilt Pending row.
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: match record.recovery.scope_id() {
+                Some(id) => calm_truth::db::RecoveryWrite::Settle { id },
+                None => calm_truth::db::RecoveryWrite::Legacy,
+            },
             state: SharedDaemonState::Failed,
             pid: None,
             pgid: None,
@@ -4295,7 +4537,7 @@ async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
             process_start_time: None,
             boot_id: None,
             started_at: None,
-            last_error: Some("operator cleared identity".into()),
+            last_error: Some("operator settled investigated fixture scope".into()),
             increment_restart_count: false,
             daemon_env_signature: None,
         },
@@ -4322,11 +4564,12 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
         .expect("spawn survivor process");
     let survivor_pid = i32::try_from(survivor.id().expect("survivor pid")).expect("pid fits i32");
     let start_time = read_proc_start_time(survivor_pid).expect("survivor start time");
-    let boot_id = read_boot_id().unwrap_or_default();
+    let boot_id = read_boot_id().expect("native boot identity required");
 
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Failed,
             pid: Some(survivor_pid),
             pgid: None,
@@ -4334,7 +4577,7 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
             sock_path: None,
             codex_home_path: None,
             process_start_time: Some(start_time),
-            boot_id: Some(boot_id),
+            boot_id: Some(boot_id.clone()),
             started_at: None,
             last_error: Some("crash".into()),
             increment_restart_count: false,
@@ -4363,20 +4606,75 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
             .last_error
             .as_deref()
             .unwrap_or_default()
-            .starts_with("unreconciled: "),
+            .starts_with("unreconciled"),
         "row must carry the unreconciled prefix; got {:?}",
         record.last_error
     );
 
     survivor.kill().await.expect("stop test survivor");
     let _ = survivor.wait().await;
-    daemon
-        .ensure_running()
+    #[cfg(not(target_os = "macos"))]
+    {
+        daemon
+            .ensure_running()
+            .await
+            .expect("verify-false after exit must reopen the spawn path");
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_eq!(record.state, SharedDaemonState::Running);
+        assert_ne!(record.pid, Some(survivor_pid));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        daemon
+            .ensure_running()
+            .await
+            .expect_err("PID exit cannot prove an unknown group empty");
+        drop(daemon);
+        let rebuilt = server(&root, repo.clone()).await;
+        rebuilt
+            .ensure_running()
+            .await
+            .expect_err("owner reconstruction retains the fence");
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_eq!(record.pid, Some(survivor_pid));
+        assert_eq!(record.pgid, None);
+        assert_eq!(record.process_start_time, Some(start_time));
+        assert_eq!(record.boot_id.as_deref(), Some(boot_id.as_str()));
+        let id = record.recovery.scope_id().expect("claimed recovery scope");
+        // This fixture owns and has reaped its only process. Explicit operator
+        // settlement is distinct from automatic PID-only recovery.
+        repo.shared_daemon_runtime_set(
+            "default",
+            SharedCodexDaemonUpdate {
+                recovery: calm_truth::db::RecoveryWrite::Settle { id },
+                state: SharedDaemonState::Failed,
+                pid: None,
+                pgid: None,
+                paths_are_legacy_display: false,
+                sock_path: None,
+                codex_home_path: None,
+                process_start_time: None,
+                boot_id: None,
+                started_at: None,
+                last_error: Some("operator settled owned fixture".into()),
+                increment_restart_count: false,
+                daemon_env_signature: None,
+            },
+        )
         .await
-        .expect("proven absence after exit must reopen the spawn path");
-    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
-    assert_eq!(record.state, SharedDaemonState::Running);
-    assert_ne!(record.pid, Some(survivor_pid));
+        .unwrap();
+        rebuilt
+            .ensure_running()
+            .await
+            .expect("operator settlement permits reuse");
+        assert_eq!(
+            repo.shared_daemon_runtime_get("default")
+                .await
+                .unwrap()
+                .state,
+            SharedDaemonState::Running
+        );
+    }
 }
 
 /// Wait for `pid` to become a zombie (its tokio `Child` is deliberately
@@ -4420,7 +4718,13 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
     );
     // The zombie's /proc entry still carries its identity: the persisted
     // tuple verifies against it.
+    #[cfg(not(target_os = "macos"))]
     let start_time = read_proc_start_time(leader_pid).expect("zombie leader keeps /proc stat");
+    #[cfg(target_os = "macos")]
+    let start_time = plugin::proc_identity::read_macos_process(leader_pid)
+        .unwrap()
+        .unwrap()
+        .start_time;
     // SAFETY: signal 0 probes liveness without delivering a signal.
     assert_eq!(
         unsafe { libc::kill(member_pid, 0) },
@@ -4436,6 +4740,7 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Failed,
             pid: Some(leader_pid),
             pgid: Some(leader_pid),
@@ -4454,6 +4759,27 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
     .unwrap();
 
     let daemon = server(&root, repo.clone()).await;
+    #[cfg(target_os = "macos")]
+    {
+        // A terminal external leader grants no new signal authority on macOS.
+        // Its live member must fence reuse until the fixture explicitly stops it.
+        assert!(daemon.ensure_running().await.is_err());
+        assert!(!pid_gone_or_zombie(member_pid));
+        let fenced = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_eq!(fenced.pid, Some(leader_pid));
+        let member = plugin::proc_identity::read_macos_process(member_pid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(member.pgid, leader_pid);
+        assert_eq!(unsafe { libc::kill(member_pid, libc::SIGKILL) }, 0);
+        for _ in 0..100 {
+            if pid_gone_or_zombie(member_pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pid_gone_or_zombie(member_pid));
+    }
     daemon
         .ensure_running()
         .await
@@ -4489,6 +4815,7 @@ async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent(
     let _ = leader.wait().await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     let root = tempfile::tempdir().unwrap();
@@ -4506,6 +4833,7 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Failed,
             pid: Some(zombie_pid),
             pgid: None,
@@ -4754,95 +5082,115 @@ async fn adopt_drain_obligation_survives_supervisor_loss() {
     let _ = child.wait().await;
 }
 
-/// The failing re-stamp is the ONLY write on the adoption path, so the pre-existing row stays untouched.
+/// A failed post-claim re-stamp must keep the old environment mismatch durable.
 #[tokio::test]
 async fn adopt_restamp_failure_keeps_mismatch_durably_detectable() {
-    let root = tempfile::tempdir().unwrap();
-    let sock = root.path().join("run/codex-appserver.sock");
-    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    for initial_state in [SharedDaemonState::Running, SharedDaemonState::Starting] {
+        let root = tempfile::tempdir().unwrap();
+        let sock = root.path().join("run/codex-appserver.sock");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
 
-    let mut child = Command::new(fake_codex_bin())
-        .arg("app-server")
-        .arg("--listen")
-        .arg(format!("unix://{}", sock.display()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn stale-signature fake app-server for re-stamp failure");
-    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
-    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+        let mut child = Command::new(fake_codex_bin())
+            .arg("app-server")
+            .arg("--listen")
+            .arg(format!("unix://{}", sock.display()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn stale-signature fake app-server for re-stamp failure");
+        let old_pid =
+            i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+        let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
 
-    let repo = repo().await;
-    persist_running_daemon_with_signature(
-        &repo,
-        &root,
-        old_pid,
-        old_pid,
-        &sock,
-        process_start_time,
-        Some("stale-env-signature".into()),
-    )
-    .await;
-    // Force the re-stamp (the sole `running` write on the adoption path)
-    // to fail.
-    (repo.db())
+        let repo = repo().await;
+        persist_running_daemon_with_signature(
+            &repo,
+            &root,
+            old_pid,
+            old_pid,
+            &sock,
+            process_start_time,
+            Some("stale-env-signature".into()),
+        )
+        .await;
+        if initial_state == SharedDaemonState::Starting {
+            repo.db()
+                .writer()
+                .execute(sqlx::query(
+                    "UPDATE codex_backend_daemons SET state='starting' WHERE backend_id='default'",
+                ))
+                .await
+                .unwrap();
+        }
+        // ClaimLegacy changes phase/id. Only the subsequent same-scope Running
+        // re-stamp is refused, on both native recovery and the Linux legacy path.
+        (repo.db())
         .writer()
         .execute(sqlx::query(
             "CREATE TRIGGER fail_running_stamp BEFORE UPDATE ON codex_backend_daemons \
-         WHEN NEW.state = 'running' BEGIN SELECT RAISE(ABORT, 'forced re-stamp failure'); END",
+         WHEN NEW.state = 'running' AND NEW.recovery_phase = OLD.recovery_phase AND NEW.recovery_id IS OLD.recovery_id AND NEW.pid IS OLD.pid BEGIN SELECT RAISE(ABORT, 'forced re-stamp failure'); END",
         ))
         .await
         .unwrap();
 
-    let instance_a = server(&root, repo.clone()).await;
-    instance_a
-        .start_or_takeover()
-        .await
-        .expect("adoption must succeed despite the re-stamp failure (warn only)");
-    assert_eq!(
+        let instance_a = server(&root, repo.clone()).await;
         instance_a
-            .status_snapshot()
-            .runtime
-            .map(|runtime| runtime.pid),
-        Some(old_pid)
-    );
-    assert!(
-        instance_a.needs_respawn_on_next_thread_start_for_test(),
-        "the in-memory drain must still be armed on re-stamp failure"
-    );
-    let record = repo.shared_daemon_runtime_get("default").await.unwrap();
-    assert_eq!(
-        record.daemon_env_signature.as_deref(),
-        Some("stale-env-signature"),
-        "the failed write must leave the old row untouched — the mismatch \
+            .start_or_takeover()
+            .await
+            .expect("adoption must succeed despite the re-stamp failure (warn only)");
+        assert_eq!(
+            instance_a
+                .status_snapshot()
+                .runtime
+                .map(|runtime| runtime.pid),
+            Some(old_pid)
+        );
+        assert!(
+            instance_a.needs_respawn_on_next_thread_start_for_test(),
+            "the in-memory drain must still be armed on re-stamp failure"
+        );
+        let record = repo.shared_daemon_runtime_get("default").await.unwrap();
+        // Starting is an observable witness that the production Running write
+        // really failed after adoption; a trigger that never fires cannot pass.
+        assert_eq!(record.state, initial_state);
+        #[cfg(target_os = "macos")]
+        assert!(matches!(
+            record.recovery,
+            calm_truth::db::DaemonRecovery::Recorded { .. }
+        ));
+        assert_eq!(
+            record.daemon_env_signature.as_deref(),
+            Some("stale-env-signature"),
+            "the failed write must leave the old row untouched — the mismatch \
          stays durably detectable"
-    );
+        );
 
-    drop(instance_a);
-    (repo.db())
-        .writer()
-        .execute(sqlx::query("DROP TRIGGER fail_running_stamp"))
-        .await
-        .unwrap();
-    let instance_b = server(&root, repo.clone()).await;
-    tokio::time::timeout(Duration::from_secs(2), instance_b.start_or_takeover())
-        .await
-        .expect("a dropped supervisor must release its client so re-adoption cannot hang")
-        .unwrap();
-    assert_eq!(
-        instance_b
-            .status_snapshot()
-            .runtime
-            .map(|runtime| runtime.pid),
-        Some(old_pid)
-    );
-    assert!(instance_b.needs_respawn_on_next_thread_start_for_test());
+        drop(instance_a);
+        (repo.db())
+            .writer()
+            .execute(sqlx::query("DROP TRIGGER fail_running_stamp"))
+            .await
+            .unwrap();
+        let instance_b = server(&root, repo.clone()).await;
+        tokio::time::timeout(Duration::from_secs(2), instance_b.start_or_takeover())
+            .await
+            .expect("a dropped supervisor must release its client so re-adoption cannot hang")
+            .unwrap();
+        assert_eq!(
+            instance_b
+                .status_snapshot()
+                .runtime
+                .map(|runtime| runtime.pid),
+            Some(old_pid)
+        );
+        assert!(instance_b.needs_respawn_on_next_thread_start_for_test());
 
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
 }
 
 #[tokio::test]
@@ -5301,3 +5649,9 @@ mod agent_backend_auth_router;
 
 #[path = "cases/agent_backend_worker_routing.rs"]
 mod agent_backend_worker_routing;
+
+#[path = "cases/shared_takeover_failure.rs"]
+mod shared_takeover_failure;
+
+#[path = "cases/shared_linux_recovery_phase.rs"]
+mod linux_recovery_phase;

@@ -1,8 +1,8 @@
 pub use calm_truth::db::{
-    Repo, RepoEventWrite, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, RouteRepo,
-    SessionCardIdentity, SharedCodexDaemonRecord, SharedCodexDaemonUpdate, SharedDaemonState,
-    TrackAreaMembership, TrackEvent, TranscriptRow, WorkspaceLease, WriteInTxFn,
-    WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
+    DaemonRecovery, RecoveryId, RecoveryWrite, Repo, RepoEventWrite, RepoOutOfDomain, RepoRead,
+    RepoSyncDomainRaw, RouteRepo, SessionCardIdentity, SharedCodexDaemonRecord,
+    SharedCodexDaemonUpdate, SharedDaemonState, TrackAreaMembership, TrackEvent, TranscriptRow,
+    WorkspaceLease, WriteInTxFn, WriteWithActorEventsFn, WriteWithEventFn, WriteWithEventsFn, rows,
 };
 
 use futures::future::BoxFuture;

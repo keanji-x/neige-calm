@@ -1,201 +1,407 @@
-//! macOS process-exit observation for a listener identified over a live Unix socket.
-use std::{
-    io,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+//! Shared-daemon policy for native recovery. Observations live in plugin::proc_identity;
+//! neither a numeric PGID nor a fresh scan after leader exit grants signal authority.
+use super::read_boot_id;
+use plugin::proc_identity::{MacProcess, observe_macos_group};
+use std::{io, time::Duration};
+use tokio::process::Child;
 
-pub(super) struct ExitWatcher {
-    pid: i32,
-    queue: Arc<OwnedFd>,
-}
-
-impl ExitWatcher {
-    pub(super) fn new(pid: i32) -> io::Result<Self> {
-        if pid <= 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "positive PID required",
-            ));
-        }
-        // SAFETY: kqueue returns a new descriptor, transferred to OwnedFd.
-        let raw = unsafe { libc::kqueue() };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let queue = Arc::new(unsafe { OwnedFd::from_raw_fd(raw) });
-        let change = libc::kevent {
-            ident: pid as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT | libc::EV_RECEIPT,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
-        let mut receipt: libc::kevent = unsafe { std::mem::zeroed() };
-        // SAFETY: both event pointers refer to initialized storage for one event.
-        let count = unsafe {
-            libc::kevent(
-                queue.as_raw_fd(),
-                &change,
-                1,
-                &mut receipt,
-                1,
-                std::ptr::null(),
-            )
-        };
-        let flags = receipt.flags;
-        let data = receipt.data;
-        if count != 1 || flags & libc::EV_ERROR == 0 || data != 0 {
-            return Err(if data > 0 {
-                io::Error::from_raw_os_error(data as i32)
-            } else if count < 0 {
-                io::Error::last_os_error()
-            } else {
-                io::Error::other("kqueue process watch registration was not acknowledged")
-            });
-        }
-        Ok(Self { pid, queue })
-    }
-
-    pub(super) fn pid(&self) -> i32 {
-        self.pid
-    }
-
-    async fn wait(&self, timeout: Duration) -> io::Result<bool> {
-        let queue = Arc::clone(&self.queue);
-        tokio::task::spawn_blocking(move || wait_blocking(queue.as_raw_fd(), timeout))
-            .await
-            .map_err(|error| io::Error::other(format!("kqueue wait task failed: {error}")))?
-    }
-
-    /// `Ok(true)`: the exit event was already pending and has now been
-    /// retrieved; nothing was signalled. `Ok(false)`: the signal was issued
-    /// (or met `ESRCH`) and the exit still has to be observed by `wait`.
-    async fn signal_unless_exited(&self, pgid: Option<i32>, signal: i32) -> io::Result<bool> {
-        let queue = Arc::clone(&self.queue);
-        let pid = self.pid;
-        tokio::task::spawn_blocking(move || {
-            poll_exit_then_signal(queue.as_raw_fd(), pid, pgid, signal)
-        })
-        .await
-        .map_err(|error| io::Error::other(format!("kqueue signal task failed: {error}")))?
-    }
-}
-
-/// Blocks until the one-shot `NOTE_EXIT` is retrieved (`Ok(true)`) or the deadline
-/// passes (`Ok(false)`); `EINTR` is retried against the original deadline.
-fn wait_blocking(queue: i32, timeout: Duration) -> io::Result<bool> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let seconds = remaining.as_secs().min(libc::time_t::MAX as u64) as libc::time_t;
-        let timespec = libc::timespec {
-            tv_sec: seconds,
-            tv_nsec: remaining.subsec_nanos() as libc::c_long,
-        };
-        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
-        // SAFETY: the queue is held open by the caller; event and timespec are valid.
-        let count = unsafe { libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, &timespec) };
-        if count < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                if remaining > Duration::ZERO {
-                    continue;
-                }
-                return Ok(false);
+// One native fact reader, with an owned-PID fault seam for boundary regressions.
+fn read_macos_process(pid: i32) -> io::Result<Option<MacProcess>> {
+    #[cfg(test)]
+    {
+        let mut faults = PROCESS_OBSERVATION_ERRORS.lock().unwrap();
+        if let Some((_, remaining)) = faults.iter_mut().find(|(target, _)| *target == pid) {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                return Err(io::Error::from_raw_os_error(libc::EACCES));
             }
-            return Err(error);
         }
-        if count == 0 {
-            return Ok(false);
-        }
-        let flags = event.flags;
-        let data = event.data;
-        if flags & libc::EV_ERROR != 0 && data != 0 {
-            return Err(io::Error::from_raw_os_error(data as i32));
-        }
-        return Ok(true);
+    }
+    plugin::proc_identity::read_macos_process(pid)
+}
+
+#[cfg(test)]
+static PROCESS_OBSERVATION_ERRORS: std::sync::Mutex<Vec<(i32, usize)>> =
+    std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+pub(super) struct ProcessObservationError(i32);
+#[cfg(test)]
+impl ProcessObservationError {
+    pub(super) fn inject(pid: i32, read: usize) -> Self {
+        let mut faults = PROCESS_OBSERVATION_ERRORS.lock().unwrap();
+        assert!(!faults.iter().any(|(target, _)| *target == pid));
+        faults.push((pid, read));
+        Self(pid)
+    }
+}
+#[cfg(test)]
+impl Drop for ProcessObservationError {
+    fn drop(&mut self) {
+        PROCESS_OBSERVATION_ERRORS
+            .lock()
+            .unwrap()
+            .retain(|(pid, _)| *pid != self.0);
     }
 }
 
-/// Runs on ONE blocking thread with no scheduling gap between the poll and the `kill`:
-/// an `EVFILT_PROC` watch does not reserve the pid/pgid, so a reaped listener could
-/// otherwise be signalled at a recycled identifier. `ESRCH` alone proves nothing.
-fn poll_exit_then_signal(queue: i32, pid: i32, pgid: Option<i32>, signal: i32) -> io::Result<bool> {
-    if wait_blocking(queue, Duration::ZERO)? {
-        return Ok(true);
+pub(super) struct ListenerIdentity {
+    pub(super) process: MacProcess,
+    pub(super) boot_id: String,
+}
+impl ListenerIdentity {
+    #[cfg(test)]
+    pub(super) fn new(pid: i32) -> io::Result<Self> {
+        let boot_id =
+            read_boot_id().ok_or_else(|| io::Error::other("boot identity unavailable"))?;
+        let process = read_macos_process(pid)?
+            .filter(|process| !process.is_zombie)
+            .ok_or_else(|| io::Error::other("listener identity unavailable"))?;
+        Ok(Self { process, boot_id })
     }
-    let target = signal_target(pid, pgid)?;
-    // SAFETY: the target is the socket-identified PID or its process group.
-    if unsafe { libc::kill(target, signal) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(false);
-        }
-        return Err(error);
-    }
-    Ok(false)
 }
 
-fn signal_target(pid: i32, pgid: Option<i32>) -> io::Result<i32> {
-    if pid <= 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "positive PID required",
+/// Observation only: failure or any live member fences reuse, including after leader death.
+/// The observer certifies all-zombie results around one complete enumeration; do not
+/// infer absence from a captured signal list or independently read member deaths.
+pub(super) fn group_empty(pgid: i32) -> bool {
+    observe_group(pgid).is_ok_and(|members| members.iter().all(|m| m.is_zombie))
+}
+
+// Inject a native enumeration error for one owned group, across cleanup and retry.
+// The guard keeps concurrently running tests' observations independent.
+#[cfg(test)]
+static GROUP_OBSERVATION_ERRORS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(super) struct GroupObservationError(i32);
+#[cfg(test)]
+impl GroupObservationError {
+    pub(super) fn inject(pgid: i32) -> Self {
+        let mut groups = GROUP_OBSERVATION_ERRORS.lock().unwrap();
+        assert!(!groups.contains(&pgid));
+        groups.push(pgid);
+        Self(pgid)
+    }
+}
+#[cfg(test)]
+impl Drop for GroupObservationError {
+    fn drop(&mut self) {
+        GROUP_OBSERVATION_ERRORS
+            .lock()
+            .unwrap()
+            .retain(|pgid| *pgid != self.0);
+    }
+}
+
+fn observe_group(pgid: i32) -> io::Result<Vec<MacProcess>> {
+    #[cfg(test)]
+    if GROUP_OBSERVATION_ERRORS.lock().unwrap().contains(&pgid) {
+        return Err(io::Error::other(
+            "injected native group observation failure",
         ));
     }
-    // The app-server spawn invariant makes it its process-group leader. Never
-    // turn an arbitrary observed group (especially pgid 1) into kill(-pgid).
-    Ok(match pgid {
-        Some(group) if group > 1 && group == pid => -group,
-        _ => pid,
-    })
+    observe_macos_group(pgid)
 }
 
-/// SIGTERM, grace, SIGKILL, 500 ms. `Ok(())` only on a `NOTE_EXIT` retrieved from the
-/// kqueue registered for the socket-identified pid. A group member that ignores SIGTERM
-/// and outlives the leader is left running (macOS has no `/proc` identity to sweep by).
+/// Missing PGID means unknown recovery scope, not a PID-only ownership claim.
+/// Invalid metadata cannot prove a different boot or a different incarnation.
+pub(super) fn persisted_absent(
+    pid: i32,
+    pgid: Option<i32>,
+    start: Option<u64>,
+    boot: Option<&str>,
+) -> bool {
+    let valid_boot = boot.and_then(|boot| uuid::Uuid::parse_str(boot).ok());
+    let current_boot = read_boot_id().and_then(|boot| uuid::Uuid::parse_str(&boot).ok());
+    if let (Some(saved), Some(current)) = (valid_boot, current_boot)
+        && saved != current
+    {
+        return true;
+    }
+    let Some(group) = pgid else {
+        // A peer PID cannot reconstruct the group it occupied before capture failed.
+        return false;
+    };
+    let verified_start = start
+        .filter(|start| *start != 0)
+        .filter(|_| valid_boot.is_some() && valid_boot == current_boot);
+    let leader_absent = match read_macos_process(pid) {
+        Ok(None) => true,
+        Ok(Some(process)) => {
+            process.is_zombie || verified_start.is_some_and(|start| process.start_time != start)
+        }
+        Err(_) => false,
+    };
+    leader_absent && group_empty(group)
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+pub(super) enum CaptureFault {
+    #[default]
+    None,
+    Boot,
+    Process,
+}
+
+/// Preserve every readable fact, including terminal identities, before asking whether
+/// the observation can authorize a signal. A failed process read leaves scope unknown.
+pub(super) fn observe_identity(
+    pid: i32,
+    #[cfg(test)] fault: CaptureFault,
+) -> (Option<MacProcess>, Option<String>) {
+    #[cfg(test)]
+    let process = if matches!(fault, CaptureFault::Process) {
+        None
+    } else {
+        read_macos_process(pid).ok().flatten()
+    };
+    #[cfg(not(test))]
+    let process = read_macos_process(pid).ok().flatten();
+    #[cfg(test)]
+    let boot = if matches!(fault, CaptureFault::Boot) {
+        None
+    } else {
+        read_boot_id()
+    };
+    #[cfg(not(test))]
+    let boot = read_boot_id();
+    (process, boot)
+}
+
+fn signal_member(member: MacProcess, signal: i32) -> io::Result<()> {
+    let Some(current) = read_macos_process(member.pid)? else {
+        return Ok(());
+    };
+    // A different birth or a process that actively left the group is outside our authority.
+    if current.start_time != member.start_time || current.pgid != member.pgid || current.is_zombie {
+        return Ok(());
+    }
+    if member.pid <= 1 || member.pid == std::process::id() as i32 {
+        return Err(io::Error::other("refusing unsafe member PID"));
+    }
+    // SAFETY: positive PID with birth and membership revalidated immediately before kill.
+    // The same bounded verify-then-signal race applies as to other external identity callers.
+    if unsafe { libc::kill(member.pid, signal) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn terminate_identity(
+    pid: i32,
+    pgid: Option<i32>,
+    start: u64,
+    boot: &str,
+    grace: Duration,
+) -> io::Result<()> {
+    terminate_identity_with_listener(pid, pgid, start, boot, grace, None).await
+}
+
+async fn terminate_identity_with_listener(
+    pid: i32,
+    pgid: Option<i32>,
+    start: u64,
+    boot: &str,
+    grace: Duration,
+    listener: Option<MacProcess>,
+) -> io::Result<()> {
+    if read_boot_id().as_deref() != Some(boot) {
+        return Err(io::Error::other("original boot identity unavailable"));
+    }
+    let leader = read_macos_process(pid)?;
+    let Some(leader) = leader.filter(|p| p.start_time == start && !p.is_zombie) else {
+        return if persisted_absent(pid, pgid, Some(start), Some(boot)) {
+            Ok(())
+        } else {
+            Err(io::Error::other("leader absent with unresolved group"))
+        };
+    };
+    let members = capture_members(leader, pgid, listener)?;
+    terminate_members(leader, pgid, &members, grace).await
+}
+
+/// The caller proves authority over this leader. External callers require a live
+/// identity; an owned Child may also pin a terminal leader until it is reaped.
+fn capture_members(
+    leader: MacProcess,
+    pgid: Option<i32>,
+    listener: Option<MacProcess>,
+) -> io::Result<Vec<MacProcess>> {
+    let members = match pgid {
+        Some(group) if group == leader.pid && leader.pgid == group => observe_group(group)?,
+        Some(_) => return Err(io::Error::other("leader group identity mismatch")),
+        None => vec![leader],
+    };
+    // Capture while the original leader still proves authority, then validate it again.
+    // Later scans may certify emptiness, but can never add signal targets.
+    if read_macos_process(leader.pid)? != Some(leader) || !members.contains(&leader) {
+        return Err(io::Error::other("leader changed during member capture"));
+    }
+    if let Some(listener) = listener
+        && (!members.contains(&listener) || read_macos_process(listener.pid)? != Some(listener))
+    {
+        return Err(io::Error::other("listener changed during member capture"));
+    }
+    Ok(members)
+}
+
+fn owned_members(child: &Child, pgid: i32) -> io::Result<Option<(MacProcess, Vec<MacProcess>)>> {
+    // Child::id becomes None after try_wait/wait has reaped it. A numeric PGID
+    // cannot recover the pin or authorize a new snapshot in that case.
+    let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
+        return Ok(None);
+    };
+    let leader = read_macos_process(pid)?
+        .ok_or_else(|| io::Error::other("owned child identity unavailable"))?;
+    if leader.pid != pgid || leader.pgid != pgid {
+        return Err(io::Error::other("owned child group identity mismatch"));
+    }
+    let members = match capture_members(leader, Some(pgid), None) {
+        Ok(members) => members,
+        Err(error) => {
+            // The Child pin still authorizes its own verified incarnation. A
+            // failed group capture grants no authority over any other member.
+            tracing::warn!(pid, pgid, %error, "owned group capture failed; only the direct child is authorized");
+            vec![leader]
+        }
+    };
+    Ok(Some((leader, members)))
+}
+
+/// A synchronous TERM belt shares the same capture/recheck policy. It neither
+/// escalates nor claims that cleanup or durable settlement has completed.
+pub(super) fn term_owned(child: &mut Child, pgid: i32) -> io::Result<()> {
+    let result = owned_members(child, pgid).and_then(|captured| {
+        if let Some((_, members)) = captured {
+            for member in members {
+                signal_member(member, libc::SIGTERM)?;
+            }
+        }
+        Ok(())
+    });
+    // Reap an already terminal direct child without waiting for a live one.
+    let reaped = child.try_wait().map(|_| ());
+    result.and(reaped)
+}
+
+pub(super) async fn terminate_owned(
+    child: &mut Child,
+    pgid: i32,
+    grace: Duration,
+) -> io::Result<()> {
+    let result = match owned_members(child, pgid) {
+        Ok(Some((leader, members))) => terminate_members(leader, Some(pgid), &members, grace).await,
+        Ok(None) if group_empty(pgid) => Ok(()),
+        Ok(None) => Err(io::Error::other(
+            "reaped child with unresolved original group",
+        )),
+        Err(error) => Err(error),
+    };
+    // A failed capture can leave a live child. Never blindly await it or add a
+    // group KILL to make wait finish. Tokio retains its normal orphan reaper.
+    let reaped = child.try_wait().map(|_| ());
+    result.and(reaped)
+}
+
+async fn terminate_members(
+    leader: MacProcess,
+    pgid: Option<i32>,
+    members: &[MacProcess],
+    grace: Duration,
+) -> io::Result<()> {
+    for member in members {
+        signal_member(*member, libc::SIGTERM)?;
+    }
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        if read_macos_process(leader.pid)?
+            .is_none_or(|p| p.start_time != leader.start_time || p.is_zombie)
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(
+            Duration::from_millis(10)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
+    }
+    for member in members {
+        signal_member(*member, libc::SIGKILL)?;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        let mut settled = true;
+        for member in members {
+            if read_macos_process(member.pid)?.is_some_and(|p| {
+                p.start_time == member.start_time && p.pgid == member.pgid && !p.is_zombie
+            }) {
+                settled = false;
+            }
+        }
+        if settled && pgid.is_none_or(group_empty) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "original group not proven empty",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub(super) async fn terminate_listener(
-    watcher: ExitWatcher,
+    identity: ListenerIdentity,
     pgid: Option<i32>,
     grace: Duration,
 ) -> io::Result<()> {
-    if watcher.signal_unless_exited(pgid, libc::SIGTERM).await? {
-        return Ok(());
-    }
-    if watcher.wait(grace).await? {
-        return Ok(());
-    }
-    tracing::warn!(
-        target: "shared_codex_daemon::stop",
-        pid = watcher.pid(),
+    // A socket peer can be a child of its launcher. Capture the live leader of
+    // the peer's observed group before capturing any signal targets. This is
+    // listener authority, not permission to repair a corrupt persisted tuple.
+    let leader = match pgid {
+        Some(group) if group != identity.process.pgid => {
+            return Err(io::Error::other("listener group identity mismatch"));
+        }
+        Some(group) if group != identity.process.pid => read_macos_process(group)?
+            .filter(|leader| leader.pgid == group && !leader.is_zombie)
+            .ok_or_else(|| io::Error::other("listener group leader unavailable"))?,
+        _ => identity.process,
+    };
+    terminate_identity_with_listener(
+        leader.pid,
         pgid,
-        grace_ms = grace.as_millis() as u64,
-        "stop-grace ceiling elapsed without a verified exit; escalating to SIGKILL"
-    );
-    if watcher.signal_unless_exited(pgid, libc::SIGKILL).await? {
-        return Ok(());
-    }
-    if watcher.wait(Duration::from_millis(500)).await? {
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "listener did not exit after SIGKILL",
-    ))
+        leader.start_time,
+        &identity.boot_id,
+        grace,
+        Some(identity.process),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{os::unix::process::CommandExt, process::Command};
+    use std::{os::unix::process::CommandExt, process::Command, time::Instant};
 
-    struct KillGroupOnDrop(i32);
+    struct KillGroupOnDrop(MacProcess);
     impl Drop for KillGroupOnDrop {
         fn drop(&mut self) {
-            unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            // These tests own the unreaped child. Do not signal its numeric group
+            // after wait() released the pin, including on a failed assertion.
+            if let Ok(Some(current)) = read_macos_process(self.0.pid)
+                && current.start_time == self.0.start_time
+                && current.pgid == self.0.pgid
+            {
+                unsafe { libc::kill(-self.0.pgid, libc::SIGKILL) };
+            }
         }
     }
 
@@ -208,8 +414,8 @@ mod tests {
         command.process_group(0);
         let mut child = command.spawn().unwrap();
         let pid = child.id() as i32;
-        let _cleanup = KillGroupOnDrop(pid);
-        let watcher = ExitWatcher::new(pid).unwrap();
+        let _cleanup = KillGroupOnDrop(read_macos_process(pid).unwrap().unwrap());
+        let watcher = ListenerIdentity::new(pid).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let grace = Duration::from_millis(100);
         let started = Instant::now();
@@ -227,8 +433,8 @@ mod tests {
         command.process_group(0);
         let mut child = command.spawn().unwrap();
         let pid = child.id() as i32;
-        let _cleanup = KillGroupOnDrop(pid);
-        let watcher = ExitWatcher::new(pid).unwrap();
+        let _cleanup = KillGroupOnDrop(read_macos_process(pid).unwrap().unwrap());
+        let watcher = ListenerIdentity::new(pid).unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let started = Instant::now();
         terminate_listener(watcher, Some(pid), Duration::from_secs(5))
@@ -241,14 +447,14 @@ mod tests {
     #[tokio::test]
     async fn terminate_listener_observes_an_exit_that_preceded_the_first_signal() {
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg("while :; do sleep 1; done");
+        command.arg("-c").arg("exec sleep 60");
         command.process_group(0);
         let mut child = command.spawn().unwrap();
         let pid = child.id() as i32;
-        let _cleanup = KillGroupOnDrop(pid);
-        let watcher = ExitWatcher::new(pid).unwrap();
-        // Reaped before the first signal: SIGTERM at `pid` would get ESRCH, and
-        // the only exit proof left is the NOTE_EXIT already queued on the watch.
+        let _cleanup = KillGroupOnDrop(read_macos_process(pid).unwrap().unwrap());
+        let watcher = ListenerIdentity::new(pid).unwrap();
+        // Reaped before the first signal: verify absence and the empty original group,
+        // without using the recycled numeric PID as a signal target.
         // SAFETY: `pid` is this test's own unreaped child.
         assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
         assert!(!child.wait().unwrap().success());
@@ -259,10 +465,42 @@ mod tests {
     }
 
     #[test]
-    fn signal_target_uses_only_the_listeners_own_safe_process_group() {
-        assert_eq!(signal_target(42, Some(42)).unwrap(), -42);
-        assert_eq!(signal_target(42, Some(1)).unwrap(), 42);
-        assert_eq!(signal_target(42, Some(41)).unwrap(), 42);
-        assert!(signal_target(0, None).is_err());
+    fn signal_member_rejects_mismatched_birth_and_group() {
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let _cleanup = KillGroupOnDrop(read_macos_process(pid).unwrap().unwrap());
+        let member = read_macos_process(pid).unwrap().unwrap();
+        signal_member(
+            MacProcess {
+                start_time: member.start_time + 1,
+                ..member
+            },
+            libc::SIGKILL,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "mismatched birth must never receive a signal"
+        );
+        signal_member(
+            MacProcess {
+                pgid: member.pgid + 1,
+                ..member
+            },
+            libc::SIGKILL,
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "moved group must never receive a signal"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

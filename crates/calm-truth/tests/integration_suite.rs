@@ -62,3 +62,6 @@ mod planner_harness_marker_migration;
 
 #[path = "progress_obligation.rs"]
 mod progress_obligation;
+
+#[path = "shared_daemon_recovery.rs"]
+mod shared_daemon_recovery;

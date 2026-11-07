@@ -144,10 +144,14 @@ fn listen_sock_path() -> PathBuf {
     PathBuf::from(path)
 }
 
+#[path = "appserver_environment.rs"]
+mod environment;
+
 /// Blocking entry point — spins up a single-threaded tokio runtime and runs
 /// the accept/serve loop until the connection closes or the process is
 /// killed (which is how the test reaps us).
 pub fn run_fake_app_server() {
+    environment::write_if_requested();
     // #954 — SIGTERM fixture + pdeathsig hygiene belt must be armed before
     // any knob that parks the process (bind delay), so a never-binding
     // child can still exercise graceful termination.
