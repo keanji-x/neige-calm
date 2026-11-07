@@ -279,7 +279,7 @@ mod tests {
         };
         for (provider, planner, assistant) in [
             (AgentProvider::Grok, true, false),
-            (AgentProvider::Antigravity, true, true),
+            (AgentProvider::Antigravity, false, false),
             (AgentProvider::OpenCode, true, true),
         ] {
             for (profile, expected) in [

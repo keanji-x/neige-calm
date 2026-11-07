@@ -59,7 +59,13 @@ async fn canonical_antigravity_unconfirmed_revocation_cannot_manufacture_keep_cl
          BEGIN SELECT RAISE(ABORT, 'revocation unavailable'); END"
     )).await.unwrap();
     fx.dispatch().await.unwrap();
-    fx.wait_idle().await;
+    fx.wait_driver_finished().await;
+    // Revocation failure keeps the turn active after its driver stops.
+    assert!(
+        fx.session
+            .active_turn_id_for_thread(&fx.owner.thread)
+            .is_some()
+    );
     fx.keep_unknown(&fx.submission, "keep-without-close").await;
     assert!(fx.backend.settle_kept_execution().await.unwrap().is_none());
     let joins: i64 =
