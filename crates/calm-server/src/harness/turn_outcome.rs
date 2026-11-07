@@ -13,7 +13,10 @@ pub(crate) enum Confirmation {
 /// Native errors can echo accepted input or malformed request frames.
 pub(crate) fn canonical_diagnostic(turn: &mut Value) {
     if let Some(error) = turn.get_mut("error").filter(|error| !error.is_null()) {
-        *error = safe_diagnostic(None);
+        let diagnostic = error["code"]
+            .as_str()
+            .and_then(provider::acp::diagnostics::terminal_diagnostic);
+        *error = safe_diagnostic(diagnostic);
     }
 }
 
@@ -105,4 +108,24 @@ pub(crate) async fn record(
             &serde_json::to_string(&outcome)?,
         )
         .await?)
+}
+
+#[cfg(test)]
+mod permission_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn canonical_permission_diagnostics_keep_only_closed_codes_and_static_copy() {
+        for (code, expected) in [
+            ("acp_permission_denied", "acp_permission_denied"),
+            ("acp_permission_rejected", "acp_permission_rejected"),
+            ("acp_tool_failure", "acp_tool_failure"),
+            ("untrusted", "provider_error"),
+        ] {
+            let mut turn = serde_json::json!({"error":{"code":code,"message":"secret native payload","raw":"private"}});
+            canonical_diagnostic(&mut turn);
+            assert_eq!(turn["error"]["code"], expected);
+            assert!(!turn.to_string().contains("secret native payload"));
+            assert!(turn["error"].get("raw").is_none());
+        }
+    }
 }

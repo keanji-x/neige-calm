@@ -510,6 +510,25 @@ fn acp_turn_can_finish_after_reporting_or_recovering_from_a_failed_tool() {
 }
 
 #[test]
+fn a_silent_tool_failure_after_success_is_failed() {
+    let mut translator = translator();
+    for (id, status) in [("read", "completed"), ("shell", "failed")] {
+        translator
+            .update(
+                &update(json!({"sessionUpdate":"tool_call", "toolCallId":id,
+            "title":id, "status":status})),
+                10,
+            )
+            .unwrap();
+    }
+    let events = translator.finish(protocol::StopReason::EndTurn, 20);
+    let PlannerEventKind::TurnCompleted { turn } = &events.last().unwrap().kind else {
+        panic!("expected a turn outcome");
+    };
+    assert_eq!(turn["status"], "failed");
+}
+
+#[test]
 fn streaming_reply_starts_empty_and_accumulates_exact_text_once() {
     let mut translator = translator();
     for (i, text) in ["hello ", "world"].iter().enumerate() {

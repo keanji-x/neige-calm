@@ -28,9 +28,12 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     owned_env: &[],
     never: NOTHING,
     ask: NOTHING,
+    // The resident process serves different cards concurrently. Keep its policy asking, and
+    // authorize only this turn's requests; a CLI skip-permissions flag would affect every card.
+    full_requests: provider::acp::approvals::FullPermissionRequests::AllowOnce,
     full: NOTHING,
     authentication: None,
     mcp_tool_request: None,
-    decline_ends_turn: false,
+    decline_ends_turn: true,
     refused_env: &[],
 };

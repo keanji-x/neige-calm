@@ -57,6 +57,21 @@ creates no ACP send receipt; canonical input remains editable so the person can 
 Approval is not an OS sandbox. The shared process runs with the service account's
 access; AGY's own policy can allow an action without emitting an approval request.
 
+## Permission modes and early stops
+
+`full` selects the agent's single-call `allow_once` option for each permission
+request in that card's current turn. `ask` shows the request in Neige's existing
+approval flow and returns the option the person chooses. `never` declines requests.
+The resident AGY process keeps its default policy: no process-wide permission
+bypass is enabled for other cards. A stopped or settled turn cannot approve a
+later request. Full requests without an unambiguous `allow_once` option are refused.
+
+If a denied tool fails and AGY ends without replying or recovering through a
+successful tool, Neige shows the denial as the turn's failure reason, even when
+earlier tools succeeded. An explicit user interruption remains interrupted.
+These modes govern requests AGY emits; they do not change Neige MCP authorization
+or grant ordinary cards cross-workspace report access.
+
 ## Compact a conversation
 
 Use `/compact` in the existing command menu after a conversation has history and

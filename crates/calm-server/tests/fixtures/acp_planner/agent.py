@@ -58,6 +58,7 @@ with (root / 'argv.jsonl').open('a') as output:
 current, pending, permission, cancel_seen = None, None, None, False
 mcp_servers = []
 shared_pending = {}
+agy_permissions = {}
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
@@ -526,6 +527,18 @@ for line in sys.stdin:
                 ask_shell(permission)
             else:
                 ask_mcp_tool(permission, 'neige_task_gate' if scenario == 'grok-mcp-unlisted' else 'neige_report_commit')
+        elif scenario == 'antigravity-permissions':
+            permission_id = 'agy-permission-' + current
+            agy_permissions[permission_id] = (current, request)
+            # Earlier successful reads must not hide a subsequent denied operation.
+            update({'sessionUpdate': 'tool_call', 'toolCallId': 'read', 'title': 'Read context', 'status': 'completed'})
+            update({'sessionUpdate': 'tool_call', 'toolCallId': 'call_1', 'title': 'echo one > one.txt', 'kind': 'execute', 'status': 'pending'})
+            emit({'jsonrpc': '2.0', 'id': permission_id, 'method': 'session/request_permission', 'params': {
+                'sessionId': current, 'toolCall': {'toolCallId': 'call_1', 'name': 'run_command',
+                    'kind': 'execute', 'title': 'printf permission-probe', 'status': 'pending',
+                    'rawInput': {'CommandLine': 'printf permission-probe', 'WaitMsBeforeAsync': 5000}},
+                'options': [{'optionId': 'allow', 'kind': 'allow_once', 'name': 'Allow'},
+                            {'optionId': 'deny', 'kind': 'reject_once', 'name': 'Deny'}]}})
         elif scenario in ['permission', 'assistant-canonical']:
             pending, permission = request, 'native-permission'
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
@@ -582,6 +595,23 @@ for line in sys.stdin:
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
             vendor('session/prompt_complete')
             finish(request, 'reply: ' + texts[-1])
+    elif method == 'session/cancel' and 'agy-permission-' + params['sessionId'] in agy_permissions:
+        current = params['sessionId']
+        permission_log({'event': 'cancel', 'sessionId': current})
+        _, prompt = agy_permissions.pop('agy-permission-' + current)
+        result(prompt, {'stopReason': 'cancelled'})
+    elif method is None and str(request.get('id', '')).startswith('agy-permission-'):
+        owner = agy_permissions.pop(request['id'], None)
+        if owner is not None:
+            current, prompt = owner
+            outcome = request['result']['outcome']
+            permission_log({'event': 'reply', 'sessionId': current, 'outcome': outcome})
+            allowed = outcome == {'outcome': 'selected', 'optionId': 'allow'}
+            update({'sessionUpdate': 'tool_call_update', 'toolCallId': 'call_1', 'status': 'completed' if allowed else 'failed'})
+            if allowed:
+                finish(prompt, 'operation allowed')
+            else:
+                result(prompt, {'stopReason': 'end_turn'})
     elif method == 'session/cancel' and params['sessionId'] in shared_pending:
         current = params['sessionId']
         finish(shared_pending.pop(current), 'cancelled', 'cancelled')
