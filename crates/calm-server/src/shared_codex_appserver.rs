@@ -7,6 +7,10 @@ use provider::control::NativeInterruptOutcome;
 use std::os::unix::ffi::OsStrExt;
 
 pub mod control;
+#[cfg(target_os = "linux")]
+mod linux_listener;
+#[cfg(target_os = "linux")]
+use linux_listener::reap_listener_if_alive;
 #[cfg(target_os = "macos")]
 mod macos_process;
 
@@ -30,6 +34,8 @@ pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 mod connection_recovery;
 mod resume_replay;
 use resume_replay::{ConnectionReplay, ReplayPlan};
+#[cfg(test)]
+mod persisted_identity_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod termination_identity_tests;
 mod thread_release;
@@ -69,8 +75,8 @@ use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_c
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, sigkill_verified_group_members, signal_process_group,
-    verify_owned_pid,
+    OwnedProcessObservation, ProcessObservation, observe_owned_pid, observe_process, read_boot_id,
+    read_proc_start_time, sigkill_verified_group_members, signal_process_group,
 };
 use crate::routes::settings::load_settings;
 use crate::session_projection_lookup::{
@@ -225,45 +231,16 @@ fn detached_spawn_result_lost(err: &CalmError) -> bool {
     err.to_string().contains(DETACHED_SPAWN_RESULT_LOST)
 }
 
-/// `/proc/<pid>/stat` state == `Z`. A zombie means "dead" only for post-reap verification
-/// of a group WE just signaled; before any signal it proves nothing about the process group.
-#[cfg(not(target_os = "macos"))]
+/// Native zombie observation shared with identity verification. A zombie proves leader exit
+/// only after an authorized group reap; before it, descendants may still be alive.
 fn proc_pid_is_zombie(pid: i32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    // The state field is the first token after the `(comm)` field.
-    stat.rsplit(") ")
-        .next()
-        .and_then(|rest| rest.chars().next())
-        .map(|state| state == 'Z')
-        .unwrap_or(false)
-}
-
-/// macOS twin of the Linux `/proc/<pid>/stat` reader via `proc_pidinfo(PROC_PIDTBSDINFO)`;
-/// `arg = 1` asks XNU to search the zombie list, without it an unreaped child answers `ESRCH`.
-#[cfg(target_os = "macos")]
-fn proc_pid_is_zombie(pid: i32) -> bool {
-    use std::ffi::c_void;
-    if pid <= 0 {
-        return false;
-    }
-    let size = std::mem::size_of::<libc::proc_bsdinfo>();
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    // SAFETY: the buffer is a zeroed `proc_bsdinfo` of exactly the size passed.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            1,
-            &mut info as *mut libc::proc_bsdinfo as *mut c_void,
-            size as libc::c_int,
-        )
-    };
-    if written != size as libc::c_int {
-        return false;
-    }
-    info.pbi_status == libc::SZOMB
+    matches!(
+        observe_process(pid),
+        ProcessObservation::Present {
+            is_zombie: true,
+            ..
+        }
+    )
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -299,35 +276,43 @@ mod macos_zombie_tests {
     }
 }
 
-/// `/proc/<pid>` presence — the ONLY probe allowed for the pid-partial shape: ownership is
-/// unprovable (the pid may be recycled), so the record must never be reaped or signaled.
-/// A zombie counts as present here.
-fn proc_pid_present(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    Path::new(&format!("/proc/{pid}")).exists()
+/// Process-only classification, before consulting mutable runtime path evidence.
+/// Zombies and observation failures cannot discharge a possible surviving group.
+pub(crate) fn persisted_process_proven_absent(record: &crate::db::SharedCodexDaemonRecord) -> bool {
+    persisted_process_proven_absent_from(
+        record,
+        record.pid.map(observe_process),
+        read_boot_id().as_deref(),
+    )
 }
 
-/// Process-only classification, before consulting mutable runtime path evidence.
-/// Keep zombies present: their process group can still contain live descendants.
-pub(crate) fn persisted_process_proven_absent(record: &crate::db::SharedCodexDaemonRecord) -> bool {
+fn persisted_process_proven_absent_from(
+    record: &crate::db::SharedCodexDaemonRecord,
+    observation: Option<ProcessObservation>,
+    live_boot: Option<&str>,
+) -> bool {
     match (
         record.pid,
         record.process_start_time,
         record.boot_id.as_deref(),
     ) {
         (None, None, None) => record.pgid.is_none(),
-        (Some(pid), Some(start_time), Some(boot_id)) => !verify_owned_pid(pid, start_time, boot_id),
-        (Some(pid), _, _) => !proc_pid_present(pid),
+        (Some(_), Some(start_time), Some(boot_id)) => crate::proc_identity::classify_owned_process(
+            observation.unwrap_or(ProcessObservation::Unknown),
+            live_boot,
+            start_time,
+            boot_id,
+        )
+        .proven_gone(),
+        (Some(_), _, _) => observation == Some(ProcessObservation::Absent),
         _ => false,
     }
 }
 
-/// POST-group-reap "survivor still alive" criterion. Zombie-as-dead is valid here ONLY
-/// because every caller has just signaled the verified group; pre-signal probes must not use it.
-fn survivor_alive_after_group_reap(pid: i32, start_time: u64, boot_id: &str) -> bool {
-    verify_owned_pid(pid, start_time, boot_id) && !proc_pid_is_zombie(pid)
+/// After an authorized group reap, a matching zombie is exited. An unreadable
+/// identity remains unresolved and cannot reopen the spawn path.
+fn survivor_unresolved_after_group_reap(pid: i32, start_time: u64, boot_id: &str) -> bool {
+    !observe_owned_pid(pid, start_time, boot_id).leader_exited()
 }
 
 /// Durable marker prefixes, human-readable; the machine rule is identity presence.
@@ -349,14 +334,13 @@ fn strip_unreconciled_prefix(last_error: &str) -> &str {
         .unwrap_or(last_error)
 }
 
-/// Read-side rule: `state='failed'` ∧ all identity columns NULL ⇒ safe to retry; any
-/// identity column present ⇒ unreconciled, run the per-shape resolution before any spawn.
-fn failed_row_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
-    record.state == SharedDaemonState::Failed
-        && (record.pid.is_some()
-            || record.pgid.is_some()
-            || record.process_start_time.is_some()
-            || record.boot_id.is_some())
+/// Any identity column can name a possible survivor. Non-adoptable records
+/// require per-shape reconciliation before spawn, regardless of their state.
+fn persisted_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
+    record.pid.is_some()
+        || record.pgid.is_some()
+        || record.process_start_time.is_some()
+        || record.boot_id.is_some()
 }
 
 /// A pure function of the record's identity shape — NOT of its previous `last_error` — so
@@ -1830,6 +1814,8 @@ struct SpawnEnvSnapshot {
 /// Outcome of the takeover connect probe: `running` rows keep the single-attempt fast-fail
 /// (boot must not stall for a broken daemon); `starting` rows get the bounded readiness window.
 enum AdoptProbe {
+    /// Observation failed: preserve the persisted identity and admit no replacement.
+    IdentityUnknown,
     /// The socket answered `initialize` — continue into the adoption body.
     Connected((CodexAppServer, crate::codex_appserver::NotificationStream)),
     /// Single-attempt probe failed against a live verified daemon —
@@ -1880,14 +1866,12 @@ impl SharedCodexAppServer {
         ) {
             return Ok(false);
         }
-        if !verify_owned_pid(pid, start_time, &boot_id) {
-            tracing::warn!(
-                target = "shared_codex_daemon::restart",
-                pid,
-                pgid,
-                "shared codex app-server persisted pid is stale"
-            );
-            return Ok(false);
+        match observe_owned_pid(pid, start_time, &boot_id) {
+            OwnedProcessObservation::Matching { .. } => {}
+            OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                return Ok(false);
+            }
+            OwnedProcessObservation::Unknown => return Err(self.retain_unreconciled(record).await),
         }
         let takeover_paths = paths
             .for_takeover(record)
@@ -1945,7 +1929,17 @@ impl SharedCodexAppServer {
             }
         };
         match probe {
+            AdoptProbe::IdentityUnknown => Err(self.retain_unreconciled(record).await),
             AdoptProbe::Connected((client, notifications)) => {
+                match observe_owned_pid(pid, start_time, &boot_id) {
+                    OwnedProcessObservation::Matching { .. } => {}
+                    OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                        return Ok(false);
+                    }
+                    OwnedProcessObservation::Unknown => {
+                        return Err(self.retain_unreconciled(record).await);
+                    }
+                }
                 let client = Arc::new(client);
                 let runtime = SharedDaemonRuntime {
                     pid,
@@ -2022,7 +2016,7 @@ impl SharedCodexAppServer {
                     error = %e,
                     "takeover handshake failed against verified daemon; reaping pgid before relaunch"
                 );
-                reap_verified_process_group(
+                let outcome = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2031,6 +2025,11 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
+                if outcome == LeaderExit::Unknown
+                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
+                {
+                    return Err(self.retain_unreconciled(record).await);
+                }
                 Ok(false)
             }
             AdoptProbe::ChildExited => Ok(false),
@@ -2045,7 +2044,7 @@ impl SharedCodexAppServer {
                 );
                 // The same wall-clock deadline the child's own supervisor would have enforced, just by a
                 // successor process — graceful, never an instant SIGKILL.
-                reap_verified_process_group(
+                let outcome = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2054,6 +2053,11 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
+                if outcome == LeaderExit::Unknown
+                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
+                {
+                    return Err(self.retain_unreconciled(record).await);
+                }
                 Ok(false)
             }
         }
@@ -2148,7 +2152,7 @@ impl SharedCodexAppServer {
             // observe the entry-time window deterministically.
             #[cfg(feature = "fixtures")]
             drop(self.transition_entry_gate.lock().await);
-            self.reap_current_child_or_runtime(&paths, running).await;
+            self.reap_current_child_or_runtime(&paths, running).await?;
             self.start_body_locked(serial, paths, increment_restart_count, last_error)
                 .await?
         };
@@ -2209,7 +2213,16 @@ impl SharedCodexAppServer {
                 return Err(CalmError::CodexAppServer(msg));
             }
         };
-        if failed_row_identity_present(&record) {
+        let takeover_eligible = !matches!(
+            record.state,
+            SharedDaemonState::Idle | SharedDaemonState::Failed
+        ) && record.pid.is_some()
+            && record.pgid == record.pid
+            && record.process_start_time.is_some()
+            && record.boot_id.is_some()
+            && record.started_at.is_some()
+            && record.sock_path.is_some();
+        if persisted_identity_present(&record) && !takeover_eligible {
             match self.resolve_persisted_shape(&paths, &record).await {
                 ShapeResolution::ProvenAbsent => {
                     // Durable proof-of-absence transition: NULL the identity
@@ -2356,24 +2369,22 @@ impl SharedCodexAppServer {
         };
         let (Some(start_time), Some(boot_id)) = (record.process_start_time, record.boot_id.clone())
         else {
-            // Shape (a): pid without a complete verification pair — ownership unprovable (the pid may
-            // be recycled), so never reap or signal; `/proc` existence (zombies INCLUDED) is the only safe probe.
-            if proc_pid_present(pid) {
-                tracing::warn!(
-                    target: "shared_codex_daemon::stop",
-                    pid,
-                    "persisted daemon record has a pid with an incomplete verification pair and the pid is present; staying unreconciled (never signaling a bare pid)"
-                );
+            // An incomplete verification pair grants no signal authority. Absence was
+            // checked above; a present or unreadable PID must remain fenced.
+            return ShapeResolution::Unreconciled {
+                needs_operator: false,
+            };
+        };
+        match observe_owned_pid(pid, start_time, &boot_id) {
+            OwnedProcessObservation::Matching { .. } => {}
+            OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                return ShapeResolution::ProvenAbsent;
+            }
+            OwnedProcessObservation::Unknown => {
                 return ShapeResolution::Unreconciled {
                     needs_operator: false,
                 };
             }
-            return ShapeResolution::ProvenAbsent;
-        };
-        if !verify_owned_pid(pid, start_time, &boot_id) {
-            // Natural death (or the identity matches no live process). A verified-but-ZOMBIE leader
-            // falls through to the pgid arms: live descendants may remain in its group.
-            return ShapeResolution::ProvenAbsent;
         }
         match record.pgid {
             Some(pgid) if pgid == pid => {
@@ -2386,7 +2397,7 @@ impl SharedCodexAppServer {
                     pgid,
                     "reaping verified persisted daemon survivor"
                 );
-                reap_verified_process_group(
+                let outcome = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2395,7 +2406,9 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
-                if survivor_alive_after_group_reap(pid, start_time, &boot_id) {
+                if outcome == LeaderExit::Unknown
+                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
+                {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
                         pid,
@@ -2412,7 +2425,7 @@ impl SharedCodexAppServer {
             Some(pgid) => {
                 // Corrupt record: never signal a pgid we did not create
                 // (risk of killing unrelated processes). Self-resolves on
-                // natural death via verify-false above.
+                // proven identity disappearance above.
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
                     pid,
@@ -2436,6 +2449,22 @@ impl SharedCodexAppServer {
                 }
             }
         }
+    }
+
+    async fn retain_unreconciled(
+        self: &Arc<Self>,
+        record: &crate::db::SharedCodexDaemonRecord,
+    ) -> CalmError {
+        let msg = unreconciled_message(record, false);
+        self.persist_failed_deduped(
+            &msg,
+            FailureClass::Unreconciled,
+            FailedIdentity::retained(record),
+        )
+        .await;
+        self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+            .await;
+        CalmError::CodexAppServer(msg)
     }
 
     /// Flip the in-memory state to Failed and arm the heal loop. The core
@@ -2752,17 +2781,17 @@ impl SharedCodexAppServer {
     /// Both arms go through `terminate_group_with_grace`: SIGTERM → exit-driven wait up to the
     /// stop grace → straggler cleanup.
     async fn reap_current_child_or_runtime(
-        &self,
+        self: &Arc<Self>,
         paths: &VerifiedRuntimePaths,
         running: Option<RunningProcessParts>,
-    ) {
+    ) -> Result<()> {
         let Some(RunningProcessParts {
             runtime,
             child,
             watcher,
         }) = running
         else {
-            return;
+            return Ok(());
         };
         watcher.handle.abort();
         if let Some(mut child) = child {
@@ -2773,10 +2802,10 @@ impl SharedCodexAppServer {
                 self.stop_grace,
             )
             .await;
-            return;
+            return Ok(());
         }
 
-        reap_verified_process_group(
+        let outcome = reap_verified_process_group(
             paths,
             runtime.pid,
             runtime.pgid,
@@ -2785,6 +2814,30 @@ impl SharedCodexAppServer {
             self.stop_grace,
         )
         .await;
+        if outcome == LeaderExit::Unknown
+            || survivor_unresolved_after_group_reap(
+                runtime.pid,
+                runtime.process_start_time,
+                &runtime.boot_id,
+            )
+        {
+            let record = match self
+                .repo
+                .shared_daemon_runtime_get(self.backend_id.as_str())
+                .await
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    let msg =
+                        format!("unreconciled: failed reading runtime after termination: {error}");
+                    self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+                        .await;
+                    return Err(CalmError::CodexAppServer(msg));
+                }
+            };
+            return Err(self.retain_unreconciled(&record).await);
+        }
+        Ok(())
     }
 
     async fn remove_stale_socket_before_spawn(&self, paths: &VerifiedRuntimePaths) -> Result<()> {
@@ -2883,7 +2936,7 @@ impl SharedCodexAppServer {
     }
 
     /// Bounded readiness window for a verified `starting` child of a previous calm-server
-    /// incarnation (no `Child` handle, so `verify_owned_pid` polling). `window` is the REMAINING
+    /// incarnation (no `Child` handle, so native identity polling). `window` is the REMAINING
     /// budget; the deadline is a TOTAL cap that also cuts an in-flight attempt.
     async fn poll_adopt_initialized(
         &self,
@@ -2910,17 +2963,16 @@ impl SharedCodexAppServer {
                         .to_string(),
                 ),
             };
-            // Liveness AFTER the (possibly long) attempt. Zombie = dead: an exited-but-unreaped child
-            // can never bind the socket. This arm sends no signals, so members of a zombie leader's
-            // group can leak past the fresh spawn.
-            if !verify_owned_pid(pid, start_time, boot_id) || proc_pid_is_zombie(pid) {
-                tracing::info!(
-                    target: "shared_codex_daemon::start",
-                    pid,
-                    waited_ms = started.elapsed().as_millis() as u64,
-                    "starting child exited during its readiness window; falling through to spawn"
-                );
-                return AdoptProbe::ChildExited;
+            match observe_owned_pid(pid, start_time, boot_id) {
+                OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                    return AdoptProbe::ChildExited;
+                }
+                // The leader cannot bind, but its descendants still require an authorized reap.
+                OwnedProcessObservation::Matching { is_zombie: true } => {
+                    return AdoptProbe::HandshakeFailed(attempt_err);
+                }
+                OwnedProcessObservation::Matching { is_zombie: false } => {}
+                OwnedProcessObservation::Unknown => return AdoptProbe::IdentityUnknown,
             }
             if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
                 tracing::warn!(
@@ -3001,7 +3053,9 @@ impl SharedCodexAppServer {
     async fn watch_taken_over_pid(this: std::sync::Weak<Self>, runtime: SharedDaemonRuntime) {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if !verify_owned_pid(runtime.pid, runtime.process_start_time, &runtime.boot_id) {
+            if observe_owned_pid(runtime.pid, runtime.process_start_time, &runtime.boot_id)
+                .leader_exited()
+            {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
@@ -4055,7 +4109,7 @@ impl SignalScope {
 enum ExitWait<'a> {
     /// We own the `Child` handle: exit-driven `child.wait()`.
     Child(&'a mut Child),
-    /// Expected external identity: revalidate before signaling, then poll `verify_owned_pid`
+    /// Expected external identity: revalidate before signaling, then poll native identity
     /// (a post-signal zombie counts as exited). This value alone grants no signal authority.
     VerifiedIdentity {
         pid: i32,
@@ -4083,6 +4137,8 @@ enum LeaderExit {
     /// the live leader is a member, so the group provably exists and
     /// cannot be recycled — group SIGKILL as before.
     AliveAtDeadline,
+    /// Observation failed: no exit proof and no authority for further signals or sweeps.
+    Unknown,
 }
 
 /// THE shared exit-driven termination helper: SIGTERM → wait for the LEADER's exit up to
@@ -4094,6 +4150,16 @@ async fn terminate_group_with_grace(
     wait: ExitWait<'_>,
     grace: Duration,
 ) -> LeaderExit {
+    terminate_group_with_grace_observing(_paths, scope, wait, grace, observe_owned_pid).await
+}
+
+async fn terminate_group_with_grace_observing(
+    _paths: &VerifiedRuntimePaths,
+    scope: SignalScope,
+    wait: ExitWait<'_>,
+    grace: Duration,
+    mut observe: impl FnMut(i32, u64, &str) -> OwnedProcessObservation,
+) -> LeaderExit {
     let (scope_kind, scope_id) = scope.describe();
     // A persisted identity may have stopped matching since takeover or the last watcher probe.
     // Reject the entire operation: a member scan of the old numeric PGID cannot restore authority.
@@ -4102,16 +4168,14 @@ async fn terminate_group_with_grace(
         start_time,
         boot_id,
     } = &wait
-        && !verify_owned_pid(*pid, *start_time, boot_id)
     {
-        tracing::debug!(
-            target: "shared_codex_daemon::stop",
-            scope_kind,
-            scope_id,
-            pid,
-            "external identity unverified before termination; skipping signals and member sweep"
-        );
-        return LeaderExit::FullyGone;
+        match observe(*pid, *start_time, boot_id) {
+            OwnedProcessObservation::Matching { .. } => {}
+            OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                return LeaderExit::FullyGone;
+            }
+            OwnedProcessObservation::Unknown => return LeaderExit::Unknown,
+        }
     }
     // An owned child ALREADY reaped before this helper ran means the numeric pgid may be
     // recycled: nothing here is safely signalable anymore, not even the initial SIGTERM.
@@ -4126,6 +4190,14 @@ async fn terminate_group_with_grace(
         );
         return LeaderExit::FullyGone;
     }
+    let external_identity = match &wait {
+        ExitWait::VerifiedIdentity {
+            pid,
+            start_time,
+            boot_id,
+        } => Some((*pid, *start_time, *boot_id)),
+        _ => None,
+    };
     scope.send(_paths, libc::SIGTERM);
     let deadline = tokio::time::Instant::now() + grace;
     let (outcome, waited_child) = match wait {
@@ -4150,35 +4222,48 @@ async fn terminate_group_with_grace(
             boot_id,
         } => (
             // Post-signal poll: zombie = dead.
-            poll_leader_exit(deadline, || {
-                if !verify_owned_pid(pid, start_time, boot_id) {
+            poll_leader_exit(deadline, || match observe(pid, start_time, boot_id) {
+                OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
                     Some(LeaderExit::FullyGone)
-                } else if proc_pid_is_zombie(pid) {
-                    Some(LeaderExit::ExitedPinned)
-                } else {
-                    None
                 }
+                OwnedProcessObservation::Matching { is_zombie: true } => {
+                    Some(LeaderExit::ExitedPinned)
+                }
+                OwnedProcessObservation::Matching { is_zombie: false } => None,
+                OwnedProcessObservation::Unknown => Some(LeaderExit::Unknown),
             })
             .await,
             None,
         ),
         #[cfg(target_os = "linux")]
         ExitWait::ProcPresence { pid } => (
-            poll_leader_exit(deadline, || {
-                if !proc_pid_present(pid) {
-                    Some(LeaderExit::FullyGone)
-                } else if proc_pid_is_zombie(pid) {
-                    Some(LeaderExit::ExitedPinned)
-                } else {
-                    None
-                }
+            poll_leader_exit(deadline, || match observe_process(pid) {
+                ProcessObservation::Absent => Some(LeaderExit::FullyGone),
+                ProcessObservation::Present {
+                    is_zombie: true, ..
+                } => Some(LeaderExit::ExitedPinned),
+                ProcessObservation::Present { .. } => None,
+                ProcessObservation::Unknown => Some(LeaderExit::Unknown),
             })
             .await,
             None,
         ),
     };
     let owned_child = waited_child.is_some();
+    let outcome = if outcome == LeaderExit::AliveAtDeadline {
+        match external_identity.map(|(pid, start, boot)| observe(pid, start, boot)) {
+            Some(OwnedProcessObservation::Unknown) => LeaderExit::Unknown,
+            Some(OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent) => {
+                LeaderExit::FullyGone
+            }
+            Some(OwnedProcessObservation::Matching { is_zombie: true }) => LeaderExit::ExitedPinned,
+            _ => outcome,
+        }
+    } else {
+        outcome
+    };
     match outcome {
+        LeaderExit::Unknown => {}
         LeaderExit::ExitedPinned if owned_child => {
             // Owned Child: WE hold the unreaped zombie, so the pgid is provably pinned and the group
             // SIGKILL is safe.
@@ -4282,8 +4367,8 @@ async fn reap_verified_process_group(
     start_time: u64,
     boot_id: &str,
     grace: Duration,
-) {
-    terminate_group_with_grace(
+) -> LeaderExit {
+    let outcome = terminate_group_with_grace(
         _paths,
         SignalScope::Group { pgid },
         ExitWait::VerifiedIdentity {
@@ -4295,15 +4380,21 @@ async fn reap_verified_process_group(
     )
     .await;
 
-    // Post-signal check: zombie = dead (the leader may linger until its parent waits).
-    if survivor_alive_after_group_reap(pid, start_time, boot_id) {
+    // A failed post-signal read must survive to the recovery caller, even if a
+    // later read succeeds. A zombie is exited only after this authorized reap.
+    let post_reap = observe_owned_pid(pid, start_time, boot_id);
+    if post_reap == OwnedProcessObservation::Unknown {
+        return LeaderExit::Unknown;
+    }
+    if !post_reap.leader_exited() {
         tracing::warn!(
             target: "shared_codex_daemon::stop",
             pid,
             pgid,
-            "after SIGKILL pgid, original launcher pid still verified; unexpected"
+            "after group reap, original launcher identity remains unresolved"
         );
     }
+    outcome
 }
 
 fn thread_started_id(notification: &Notification) -> Option<&str> {
@@ -4396,73 +4487,6 @@ async fn handle_thread_started_notification(
         }
         None => Ok(ThreadStartedHandling::DispatchNormally),
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn reap_listener_if_alive(paths: &VerifiedRuntimePaths, grace: Duration) -> Result<()> {
-    let sock_path = &paths.paths().socket;
-    let Ok(stream) = UnixStream::connect(sock_path).await else {
-        return Ok(());
-    };
-
-    let peer_pid = match stream.peer_cred().and_then(|cred| {
-        cred.pid().filter(|pid| *pid > 0).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "listener peer PID is unavailable",
-            )
-        })
-    }) {
-        Ok(pid) => pid,
-        Err(error) => {
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                %error,
-                sock = %sock_path.display(),
-                "SO_PEERCRED failed; proceeding to unlink listener-bound socket without reap"
-            );
-            return Ok(());
-        }
-    };
-    let pgid = unsafe { libc::getpgid(peer_pid) };
-    if pgid < 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            peer_pid,
-            error = %err,
-            sock = %sock_path.display(),
-            "getpgid failed; falling back to pid-only reap of stale socket listener"
-        );
-        drop(stream);
-        // Graceful pid-fallback reap (exit observed via /proc).
-        terminate_group_with_grace(
-            paths,
-            SignalScope::Pid { pid: peer_pid },
-            ExitWait::ProcPresence { pid: peer_pid },
-            grace,
-        )
-        .await;
-        return Ok(());
-    }
-
-    tracing::warn!(
-        target: "shared_codex_daemon::stop",
-        peer_pid,
-        pgid,
-        sock = %sock_path.display(),
-        "stale socket has live listener; reaping orphaned daemon pgid before unlink"
-    );
-    drop(stream);
-    // Graceful group reap: SIGTERM → exit-driven wait → straggler cleanup.
-    terminate_group_with_grace(
-        paths,
-        SignalScope::Group { pgid },
-        ExitWait::ProcPresence { pid: peer_pid },
-        grace,
-    )
-    .await;
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -4750,7 +4774,7 @@ mod tests {
 
     /// Read-side classification rule over row shapes.
     #[test]
-    fn failed_row_identity_presence_classifies_unreconciled() {
+    fn persisted_identity_presence_classifies_unreconciled() {
         let mut record = crate::db::SharedCodexDaemonRecord {
             state: SharedDaemonState::Failed,
             pid: None,
@@ -4767,18 +4791,18 @@ mod tests {
             daemon_env_signature: None,
         };
         assert!(
-            !failed_row_identity_present(&record),
+            !persisted_identity_present(&record),
             "failed + all-NULL identity is SafeToRetry (legacy rows included)"
         );
         record.boot_id = Some("b".into());
         assert!(
-            failed_row_identity_present(&record),
+            persisted_identity_present(&record),
             "ANY identity column present marks the row unreconciled"
         );
         record.state = SharedDaemonState::Running;
         assert!(
-            !failed_row_identity_present(&record),
-            "the rule applies to failed rows only"
+            persisted_identity_present(&record),
+            "non-adoptable running records also need reconciliation"
         );
     }
 

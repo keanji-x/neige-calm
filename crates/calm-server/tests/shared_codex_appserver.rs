@@ -29,6 +29,10 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+#[cfg(target_os = "linux")]
+#[path = "shared_codex_appserver/stale_listener.rs"]
+mod stale_listener;
+
 /// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -4137,7 +4141,7 @@ async fn settings_nudge_returns_promptly_during_stalled_spawn() {
         .expect("delayed initialize within the default deadline must succeed");
 }
 
-/// While `/proc/<pid>` exists the pid-only shape is never signaled: ownership is unprovable and a bare-pid kill could hit an unrelated process.
+/// While the native PID is present the pid-only shape is never signaled: ownership is unprovable and a bare-pid kill could hit an unrelated process.
 #[tokio::test]
 async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
     let root = tempfile::tempdir().unwrap();
@@ -4369,23 +4373,23 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
     daemon
         .ensure_running()
         .await
-        .expect("verify-false after exit must reopen the spawn path");
+        .expect("proven absence after exit must reopen the spawn path");
     let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(survivor_pid));
-}
-
-/// `/proc/<pid>/stat` state field (first token after the `(comm)` field).
-fn proc_stat_state(pid: i32) -> Option<char> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit(") ").next()?.chars().next()
 }
 
 /// Wait for `pid` to become a zombie (its tokio `Child` is deliberately
 /// held un-`wait()`ed by the caller, so the kernel keeps the entry).
 async fn wait_until_zombie(pid: i32) -> bool {
     for _ in 0..250 {
-        if proc_stat_state(pid) == Some('Z') {
+        if matches!(
+            plugin::proc_identity::observe_process(pid),
+            plugin::proc_identity::ProcessObservation::Present {
+                is_zombie: true,
+                ..
+            }
+        ) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -4523,7 +4527,7 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     let err = daemon
         .ensure_running()
         .await
-        .expect_err("a zombie pid is a present /proc entry: the shape must stay unreconciled");
+        .expect_err("a zombie pid is still present: the shape must stay unreconciled");
     assert!(
         err.to_string().contains("unreconciled"),
         "fence error must say unreconciled; got: {err}"
@@ -4544,7 +4548,7 @@ async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
     daemon
         .ensure_running()
         .await
-        .expect("a truly-gone /proc entry must reopen the spawn path");
+        .expect("a proven-absent native PID must reopen the spawn path");
     let record = repo.shared_daemon_runtime_get("default").await.unwrap();
     assert_eq!(record.state, SharedDaemonState::Running);
     assert_ne!(record.pid, Some(zombie_pid));

@@ -2,6 +2,15 @@ use super::execution_support as support;
 use calm_session::control::{IoMode, ProcSignal, execution::*};
 use support::*;
 
+// Linux proves descendant drain; macOS proves only the pinned original group empty.
+fn scope_completion_proven(state: &ExecutionState) -> bool {
+    #[cfg(target_os = "linux")]
+    let proven = matches!(state, ExecutionState::Drained { .. });
+    #[cfg(target_os = "macos")]
+    let proven = matches!(state, ExecutionState::OriginalGroupEmpty { .. });
+    proven
+}
+
 #[tokio::test]
 async fn execution_pipe_and_pty_use_registered_cwd_and_explicit_environment() {
     let harness = Harness::start().await;
@@ -121,7 +130,7 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
     );
     let old_receipt = launch(&mut client, &old).await;
     wait_for(&mut client, &old, &old_receipt, |state, output| {
-        matches!(state, ExecutionState::Drained { .. }) && output.contains("old")
+        scope_completion_proven(state) && output.contains("old")
     })
     .await;
     let mut next = prepare(
@@ -245,7 +254,7 @@ async fn execution_exact_ticket_retry_and_old_controls_cannot_touch_alias_replac
         ExecutionReply::StdinProgress { accepted_bytes: 6 }
     ));
     wait_for(&mut client, &next, &next_receipt, |state, output| {
-        matches!(state, ExecutionState::Drained { .. }) && output.contains("new:hello")
+        scope_completion_proven(state) && output.contains("new:hello")
     })
     .await;
 }
@@ -550,13 +559,17 @@ async fn execution_revocation_blocks_input_but_lifecycle_drains_exact_scope() {
     let authority = authority();
     let (scope, registration) = external(root, &authority);
 
+    #[cfg(target_os = "linux")]
+    let io_mode = IoMode::Pty { cols: 80, rows: 24 };
+    #[cfg(target_os = "macos")]
+    let io_mode = IoMode::Pipe;
     let request = prepare(
         &client,
         scope,
         &registration,
         authority,
         "closing-execution",
-        IoMode::Pty { cols: 80, rows: 24 },
+        io_mode,
         "printf ready; read value",
     );
     let receipt = launch(&mut client, &request).await;
@@ -591,7 +604,7 @@ async fn execution_revocation_blocks_input_but_lifecycle_drains_exact_scope() {
         ExecutionReply::ActionComplete
     ));
     wait_for(&mut client, &request, &receipt, |state, _| {
-        matches!(state, ExecutionState::Drained { .. })
+        scope_completion_proven(state)
     })
     .await;
 }
