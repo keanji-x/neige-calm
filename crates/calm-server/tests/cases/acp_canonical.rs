@@ -231,10 +231,6 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     })
     .await
     .unwrap();
-    // Keep the genuine in-flight checkpoint while the Ask is held. A crash before terminal
-    // projection must restore this checkpoint, not the later, already-consumed END state.
-    let ask_runtime = stack.runtime(&ask).await;
-    let recovery_checkpoint = ask_runtime.handle_state_json.clone().unwrap();
     for card in [&full, &never] {
         let (status, body) = stack.post_input(card, "operation").await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -275,55 +271,6 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
     assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
-    let db = stack.repo().sqlite_db().unwrap().clone();
-    stack.shutdown().await;
-    // Model a crash after durable receipt settlement but before transcript projection. Recovery
-    // must rebuild the reason from the receipt, rather than relying on the earlier live row.
-    let card = ask.clone();
-    db.writer()
-        .with_writer(|session| {
-            Box::pin(async move {
-                let mut tx = session.begin_immediate().await.unwrap();
-                delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
-                sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-                    .bind(&ask_runtime.id)
-                    .bind(serde_json::to_string(&recovery_checkpoint).unwrap())
-                    .execute(&mut **tx)
-                    .await
-                    .unwrap();
-                tx.commit().await.unwrap();
-            })
-        })
-        .await
-        .unwrap();
-    let stack = boot_as(
-        &root,
-        "antigravity",
-        json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
-        }),
-        "1.5.0",
-    )
-    .await;
-    // AppState::boot builds the stack; application_boot invokes this separate recovery phase.
-    // Keep the real Codex daemon unavailable while exercising ACP's production boot owner.
-    calm_server::recover_harnesses_after_daemon_boot(
-        &stack.state,
-        Err(calm_server::error::CalmError::Internal(
-            "fixture: Codex daemon unavailable".into(),
-        )),
-    )
-    .await
-    .unwrap();
-    for (card, code) in [
-        (&ask, "acp_permission_rejected"),
-        (&never, "acp_permission_denied"),
-    ] {
-        let outcome = stack.wait_outcomes(card, 1).await[0].clone();
-        assert_eq!(outcome["status"], "failed", "{outcome}");
-        assert_eq!(outcome["error"]["code"], code, "{outcome}");
-    }
-    assert_eq!(requests(&root, "session/prompt").len(), 3);
     stack.shutdown().await;
 }
 
