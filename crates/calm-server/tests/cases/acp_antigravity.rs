@@ -107,14 +107,15 @@ async fn standalone_antigravity_refuses_manual_compaction_before_dispatch() {
         .await;
     turn(&stack, &card, "remember context", 1).await;
     let before = requests(&root, "session/prompt");
-    let (status, _) = stack
+    let (status, body) = stack
         .send(
             "POST",
             &format!("/api/cards/{card}/planner/compact"),
             Some(json!({})),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "conflict");
     assert_eq!(requests(&root, "session/prompt"), before);
     stack.shutdown().await;
 }
