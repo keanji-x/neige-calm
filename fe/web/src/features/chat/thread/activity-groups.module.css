@@ -57,4 +57,30 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Astryx rows start with the semantic status/icon slot; exclude result
+     content so its own Code layout is untouched. Match text scale in the
+     fixed glyph slots, then let names and trailing text yield before arrows. */
+  .group div:not([data-nc-detail] *):has(> span:first-child svg) > span:first-child {
+    inline-size: 1rem;
+    block-size: 1rem;
+  }
+
+  .group div:not([data-nc-detail] *):has(> span:first-child svg) > span:nth-child(2) {
+    min-inline-size: 0;
+  }
+
+  .group div:not([data-nc-detail] *):has(> span:first-child svg) > span:last-child:has(svg) {
+    inline-size: 0.875rem;
+    block-size: 0.875rem;
+  }
+
+  /* With details the penultimate slot is trailing text; without details it
+     is the last. The icon/count slots retain their intrinsic width. */
+  .group div:not([data-nc-detail] *):has(> span:first-child svg) > span:is(:last-child, :nth-last-child(2)):not(:first-child, :nth-child(2)):not(:has(svg)) {
+    min-inline-size: 0;
+    flex-shrink: 10;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

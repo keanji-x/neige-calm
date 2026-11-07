@@ -734,9 +734,8 @@ function useConversationPane(
                                reads it again. */
               /* With `headerActions` unset Astryx does not render that row at all. */
               footerActions={(
-                /* A phone's options panel is narrower than the controls with the Role beside them, so the row wraps there
-                   rather than squeezing the model picker to nothing. */
-                <HStack gap={1} align="center" wrap={compactComposer ? 'wrap' : undefined} className={footerStyles.group}>
+                /* The same controls can live in a desktop sidebar or the phone's options panel. */
+                <HStack gap={1} align="center" wrap="wrap" className={footerStyles.group}>
                   <PlannerAttachButton
                     attachments={composerAttachments}
                     support={{

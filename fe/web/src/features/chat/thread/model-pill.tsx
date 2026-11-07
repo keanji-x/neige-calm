@@ -173,7 +173,7 @@ export function ModelPill<Provider extends string = AgentProvider>({
   const switchNote = shown.some((group) => group.selectionProblem === undefined && legacyPresentation(group.provider)?.switchNote);
 
   return (
-    <HStack gap={1} align="center" className={styles.group}>
+    <HStack gap={1} align="center" wrap="wrap" className={styles.group}>
       <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
         <DropdownMenu
           placement={placement}

@@ -1,0 +1,29 @@
+@layer features {
+  .standard,
+  .vendor,
+  .input {
+    min-inline-size: 0;
+  }
+
+  /* Anchor on our input slot, not generated vendor classes. Astryx's last
+     body row is the footer: settings and submission keep their own groups
+     and wrap according to the column's space, including desktop sidebars. */
+  .vendor > div:has(> div > .input) > div:last-child {
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+
+  .vendor > div:has(> div > .input) > div:last-child > div:first-child {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    max-inline-size: 100%;
+  }
+
+  .vendor > div:has(> div > .input) > div:last-child > div:last-child {
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-inline-size: 100%;
+    margin-inline-start: auto;
+  }
+}
