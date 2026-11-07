@@ -61,9 +61,10 @@ pub(crate) struct AcpAgentProfile {
     /// key of its own ([`Self::mcp_server_key`]), so no other server can take its name. `None`
     /// answers it as the mode answers any request, and keeps the shared key.
     pub(crate) mcp_tool_request: Option<McpToolRequest>,
-    /// The agent ends its turn `cancelled` when a request it asked is declined, so the turn ends
-    /// with the decline as its reason rather than as interrupted.
+    /// The agent may end on a declined permission. Surface that reason on its cancellation
+    /// or a correlated silent tool failure, instead of hiding it as an ordinary end.
     pub(crate) decline_ends_turn: bool,
+    pub(crate) full_requests: provider::acp::approvals::FullPermissionRequests,
     /// Environment the registration may not set: credentials the agent would use in place of the
     /// sign-in it authenticates with.
     pub(crate) refused_env: &'static [&'static str],
@@ -198,6 +199,7 @@ impl AcpAgentProfile {
                 .mcp_tool_request
                 .and_then(|form| OwnTools::new(form, server, tools)),
             decline_ends_turn: self.decline_ends_turn,
+            full_requests: self.full_requests,
         }
     }
 

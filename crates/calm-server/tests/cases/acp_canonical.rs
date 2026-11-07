@@ -143,3 +143,235 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     );
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
+    let root = Root::new("unused");
+    let stack = boot_as_with_creation_mode(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+        }),
+        "1.5.0",
+        Some("full"),
+    )
+    .await;
+    let (_, card) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    std::fs::write(root.path().join("scenario"), "ask").unwrap();
+    let (status, body) = stack.post_input(&card, "use a tool").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        stack.wait_outcomes(&card, 1).await[0]["status"],
+        "completed"
+    );
+    let log = std::fs::read_to_string(root.path().join("permission-log.jsonl")).unwrap();
+    let reply: Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        reply["outcome"],
+        json!({"outcome":"selected", "optionId":"once"})
+    );
+    stack.shutdown().await;
+}
+
+/// One resident agent serves cards with different modes. A Full response must not approve a
+/// concurrent Ask card, nor turn a Never denial into a silent successful completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain_early_stop() {
+    use calm_server::event::Event;
+    let root = Root::new("unused");
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+        }),
+        "1.5.0",
+    )
+    .await;
+    let (ask_track, ask) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    let (_, full) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    let (_, never) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    for (card, mode) in [(&ask, "ask"), (&full, "full"), (&never, "never")] {
+        let (status, body) = stack
+            .send(
+                "PUT",
+                &format!("/api/cards/{card}/planner/permission-mode"),
+                Some(json!({"permission_mode":mode})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    std::fs::write(root.path().join("scenario"), "antigravity-permissions").unwrap();
+    let (status, body) = stack.post_input(&ask, "ask before operation").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ask_id = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let events = stack
+                .repo()
+                .events_for_track(&ask_track, &["ask.requested"], None)
+                .await
+                .unwrap();
+            if let Some(event) = events
+                .into_iter()
+                .find(|event| matches!(event.event, Event::AskRequested { .. }))
+            {
+                break event.id;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for card in [&full, &never] {
+        let (status, body) = stack.post_input(card, "operation").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let outcome = stack.wait_outcomes(&full, 1).await[0].clone();
+    assert_eq!(outcome["status"], "completed", "{outcome}");
+    let outcome = stack.wait_outcomes(&never, 1).await[0].clone();
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert!(
+        outcome["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("`never`"),
+        "{outcome}"
+    );
+    // The Ask is still pending even though Full already completed on the same process.
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/tracks/{ask_track}/asks/{ask_id}/answer"),
+            Some(json!({"answers":[{"option":1}]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let outcome = stack.wait_outcomes(&ask, 1).await[0].clone();
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert_eq!(
+        outcome["error"]["code"], "acp_permission_rejected",
+        "{outcome}"
+    );
+    for (card, code) in [
+        (&ask, "acp_permission_rejected"),
+        (&never, "acp_permission_denied"),
+    ] {
+        wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
+        assert_eq!(stack.outcomes(card).await[0]["error"]["code"], code);
+    }
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 3);
+    assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
+    let db = stack.repo().sqlite_db().unwrap().clone();
+    stack.shutdown().await;
+    // Model a crash after durable receipt settlement but before transcript projection. Recovery
+    // must rebuild the reason from the receipt, rather than relying on the earlier live row.
+    for card in [&ask, &never] {
+        db.writer()
+            .execute(
+                sqlx::query(
+                    "DELETE FROM harness_items WHERE card_id=?1 AND method='turn/completed'",
+                )
+                .bind(card),
+            )
+            .await
+            .unwrap();
+    }
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+        }),
+        "1.5.0",
+    )
+    .await;
+    for (card, code) in [
+        (&ask, "acp_permission_rejected"),
+        (&never, "acp_permission_denied"),
+    ] {
+        let outcome = stack.wait_outcomes(card, 1).await[0].clone();
+        assert_eq!(outcome["status"], "failed", "{outcome}");
+        assert_eq!(outcome["error"]["code"], code, "{outcome}");
+    }
+    assert_eq!(requests(&root, "session/prompt").len(), 3);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_ask_approval_continues_and_cancel_stays_interrupted() {
+    let root = Root::new("unused");
+    let stack = boot_as_with_creation_mode(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+        }),
+        "1.5.0",
+        Some("ask"),
+    )
+    .await;
+    let (track, card) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    std::fs::write(root.path().join("scenario"), "antigravity-permissions").unwrap();
+    for n in 1..=2 {
+        let (status, body) = stack
+            .post_input(&card, "operation requiring approval")
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let ask_id = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let events = stack
+                    .repo()
+                    .events_for_track(&track, &["ask.requested"], None)
+                    .await
+                    .unwrap();
+                if events.len() >= n {
+                    break events[n - 1].id;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if n == 1 {
+            let (status, body) = stack
+                .send(
+                    "POST",
+                    &format!("/api/tracks/{track}/asks/{ask_id}/answer"),
+                    Some(json!({"answers":[{"option":0}]})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+            assert_eq!(
+                stack.wait_outcomes(&card, n).await[n - 1]["status"],
+                "completed"
+            );
+        } else {
+            let (status, body) = stack
+                .send(
+                    "POST",
+                    &format!("/api/cards/{card}/planner/interrupt"),
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                stack.wait_outcomes(&card, n).await[n - 1]["status"],
+                "interrupted"
+            );
+        }
+        wait_phase(&stack, &stack.runtime(&card).await.id, "turn_completed").await;
+    }
+    stack.shutdown().await;
+}

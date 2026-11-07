@@ -75,6 +75,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
         env: &[ASK_PERMISSION],
         agent_options: &[],
     },
+    full_requests: provider::acp::approvals::FullPermissionRequests::Native,
     full: ModeLaunch {
         env: &[FULL_PERMISSION],
         agent_options: &[],

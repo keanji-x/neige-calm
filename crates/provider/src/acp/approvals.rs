@@ -2,8 +2,10 @@
 //! `session/request_permission`, and how each request becomes one question of a Planner harness
 //! and each chosen option the ACP answer.
 //!
-//! The turn's permission mode is the harness's, read when it issued the turn. Under `never` and
-//! `full` (#2441) every request is answered `cancelled` where it is read. Under `ask` each request
+//! The turn's permission mode is the harness's, read when it issued the turn. Under `never` or
+//! `full` with native permission configuration, requests are answered `cancelled`. A profile may
+//! instead enforce `full` with per-turn `allow_once` answers, keeping shared processes isolated.
+//! Under `ask` each request
 //! becomes an `Open` whose [`AcpResponder`] answers it with the chosen option's id. The caller runs
 //! one agent process per turn, so the process is the connection: the [`HeldPermissions`] the turn's
 //! reader owns pushes `ConnectionLost` when it is dropped, after the reader's last frame.
@@ -28,7 +30,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use calm_types::event::{ASK_MAX_TEXT_CHARS, AskQuestion, clip_ask_title};
 use calm_types::harness::PlannerPermissionMode;
@@ -46,8 +47,9 @@ use crate::held_requests::{
 pub struct Approvals {
     answers: Answers,
     agent: AgentAsks,
-    /// Set by a cancel or the end of the turn's read; the turn's one reader sets and reads it.
-    fenced: AtomicBool,
+    /// Serializes automatic answers with both the driver and canonical interrupt handle.
+    /// Hold through the wire write so cancellation cannot overtake an allow_once answer.
+    fenced: Mutex<bool>,
     /// Why the last request this turn declined was declined, until the fence.
     declined: Declined,
 }
@@ -58,6 +60,7 @@ enum Answers {
     Refused(Client, PlannerPermissionMode),
     /// `ask`: a permission request is put to the person through the harness.
     Held(HeldPermissions),
+    Allowed(Client),
 }
 
 /// What the client knows of how its agent asks, as the agent's profile declares it.
@@ -65,9 +68,21 @@ enum Answers {
 pub struct AgentAsks {
     /// The client's own MCP server's tools, approved without asking until the fence.
     pub own_tools: Option<OwnTools>,
-    /// The agent ends its turn `cancelled` when a request it asked is declined, so such an end
-    /// is the decline's, not an interruption.
+    /// Enforce Full through this turn's allow_once answers, rather than process-wide flags.
+    /// Shared agents must never inherit another card's permission mode.
+    pub full_requests: FullPermissionRequests,
+    /// The agent may end after a decline; retain the cause for outcome translation.
     pub decline_ends_turn: bool,
+}
+
+/// Where the agent profile enforces Full permissions.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum FullPermissionRequests {
+    /// Native launch configuration owns Full; unexpected requests remain refused.
+    #[default]
+    Native,
+    /// The client selects allow_once for each valid request in this Full turn.
+    AllowOnce,
 }
 
 /// How an agent asks before calling one MCP tool, as its profile declares it: a request of ACP
@@ -125,20 +140,31 @@ impl OwnTools {
         if input != Some(name) {
             return None;
         }
-        request
-            .options
-            .iter()
-            .find(|option| option.kind == "allow_once")
-            .map(|option| option.option_id.as_str())
+        request.allow_once()
     }
 }
 
 /// Why the agent ended the turn, after the last request of the turn was declined.
-type Declined = Arc<std::sync::Mutex<Option<String>>>;
+type Declined = Arc<std::sync::Mutex<Option<DeclinedPermission>>>;
 
-fn decline(declined: &Declined, reason: String) {
-    *declined.lock().expect("ACP declined request") =
-        Some(format!("The agent ended the turn because {reason}"));
+#[derive(Clone, Debug)]
+pub struct DeclinedPermission {
+    pub tool_call_id: String,
+    pub reason: String,
+    pub diagnostic: super::diagnostics::AcpDiagnostic,
+}
+
+fn decline(
+    declined: &Declined,
+    tool_call_id: &str,
+    diagnostic: super::diagnostics::AcpDiagnostic,
+    reason: String,
+) {
+    *declined.lock().expect("ACP declined request") = Some(DeclinedPermission {
+        tool_call_id: tool_call_id.to_owned(),
+        diagnostic,
+        reason: format!("The agent ended the turn because {reason}"),
+    });
 }
 
 /// What a person is told a request was about: its title, or its id without one.
@@ -182,6 +208,11 @@ impl Approvals {
     ) -> Self {
         let declined = Declined::default();
         let answers = match mode {
+            PlannerPermissionMode::Full
+                if matches!(agent.full_requests, FullPermissionRequests::AllowOnce) =>
+            {
+                Answers::Allowed(client.clone())
+            }
             PlannerPermissionMode::Never | PlannerPermissionMode::Full => {
                 Answers::Refused(client.clone(), mode)
             }
@@ -196,27 +227,27 @@ impl Approvals {
         Self {
             answers,
             agent,
-            fenced: AtomicBool::new(false),
+            fenced: Mutex::new(false),
             declined,
         }
     }
 
     fn client(&self) -> &Client {
         match &self.answers {
-            Answers::Refused(client, _) => client,
+            Answers::Refused(client, _) | Answers::Allowed(client) => client,
             Answers::Held(held) => &held.client,
         }
     }
 
     /// A request the agent sent during the turn.
     pub async fn request(&self, id: Value, method: &str, params: Value) -> Result<(), Error> {
-        let fenced = self.fenced.load(Ordering::SeqCst);
+        let fenced = self.fenced.lock().await;
         let request = (method == permission::METHOD)
             .then(|| PermissionRequest::decode(params.clone()).ok())
             .flatten();
         if let Some(request) = &request
             && let Some(own_tools) = &self.agent.own_tools
-            && !fenced
+            && !*fenced
             && let Some(option) = own_tools.allow_once(request)
         {
             return self
@@ -225,12 +256,27 @@ impl Approvals {
                 .await;
         }
         match &self.answers {
+            Answers::Allowed(client) => {
+                if !*fenced
+                    && let Some(request) = &request
+                    && let Some(option) = request.allow_once()
+                {
+                    return client.respond(id, permission::selected(option)).await;
+                }
+                refuse(client, id, method).await
+            }
             Answers::Held(held) if method == permission::METHOD => held.open(id, params).await,
             Answers::Held(held) => refuse(&held.client, id, method).await,
             Answers::Refused(client, mode) => {
-                if let Some(request) = request.as_ref().filter(|_| !fenced) {
+                if let Some(request) = request.as_ref().filter(|_| !*fenced) {
                     decline(
                         &self.declined,
+                        &request.tool_call.tool_call_id,
+                        if *mode == PlannerPermissionMode::Never {
+                            super::diagnostics::AcpDiagnostic::Never
+                        } else {
+                            super::diagnostics::AcpDiagnostic::NativeFull
+                        },
                         format!(
                             "Neige declined `{}` under the `{}` permission mode.{}",
                             subject(request),
@@ -248,6 +294,11 @@ impl Approvals {
     /// when the agent's profile says it ends a turn on a decline. `None` otherwise, and for a turn
     /// that declined nothing.
     pub fn declined(&self) -> Option<String> {
+        self.declined_permission().map(|decline| decline.reason)
+    }
+
+    /// Correlates a refusal with the tool result instead of attributing later failures to it.
+    pub fn declined_permission(&self) -> Option<DeclinedPermission> {
         if !self.agent.decline_ends_turn {
             return None;
         }
@@ -260,11 +311,14 @@ impl Approvals {
         native: &str,
         gate: &crate::send_boundary::PreSendGate<'_>,
     ) -> Result<(), Error> {
-        self.fenced.store(true, Ordering::SeqCst);
+        let mut fenced = self.fenced.lock().await;
+        *fenced = true;
         match &self.answers {
-            Answers::Refused(client, _) => super::protocol::cancel(client, native, gate)
-                .await
-                .map_err(super::WriteFailure::into_error),
+            Answers::Refused(client, _) | Answers::Allowed(client) => {
+                super::protocol::cancel(client, native, gate)
+                    .await
+                    .map_err(super::WriteFailure::into_error)
+            }
             Answers::Held(held) => held.cancel(native, gate).await,
         }
     }
@@ -273,7 +327,8 @@ impl Approvals {
     /// `cancelled`, and refuse every later answer. Call it before anything else of the turn's
     /// teardown; nothing the person chooses reaches the agent after it.
     pub async fn close(&self) {
-        self.fenced.store(true, Ordering::SeqCst);
+        let mut fenced = self.fenced.lock().await;
+        *fenced = true;
         if let Answers::Held(held) = &self.answers {
             held.close().await;
         }
@@ -342,6 +397,7 @@ impl HeldPermissions {
                     .map(|option| (option.option_id.clone(), option.kind.clone()))
                     .collect(),
                 subject: subject(&request),
+                tool_call_id: request.tool_call.tool_call_id.clone(),
                 declined: Arc::clone(&self.declined),
                 client: self.client.clone(),
                 requests: Arc::clone(&self.requests),
@@ -487,6 +543,7 @@ struct Pending {
     options: Vec<(String, String)>,
     /// What the request was about, for the record of a reject the person chose.
     subject: String,
+    tool_call_id: String,
     declined: Declined,
     client: Client,
     requests: Arc<Mutex<Requests>>,
@@ -502,6 +559,7 @@ impl Pending {
             id,
             options,
             subject,
+            tool_call_id,
             declined,
             client,
             requests,
@@ -519,7 +577,12 @@ impl Pending {
             let result = match chosen {
                 Some((option_id, kind)) => {
                     if kind.starts_with("reject") {
-                        decline(&declined, format!("the person declined `{subject}`."));
+                        decline(
+                            &declined,
+                            &tool_call_id,
+                            super::diagnostics::AcpDiagnostic::Rejected,
+                            format!("the person declined `{subject}`."),
+                        );
                     }
                     permission::selected(option_id)
                 }
