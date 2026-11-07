@@ -79,6 +79,7 @@ use calm_session::control::execution::{
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LaunchEnvironment(Vec<(String, String)>);
 impl LaunchEnvironment {
+    #[cfg(target_os = "linux")]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

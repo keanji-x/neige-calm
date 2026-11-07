@@ -8,7 +8,9 @@ use std::{
 use calm_session::control::execution::ObjectRegistrationReceipt;
 use calm_session::control::execution::{ExecutionReceipt, ExecutionState, PrepareExecution};
 use serde::{Deserialize, Serialize};
-use workspace::execution::{ExecutionId, NativeProcessIdentity, ScopeMechanismIdentity};
+use workspace::execution::{
+    ExecutionId, InterruptedScope, NativeProcessIdentity, ScopeMechanismIdentity,
+};
 
 // Pre-E1a opt-in journals are intentionally refused; required facts are never backfilled.
 pub(super) const JOURNAL_VERSION: u32 = 5;
@@ -83,8 +85,25 @@ impl Journal {
                     && proof.host_boot_id == self.host_boot_id
                     && proof.helper_process == receipt.process
                     && proof.mechanism == receipt.scope_mechanism
-                    && matches!(receipt.process, NativeProcessIdentity::LinuxHelper(ref p) if p.pid > 0 && p.start_time_ticks > 0)
-                    && matches!(receipt.scope_mechanism, ScopeMechanismIdentity::LinuxHelper(ref h) if h.protocol_version == 1),
+                    && match (&receipt.process, &receipt.scope_mechanism, &proof.scope) {
+                        (
+                            NativeProcessIdentity::LinuxHelper(p),
+                            ScopeMechanismIdentity::LinuxHelper(h),
+                            InterruptedScope::LinuxOriginalGroupAndSessionEmpty,
+                        ) => p.pid > 0 && p.start_time_ticks > 0 && h.protocol_version == 1,
+                        (
+                            NativeProcessIdentity::MacOwnedGroup(p),
+                            ScopeMechanismIdentity::MacOwnedGroup {
+                                protocol_version: 1,
+                            },
+                            InterruptedScope::MacOriginalGroupEmpty,
+                        ) =>
+                            p.pid > 0
+                                && p.pid <= i32::MAX as u32
+                                && p.birth_seconds > 0
+                                && p.birth_microseconds < 1_000_000,
+                        _ => false,
+                    },
                 "interruption proof does not bind original receipt and host boot"
             );
         }

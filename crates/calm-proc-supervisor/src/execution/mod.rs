@@ -16,6 +16,9 @@ mod monitor_tests;
 mod native_child;
 #[cfg(target_os = "linux")]
 mod native_recovery;
+#[cfg(target_os = "macos")]
+#[path = "native_recovery_macos.rs"]
+mod native_recovery;
 mod output;
 mod preparation;
 mod private;

@@ -2,8 +2,6 @@ use super::*;
 
 impl Executor {
     pub(super) async fn reconcile_interrupted(&self, id: &ExecutionId) -> anyhow::Result<()> {
-        // macOS restart has no qualified native absence observation in this contract.
-        #[cfg(target_os = "linux")]
         {
             let gate = self.id_gate(id)?;
             let _id = gate.lock().await;
@@ -40,7 +38,10 @@ impl Executor {
                 host_boot_id: record.host_boot_id.clone(),
                 helper_process: receipt.process.clone(),
                 mechanism: receipt.scope_mechanism.clone(),
+                #[cfg(target_os = "linux")]
                 scope: InterruptedScope::LinuxOriginalGroupAndSessionEmpty,
+                #[cfg(target_os = "macos")]
+                scope: InterruptedScope::MacOriginalGroupEmpty,
             };
             record.phase = Phase::InterruptedQuiescent {
                 receipt: receipt.clone(),
@@ -48,11 +49,10 @@ impl Executor {
                 proof,
             };
             record.version = journal::RECOVERY_JOURNAL_VERSION;
+            record.validate()?;
             // No positive state is published before this durability barrier succeeds.
             self.persist(record)?;
         }
-        #[cfg(target_os = "macos")]
-        let _ = id;
         Ok(())
     }
 }
@@ -262,3 +262,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "recovery_macos_tests.rs"]
+mod macos_tests;
