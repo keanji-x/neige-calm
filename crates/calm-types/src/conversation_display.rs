@@ -415,6 +415,7 @@ mod imported_tests {
 }
 
 /// A current execution's persisted terminal fact, independent of display pagination.
+/// The nullable diagnostic code is closed kernel vocabulary, never native error text or input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ConversationTerminalOutcome {
@@ -427,6 +428,8 @@ pub struct ConversationTerminalOutcome {
     pub created_at_ms: i64,
     #[schema(required = true, nullable = true)]
     pub duration_ms: Option<f64>,
+    #[schema(required = true, nullable = true)]
+    pub diagnostic_code: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]

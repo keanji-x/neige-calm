@@ -437,7 +437,7 @@ it('shows the current canonical END outside pagination and removes it for the ne
   await screen.findByText('Please answer');
   expect(screen.queryByText('Interrupted',{exact:true})).toBeNull();
   run.terminalOutcome={worker_session_id:'original-retained',card_id:'daily-planner',track_id:'daily',thread_id:'native-thread',
-    turn_id:'native-turn',status:'interrupted',created_at_ms:2000,duration_ms:19};
+    turn_id:'native-turn',status:'interrupted',created_at_ms:2000,duration_ms:19,diagnostic_code:null};
   await f.client.invalidateQueries({queryKey:queryKeys.plannerRun('daily-planner')});
   await screen.findByText('Interrupted',{exact:true});
   expect(screen.getAllByText('Please answer')).toHaveLength(1);

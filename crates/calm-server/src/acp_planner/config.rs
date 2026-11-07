@@ -172,6 +172,7 @@ impl AcpPlannerConfig {
                     agent.provider.wire_name()
                 )));
             }
+            profile.validate_options(&agent.args)?;
         }
         Ok(())
     }
@@ -516,6 +517,22 @@ mod tests {
             let mut agent = opencode();
             agent["default_permission_mode"] = invalid.clone();
             assert!(read(agent).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn antigravity_registration_cannot_override_managed_native_policy() {
+        for argument in [
+            "--sandbox=false",
+            "--gemini_dir=/elsewhere",
+            "--app-data-dir=other",
+            "--cli_dir_name=other",
+            "--dangerously-skip-permissions",
+        ] {
+            let mut agent = opencode();
+            agent["provider"] = json!("antigravity");
+            agent["args"] = json!([argument]);
+            assert!(matches!(read(agent), Err(CalmError::BadRequest(_))));
         }
     }
 

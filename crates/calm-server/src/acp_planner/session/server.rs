@@ -267,28 +267,6 @@ async fn settle(
     }
 }
 
-pub(super) async fn ensure_native_owner<'e>(
-    executor: impl sqlx::SqliteExecutor<'e>,
-    provider: &AgentProvider,
-    worker: &str,
-    native: &str,
-) -> Result<()> {
-    let collision: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider=?1 AND agent_session_id=?2 AND id<>?3)",
-    )
-    .bind(provider.wire_name())
-    .bind(native)
-    .bind(worker)
-    .fetch_one(executor)
-    .await?;
-    if collision {
-        return Err(CalmError::Conflict(
-            "Shared ACP native session belongs to another worker".into(),
-        ));
-    }
-    Ok(())
-}
-
 async fn cleanup_unknown(
     params: &SessionParams,
     receipt: &AcpSubmission,

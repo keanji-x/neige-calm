@@ -212,6 +212,15 @@ impl AcpPlannerSession {
                     &mut usage,
                 )
                 .await?;
+            if wire == CompactionWire::CommandPrompt {
+                super::super::process::wait_command_catalog(
+                    &mut process.connection,
+                    &process.commands,
+                    &native,
+                    |session| session == native,
+                )
+                .await?;
+            }
             if !process.commands.contains(&native, "compact") {
                 return Err(refused("ACP did not declare the compact command"));
             }
@@ -500,7 +509,10 @@ async fn drive_compact(
             _ = cancelled.changed() => return Err(before("ACP compact interrupted")),
             frame = process.connection.incoming.recv(), if incoming_open => match frame {
                 Some(Incoming::Notification { method, params }) => correlation.observe(wire, &method, &params, &native).map_err(CompactFailure::Before)?,
-                Some(Incoming::Request { id, method, .. }) => provider::acp::approvals::refuse(&process.connection.client, id, &method).await.map_err(|e| CompactFailure::Crossed(wire_error(e)))?,
+                Some(Incoming::Request { id, method, .. }) => {
+                    provider::acp::approvals::refuse(&process.connection.client, id, &method).await.map_err(|e| CompactFailure::Crossed(wire_error(e)))?;
+                    return Err(CompactFailure::Crossed(CalmError::Conflict("ACP compact requested a client operation".into())));
+                },
                 None => incoming_open = false,
             }
         }}

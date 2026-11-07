@@ -4,6 +4,7 @@ import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 
 import { ChatThread, ChatComposer } from './public.tsx';
+import { currentConversationOutcome } from '../../../../../core/domain/conversation-display.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { Conversation, ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
@@ -269,4 +270,17 @@ it.each([390, 1280])('keeps an unconfirmed Claude identity visible after its act
   expect(screen.getByRole('textbox').getAttribute('contenteditable')).toBe('false');
   expect(document.documentElement.scrollWidth).toBe(width);
   await page.screenshot({ path: `../../../../../test-results/claude-identity-held-${width}.png` });
+});
+
+
+it.each([390, 1280])('explains current canonical permission denial without transcript rows (%ipx)', async width => {
+  await page.viewport(width, 844);
+  const fact = {worker_session_id:'worker',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'turn',
+    status:'failed' as const,created_at_ms:1,duration_ms:null,diagnostic_code:'acp_permission_denied'};
+  render(<ChatThread conversation={conversation()} turns={[]} cards={{}} stalled={false} canContinue
+    hasPendingMessages={false} currentResponseOutcome={currentConversationOutcome(fact)} />);
+  await userEvent.click(screen.getByRole('button', { name:'Failed',expanded:false }));
+  const hint = screen.getByText('This conversation’s permission policy blocked a tool request. Other permitted tools remain available.');
+  expect(hint.checkVisibility()).toBe(true);
+  expect(document.documentElement.scrollWidth).toBe(width);
 });

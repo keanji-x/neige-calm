@@ -62,6 +62,7 @@ agy_permissions = {}
 xai = os.environ.get('ACP_FIXTURE_VENDOR') == 'xai'
 always_approve = '--always-approve' in sys.argv
 model, effort = 'fixture/model-a', 'normal'
+mode = 'default'
 compaction = False
 
 def emit(value):
@@ -86,6 +87,10 @@ def config():
              {'value': 'fixture/model-a', 'name': 'Fixture A'}, {'value': 'fixture/model-b', 'name': 'Fixture B'}]}]},
         {'id': 'declared-effort-key', 'type': 'select', 'category': 'thought_level', 'currentValue': effort,
          'options': [{'value': 'normal', 'name': 'Normal'}, {'value': 'deep', 'name': 'Deep'}]}]}
+    scenario = (root / 'scenario').read_text().strip()
+    if os.environ.get('ACP_FIXTURE_AGENT_NAME') == 'Antigravity ACP Server' and scenario != 'agy-mode-missing':
+        result['configOptions'].append({'id':'declared-mode-key', 'type':'select', 'category':'mode',
+            'currentValue':mode, 'options':[{'value':v, 'name':v} for v in (['default'] if scenario == 'agy-mode-unsupported' else ['default','accept-edits','plan'])]})
     if xai:
         result['models'] = {'currentModelId': model, 'availableModels': [
             {'modelId': name, 'name': name, '_meta': {'totalContextTokens': 200000}}
@@ -164,9 +169,9 @@ def update(value, meta=None):
 
 def attach_updates():
     scenario = (root / 'scenario').read_text().strip()
-    if (xai and not scenario.startswith('grok-compact-')) or scenario == 'compact-undeclared':
+    if (xai and not scenario.startswith('grok-compact-')) or scenario == 'compact-undeclared' or scenario.startswith('agy-menu-'):
         return
-    update({'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': 'compact', 'description': 'Compact the session'}]})
+    update({'sessionUpdate': 'available_commands_update', 'availableCommands': ([] if scenario == 'shared-menu-empty' else [{'name': 'compact', 'description': 'Compact the session'}])})
     if not xai:
         update({'sessionUpdate': 'config_option_update', **config()})
 
@@ -308,7 +313,8 @@ for line in sys.stdin:
         if (root / 'scenario').read_text().strip() == 'catalog_error':
             emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32603, 'message': 'catalog setup failed'}})
             continue
-        current = 'native_' + uuid.uuid4().hex
+        current = ((root / 'next-native-id').read_text() if (root / 'next-native-id').exists()
+                   else 'native_' + uuid.uuid4().hex)
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         mcp_servers = params['mcpServers']
         if os.environ.get('ACP_FIXTURE_CAPTURE_SHARED_TOKEN') == '1':
@@ -376,6 +382,13 @@ for line in sys.stdin:
             model = params['value']
         elif params['configId'] == 'declared-effort-key':
             effort = params['value']
+        elif params['configId'] == 'declared-mode-key':
+            scenario = (root / 'scenario').read_text().strip()
+            if scenario == 'agy-mode-rpc-error':
+                emit({'jsonrpc':'2.0', 'id':request['id'], 'error':{'code':-32602,'message':'mode unavailable'}})
+                continue
+            if scenario != 'agy-mode-unconfirmed':
+                mode = params['value']
         else:
             raise AssertionError('use the declared config key')
         state = json.loads(native_path().read_text())
@@ -384,6 +397,18 @@ for line in sys.stdin:
         if not xai:
             update({'sessionUpdate': 'config_option_update', **config()})
         result(request, config())
+        if params['configId'] == 'declared-mode-key' and (root / 'scenario').read_text().strip().startswith('agy-menu-'):
+            (root / 'catalog-ready').touch()
+            while not (root / 'release-catalog').exists():
+                time.sleep(0.001)
+            scenario = (root / 'scenario').read_text().strip()
+            if scenario == 'agy-menu-late':
+                update({'sessionUpdate':'available_commands_update', 'availableCommands':[{'name':'compact','description':'Compact'}]})
+            elif scenario in ['agy-menu-empty', 'agy-menu-wrong']:
+                if scenario == 'agy-menu-wrong':
+                    emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'foreign-native',
+                        'update':{'sessionUpdate':'available_commands_update','availableCommands':[{'name':'compact','description':'Foreign'}]}}})
+                update({'sessionUpdate':'available_commands_update', 'availableCommands':[]})
     elif method == '_x.ai/compact_conversation':
         assert xai and not compaction, 'Grok does not negotiate standard compaction'
         assert params['session_id'] == current
@@ -452,9 +477,13 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         write_native(state)
         scenario = (root / 'scenario').read_text().strip()
+        if scenario.startswith('agy-mode-'):
+            assert mode == 'accept-edits', 'the client must configure execution mode before user input'
         if scenario == 'shared-menu-empty':
             update({'sessionUpdate':'available_commands_update', 'availableCommands':[]})
-        if texts == ['/compact'] and scenario.startswith('shared-compact-'):
+        if texts == ['/compact'] and scenario.startswith('agy-menu-'):
+            result(request, {'stopReason':'end_turn'})
+        elif texts == ['/compact'] and scenario.startswith('shared-compact-'):
             if scenario == 'shared-compact-wait':
                 import threading
                 def release_compact(saved=request, session=current):
@@ -569,8 +598,15 @@ for line in sys.stdin:
             result(request, {'unexpected': True})
         elif scenario == 'shared-hold':
             shared_pending[current] = request
-        elif scenario in ['hold', 'server-drain']:
+        elif scenario in ['hold', 'server-drain', 'hold-until-released']:
             pending = request
+            if scenario == 'hold-until-released':
+                import threading
+                def release_prompt(saved=request, session=current):
+                    while not (root / ('release-' + session)).exists():
+                        time.sleep(0.01)
+                    finish(saved, 'released')
+                threading.Thread(target=release_prompt, daemon=True).start()
             if (root / 'prompt-consumption.sock').exists():
                 update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'held prompt received'}})
             if scenario == 'server-drain':

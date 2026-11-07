@@ -178,3 +178,89 @@ async fn canonical_acp_resume_does_not_require_load_capability() {
     );
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_antigravity_native_collision_refuses_new_and_resume_before_prompt() {
+    for resume in [false, true] {
+        let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", true).await;
+        let native = if resume {
+            fx.dispatch().await.unwrap();
+            fx.wait_end().await;
+            fx.requests()
+                .into_iter()
+                .find(|r| r["method"] == "session/prompt")
+                .unwrap()["params"]["sessionId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        } else {
+            "native_collision_test".into()
+        };
+        let other_directory = tempfile::tempdir().unwrap();
+        let other = super::super::super::dispatch_fixture::seed_with_url(
+            other_directory.path(),
+            AgentProvider::Antigravity,
+            &fx.owner.db_url,
+        )
+        .await;
+        other
+            .repo
+            .db()
+            .writer()
+            .execute(
+                sqlx::query("UPDATE worker_sessions SET agent_session_id=?1 WHERE id=?2")
+                    .bind(&native)
+                    .bind(&other.worker),
+            )
+            .await
+            .unwrap();
+        if !resume {
+            std::fs::write(fx.dir.path().join("next-native-id"), &native).unwrap();
+        }
+        let submission = if resume {
+            fx.claim_successor().await
+        } else {
+            fx.submission.clone()
+        };
+        let report = fx.dispatch_submission(&submission).await;
+        assert!(matches!(
+            report.report.delivery(),
+            InputDelivery::NotDispatched(_)
+        ));
+        assert!(report.report.outcome().is_err());
+        assert_eq!(fx.prompts(), usize::from(resume));
+        assert!(
+            !fx.requests()
+                .iter()
+                .any(|r| r["method"] == "session/resume")
+        );
+        fx.session.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn canonical_antigravity_requires_confirmed_execution_mode_before_user_input() {
+    for scenario in [
+        "agy-mode-confirmed",
+        "agy-mode-missing",
+        "agy-mode-unsupported",
+        "agy-mode-unconfirmed",
+        "agy-mode-rpc-error",
+    ] {
+        let fx = Fixture::with_provider(AgentProvider::Antigravity, scenario, false).await;
+        let report = fx.dispatch().await.unwrap();
+        if scenario == "agy-mode-confirmed" {
+            fx.wait_idle().await;
+            assert_eq!(fx.receipt_bytes(&fx.submission).await.2, "completed");
+            assert_eq!(fx.prompts(), 1);
+        } else {
+            assert!(
+                matches!(report.report.delivery(), InputDelivery::NotDispatched(_)),
+                "{scenario}"
+            );
+            assert!(report.report.outcome().is_err(), "{scenario}");
+            assert_eq!(fx.prompts(), 0, "{scenario}");
+        }
+        fx.session.shutdown().await.unwrap();
+    }
+}

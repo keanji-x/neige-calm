@@ -2,7 +2,10 @@
 
 Neige supports Antigravity as a Planner and Assistant through the official
 [`agy acp`](https://antigravity.google/docs/cli/acp/) entry point. The supported
-release line is AGY 1.x, tested from 1.5.0.
+release line is AGY 1.x from 1.5.1; native integration checks use 1.5.3.
+AGY 1.5.0 is refused because 1.5.1 fixes native sandbox credential exposure,
+cancellation across prompts, and updates arriving after prompt completion. See the
+[1.5.1 release notes](https://antigravity.google/docs/changelog/#v1-5-1).
 
 ## Configure once
 
@@ -20,7 +23,7 @@ adds the `acp` argument. For example:
     "command": "/absolute/path/agy",
     "args": [],
     "env": {"HOME": "/home/neige"},
-    "min_agent_version": "1.5.0"
+    "min_agent_version": "1.5.1"
   }]
 }
 ```
@@ -35,17 +38,17 @@ picker. Upgrading Neige does not install or sign in to AGY automatically.
 | Capability | Behavior |
 | --- | --- |
 | Planner and Assistant | Available through the existing model picker |
-| Concurrent cards | One resident ACP process, separate native sessions and working directories |
+| Concurrent cards | Each turn owns its process, native session, working directory and credential |
 | Cancel | Targets one card's native session |
-| Neige MCP tools | Card-session authorization; ending the session or archiving the Assistant revokes its credential |
+| Neige MCP tools | Card authorization with a fresh credential per execution; settlement or archive revokes it |
 | Track soft-close | Pauses the Track and retains the card session |
 | Images | Existing upload/attachment controls, in managed workspaces; only this card's bound images are sent |
-| Read/write approval requests | Routed through Neige's existing approval flow when AGY requests approval |
+| Read/write approval requests | Sandbox work proceeds normally; Planner `ask` asks for additional authority, Assistant `never` declines it |
 | Running-turn steer | Not enabled |
 | Manual compaction | Existing `/compact` command for canonical Planner and Assistant conversations |
 | Canonical input | New Planner and Assistant conversations use canonical messages, original submission receipts and retained execution recovery |
 | History replacement | Not enabled |
-| Per-card OS sandbox | Not provided by this integration |
+| Terminal sandbox | AGY native sandbox for `never`/`ask`; disabled for `full` |
 
 Images use standard ACP image blocks and require the agent to negotiate image
 support. The existing upload limit is 8 MiB per file, but the complete ACP request
@@ -54,21 +57,47 @@ and all images. Use smaller images or fewer attachments when a message exceeds
 that limit. A local capability or size refusal leaves the input editable and
 creates no ACP send receipt; canonical input remains editable so the person can remove it and send a smaller message.
 
-Approval is not an OS sandbox. The shared process runs with the service account's
-access; AGY's own policy can allow an action without emitting an approval request.
-
 ## Permission modes and early stops
 
-`full` selects the agent's single-call `allow_once` option for each permission
-request in that card's current turn. `ask` shows the request in Neige's existing
-approval flow and returns the option the person chooses. `never` declines requests.
-The resident AGY process keeps its default policy: no process-wide permission
-bypass is enabled for other cards. A stopped or settled turn cannot approve a
-later request. Full requests without an unambiguous `allow_once` option are refused.
+Planner cards expose permission selection. Assistant conversations keep `never`.
+The AGY profile bridges three separate native controls: the terminal sandbox,
+`toolPermission`, and the advertised ACP `mode` option. Neige selects and checks
+`accept-edits` through `session/set_config_option`, so workspace edits do not
+need additional authority; this mode alone does not authorize shell commands.
+
+| Neige mode | Native terminal policy | Additional permission requests |
+| --- | --- | --- |
+| `never` | Sandbox enabled, `proceed-in-sandbox` | Declined |
+| `ask` | Sandbox enabled, `proceed-in-sandbox` | Existing Neige approval flow |
+| `full` | Sandbox disabled, `request-review` | Current turn's unambiguous `allow_once` |
+
+The terminal sandbox must be available on the host. AGY documents that
+`proceed-in-sandbox` falls back to review when it is unavailable; Neige does not
+report an unverified sandbox status or automatically bypass the resulting request.
+Full never uses a process-wide skip-permissions flag. Stopped or settled turns
+cannot approve later requests.
+
+Native settings are prepared under the registration's explicit absolute `HOME`,
+in documented CLI settings subdirectories `neige-sandboxed-v1` and
+`neige-unrestricted-v1`. Authentication and native history stay with the account;
+no private credential or history files are copied. Neige leaves the original
+`settings.json` unchanged. Derived settings pin the native execution policy. Nonempty custom permission
+rules in the operator CLI settings are refused before a user prompt: real ACP
+probes of 1.5.0 and 1.5.3 did not enforce a copied `deny command(*)` in an isolated
+CLI profile. This bridge does not claim support for those native custom rules or report that
+Project/Shared native permission scopes have been inspected.
+Registration arguments may not override profile-owned
+settings paths or permission flags.
+
+Each turn uses Neige's existing managed execution owner. Before continuation,
+previous execution and credential cleanup must be confirmed. A new process
+resumes the same native session with fresh MCP configuration. Permission changes
+never change the durable registration identity, resend an original input, or
+bypass an uncertain prior execution.
 
 If a denied tool fails and AGY ends without replying or recovering through a
-successful tool, Neige shows the denial as the turn's failure reason, even when
-earlier tools succeeded. An explicit user interruption remains interrupted.
+successful tool, Neige shows the denial in the current response status
+independently of transcript pagination, even when earlier tools succeeded. An explicit user interruption remains interrupted.
 These modes govern requests AGY emits; they do not change Neige MCP authorization
 or grant ordinary cards cross-workspace report access.
 
@@ -77,7 +106,7 @@ or grant ordinary cards cross-workspace report access.
 Use `/compact` in the existing command menu after a conversation has history and
 its current turn has finished. Neige uses canonical maintenance admission and
 retains the native session; it adds no Human message, input receipt or assistant
-reply. Other cards can continue using the same resident ACP server.
+reply. Other cards continue in their own executions.
 
 The AGY profile uses the advertised native `compact` command. AGY documents that
 [bare `/compact` summarizes the conversation and ends the turn](https://antigravity.google/docs/changelog/),
@@ -90,8 +119,8 @@ lifecycle-event requirement.
 
 Errors, cancellation, missing results and overflowing session traffic cannot
 confirm compaction. An uncertain operation is retained and never automatically
-resent. Cleanup closes and revokes only the affected native attachment. Successful
-compaction preserves its session authorization.
+resent. Cleanup revokes the maintenance credential and stops its exact execution. Successful
+compaction preserves the native session identity; the next turn receives fresh authorization.
 
 Running-turn steer remains unavailable: AGY 1.5.0 returns method-not-found for
 `session/steer`, and overlapping `session/prompt` calls do not provide Neige's
