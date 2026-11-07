@@ -301,44 +301,26 @@ fn immediate_children() -> anyhow::Result<Vec<u32>> {
 }
 
 fn forward_signal() -> anyhow::Result<()> {
-    use std::os::fd::AsRawFd;
-    let signal = REQUESTED_SIGNAL.load(Ordering::SeqCst);
-    if signal == 0 {
-        return Ok(());
-    }
+    use rustix::process::Signal;
+    let signal = match REQUESTED_SIGNAL.load(Ordering::SeqCst) {
+        0 => return Ok(()),
+        libc::SIGTERM => Signal::TERM,
+        libc::SIGHUP => Signal::HUP,
+        libc::SIGUSR1 => Signal::KILL,
+        signal => anyhow::bail!("unexpected helper signal {signal}"),
+    };
     for pid in immediate_children()? {
         // Pin first, then revalidate scope membership: the spawn worker can reap an exec failure.
         // No signal is ever delivered through a recycled numeric PID.
-        // SAFETY: opening a native handle has no signaling or reaping side effect.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if fd < 0 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-                continue;
-            }
-            return Err(std::io::Error::last_os_error().into());
-        }
-        // SAFETY: successful pidfd_open transferred this unique descriptor.
-        let handle = unsafe { File::from_raw_fd(fd as RawFd) };
+        let handle = match super::process::open_pidfd(pid) {
+            Ok(handle) => handle,
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
+            Err(error) => return Err(error.into()),
+        };
         if !immediate_children()?.contains(&pid) {
             continue;
         }
-        // SAFETY: the owned pidfd was pinned before scope membership was revalidated.
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                handle.as_raw_fd(),
-                if signal == libc::SIGUSR1 {
-                    libc::SIGKILL
-                } else {
-                    signal
-                },
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        if result < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        super::process::signal_pidfd(&handle, signal)?;
     }
     Ok(())
 }
