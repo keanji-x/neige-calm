@@ -1,8 +1,6 @@
-//! Hidden MCP drill-ins for track-vcs history.
+//! Bound-Track read-only MCP drill-ins for track-vcs history.
 //!
-//! These handlers are registered as wire-callable tools but use
-//! `listed_for: &[]`, so they do not appear in `tools/list` for any
-//! role. Human-facing drill-in goes through `neige track diff`, `neige track show`, and
+//! Listed for Assistant; Planner and Worker use the existing CLI drill-ins. Human-facing drill-in goes through `neige track diff`, `neige track show`, and
 //! `neige track log`, served by `mcp_server::cli`; planner turns receive the summarized
 //! since-last-turn block.
 
@@ -65,8 +63,8 @@ fn diff_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner, CardRole::Worker],
-        listed_for: &[],
+        roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
+        listed_for: &[CardRole::Assistant],
     }
 }
 
@@ -86,8 +84,8 @@ fn cat_at_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner, CardRole::Worker],
-        listed_for: &[],
+        roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
+        listed_for: &[CardRole::Assistant],
     }
 }
 
@@ -107,8 +105,8 @@ fn log_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner, CardRole::Worker],
-        listed_for: &[],
+        roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
+        listed_for: &[CardRole::Assistant],
     }
 }
 

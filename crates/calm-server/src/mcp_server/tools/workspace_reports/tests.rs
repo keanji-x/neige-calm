@@ -310,60 +310,12 @@ async fn granted_assistant_reads_all_workspace_tools_without_foreign_write_ancho
         )
         .await
         .unwrap();
-    assert_eq!(
+    let listed =
         registry.lookup("neige_workspace_ls").unwrap()(route.mcp_context.clone(), id, json!({}))
             .await
-            .unwrap_err()
-            .code,
-        -32403
-    );
-}
-
-#[tokio::test]
-async fn ungranted_planner_cannot_read_workspace_reports() {
-    let (_tmp, repo, state) = fixture().await;
-    let route = crate::state::RouteState::from_ref(&state);
-    let track = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
-        .await
-        .unwrap();
-    let id = identity(&route, &track).await;
-    // A previously usable tool and identity must lose access with the live grant.
-    let registry = crate::mcp_server::build_default_registry();
-    let listed = registry.lookup("neige_workspace_ls").unwrap()(
-        route.mcp_context.clone(),
-        id.clone(),
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert!(listed.into_structured()["reports"].is_array());
-    (repo.db())
-        .writer()
-        .execute(
-            sqlx::query(
-                "UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1",
-            )
-            .bind(track.id.as_str()),
-        )
-        .await
-        .unwrap();
-    for (tool, args) in [
-        ("neige_workspace_ls", json!({})),
-        ("neige_workspace_cat", json!({"track_id":track.id})),
-        ("neige_workspace_diff", json!({"date":"2026-10-03"})),
-        (
-            "neige_workspace_log",
-            json!({"date":"2026-10-03","track_id":track.id,"through_event_id":0}),
-        ),
-    ] {
-        let handler = crate::mcp_server::build_default_registry()
-            .lookup(tool)
-            .unwrap();
-        let error = handler(route.mcp_context.clone(), id.clone(), args)
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, -32403, "{tool}");
-    }
+            .unwrap()
+            .into_structured();
+    assert_eq!(listed["reports"][0]["track_id"], foreign.id.as_str());
 }
 
 #[tokio::test]
@@ -406,7 +358,7 @@ async fn workers_and_forged_role_or_track_bindings_are_refused() {
     .await
     .unwrap_err();
     assert_eq!(forged.code, -32403);
-    assert!(forged.message.contains("kernel-issued grant"));
+    assert!(forged.message.contains("live bound Planner or Assistant"));
     assert!(
         dispatch(
             route.mcp_context.clone(),
@@ -753,7 +705,7 @@ async fn workspace_tools_refuse_the_retired_after_with_their_valid_keys() {
 }
 
 #[tokio::test]
-async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports() {
+async fn persisted_workers_cannot_read_workspace_reports() {
     let (_tmp, repo, state) = fixture().await;
     let route = crate::state::RouteState::from_ref(&state);
     let daily = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
@@ -784,16 +736,17 @@ async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports
             -32403
         );
     }
-    (repo.db())
-        .writer()
-        .execute(
-            sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-                .bind(CardRole::Assistant.as_db_str())
-                .bind(&id.card_id),
-        )
+}
+
+#[tokio::test]
+async fn ordinary_recorders_read_workspace_reports_without_managed_grants() {
+    let (_tmp, repo, state) = fixture().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let foreign = foreign_track(&route).await;
+    let daily = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
         .await
         .unwrap();
-    id.role = CardRole::Assistant;
+    let mut id = identity(&route, &daily).await;
     (repo.db())
         .writer()
         .execute(
@@ -802,24 +755,46 @@ async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports
         )
         .await
         .unwrap();
-    for (tool, args) in [
-        ("neige_workspace_ls", json!({})),
-        ("neige_workspace_cat", json!({"track_id":daily.id})),
-        ("neige_workspace_diff", json!({"date":"2026-10-03"})),
-        (
-            "neige_workspace_log",
-            json!({"date":"2026-10-03","track_id":daily.id,"through_event_id":0}),
-        ),
-    ] {
+    for role in [CardRole::Planner, CardRole::Assistant] {
+        (repo.db())
+            .writer()
+            .execute(
+                sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+                    .bind(role.as_db_str())
+                    .bind(&id.card_id),
+            )
+            .await
+            .unwrap();
+        id.role = role;
+        for (tool, args) in [
+            ("neige_workspace_ls", json!({})),
+            ("neige_workspace_cat", json!({"track_id":foreign.id})),
+            ("neige_workspace_diff", json!({"date":"2026-10-03"})),
+            (
+                "neige_workspace_log",
+                json!({"date":"2026-10-03","track_id":foreign.id,"through_event_id":0}),
+            ),
+        ] {
+            let result = call(&route, &id, tool, args).await.unwrap();
+            if tool == "neige_workspace_cat" {
+                assert_eq!(result["track_id"], foreign.id.as_str());
+                assert!(result["body"].as_str().unwrap().contains("概要"));
+            } else if tool == "neige_workspace_ls" {
+                assert_eq!(result["reports"][0]["track_id"], foreign.id.as_str());
+                assert_eq!(result["timezone"], "Asia/Shanghai");
+            }
+        }
         assert_eq!(
-            crate::mcp_server::build_default_registry()
-                .lookup(tool)
-                .unwrap()(route.mcp_context.clone(), id.clone(), args)
+            call(
+                &route,
+                &id,
+                "neige_workspace_cat",
+                json!({"track_id":daily.id})
+            )
             .await
             .unwrap_err()
             .code,
-            -32403,
-            "{tool}"
+            -32403
         );
     }
 }

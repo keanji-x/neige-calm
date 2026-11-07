@@ -1,1 +1,1 @@
-Grant required. List reports; page with cursor.
+Read-only. List reports; page with cursor.

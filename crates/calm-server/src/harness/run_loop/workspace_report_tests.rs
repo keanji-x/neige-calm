@@ -4,7 +4,7 @@ use super::*;
 use crate::model::CardRole;
 
 #[tokio::test]
-async fn resumed_planner_and_assistant_receive_live_workspace_report_instructions() {
+async fn managed_report_context_refreshes_historical_resumed_turns() {
     for role in [CardRole::Planner, CardRole::Assistant] {
         let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
@@ -111,8 +111,9 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
 }
 
 #[tokio::test]
-async fn ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants() {
+async fn ordinary_readers_and_workers_do_not_receive_managed_report_context() {
     for (role, scope) in [
+        (CardRole::Planner, None),
         (CardRole::Assistant, None),
         (CardRole::Assistant, Some("area")),
         (CardRole::Worker, Some("workspace")),

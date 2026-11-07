@@ -2923,3 +2923,84 @@ async fn output_gate_step_selects_only_matching_text() {
     }
     std::fs::remove_dir_all(&boot.gate_logs_dir).unwrap();
 }
+
+#[tokio::test]
+async fn assistant_reads_bound_track_files_and_history_but_not_foreign_commits() {
+    let boot = boot().await;
+    track_vcs::backfill_existing_tracks(boot.sqlx_repo.db())
+        .await
+        .unwrap();
+    let own = track_vcs::head(boot.sqlx_repo.pool(), &boot.track_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let foreign = track_vcs::head(boot.sqlx_repo.pool(), &boot.other_track_id)
+        .await
+        .unwrap()
+        .unwrap();
+    boot.sqlx_repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+                .bind(CardRole::Assistant.as_db_str())
+                .bind(boot.planner_card_id.as_str()),
+        )
+        .await
+        .unwrap();
+    let id = ToolCallIdentity {
+        role: CardRole::Assistant,
+        ..planner_identity(&boot)
+    };
+    let file = call_tool(
+        &boot,
+        TOOL_TRACK_CAT,
+        id.clone(),
+        json!({"path":"report.md"}),
+    )
+    .await
+    .unwrap();
+    assert!(file["content"].as_str().unwrap().contains("概要"));
+    let listed = call_tool(&boot, TOOL_TRACK_LS, id.clone(), json!({"path":"/"}))
+        .await
+        .unwrap();
+    assert!(!listed["entries"].as_array().unwrap().is_empty());
+    let history = call_tool(&boot, TOOL_TRACK_LOG, id.clone(), json!({}))
+        .await
+        .unwrap();
+    assert!(!history["commits"].as_array().unwrap().is_empty());
+    let shown = call_tool(
+        &boot,
+        TOOL_TRACK_SHOW,
+        id.clone(),
+        json!({"commit":own,"path":"report.md"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown["content"], file["content"]);
+    let diff = call_tool(
+        &boot,
+        TOOL_TRACK_DIFF,
+        id.clone(),
+        json!({"from":own,"to":own}),
+    )
+    .await
+    .unwrap();
+    assert!(diff["files"].as_array().unwrap().is_empty());
+    for (tool, args) in [
+        (
+            TOOL_TRACK_SHOW,
+            json!({"commit":foreign,"path":"report.md"}),
+        ),
+        (TOOL_TRACK_DIFF, json!({"from":own,"to":foreign})),
+    ] {
+        assert_eq!(
+            call_tool(&boot, tool, id.clone(), args)
+                .await
+                .unwrap_err()
+                .code,
+            RpcError::NOT_FOUND,
+            "{tool}"
+        );
+    }
+}

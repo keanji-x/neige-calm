@@ -1,4 +1,4 @@
-//! Read-only workspace report projection shared by HTTP and granted Planner tools.
+//! Read-only workspace report projection shared by HTTP and Planner/Assistant tools.
 pub use calm_types::daily_planner::{
     ReportChange, ReportChangesPage, ReportEdit, ReportEditEntry, ReportEditsPage,
 };
@@ -9,6 +9,9 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 use sqlx::{FromRow, SqlitePool};
 use utoipa::ToSchema;
+
+/// Default calendar for workspace report changes, shared with the daily HTTP views.
+pub const TIME_ZONE: Tz = chrono_tz::Asia::Shanghai;
 
 pub const PAGE_SIZE: usize = 20;
 pub const PATCH_LINES: usize = 500;

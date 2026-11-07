@@ -1,4 +1,4 @@
-//! Granted workspace report reads. Foreign reports never enter the caller’s write ledger.
+//! Role-bound workspace report reads. Foreign reports never enter the caller’s write ledger.
 use crate::managed_track::{WORKSPACE_REPORT_ROLES, require_workspace_reports};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
