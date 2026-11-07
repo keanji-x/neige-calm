@@ -151,6 +151,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0211_track_plugin_access.sql",
     "0212_session_failure_epochs.sql",
     "0213_canonical_antigravity_turns.sql",
+    "0214_mail_hourly_quota.sql",
 ];
 
 #[test]

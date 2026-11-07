@@ -57,3 +57,26 @@ export function plannerTurnDurationPatch(value: string | null): SettingsPatch {
   if (!parsed.ok) throw new Error(parsed.error);
   return { [PLANNER_TURN_DURATION_KEY]: String(parsed.minutes) };
 }
+
+export const MAIL_PER_HOUR_KEY = 'mail_per_hour';
+const DEFAULT_MAIL_PER_HOUR = '5/h';
+const MAIL_PER_HOUR_ERROR = 'Enter a limit like 5/h, using a whole number from 1 to 1000.';
+
+export function mailPerHour(value: string | undefined):
+  | Readonly<{ ok: true; text: string }>
+  | Readonly<{ ok: false; error: string }> {
+  if (value === undefined) return { ok: true, text: DEFAULT_MAIL_PER_HOUR };
+  const count = value.slice(0, -2);
+  const limit = Number(count);
+  if (!value.endsWith('/h') || /[^0-9]/.test(count) || limit < 1 || limit > 1000) {
+    return { ok: false, error: MAIL_PER_HOUR_ERROR };
+  }
+  return { ok: true, text: `${limit}/h` };
+}
+
+export function mailPerHourPatch(value: string | null): SettingsPatch {
+  if (value === null) return { [MAIL_PER_HOUR_KEY]: null };
+  const parsed = mailPerHour(value);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return { [MAIL_PER_HOUR_KEY]: parsed.text };
+}

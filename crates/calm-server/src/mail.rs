@@ -1,7 +1,7 @@
 //! Mail between the Tracks of one Area (#2130, `docs/architecture/2130-track-mail.md`). A send
 //! stores one `mails` row and, in the same transaction, the `track.wake_requested` that wakes the
 //! recipient's Planner; the recipient's first `cat` stamps `read_at`. A causal hop count, computed
-//! from the caller's current turn, refuses the seventh hop.
+//! from the caller's current turn, describes its provenance. Sends use a per-Track hourly quota.
 
 use std::sync::{Arc, Mutex};
 
@@ -23,8 +23,43 @@ pub const TOOL_MAIL_SEND: &str = "neige_mail_send";
 pub const TOOL_MAIL_LS: &str = "neige_mail_ls";
 pub const TOOL_MAIL_CAT: &str = "neige_mail_cat";
 
-/// The highest hop a mail may carry; a send that would get a higher one is refused.
-pub const MAX_HOP: i64 = 6;
+pub(crate) const MAIL_PER_HOUR_KEY: &str = "mail_per_hour";
+const DEFAULT_MAIL_PER_HOUR: i64 = 5;
+const HOUR_MS: i64 = 3_600_000;
+pub(crate) const RATE_LIMIT_MESSAGE: &str =
+    "Hourly mail limit reached. Wait for a slot before sending again.";
+
+pub(crate) fn parse_mail_per_hour(value: &str) -> Result<i64, String> {
+    if let Some(count) = value.strip_suffix("/h")
+        && count.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(limit @ 1..=1000) = count.parse()
+    {
+        return Ok(limit);
+    }
+    Err("Enter a mail limit like 5/h, using a whole number from 1 to 1000.".into())
+}
+
+async fn rate_limited_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    sender: &str,
+    now: i64,
+) -> Result<bool, CalmError> {
+    let stored: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
+        .bind(MAIL_PER_HOUR_KEY)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let limit = match stored {
+        Some(value) => parse_mail_per_hour(&value).map_err(CalmError::Internal)?,
+        None => DEFAULT_MAIL_PER_HOUR,
+    };
+    let recent: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM mails WHERE from_track_id = ?1 AND sent_at > ?2")
+            .bind(sender)
+            .bind(now - HOUR_MS)
+            .fetch_one(&mut **tx)
+            .await?;
+    Ok(recent >= limit)
+}
 /// Mail failure does not itself require a user escalation.
 pub(crate) const USER_DECISION_GUIDANCE: &str =
     "use neige_user_ask only for user decisions/approvals";
@@ -49,11 +84,6 @@ pub struct SendRequest {
 pub struct Sent {
     pub mail_id: String,
     pub hop: i64,
-}
-
-/// `n/6`, the one spelling of a hop in every result.
-pub fn hop_label(hop: i64) -> String {
-    format!("{hop}/{MAX_HOP}")
 }
 
 /// A refusal: its JSON-RPC code, the machine kind in `data.refusal`, and the message.
@@ -133,7 +163,10 @@ async fn next_hop(
             .bind(turn.created_at_ms)
             .fetch_one(&mut **tx)
             .await?;
-    Ok(1 + read.unwrap_or(0).max(replied_hop.unwrap_or(0)))
+    Ok(read
+        .unwrap_or(0)
+        .max(replied_hop.unwrap_or(0))
+        .saturating_add(1))
 }
 
 /// `neige_mail_send`: one mail row and its wake, in one transaction, after every check of §6.
@@ -242,14 +275,10 @@ pub async fn send(
                     ));
                 };
                 let hop = next_hop(tx, &caller, turn, replied_hop).await?;
-                if hop > MAX_HOP {
-                    return Err(slot.refuse(
-                        -32409,
-                        "hop_limit",
-                        format!("{TOOL}: hop 6/6 reached — {USER_DECISION_GUIDANCE}"),
-                    ));
-                }
-                let (sent, event) = write_mail_tx(tx, &sender, &recipient, &request.summary,
+                let Some(sender) = admit_send_tx(tx, sender).await? else {
+                    return Err(slot.refuse(-32409, "rate_limit", format!("{TOOL}: {RATE_LIMIT_MESSAGE}")));
+                };
+                let (sent, event) = write_mail_tx(tx, sender, &recipient, &request.summary,
                     &request.text, hop, reply_to.as_deref(), WakeBody::Summary).await?;
                 Ok((sent, vec![event]))
             })
@@ -262,17 +291,34 @@ pub async fn send(
     }
 }
 
-/// The mail owner writes the durable body and its sole wake together. Admission
-/// remains with the entry that owns the transaction; wake shape is explicit.
+/// The caller chooses the wake shape. The mail owner admits and writes both forms
+/// of mail under the same quota.
 pub(crate) enum WakeBody {
     Summary,
     FullText,
 }
 
+/// A send admitted under the writer lock, consumed by the write in that transaction.
+pub(crate) struct AdmittedSender {
+    track: crate::model::Track,
+    sent_at: i64,
+}
+
+pub(crate) async fn admit_send_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: crate::model::Track,
+) -> Result<Option<AdmittedSender>, CalmError> {
+    let sent_at = now_ms();
+    if rate_limited_tx(tx, track.id.as_str(), sent_at).await? {
+        return Ok(None);
+    }
+    Ok(Some(AdmittedSender { track, sent_at }))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn write_mail_tx(
     tx: &mut Transaction<'_, Sqlite>,
-    sender: &crate::model::Track,
+    sender: AdmittedSender,
     recipient: &crate::model::Track,
     summary: &str,
     text: &str,
@@ -280,6 +326,10 @@ pub(crate) async fn write_mail_tx(
     reply_to: Option<&str>,
     wake: WakeBody,
 ) -> Result<(Sent, (EventScope, Event)), CalmError> {
+    let AdmittedSender {
+        track: sender,
+        sent_at,
+    } = sender;
     let mail_id = new_id();
     sqlx::query(
         "INSERT INTO mails (id, from_track_id, to_track_id, reply_to, summary, text, hop, sent_at)
@@ -292,7 +342,7 @@ pub(crate) async fn write_mail_tx(
     .bind(summary)
     .bind(text)
     .bind(hop)
-    .bind(now_ms())
+    .bind(sent_at)
     .execute(&mut **tx)
     .await?;
     let event = Event::TrackWakeRequested {
@@ -327,11 +377,7 @@ pub(crate) async fn creator_hop_tx(
     let turn = turn_input::latest(tx, card, session)
         .await?
         .ok_or_else(|| CalmError::Conflict("turn_unrecorded".into()))?;
-    let hop = next_hop(tx, track, turn, None).await?;
-    if hop > MAX_HOP {
-        return Err(CalmError::Conflict("hop_limit".into()));
-    }
-    Ok(hop)
+    next_hop(tx, track, turn, None).await
 }
 
 /// §4.5: the one line the recipient's Planner is woken with; no body, no hop. A title's line
@@ -390,7 +436,7 @@ impl MailRow {
             "track_id": other,
             "title": self.title,
             "summary": self.summary,
-            "hop": hop_label(self.hop),
+            "hop": self.hop.to_string(),
             "state": state,
             "sent_at": crate::time_format::at(self.sent_at),
             "read_at": crate::time_format::at_opt(self.read_at),
@@ -457,7 +503,7 @@ pub async fn ls(
 
 /// `neige_mail_cat`: one mail to or from this Track. The recipient's first cat stamps `read_at`;
 /// `next_hop` is what an allowed new, non-reply send from this turn would get; it is null
-/// with `refused: true` at the hop limit, or `refused: false` when no turn is recorded.
+/// with `refused: true` at the hourly limit, or `refused: false` when no turn is recorded.
 pub async fn cat(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
@@ -518,10 +564,11 @@ pub async fn cat(
             let mut mail = row.summary_json(&caller);
             mail.insert("text".into(), json!(row.text));
             mail.insert("reply_to".into(), json!(row.reply_to));
-            mail.insert("refused".into(), json!(next.is_some_and(|hop| hop > MAX_HOP)));
+            let refused = next.is_some() && rate_limited_tx(tx, &caller, now_ms()).await?;
+            mail.insert("refused".into(), json!(refused));
             mail.insert(
                 "next_hop".into(),
-                json!(next.filter(|hop| *hop <= MAX_HOP).map(hop_label)),
+                json!(next.filter(|_| !refused).map(|hop| hop.to_string())),
             );
             Ok(Value::Object(mail))
         })

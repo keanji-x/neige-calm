@@ -76,6 +76,13 @@ pub(crate) async fn put_settings(
             .map_err(crate::error::CalmError::BadRequest)?
             .canonical();
     }
+    if let Some(Some(value)) = p.settings.get_mut(crate::mail::MAIL_PER_HOUR_KEY)
+        && !value.is_empty()
+    {
+        let limit =
+            crate::mail::parse_mail_per_hour(value).map_err(crate::error::CalmError::BadRequest)?;
+        *value = format!("{limit}/h");
+    }
     let before = load_settings(s.repo.as_ref()).await?;
     let mut proxy_changed = false;
     for (key, maybe_val) in p.settings.iter() {

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use super::track_mail_fixture::{Planner, World, mail_and_hop, refusal};
 
-const HANDOFF: &str = "hop 6/6 reached — use neige_user_ask only for user decisions/approvals";
+const HANDOFF: &str = "Hourly mail limit reached. Wait for a slot before sending again.";
 
 fn line(title: &str, summary: &str, mail_id: &str) -> String {
     format!("Wake from mail ({mail_id}): \"{title}\": {summary} — neige mail cat {mail_id}")
@@ -43,7 +43,7 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
         .await
         .unwrap();
     let (mail_id, hop) = mail_and_hop(&sent);
-    assert_eq!(hop, "1/6");
+    assert_eq!(hop, "1");
     let row: (String, String, i64, Option<i64>, Option<String>) = sqlx::query_as(
         "SELECT from_track_id, to_track_id, hop, read_at, reply_to FROM mails WHERE id = ?1",
     )
@@ -141,7 +141,7 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
         assert_eq!(text, format!("\"{name}\": s — neige mail cat {mail}"));
         let (stdout, _, _) = w.neige(n, &["mail", "cat", &mail]).await;
         let header = stdout.lines().next().unwrap_or_default();
-        assert!(header.ends_with(&format!("hop 1/6  {shown}")), "{header}");
+        assert!(header.ends_with(&format!("hop 1  {shown}")), "{header}");
     }
 
     // The append failure path: the event insert aborts, so the row must roll back with it.
@@ -189,7 +189,7 @@ async fn mail_hop_follows_the_worked_example() {
     let (a, b, c) = (w.p(0), w.p(1), w.p(2));
     w.user_turn(a, "start the review chain").await;
     let (mut mail, hop) = w.send_ok(a, b, "m1").await;
-    assert_eq!(hop, "1/6");
+    assert_eq!(hop, "1");
     w.complete(a).await;
     // Steps 2–6: each woken Planner reads the mail that woke it and mails the next Track.
     let steps = [
@@ -202,35 +202,19 @@ async fn mail_hop_follows_the_worked_example() {
     for (from, to, turn, expected) in steps {
         let text = w.wait_turn(from, turn).await;
         assert!(text.contains(&format!("neige mail cat {mail}")), "{text}");
-        cat_next(&w, from, &mail, &format!("next hop {expected}/6")).await;
+        cat_next(&w, from, &mail, &format!("next hop {expected}")).await;
         let (next, hop) = w.send_ok(from, to, &format!("m{expected}")).await;
-        assert_eq!(hop, format!("{expected}/6"));
+        assert_eq!(hop, format!("{expected}"));
         mail = next;
         w.complete(from).await;
     }
-    // Step 7: A reads m6 and may not send; step 8 hands off to the user.
     w.wait_turn(a, 3).await;
-    cat_next(&w, a, &mail, HANDOFF).await;
-    let error = w
-        .send(
-            a,
-            json!({"track_id": b.track_id.as_str(), "summary": "m7", "text": "x"}),
-        )
-        .await
-        .expect_err("the seventh hop is refused");
-    assert_eq!(refusal(&error, "hop_limit").0, -32409);
-    let asked = w
-        .call(
-            a,
-            "neige_user_ask",
-            json!({"questions": [{"title": "The review loop needs you: continue?"}]}),
-        )
-        .await;
-    assert!(asked.get("error").is_none(), "{asked}");
+    cat_next(&w, a, &mail, "next hop 7").await;
+    assert_eq!(w.send_ok(a, b, "m7").await.1, "7");
     w.complete(a).await;
-    // Step 9: the user's reply restarts the chain.
+    // The next user turn restarts the causal count.
     w.user_turn(a, "carry on").await;
-    assert_eq!(w.send_ok(a, b, "m7").await.1, "1/6");
+    assert_eq!(w.send_ok(a, b, "m7").await.1, "1");
 }
 
 /// A NUL in the summary or text is refused as an argument (SQLite's `length()` stops at NUL, so
@@ -274,43 +258,74 @@ async fn mail_hop_takes_the_max_of_mixed_reads() {
     let high = w.seed_mail(&r.track_id, &n.track_id, 4).await;
     let low = w.seed_mail(&r.track_id, &n.track_id, 2).await;
     w.task_turn(n).await;
-    cat_next(&w, n, &high, "next hop 5/6").await;
-    cat_next(&w, n, &low, "next hop 5/6").await;
-    assert_eq!(w.send_ok(n, r, "answer").await.1, "5/6");
+    cat_next(&w, n, &high, "next hop 5").await;
+    cat_next(&w, n, &low, "next hop 5").await;
+    assert_eq!(w.send_ok(n, r, "answer").await.1, "5");
 }
 
-/// Row 3 (M): a hop-6 send is allowed, the seventh is refused with the hand-off token and stores
-/// nothing. Both reading turns are wake turns.
+/// The quota covers replies and direct sends across recipients and counts only committed mail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mail_send_refuses_the_seventh_hop_with_the_handoff_token() {
-    let w = World::new(&["A", "B"]).await;
-    let (a, b) = (w.p(0), w.p(1));
-    let hop4 = w.seed_mail(&a.track_id, &b.track_id, 4).await;
-    w.task_turn(b).await;
-    cat_next(&w, b, &hop4, "next hop 5/6").await;
-    let (m5, hop) = w.send_ok(b, a, "m5").await;
-    assert_eq!(hop, "5/6");
-    w.complete(b).await;
-    w.wait_turn(a, 1).await;
-    cat_next(&w, a, &m5, "next hop 6/6").await;
-    let (m6, hop) = w.send_ok(a, b, "m6").await;
-    assert_eq!(hop, "6/6", "hop 6 is still allowed");
-    w.complete(a).await;
-    w.wait_turn(b, 2).await;
-    cat_next(&w, b, &m6, HANDOFF).await;
-    let (rows, wakes) = (w.mail_rows().await, w.wake_events().await);
+async fn mail_send_enforces_the_hourly_quota_per_track() {
+    let w = World::new(&["A", "B", "C"]).await;
+    let (a, b, c) = (w.p(0), w.p(1), w.p(2));
+    let incoming = w.seed_mail(&b.track_id, &a.track_id, 1).await;
+    w.user_turn(a, "write to the team").await;
+    for recipient in [b, c, b, c, b] {
+        w.send_ok(a, recipient, "within quota").await;
+    }
+    cat_next(&w, a, &incoming, HANDOFF).await;
+    let rows_and_wakes = (w.mail_rows().await, w.wake_events().await);
     let error = w
         .send(
-            b,
-            json!({"track_id": a.track_id.as_str(), "summary": "m7", "text": "x"}),
+            a,
+            json!({"mail_id": incoming, "summary": "reply", "text": "too soon"}),
         )
         .await
-        .expect_err("refused");
+        .expect_err("the sixth send shares the same quota even when it is a reply");
+    assert_eq!(refusal(&error, "rate_limit").0, -32409);
+    assert_eq!((w.mail_rows().await, w.wake_events().await), rows_and_wakes);
+
+    // Another sender has a separate quota.
+    w.wait_turn(c, 1).await;
+    w.send_ok(c, b, "independent quota").await;
+
+    // A persisted setting takes effect on the next send, even in the same turn.
+    w.repo_dyn
+        .settings_upsert("mail_per_hour", "6/h")
+        .await
+        .unwrap();
+    w.reply_ok(a, &incoming).await;
+    let args = json!({"track_id": c.track_id.as_str(), "summary": "next", "text": "body"});
+    let error = w
+        .send(a, args.clone())
+        .await
+        .expect_err("the updated quota is full");
+    assert_eq!(refusal(&error, "rate_limit").0, -32409);
+
+    // Expire one committed send without sleeping. Two contenders share the last slot.
+    w.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query(
+                "UPDATE mails SET sent_at = ?1 WHERE id = (SELECT id FROM mails
+             WHERE from_track_id = ?2 ORDER BY sent_at, id LIMIT 1)",
+            )
+            .bind(now_ms() - 3_600_000)
+            .bind(a.track_id.as_str()),
+        )
+        .await
+        .unwrap();
+    let (one, two) = tokio::join!(w.send(a, args.clone()), w.send(a, args));
+    let error = match (one, two) {
+        (Ok(_), Err(error)) | (Err(error), Ok(_)) => error,
+        other => panic!("expected one committed send: {other:?}"),
+    };
+    assert_eq!(refusal(&error, "rate_limit").0, -32409);
     assert_eq!(
-        refusal(&error, "hop_limit"),
-        (-32409, format!("neige_mail_send: {HANDOFF}"))
+        (w.mail_rows().await, w.wake_events().await),
+        (rows_and_wakes.0 + 3, rows_and_wakes.1 + 3)
     );
-    assert_eq!((w.mail_rows().await, w.wake_events().await), (rows, wakes));
 }
 
 /// Row 4 (M): a turn the user spoke in sends hop 1 even after reading a hop-3 mail; so does a turn
@@ -321,13 +336,13 @@ async fn mail_hop_restarts_in_a_user_turn() {
     let (r, n) = (w.p(0), w.p(1));
     let first = w.seed_mail(&r.track_id, &n.track_id, 3).await;
     w.user_turn(n, "look at R's mail").await;
-    cat_next(&w, n, &first, "next hop 1/6").await;
-    assert_eq!(w.send_ok(n, r, "answer").await.1, "1/6");
+    cat_next(&w, n, &first, "next hop 1").await;
+    assert_eq!(w.send_ok(n, r, "answer").await.1, "1");
     w.complete(n).await;
 
     let second = w.seed_mail(&r.track_id, &n.track_id, 3).await;
     w.task_turn(n).await;
-    cat_next(&w, n, &second, "next hop 4/6").await;
+    cat_next(&w, n, &second, "next hop 4").await;
     n.harness()
         .observe_for_test(
             Observation::UserMessage {
@@ -347,14 +362,14 @@ async fn mail_hop_restarts_in_a_user_turn() {
         .expect("steer")
         .unwrap_or_else(|refused| panic!("the steer was refused: {refused:?}"));
     let deadline = Instant::now() + Duration::from_secs(5);
-    while w.cat_json(n, &second).await["next_hop"] != json!("1/6") {
+    while w.cat_json(n, &second).await["next_hop"] != json!("1") {
         assert!(
             Instant::now() < deadline,
             "the steer never restarted the chain"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(w.send_ok(n, r, "steered answer").await.1, "1/6");
+    assert_eq!(w.send_ok(n, r, "steered answer").await.1, "1");
 }
 
 /// Row 5: a reply counts the replied mail although this turn (a task completion) never read it.
@@ -368,7 +383,7 @@ async fn mail_reply_counts_the_replied_mail_without_reading_it() {
     w.wait_turn(n, 1).await;
     w.complete(n).await;
     w.task_turn(n).await;
-    assert_eq!(w.reply_ok(n, &m1).await.1, "2/6");
+    assert_eq!(w.reply_ok(n, &m1).await.1, "2");
     assert_eq!(w.read_at(&m1).await, None, "the reply did not read m1");
 }
 
@@ -721,33 +736,33 @@ async fn mail_trace_of_the_investment_case() {
         "{outline}"
     );
     let (m1, hop) = w.send_ok(r, n, "NVDA guidance below thesis").await;
-    assert_eq!(hop, "1/6");
+    assert_eq!(hop, "1");
     w.complete(r).await;
     w.wait_turn(n, 1).await;
     let (stdout, _, _) = w.neige(n, &["mail", "cat", &m1]).await;
     assert_eq!(
         stdout,
         format!(
-            "{m1}  in  read  hop 1/6  Weekly review\nsummary: NVDA guidance below thesis\n\nbody\nnext hop 2/6\n"
+            "{m1}  in  read  hop 1  Weekly review\nsummary: NVDA guidance below thesis\n\nbody\nnext hop 2\n"
         )
     );
     w.complete(n).await;
     w.task_turn(n).await;
     let (m2, hop) = w.reply_ok(n, &m1).await;
-    assert_eq!(hop, "2/6");
+    assert_eq!(hop, "2");
     w.complete(n).await;
     w.wait_turn(r, 2).await;
     let reply = w.cat_json(r, &m2).await;
     assert_eq!(reply["reply_to"], json!(m1));
-    assert_eq!(reply["next_hop"], json!("3/6"));
+    assert_eq!(reply["next_hop"], json!("3"));
     let (stdout, stderr, exit) = w.neige(r, &["mail", "ls"]).await;
     assert_eq!(exit, 0, "{stderr}");
     let rows: Vec<&str> = stdout.lines().collect();
     assert_eq!(
         rows,
         [
-            format!("{m2}  in  read  hop 2/6  NVDA research: reply"),
-            format!("{m1}  out  read  hop 1/6  NVDA research: NVDA guidance below thesis"),
+            format!("{m2}  in  read  hop 2  NVDA research: reply"),
+            format!("{m1}  out  read  hop 1  NVDA research: NVDA guidance below thesis"),
         ]
     );
 }

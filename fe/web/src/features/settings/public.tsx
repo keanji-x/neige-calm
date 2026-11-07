@@ -50,7 +50,7 @@ export function SettingsPane({ title, lede, children, category }: Readonly<{
   title: string;
   /** Present only on a top-level category; drill-ins keep their own heading. */
   category?: SettingsSection;
-  lede: string;
+  lede?: string;
   children: ReactNode;
 }>) {
   const headingId = `nc-settings-${title.toLowerCase().replace(/\s+/g, '-')}`;
@@ -58,7 +58,7 @@ export function SettingsPane({ title, lede, children, category }: Readonly<{
     <div className={styles.paneBody}>
       <section className={styles.group} aria-labelledby={headingId}>
         <AstryxHeading level={3} id={headingId} className={category === undefined ? undefined : styles.categoryHeading}>{title}</AstryxHeading>
-        <AstryxText as="p" color="secondary">{lede}</AstryxText>
+        {lede !== undefined && <AstryxText as="p" color="secondary">{lede}</AstryxText>}
         {children}
       </section>
     </div>
@@ -80,16 +80,16 @@ export type SettingRowProps = Readonly<{
   /** A badge or status mark before the title. */
   startContent?: ReactNode;
 }> & (
-  | Readonly<{ control: ReactNode; onOpen?: never }>
-  | Readonly<{ onOpen: () => void; control?: never }>
+  | Readonly<{ control: ReactNode; onOpen?: never; stackControlOnMobile?: boolean }>
+  | Readonly<{ onOpen: () => void; control?: never; stackControlOnMobile?: never }>
 );
 
 export function SettingRow({
-  title, titleSuffix, description, startContent, control, onOpen,
+  title, titleSuffix, description, startContent, control, onOpen, stackControlOnMobile = true,
 }: SettingRowProps) {
   return (
     <AstryxListItem
-      className={`${styles.row} ${onOpen === undefined ? styles.controlRow : ''}`}
+      className={`${styles.row} ${onOpen === undefined && stackControlOnMobile ? styles.controlRow : ''}`}
       label={titleSuffix === undefined ? title : (
         <span className={styles.rowTitle} data-nc-row-title="">
           {title}

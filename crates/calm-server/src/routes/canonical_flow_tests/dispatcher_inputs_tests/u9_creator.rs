@@ -621,10 +621,38 @@ async fn u9_canonical_creator_system_turn_uses_real_hops() {
     super::u9_canonical::tool(&flow, "neige_mail_cat", json!({"mail_id":incoming}))
         .await
         .unwrap();
+    flow.state
+        .repo
+        .settings_upsert(crate::mail::MAIL_PER_HOUR_KEY, "2/h")
+        .await
+        .unwrap();
+    let creator = route(&flow, 3);
+    assert_eq!(
+        creator
+            .add(input(&flow, "system-hop-four"))
+            .await
+            .unwrap()
+            .id,
+        second.id,
+        "replay of committed first mail needs no new slot"
+    );
+    let cache_sizes = (
+        flow.state.track_area_cache.len(),
+        flow.state.card_role_cache.len(),
+    );
     assert!(matches!(
-        route(&flow, 3).add(input(&flow, "seventh-hop")).await,
-        Err(crate::mcp_server::tools::track_add::TrackAddRefusal::Create(CalmError::Conflict(_)))
+        creator.add(input(&flow, "quota-full")).await,
+        Err(crate::mcp_server::tools::track_add::TrackAddRefusal::Create(CalmError::Conflict(message)))
+            if message == crate::mail::RATE_LIMIT_MESSAGE
     ));
+    assert_eq!(
+        (
+            flow.state.track_area_cache.len(),
+            flow.state.card_role_cache.len()
+        ),
+        cache_sizes,
+        "quota refusal must precede write-through cache publication"
+    );
     let allocated: i64 =
         sqlx::query_scalar("SELECT count(*) FROM tracks WHERE creator_track_id=?1")
             .bind(&flow.track)

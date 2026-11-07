@@ -343,6 +343,55 @@ async fn planner_turn_budget_canonical_reset_and_corrupt_get() {
     }
 }
 
+#[tokio::test]
+async fn mail_quota_settings_validates_before_writing_and_can_reset() {
+    let (state, repo) = fresh_state().await;
+    let app = routes::application_router(state, super::auth::dev_auth_state());
+    for (value, status, stored) in [
+        (serde_json::json!("0/h"), 400, None),
+        (serde_json::json!("1001/h"), 400, None),
+        (serde_json::json!("5"), 400, None),
+        (serde_json::json!("5/m"), 400, None),
+        (serde_json::json!("+5/h"), 400, None),
+        (serde_json::json!("05/h"), 200, Some("5/h")),
+        (serde_json::Value::Null, 200, None),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put("/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "settings": {"mail_per_hour": value, "other": "sibling key"}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        let settings = repo.settings_get_all().await.unwrap();
+        if status == 400 {
+            assert!(settings.is_empty());
+        } else {
+            assert_eq!(
+                settings
+                    .iter()
+                    .find(|(key, _)| key == "mail_per_hour")
+                    .map(|(_, value)| value.as_str()),
+                stored
+            );
+            assert!(
+                settings
+                    .iter()
+                    .any(|(key, value)| key == "other" && value == "sibling key")
+            );
+        }
+    }
+}
+
 async fn area_owner_session() -> (axum::Router, AppState, Arc<SqlxRepo>, String) {
     let (state, repo) = fresh_state().await;
     let auth = super::auth::live_auth_state("owner", "fixture-password");

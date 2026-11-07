@@ -4,22 +4,19 @@
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
-import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
-import { useRef } from 'react';
 
 import type { AgentProvider } from '../../../../core/api/schemas.ts';
 import {
   unavailableCreationNote, type ProviderAvailability, type ManagedProviderAvailability, type AuthenticationRetryResponse,
 } from '../../../../core/domain/agent-providers.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
-import { useState } from '../../ui/state/public.ts';
-import { plannerTurnDuration, SETTINGS_FAILURES, SETTINGS_TEXT } from '../../../../core/domain/settings.ts';
-import { writeFailureText } from '../../../../core/domain/failure-class.ts';
-import { CONTROL_WIDTH, SettingRow, SettingsList, SettingsPane } from './public.tsx';
+import { plannerTurnDuration } from '../../../../core/domain/settings.ts';
+import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
+import { SettingEditor, type SettingEditorCopy, type SettingEditorProps } from './setting-editor.tsx';
 import styles from './settings.module.css';
 
 export type PlannersPaneProps = Readonly<{
-  turnDuration: PlannerTurnDurationProps;
+  turnDuration: SettingEditorProps;
   /** `undefined` means "still checking" — never render a guessed status. */
   providers: readonly PlannerProvider[] | undefined;
   loadError: string | null;
@@ -46,116 +43,18 @@ type PlannerProvider = Readonly<{
   accepts_unavailable_blank_track: ManagedProviderAvailability['accepts_unavailable_blank_track'];
 }>;
 
-/** Only this setting's value and capabilities; app owns the bag, transport and invalidation. */
-type PlannerTurnDurationProps = Readonly<{
-  value: string | undefined;
-  /** Successful-read counter: even an unchanged server value can supersede a save confirmation. */
-  readRevision: number;
-  loaded: boolean;
-  loadError: string | null;
-  onRetryLoad: () => void;
-  onSave: (value: string | null) => Promise<void>;
-}>;
-
-function durationText(value: string | undefined): string {
-  const parsed = plannerTurnDuration(value);
-  return parsed.ok ? String(parsed.minutes) : value!;
-}
-
-type DurationSave =
-  | Readonly<{ phase: 'idle' }>
-  | Readonly<{ phase: 'pending' | 'saved'; value: string }>
-  | Readonly<{ phase: 'failed'; value: string; message: string }>;
-
-function PlannerTurnDuration({ value, readRevision, loaded, loadError, onRetryLoad, onSave }: PlannerTurnDurationProps) {
-  const [seed, setSeed] = useState({ loaded, value, readRevision });
-  const [draft, setDraft] = useState(loaded ? durationText(value) : '');
-  const [changedElsewhere, setChangedElsewhere] = useState(false);
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const [save, setSave] = useState<DurationSave>({ phase: 'idle' });
-  // One active write. Editing stays available, but no queued or automatically replayed PUT exists.
-  const busy = useRef(false);
-  const acknowledged = useRef<string | undefined>(undefined);
-  const latestRead = useRef({ value, readRevision });
-  latestRead.current = { value, readRevision };
-  if (loaded && (!seed.loaded || seed.value !== value || seed.readRevision !== readRevision)) {
-    const incoming = durationText(value);
-    const clean = !seed.loaded || draft === durationText(seed.value);
-    setSeed({ loaded, value, readRevision });
-    acknowledged.current = undefined;
-    if (clean && !busy.current && save.phase === 'idle') {
-      setDraft(incoming);
-      setChangedElsewhere(false);
-      setSave({ phase: 'idle' });
-      setValidationError(null);
-    } else {
-      setChangedElsewhere(draft !== incoming && !(save.phase === 'pending' && save.value === incoming));
-      if (save.phase === 'saved' && save.value !== incoming) setSave({ phase: 'idle' });
-    }
-  }
-  const commit = (reset: boolean, explicit: boolean) => {
-    if (busy.current || !loaded) return;
-    const parsed = plannerTurnDuration(reset ? undefined : draft);
-    if (!parsed.ok) { setValidationError(parsed.error); return; }
-    const text = String(parsed.minutes);
-    // Leaving a failed field is not permission to silently retry it.
-    if (!reset && !explicit && save.phase === 'failed' && save.value === text) return;
-    if (!reset && save.phase !== 'failed' && (text === acknowledged.current
-      || (plannerTurnDuration(value).ok && text === durationText(value)))) return;
-    busy.current = true;
-    setDraft(text);
-    setChangedElsewhere(false);
-    setValidationError(null);
-    setSave({ phase: 'pending', value: text });
-    const submittedRevision = readRevision;
-    void (async () => {
-      try {
-        await onSave(reset ? null : text);
-        const read = latestRead.current;
-        if (read.readRevision !== submittedRevision && durationText(read.value) !== text) {
-          acknowledged.current = undefined;
-          setSave({ phase: 'idle' });
-          return;
-        }
-        acknowledged.current = text;
-        setSave({ phase: 'saved', value: text });
-      } catch (error: unknown) {
-        acknowledged.current = undefined;
-        setSave({ phase: 'failed', value: text,
-          message: writeFailureText(SETTINGS_FAILURES, SETTINGS_TEXT)(error) ?? SETTINGS_TEXT.unknown });
-      } finally { busy.current = false; }
-    })();
-  };
-  const stored = plannerTurnDuration(value);
-  const parsedDraft = plannerTurnDuration(draft);
-  const inputError = parsedDraft.ok ? null
-    : !stored.ok && draft === durationText(value)
-      ? `Stored duration is invalid. ${stored.error} Restore default to repair it.`
-      : validationError ?? parsedDraft.error;
-  return <SettingsList>
-    <SettingRow title="Maximum turn duration" titleSuffix="minutes"
-      control={<div className={styles.durationControl}>
-        {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-        {!loaded ? loadError === null && <span role="status">Loading duration…</span> : <>
-          <AstryxTextInput label="Maximum turn duration (minutes)" value={draft} width={CONTROL_WIDTH}
-            ref={(input) => { if (input !== null) input.inputMode = 'numeric'; }}
-            description="Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; retrying an unconfirmed start keeps its frozen budget. Hold waiting time does not count. Backends without steer support receive only the budget reminder at the start of the turn, without a mid-turn warning."
-            status={inputError === null ? undefined : { type: 'error', message: inputError }}
-            onChange={(next) => { setDraft(next); setValidationError(null); }}
-            onBlur={() => commit(false, false)}
-            onEnter={() => commit(false, true)} />
-          <AstryxButton label="Restore default duration" variant="secondary" isDisabled={save.phase === 'pending'}
-            onPointerDown={(event) => event.preventDefault()} onClick={() => commit(true, true)}>Restore default</AstryxButton>
-          {save.phase === 'failed' && <p className={styles.error} role="alert">{save.value} minutes: {save.message} Press Enter to try again or restore default.</p>}
-          <span role="status">{save.phase === 'pending' ? `Saving ${save.value} minutes…`
-            : save.phase === 'saved' && save.value === draft ? 'Saved.'
-              : draft !== durationText(value) ? 'Your edit is not saved.' : ''}</span>
-          {save.phase === 'pending' && save.value !== draft && <span role="status">Your new edit is not saved. Press Enter after this save finishes.</span>}
-          {changedElsewhere && <span role="status">Changed elsewhere. Your edit is retained; review it before saving.</span>}
-        </>}
-      </div>} />
-  </SettingsList>;
-}
+const TURN_DURATION: SettingEditorCopy = Object.freeze({
+  label: 'Maximum turn duration (minutes)',
+  unit: 'minutes',
+  inputMode: 'numeric',
+  name: 'duration',
+  description: 'Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; retrying an unconfirmed start keeps its frozen budget. Hold waiting time does not count. Backends without steer support receive only the budget reminder at the start of the turn, without a mid-turn warning.',
+  resetLabel: 'Restore default duration',
+  parse(value: string | undefined) {
+    const parsed = plannerTurnDuration(value);
+    return parsed.ok ? { ok: true as const, text: String(parsed.minutes) } : parsed;
+  },
+});
 
 const PROVIDER_LABELS: Readonly<Record<AgentProvider, string>> = Object.freeze({ codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', grok: 'Grok', antigravity: 'Antigravity' });
 
@@ -195,7 +94,10 @@ export function PlannersPane({
       title="Planners"
       lede="Which Planner providers this server can run right now, and how to fix one that cannot."
     >
-      <PlannerTurnDuration {...turnDuration} />
+      <SettingsList>
+        <SettingRow title="Maximum turn duration" titleSuffix={TURN_DURATION.unit}
+          control={<SettingEditor {...turnDuration} copy={TURN_DURATION} />} />
+      </SettingsList>
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
       {providers === undefined
         ? loadError === null && <AstryxText as="p" color="secondary">Checking providers…</AstryxText>

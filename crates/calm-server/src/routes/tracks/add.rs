@@ -141,13 +141,15 @@ impl CreatorAdmission {
         Ok(track)
     }
 
-    pub(super) async fn first_mail_tx(
+    pub(super) async fn admit_first_mail_tx(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
-        recipient: &Track,
-    ) -> Result<(crate::event::EventScope, crate::event::Event)> {
+    ) -> Result<(crate::mail::AdmittedSender, i64)> {
         let sender =
             crate::db::sqlite::track_get_tx(tx, &self.creator_track_id.clone().into()).await?;
+        let sender = crate::mail::admit_send_tx(tx, sender)
+            .await?
+            .ok_or_else(|| CalmError::Conflict(crate::mail::RATE_LIMIT_MESSAGE.into()))?;
         let hop = crate::mail::creator_hop_tx(
             tx,
             &self.creator_track_id,
@@ -155,9 +157,18 @@ impl CreatorAdmission {
             self.session.as_str(),
         )
         .await?;
+        Ok((sender, hop))
+    }
+
+    pub(super) async fn first_mail_tx(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        recipient: &Track,
+        (sender, hop): (crate::mail::AdmittedSender, i64),
+    ) -> Result<(crate::event::EventScope, crate::event::Event)> {
         let (_, event) = crate::mail::write_mail_tx(
             tx,
-            &sender,
+            sender,
             recipient,
             &self.summary,
             &self.text,

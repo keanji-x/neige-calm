@@ -1,5 +1,23 @@
 # #2130 — Mail between the Tracks of one Area
 
+## Hourly quota (PR #3252)
+
+Deployment owners set **Sending limit** in **Settings → Mail**. The
+default is five messages per sending Track in a rolling 60-minute window.
+Enter the hourly count, such as `5`. The count can be 1 to 1000, and changes apply
+to subsequent sends as soon as they are saved.
+Direct mail, replies and the first mail to a Planner-created Track share the
+sender's quota across turns and recipients. The writer counts recent stored
+mail and commits the new mail and wake in the same transaction. A full quota
+refuses the send with `rate_limit` and leaves no mail or wake. A first-mail
+quota refusal happens before Track allocation. Replaying a committed allocation
+does not send another mail.
+
+Causal hops remain recorded as positive numbers. CLI and MCP show hop strings
+such as `"7"`. In a recorded turn, `mail cat` reports `refused: true` and
+`next_hop: null` when the sender's quota is full. The following sections record
+the original S1 design, including its former hop ceiling and display format.
+
 **Owner rules (bind every section).** (1) Simple first, pain points only: the fewest mechanisms
 that cover the observed scenario; hypotheticals are one-line KNOWN GAPS (§10). (2) Compatibility
 means the 4140 database only (§11). (3) Only hazards this feature introduces get a mechanism; each

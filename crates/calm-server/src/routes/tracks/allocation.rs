@@ -129,6 +129,15 @@ pub(super) async fn allocate_track_structure_tx(
     if let Some(creator) = &creator {
         creator.admit_tx(tx).await?;
     }
+    // A quota refusal must precede row allocation and its write-through caches.
+    let first_mail = if matches!(context, CreationContext::CreatorCanonical) {
+        let creator = creator
+            .as_ref()
+            .ok_or_else(|| CalmError::Internal("creator admission missing".into()))?;
+        Some((creator, creator.admit_first_mail_tx(tx).await?))
+    } else {
+        None
+    };
     calm_truth::db::sqlite::admit_attached_workspace_tx(
         tx,
         &p.cwd,
@@ -367,11 +376,8 @@ pub(super) async fn allocate_track_structure_tx(
     }
 
     let mut events = structure.creation_events(&track, &actor_id_for_tx, creation_message);
-    if matches!(context, CreationContext::CreatorCanonical) {
-        let creator = creator
-            .as_ref()
-            .ok_or_else(|| CalmError::Internal("creator admission missing".into()))?;
-        let (scope, event) = creator.first_mail_tx(tx, &track).await?;
+    if let Some((creator, admitted)) = first_mail {
+        let (scope, event) = creator.first_mail_tx(tx, &track, admitted).await?;
         events.push((ActorId::Kernel, scope, event));
     }
     if let Some(projection) = init_projection {

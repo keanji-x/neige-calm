@@ -62,7 +62,7 @@ async fn u9_canonical_creator_real_turn_facts() {
         )
         .await;
         assert!(
-            sent.is_ok() && cat["next_hop"] == "1/6" && cat["refused"] == false,
+            sent.is_ok() && cat["next_hop"] == "1" && cat["refused"] == false,
             "ordinary mail::send/cat: send={sent:?}; cat={cat:?}"
         );
         flow.end(TURN).await;
@@ -80,8 +80,8 @@ async fn u9_canonical_creator_real_turn_facts() {
             wake["text"],
             crate::mail::wake_line(&flow.track, "", "hello", sent["mail_id"].as_str().unwrap())
         );
-        assert_eq!(sent["hop"], "1/6");
-        assert_eq!(cat["next_hop"], "1/6");
+        assert_eq!(sent["hop"], "1");
+        assert_eq!(cat["next_hop"], "1");
         assert_eq!(cat["refused"], false);
         assert_eq!(
             facts.unwrap(),
@@ -161,12 +161,12 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
                 )
                 .await
                 .unwrap();
-                assert_eq!(first["hop"], "1/6");
+                assert_eq!(first["hop"], "1");
                 let mail = incoming(&flow, other, 3).await;
                 let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":mail}))
                     .await
                     .unwrap();
-                assert_eq!(cat["next_hop"], "4/6");
+                assert_eq!(cat["next_hop"], "4");
                 assert_eq!(cat["refused"], false);
                 let stamp: i64 = sqlx::query_scalar("SELECT read_at FROM mails WHERE id=?1")
                     .bind(&mail)
@@ -191,29 +191,21 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
                 )
                 .await
                 .unwrap();
-                assert_eq!(sent["hop"], "4/6");
-                let limit = incoming(&flow, other, 6).await;
-                let refused = tool(
+                assert_eq!(sent["hop"], "4");
+                let high = incoming(&flow, other, 6).await;
+                let reply = tool(
                     &flow,
                     "neige_mail_send",
-                    json!({"mail_id":limit,"summary":"reply","text":"seventh"}),
+                    json!({"mail_id":high,"summary":"reply","text":"seventh hop"}),
                 )
                 .await
-                .unwrap_err();
-                assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
-                let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":limit}))
+                .unwrap();
+                assert_eq!(reply["hop"], "7");
+                let cat = tool(&flow, "neige_mail_cat", json!({"mail_id":high}))
                     .await
                     .unwrap();
-                assert_eq!(cat["next_hop"], Value::Null);
-                assert_eq!(cat["refused"], true);
-                let refused = tool(
-                    &flow,
-                    "neige_mail_send",
-                    json!({"track_id":other,"summary":"send","text":"seventh"}),
-                )
-                .await
-                .unwrap_err();
-                assert_eq!(refused.data.unwrap()["refusal"], "hop_limit");
+                assert_eq!(cat["next_hop"], "7");
+                assert_eq!(cat["refused"], false);
                 flow.report("Second real System turn").await;
                 flow.end("system-mail-turn").await;
                 let call = flow.next().await.unwrap();
@@ -225,7 +217,7 @@ async fn u9_canonical_turn_owner_system_hops_and_turn_read_isolation() {
                 )
                 .await
                 .unwrap();
-                assert_eq!(sent["hop"], "1/6");
+                assert_eq!(sent["hop"], "1");
                 flow.end("system-mail-turn-two").await;
                 flow.fixture
                     .wait_phase(&flow.track, HarnessPhaseTag::TurnCompleted)

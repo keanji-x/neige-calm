@@ -4,9 +4,9 @@ use serde_json::{Value, json};
 
 use super::track_mail_fixture::{World, mail_and_hop, refusal};
 
-/// No recorded turn and a refused hop are distinct structured results.
+/// No recorded turn and a full quota are distinct structured results.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mail_cat_without_a_turn_is_not_a_hop_refusal() {
+async fn mail_cat_without_a_turn_is_not_a_quota_refusal() {
     let w = World::new(&["A", "B"]).await;
     let (a, b) = (w.p(0), w.p(1));
     let mail = w.seed_mail(&a.track_id, &b.track_id, 6).await;
