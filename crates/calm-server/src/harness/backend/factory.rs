@@ -330,6 +330,50 @@ impl<'a> PlannerFactory<'a> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn codex_readiness_survives_connection_core_contention() {
+        use crate::db::sqlite::SqlxRepo;
+        use crate::shared_codex_appserver::native_owner_tests::{
+            connect, hold_connected_client_gate,
+        };
+        use std::time::Duration;
+
+        let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let daemon = SharedCodexAppServer::new_stub(repo);
+        let claude = Arc::new(ClaudePlannerHost::unconfigured_scratch().unwrap());
+        let acp = Arc::new(AcpPlannerHost::unconfigured_scratch().unwrap());
+        let factory = PlannerFactory::new(Arc::downgrade(&daemon), &claude, &acp);
+        let provider = AgentProvider::Codex;
+
+        assert!(matches!(
+            factory.ready_retained(&provider).await,
+            Err(CalmError::Internal(_))
+        ));
+        assert!(matches!(
+            factory.ready(&provider, ReadinessFor::RestoreOrSend).await,
+            Err(CalmError::ServiceUnavailable(_))
+        ));
+
+        let (_client, _peer) = connect(&daemon).await;
+        assert!(factory.ready_retained(&provider).await.is_ok());
+        let core = hold_connected_client_gate(&daemon).await;
+        let retained =
+            tokio::time::timeout(Duration::from_secs(5), factory.ready_retained(&provider)).await;
+        let restore = tokio::time::timeout(
+            Duration::from_secs(5),
+            factory.ready(&provider, ReadinessFor::RestoreOrSend),
+        )
+        .await;
+        drop(core);
+
+        retained
+            .expect("readiness must not wait for the connection core")
+            .expect("a published Running daemon must admit retained startup");
+        restore
+            .expect("readiness must not wait for the connection core")
+            .expect("a published Running daemon must admit restore/send");
+    }
+
     #[test]
     fn factory_pre_checkpoint_replay_excludes_acp_receipt_recovery() {
         assert!(PlannerFactory::pre_checkpoint_replay_eligible(

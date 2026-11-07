@@ -139,6 +139,33 @@ async fn daemon() -> Arc<SharedCodexAppServer> {
     SharedCodexAppServer::new_stub(repo)
 }
 
+#[tokio::test]
+async fn running_daemon_core_contention_cannot_prove_worker_death() {
+    use calm_exec::WorkerProvider;
+    use calm_types::worker::DeathVerdict;
+
+    let daemon = daemon().await;
+    let worker = provider::worker::CodexProvider::new("/unused-supervisor.sock", daemon.clone());
+    assert_eq!(
+        worker.confirm_durable_death("thread", 0, 1_000).await,
+        DeathVerdict::Dead
+    );
+
+    let (_client, _peer) = connect(&daemon).await;
+    let core = hold_connected_client_gate(&daemon).await;
+    let verdict = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker.confirm_durable_death("thread", daemon.daemon_connected_at_ms(), 1_000),
+    )
+    .await;
+    drop(core);
+
+    assert_eq!(
+        verdict.expect("a running daemon's rebuild grace requires no connection-core wait"),
+        DeathVerdict::Unknown
+    );
+}
+
 pub(crate) async fn request(peer: &mut Peer) -> Value {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {

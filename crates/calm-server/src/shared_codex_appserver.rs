@@ -1616,9 +1616,8 @@ impl SharedCodexAppServer {
         self.harness_notifications.subscribe()
     }
 
-    /// Whether a Running daemon is installed, read from the readiness channel (#1817): unlike
-    /// [`Self::is_running`]'s `try_lock`, never a spurious `false` while another task holds the
-    /// core lock, so an availability answer cached for 30 s does not record one.
+    /// Whether a Running daemon is installed, read from the readiness channel (#1817).
+    /// Core-lock contention does not change the published incarnation's readiness.
     pub fn is_running_per_readiness(&self) -> bool {
         #[cfg(feature = "fixtures")]
         if self.fake.is_some() {
@@ -1628,13 +1627,7 @@ impl SharedCodexAppServer {
     }
 
     pub fn is_running(&self) -> bool {
-        #[cfg(feature = "fixtures")]
-        if self.fake.is_some() {
-            return true;
-        }
-        self.core
-            .try_lock()
-            .is_ok_and(|core| matches!(core.state, SupervisorState::Running { .. }))
+        self.is_running_per_readiness()
     }
 
     pub fn remote_uri(&self) -> String {
