@@ -40,57 +40,40 @@ fn classify_proc_stat(stat: std::io::Result<String>) -> ProcessObservation {
     }
 }
 
-/// Observe macOS identity and state together. XNU's `arg=1` includes the zombie
-/// list when no live process is found; only ESRCH from that lookup proves absence.
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{MacProcess, observe_macos_group, read_macos_process};
+
+/// Includes zombies; denied, incomplete and invalid native reads remain unknown.
 #[cfg(target_os = "macos")]
 pub fn observe_process(pid: i32) -> ProcessObservation {
     if pid <= 0 {
         return ProcessObservation::Absent;
     }
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-    // SAFETY: proc_bsdinfo contains only integer fields and arrays; zero is valid.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    // SAFETY: info is writable for exactly size bytes; no pointers escape.
-    let written = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            1,
-            std::ptr::from_mut(&mut info).cast(),
-            size,
-        )
-    };
-    let error = (written == 0).then(std::io::Error::last_os_error);
-    classify_bsd_info(pid, written, error.and_then(|e| e.raw_os_error()), &info)
+    classify_macos_process(read_macos_process(pid))
 }
 
 #[cfg(target_os = "macos")]
+fn classify_macos_process(process: std::io::Result<Option<MacProcess>>) -> ProcessObservation {
+    match process {
+        Ok(Some(process)) => ProcessObservation::Present {
+            start_time: process.start_time,
+            is_zombie: process.is_zombie,
+        },
+        Ok(None) => ProcessObservation::Absent,
+        Err(_) => ProcessObservation::Unknown,
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
 fn classify_bsd_info(
     pid: i32,
     written: i32,
     error: Option<i32>,
     info: &libc::proc_bsdinfo,
 ) -> ProcessObservation {
-    if written == 0 && error == Some(libc::ESRCH) {
-        return ProcessObservation::Absent;
-    }
-    if written != std::mem::size_of::<libc::proc_bsdinfo>() as i32
-        || info.pbi_pid != pid as u32
-        || info.pbi_start_tvusec >= 1_000_000
-    {
-        return ProcessObservation::Unknown;
-    }
-    let start = info
-        .pbi_start_tvsec
-        .checked_mul(1_000_000)
-        .and_then(|sec| sec.checked_add(info.pbi_start_tvusec));
-    match start {
-        Some(start_time) if start_time != 0 => ProcessObservation::Present {
-            start_time,
-            is_zombie: info.pbi_status == libc::SZOMB,
-        },
-        _ => ProcessObservation::Unknown,
-    }
+    classify_macos_process(macos::classify_bsd_info(pid, written, error, info))
 }
 
 /// Unsupported platforms cannot establish presence or absence.

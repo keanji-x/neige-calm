@@ -506,54 +506,7 @@ impl RepoOutOfDomain for SqlxRepo {
         backend_id: &str,
         update: SharedCodexDaemonUpdate,
     ) -> Result<()> {
-        let now = now_ms();
-        let start_time = update
-            .process_start_time
-            .and_then(|v| i64::try_from(v).ok());
-        (self.db)
-            .writer()
-            .execute(
-                sqlx::query(
-                    r#"INSERT INTO codex_backend_daemons
-                   (backend_id, state, pid, pgid, sock_path, codex_home_path, process_start_time,
-                    boot_id, started_at, updated_at, restart_count, last_error,
-                    daemon_env_signature, paths_are_legacy_display)
-               VALUES
-                   (?13, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                    CASE WHEN ?10 THEN 1 ELSE 0 END, ?11, ?12, ?14)
-               ON CONFLICT(backend_id) DO UPDATE SET
-                   state = excluded.state,
-                   pid = excluded.pid,
-                   pgid = excluded.pgid,
-                   paths_are_legacy_display = excluded.paths_are_legacy_display,
-                   sock_path = excluded.sock_path,
-                   codex_home_path = excluded.codex_home_path,
-                   process_start_time = excluded.process_start_time,
-                   boot_id = excluded.boot_id,
-                   started_at = excluded.started_at,
-                   updated_at = excluded.updated_at,
-                   restart_count = codex_backend_daemons.restart_count
-                       + CASE WHEN ?10 THEN 1 ELSE 0 END,
-                   last_error = excluded.last_error,
-                   daemon_env_signature = excluded.daemon_env_signature"#,
-                )
-                .bind(update.state.as_db_str())
-                .bind(update.pid)
-                .bind(update.pgid)
-                .bind(&update.sock_path)
-                .bind(&update.codex_home_path)
-                .bind(start_time)
-                .bind(&update.boot_id)
-                .bind(update.started_at)
-                .bind(now)
-                .bind(update.increment_restart_count)
-                .bind(&update.last_error)
-                .bind(&update.daemon_env_signature)
-                .bind(backend_id)
-                .bind(update.paths_are_legacy_display),
-            )
-            .await?;
-        Ok(())
+        super::shared_daemon_runtime::write(&self.db, backend_id, update).await
     }
 
     async fn shared_daemon_record_event(

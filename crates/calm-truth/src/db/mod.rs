@@ -76,8 +76,12 @@ pub struct TrackEvent {
     pub event: Event,
 }
 
+mod shared_daemon_recovery;
+pub use shared_daemon_recovery::{DaemonRecovery, RecoveryId, RecoveryWrite};
+
 #[derive(Debug, Clone)]
 pub struct SharedCodexDaemonRecord {
+    pub recovery: DaemonRecovery,
     pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
@@ -105,6 +109,7 @@ pub struct SessionCardIdentity {
 
 #[derive(Debug, Clone)]
 pub struct SharedCodexDaemonUpdate {
+    pub recovery: RecoveryWrite,
     pub state: SharedDaemonState,
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
