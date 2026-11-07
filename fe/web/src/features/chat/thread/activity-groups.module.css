@@ -45,26 +45,16 @@
   /* Preserve the vendor's status role and dimensions; its direct SVG is replaced by our execution mark, which is portalled in as a direct SVG child too and must stay painted. */
   .group [role='status'] > svg:not([data-nc-motion]) { display: none; }
 
-  /* Remove only completed calls' tinted disks; failure glyphs keep their error treatment. */
-  .group div:has(> span > [data-nc-tool-complete]) > span:first-child > span:first-child,
-  .group[data-nc-last-complete] > [aria-expanded='false'] > span:first-child > span:first-child { display: none; }
-
-  /* The completed-call marker has no visual box. Status announcements and
-     error descriptions now belong to Astryx itself. */
-  .srOnly {
-    position: absolute;
-    inline-size: 1px;
-    block-size: 1px;
-    margin: calc(-1 * var(--space-px));
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
+  /* Summary and detail disclosures share the column's trailing edge. The
+     vendor's expanded summary label otherwise wraps beside its fixed icons. */
+  .group[role='group'] > [aria-expanded] > span:last-child {
+    margin-inline-start: auto;
   }
 
-  /* The completed-call marker uses the stats slot without consuming a
-     flex item or an extra gap in the command's available width. */
-  .group :has(> .srOnly) {
-    display: contents;
+  .group[role='group'] > [aria-expanded='true'] > span:nth-child(2) {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }

@@ -26,11 +26,14 @@ it('uses the execution mark in a collapsed and expanded tool group and removes i
   expect(container.querySelector('[role="status"]')!.checkVisibility()).toBe(false);
 });
 
-it('shows a plain check without the vendor disk on a completed group', () => {
-  const { container } = render(<ChatThread hasPendingMessages={false} canContinue={false} conversation={conversation} turns={[action('first', 'done'), action('second', 'done')]} cards={{}} stalled={false} />);
+it('replaces the running animation with a visible completion icon', () => {
+  const props = { hasPendingMessages: false, canContinue: false, conversation, cards: {}, stalled: false };
+  const { container, rerender } = render(<ChatThread {...props} turns={[action('first', 'done'), action('second', 'running')]} pending />);
+  expect(container.querySelector('[data-nc-motion]')!.checkVisibility()).toBe(true);
+  rerender(<ChatThread {...props} turns={[action('first', 'done'), action('second', 'done')]} />);
   const icon = container.querySelector('[aria-expanded="false"] > span:first-child')!;
-  expect(getComputedStyle(icon.firstElementChild!).display).toBe('none');
-  expect(icon.querySelector('svg')).not.toBeNull();
+  expect(icon.querySelector('svg')!.checkVisibility()).toBe(true);
+  expect(icon.querySelector('svg')!.getBoundingClientRect().width).toBeGreaterThan(0);
   expect(container.querySelector('[data-nc-motion]')).toBeNull();
 });
 

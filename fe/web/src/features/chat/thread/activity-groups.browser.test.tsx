@@ -609,3 +609,43 @@ it('reads OpenCode thoughts and tool details as live items update and a reply fo
   expect(screen.getByText('Checking the inventory and shop counts')).toBeTruthy();
   expect(screen.getByText('Inventory checked.')).toBeTruthy();
 });
+
+// Measure painted glyphs and row geometry: fitting scrollWidth alone also passes
+// when a status icon is hidden or the summary label wraps beside its chevron.
+it('keeps completed status icons painted for lone, collapsed and expanded calls', () => {
+  const props = { hasPendingMessages: false, canContinue: false, cards: {}, stalled: false, conversation: conversation() };
+  const { container, rerender } = render(<ChatThread {...props} turns={[activity('thought', { verb: 'Thought', target: null })]} />);
+  const expectStatus = (label: string) => {
+    const name = screen.getByText(label);
+    const glyph = name.previousElementSibling!.querySelector('svg')!;
+    expect(glyph).not.toBeNull();
+    expect(visible(glyph)).toBe(true);
+    expect(glyph.getBoundingClientRect().width).toBeGreaterThan(0);
+  };
+  expectStatus('Thought');
+  rerender(<ChatThread {...props} turns={[activity('thought', { verb: 'Thought', target: null }), activity('search', { verb: 'Searched the web', target: null })]} />);
+  const button = groupButton(container);
+  const collapsedGlyph = button.firstElementChild!.querySelector('svg')!;
+  expect(visible(collapsedGlyph)).toBe(true);
+  act(() => { fireEvent.click(button); });
+  expectStatus('Thought');
+  // The hidden collapsed summary is unmounted when the group opens.
+  expectStatus('Searched the web');
+});
+
+it.each([100, 280])('keeps a %ipx group summary on one line and aligns its chevron with detail rows', (width) => {
+  const { container } = render(<div style={{ width }}>
+    <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()}
+      turns={[activity('thought', { verb: 'Thought', target: null, detail: 'Reasoning' }), activity('search', { verb: 'Searched the web', target: null, detail: 'Results' })]} />
+  </div>);
+  const button = groupButton(container);
+  act(() => { fireEvent.click(button); });
+  const summary = screen.getByText('2 tool calls');
+  expect(summary.getBoundingClientRect().height).toBeLessThanOrEqual(parseFloat(getComputedStyle(summary).lineHeight) + 1);
+  const headerChevron = button.lastElementChild!.getBoundingClientRect();
+  const row = screen.getByText('Thought').parentElement!;
+  const detailChevron = row.lastElementChild!.getBoundingClientRect();
+  expect(Math.abs(headerChevron.right - detailChevron.right)).toBeLessThanOrEqual(1);
+  const headerIcon = button.firstElementChild!.getBoundingClientRect();
+  expect(Math.abs((headerIcon.top + headerIcon.bottom) / 2 - (headerChevron.top + headerChevron.bottom) / 2)).toBeLessThanOrEqual(1);
+});

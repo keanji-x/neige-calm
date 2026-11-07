@@ -117,11 +117,8 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
           if (event.key === 'Enter' || event.key === ' ') noteToggle(event);
         }}
         data-nc-entry={entry}
-        {...(calls[calls.length - 1]?.status === 'complete' ? { 'data-nc-last-complete': '' } : {})}
         {...(live ? { 'data-nc-live': '' } : {})}
-        calls={calls.map((call) => (call.status === 'complete'
-          ? { ...call, stats: <><span className={styles.srOnly} data-nc-tool-complete="" aria-hidden="true" />{call.stats}</> }
-          : call))}
+        calls={[...calls]}
       />
       {live && motionHosts.map((host, index) => createPortal(<NeigeMotion kind="execution" />, host, String(index)))}
     </>

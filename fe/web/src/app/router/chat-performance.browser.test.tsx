@@ -156,7 +156,7 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
     if (count === 120) {
       expect(document.querySelectorAll('img[alt="Probe image"]').length).toBe(7);
       await expect.poll(() => [...document.querySelectorAll<HTMLImageElement>('img[alt="Probe image"]')].filter((image) => image.complete && image.naturalWidth > 0).length).toBeGreaterThan(0);
-      expect(document.querySelectorAll('[data-nc-tool-complete]').length).toBe(12);
+      expect(page.getByText(/^echo probe-\d+$/).elements()).toHaveLength(12);
     } else expect(document.querySelectorAll('[data-nc-turn="unknown"], [data-nc-turn="agent"]').length).toBe(count + 1);
     const loaded = { durationMs: performance.now() - start, ...snapshot(), domElements: document.querySelectorAll('#root *').length,
       loadedImages: [...document.querySelectorAll<HTMLImageElement>('img[alt="Probe image"]')].filter((image) => image.complete && image.naturalWidth > 0).length };
