@@ -305,6 +305,16 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
         "1.5.0",
     )
     .await;
+    // AppState::boot builds the stack; application_boot invokes this separate recovery phase.
+    // Keep the real Codex daemon unavailable while exercising ACP's production boot owner.
+    calm_server::recover_harnesses_after_daemon_boot(
+        &stack.state,
+        Err(calm_server::error::CalmError::Internal(
+            "fixture: Codex daemon unavailable".into(),
+        )),
+    )
+    .await
+    .unwrap();
     for (card, code) in [
         (&ask, "acp_permission_rejected"),
         (&never, "acp_permission_denied"),
