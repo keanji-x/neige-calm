@@ -231,6 +231,10 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     })
     .await
     .unwrap();
+    // Keep the genuine in-flight checkpoint while the Ask is held. A crash before terminal
+    // projection must restore this checkpoint, not the later, already-consumed END state.
+    let ask_runtime = stack.runtime(&ask).await;
+    let recovery_checkpoint = ask_runtime.handle_state_json.clone().unwrap();
     for card in [&full, &never] {
         let (status, body) = stack.post_input(card, "operation").await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -275,14 +279,18 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     stack.shutdown().await;
     // Model a crash after durable receipt settlement but before transcript projection. Recovery
     // must rebuild the reason from the receipt, rather than relying on the earlier live row.
-    let cards = [ask.clone(), never.clone()];
+    let card = ask.clone();
     db.writer()
         .with_writer(|session| {
             Box::pin(async move {
                 let mut tx = session.begin_immediate().await.unwrap();
-                for card in cards {
-                    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
-                }
+                delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
+                sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+                    .bind(&ask_runtime.id)
+                    .bind(serde_json::to_string(&recovery_checkpoint).unwrap())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
                 tx.commit().await.unwrap();
             })
         })
