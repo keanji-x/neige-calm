@@ -18,7 +18,7 @@ it.each([[224, 16], [280, 16], [280, 20], [280, 32]])('keeps real Planner compos
   const model = 'gpt-6-astra-with-a-deliberately-long-identifier';
   const catalog: ModelCatalog = { models: [{ id: 'model', model, resolved_model: null, display_name: 'A deliberately long model name', description: '',
     is_default: true, supported_reasoning_efforts: efforts, default_reasoning_effort: 'high' }],
-    default: { model, reasoning_effort: 'high', supported_reasoning_efforts: efforts }, default_source: 'config_read', source: 'live', fetched_at_ms: 1 };
+    default: { model, reasoning_effort: 'high', supported_reasoning_efforts: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1 };
   renderPlannerSwitchFixture({ reply: request => request.path.startsWith('/api/models?') ? { status: 200, statusText: 'OK', body: catalog } : undefined });
   await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   const input = page.getByRole('combobox', { name: 'Message' });
