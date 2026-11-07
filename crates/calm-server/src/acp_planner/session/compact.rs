@@ -132,19 +132,6 @@ impl AcpPlannerSession {
             .map_err(|e| CompactFailure::Before(start::registration_error(e).into()))?;
         super::super::execution::validate_registration(registration)
             .map_err(CompactFailure::Before)?;
-        if registration.profile.shared_server {
-            return server::compact(
-                shared,
-                registration,
-                &native,
-                wire,
-                target,
-                selection,
-                admission,
-                track_fence,
-            )
-            .await;
-        }
         let engine = crate::provider_execution::engine(params.engine.as_ref())
             .map_err(CompactFailure::Before)?;
         let turn = uuid::Uuid::new_v4().to_string();
@@ -286,7 +273,7 @@ impl AcpPlannerSession {
         let owner = shared.admission(thread, Some(permission), Some(&native), Some(&turn));
         let combined = admission.combined(&owner);
         let result = match wire {
-            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt => {
+            CompactionWire::StandardPrompt => {
                 protocol::prompt(
                     &client,
                     &capabilities,
@@ -382,20 +369,14 @@ pub(super) struct Correlation {
 impl Correlation {
     pub(super) fn confirmed(&self, wire: CompactionWire, result: Value) -> Result<bool> {
         let ended = match wire {
-            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt => {
+            CompactionWire::StandardPrompt => {
                 let result: protocol::PromptResponse =
                     protocol::decode(result).map_err(wire_error)?;
                 matches!(result.stop_reason, protocol::StopReason::EndTurn)
             }
             CompactionWire::XaiExtension => grok_compaction::empty_response(&result),
         };
-        Ok(ended
-            && match wire {
-                CompactionWire::CommandPrompt => self.settled != Some(false),
-                CompactionWire::StandardPrompt | CompactionWire::XaiExtension => {
-                    self.settled == Some(true)
-                }
-            })
+        Ok(ended && self.settled == Some(true))
     }
 
     pub(super) fn observe(
@@ -406,9 +387,7 @@ impl Correlation {
         native: &str,
     ) -> Result<()> {
         match wire {
-            CompactionWire::StandardPrompt | CompactionWire::CommandPrompt
-                if method == "session/update" =>
-            {
+            CompactionWire::StandardPrompt if method == "session/update" => {
                 self.update(params, native)
             }
             CompactionWire::XaiExtension => {

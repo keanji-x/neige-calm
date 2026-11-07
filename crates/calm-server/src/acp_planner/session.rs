@@ -8,12 +8,9 @@ mod input;
 mod issuance;
 mod normal_join;
 mod recovery;
-mod server;
 mod setup;
 use cancellation::IssueGuard;
 use input::InputContract;
-pub(super) use server::Server;
-pub(crate) use server::detach_worker;
 mod execution_end;
 use super::{config::AcpPlannerHost, execution::Process, process::setup_request};
 use crate::db::sqlite::{
@@ -268,12 +265,10 @@ impl AcpPlannerSession {
         let stopped = self
             .stop_execution(crate::provider_execution::StopReason::Shutdown)
             .await;
-        let detached = detach_worker(&params.host, &params.worker_session_id).await;
         // Cleanup errors never detach the writer: recovery waits for all its writes.
         join_driver(&self.shared).await?;
         revoked?;
         stopped?;
-        detached?;
         Ok(())
     }
 }
@@ -323,11 +318,6 @@ async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Resu
             .ok_or_else(|| CalmError::NotFound("ACP owner".into()))?;
             if !row.state.is_active_authority() || row.thread_id.as_deref() != Some(&thread) {
                 return Err(CalmError::Conflict("ACP native owner changed".into()));
-            }
-            if super::profile::AcpAgentProfile::of(&provider)
-                .is_some_and(|profile| profile.shared_server)
-            {
-                server::ensure_native_owner(&mut **tx, &provider, &worker, &native).await?;
             }
             crate::db::sqlite::session_bind_attribution_tx(
                 tx,
@@ -394,18 +384,6 @@ fn cancel_outcome(
             error,
             evidence: provider::control::SubmissionEvidence::NotWritten,
         },
-    }
-}
-
-#[cfg(all(test, feature = "fixtures"))]
-impl AcpPlannerSession {
-    pub(crate) fn stop_fault_scope_for_test(&self) -> String {
-        self.shared
-            .params
-            .host
-            .agent_logs
-            .to_string_lossy()
-            .into_owned()
     }
 }
 

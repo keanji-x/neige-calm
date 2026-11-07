@@ -29,18 +29,25 @@ async fn assert_canonical(stack: &Stack, card: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canonical_antigravity_cards_share_server_cancel_independently_and_revoke_archive() {
+async fn canonical_antigravity_processes_cancel_independently_and_revoke_turn_authority() {
     let root = Root::new("unused");
-    let stack = boot_as(&root, "antigravity", json!({
-        "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0", "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
-    }), "1.5.0").await;
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"antigravity-acp", "ACP_FIXTURE_VERSION":"1.4.5",
+            "ACP_FIXTURE_CLOSE":"0", "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
+        }),
+        "1.4.5",
+    )
+    .await;
     let (track, first) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     let (_, second) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
-    std::fs::write(root.path().join("scenario"), "shared-hold").unwrap();
+    std::fs::write(root.path().join("scenario"), "hold").unwrap();
     for card in [&first, &second] {
         let (status, body) = stack.post_input(card, "canonical concurrent request").await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -55,6 +62,22 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     let first_native = stack.runtime(&first).await.session_id.unwrap();
     let second_native = stack.runtime(&second).await.session_id.unwrap();
     assert_ne!(first_native, second_native);
+    let token = |native: &str| {
+        std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap()
+    };
+    let first_token = token(&first_native);
+    let second_token = token(&second_native);
+    assert!(stack.token_authenticates(&first_token).await);
+    assert!(stack.token_authenticates(&second_token).await);
+    let stream = tokio::net::UnixStream::connect(stack.mcp_socket())
+        .await
+        .unwrap();
+    let mut stream = tokio::io::BufReader::new(stream);
+    let initialized = mcp_exchange(&mut stream, json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+        "protocolVersion":"2024-11-05", "capabilities":{}, "clientInfo":{"name":"canonical-acp","version":"1"},
+        "_meta":{"dev.neige/auth":{"token":first_token}}
+    }})).await;
+    assert!(initialized.get("result").is_some());
     let (status, body) = stack
         .send(
             "POST",
@@ -67,21 +90,36 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         stack.wait_outcomes(&first, 1).await[0]["status"],
         "interrupted"
     );
+    wait_phase(&stack, &stack.runtime(&first).await.id, "turn_completed").await;
+    assert!(!stack.token_authenticates(&first_token).await);
+    assert!(stack.token_authenticates(&second_token).await);
+    assert!(stack.outcomes(&second).await.is_empty());
+    assert!(
+        mcp_exchange(
+            &mut stream,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})
+        )
+        .await
+        .get("error")
+        .is_some()
+    );
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{second}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         stack.wait_outcomes(&second, 1).await[0]["status"],
-        "completed"
+        "interrupted"
     );
     for card in [&first, &second] {
         wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
         assert_canonical(&stack, card).await;
     }
-    let token = |native: &str| {
-        std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap()
-    };
-    let first_token = token(&first_native);
-    let second_token = token(&second_native);
-    assert!(stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
+    assert!(!stack.token_authenticates(&second_token).await);
     std::fs::write(root.path().join("scenario"), "reply").unwrap();
     let (status, body) = stack
         .send_with(
@@ -102,45 +140,29 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     let runtime = stack.runtime(assistant).await;
     wait_phase(&stack, &runtime.id, "turn_completed").await;
     assert_canonical(&stack, assistant).await;
-    let assistant_token = token(runtime.session_id.as_deref().unwrap());
-    let stream = tokio::net::UnixStream::connect(stack.mcp_socket())
-        .await
-        .unwrap();
-    let mut stream = tokio::io::BufReader::new(stream);
-    let initialized = mcp_exchange(&mut stream, json!({
-        "jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
-            "protocolVersion":"2024-11-05", "capabilities":{}, "clientInfo":{"name":"canonical-agy","version":"1"},
-            "_meta":{"dev.neige/auth":{"token":assistant_token}}
-        }
-    })).await;
-    assert!(initialized.get("result").is_some());
-    let (status, body) = stack
-        .send(
-            "PATCH",
-            &format!("/api/tracks/{track}/conversations/{assistant}/archive"),
-            Some(json!({"archived":true})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!stack.token_authenticates(&assistant_token).await);
-    assert!(stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
     assert!(
-        mcp_exchange(
-            &mut stream,
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})
-        )
-        .await
-        .get("error")
-        .is_some()
+        !stack
+            .token_authenticates(&token(runtime.session_id.as_deref().unwrap()))
+            .await
+    );
+    assert_eq!(
+        stack
+            .send(
+                "PATCH",
+                &format!("/api/tracks/{track}/conversations/{assistant}/archive"),
+                Some(json!({"archived":true}))
+            )
+            .await
+            .0,
+        StatusCode::NO_CONTENT
     );
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(
-        prompts
-            .iter()
-            .all(|prompt| prompt["_pid"] == prompts[0]["_pid"])
-    );
+    let processes: std::collections::HashSet<_> = prompts
+        .iter()
+        .map(|p| p["_pid"].as_u64().unwrap())
+        .collect();
+    assert_eq!(processes.len(), 3);
     stack.shutdown().await;
 }
 
@@ -151,9 +173,9 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"antigravity-acp", "ACP_FIXTURE_CLOSE":"0", "ACP_FIXTURE_VERSION":"1.4.5"
         }),
-        "1.5.0",
+        "1.4.5",
         Some("full"),
     )
     .await;
@@ -176,7 +198,7 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
     stack.shutdown().await;
 }
 
-/// One resident agent serves cards with different modes. A Full response must not approve a
+/// Independent native processes serve cards with different modes. Full must not approve a
 /// concurrent Ask card, nor turn a Never denial into a silent successful completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain_early_stop() {
@@ -186,9 +208,9 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"antigravity-acp", "ACP_FIXTURE_CLOSE":"0", "ACP_FIXTURE_VERSION":"1.4.5"
         }),
-        "1.5.0",
+        "1.4.5",
     )
     .await;
     let (ask_track, ask) = stack
@@ -246,7 +268,7 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
             .contains("`never`"),
         "{outcome}"
     );
-    // The Ask is still pending even though Full already completed on the same process.
+    // The Ask remains pending while the independent Full process has completed.
     let (status, body) = stack
         .send(
             "POST",
@@ -270,7 +292,14 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     }
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|p| p["_pid"].as_u64().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
     stack.shutdown().await;
 }
 
@@ -281,9 +310,9 @@ async fn canonical_antigravity_ask_approval_continues_and_cancel_stays_interrupt
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"antigravity-acp", "ACP_FIXTURE_CLOSE":"0", "ACP_FIXTURE_VERSION":"1.4.5"
         }),
-        "1.5.0",
+        "1.4.5",
         Some("ask"),
     )
     .await;
