@@ -374,3 +374,58 @@ async fn c4_acp_owner_retry_preserves_the_normal_drivers_known_receipt() {
     );
     fx.session.shutdown().await.unwrap();
 }
+
+/// Use the same real receipt/projection fault window as the recovery suite. A snapshot taken
+/// before predecessor cleanup preserves the original active proof without rewinding END.
+#[tokio::test]
+async fn canonical_antigravity_denied_tool_diagnostic_survives_receipt_only_recovery() {
+    let fx =
+        Fixture::with_provider(AgentProvider::Antigravity, "antigravity-permissions", true).await;
+    fail_terminal_outcome(fx.owner.repo.as_ref()).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_driver_finished().await;
+    let durable = receipt(&fx.owner).await;
+    assert_eq!(durable.0, "completed");
+    let terminal: serde_json::Value = serde_json::from_str(durable.2.as_ref().unwrap()).unwrap();
+    assert_eq!(terminal["status"], "failed");
+    assert_eq!(terminal["error"]["code"], "acp_permission_denied");
+    assert!(
+        rows(&fx.owner)
+            .await
+            .iter()
+            .all(|row| row.1 != "turn/completed")
+    );
+    let owner = snapshot(&fx.owner, &fx.dir, "permission-receipt-crash.db").await;
+    let prompts = fx.prompts();
+    fx.session.shutdown().await.unwrap();
+    owner
+        .repo
+        .db()
+        .writer()
+        .execute(sqlx::query("DROP TRIGGER fail_outcome"))
+        .await
+        .unwrap();
+    let (backend, session, _held) =
+        session_for_provider(&owner, &fx.dir, AgentProvider::Antigravity);
+    backend.recover_retained().await.unwrap();
+    let recovered = rows(&owner).await;
+    let projected: serde_json::Value = serde_json::from_str(
+        &recovered
+            .iter()
+            .find(|row| row.1 == "turn/completed")
+            .expect("receipt recovery projects its failure")
+            .2,
+    )
+    .unwrap();
+    assert_eq!(projected["status"], "failed");
+    assert_eq!(projected["error"]["code"], "acp_permission_denied");
+    assert!(complete(&owner, &backend).await);
+    assert!(!complete(&owner, &backend).await);
+    assert_eq!(receipt(&owner).await, durable);
+    assert_eq!(
+        fx.prompts(),
+        prompts,
+        "completed receipt must not resend the prompt"
+    );
+    session.shutdown().await.unwrap();
+}
