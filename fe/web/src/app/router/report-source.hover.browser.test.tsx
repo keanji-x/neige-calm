@@ -53,7 +53,7 @@ it('keeps the asynchronous cross-report preview stable beside a report with tabl
   await expect.element(page.getByRole('heading', { name: '另一报告保存的来源 · 示例', exact: true })).toBeVisible();
 });
 
-it('reads and scrolls a captured source beside the report without moving the report', async () => {
+it('reads and scrolls a captured source near its link without moving the report', async () => {
   await page.viewport(1440, 900);
   const source: TrackSourceDetail = {
     source_id: 'src_0971fbde', title: '巴克莱芯片压力测试，10月7日', provenance: 'summary',
@@ -85,7 +85,13 @@ it('reads and scrolls a captured source beside the report without moving the rep
   await expect.element(page.getByRole('heading', { name: '摘要阅读', exact: true })).toBeVisible();
   const preview = page.getByRole('dialog', { name: `Preview: ${source.title}` }).element();
   const bounds = preview.getBoundingClientRect();
-  expect(bounds.left).toBeGreaterThanOrEqual(reading.right);
+  const linkBounds = link.element().getBoundingClientRect();
+  const gap = Math.max(bounds.left - linkBounds.right, linkBounds.left - bounds.right,
+    bounds.top - linkBounds.bottom, linkBounds.top - bounds.bottom);
+  expect(gap).toBeGreaterThanOrEqual(0);
+  expect(gap).toBeLessThanOrEqual(14);
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(1440);
   expect(bounds.bottom).toBeLessThanOrEqual(900);
   const region = preview.querySelector<HTMLElement>('[role="region"]')!;
@@ -263,20 +269,23 @@ it('excludes retained descendant report ownership from background reading inputs
 });
 
 it('keeps a delayed real file resource in one mounted tree through narrow side width and actual frame growth', async () => {
-  await page.viewport(1040, 900);
+  await page.viewport(680, 900);
   let resolve!: (value: { path: string; text: string; size: number; truncated: boolean }) => void;
   const readFile = vi.fn(() => new Promise<{ path: string; text: string; size: number; truncated: boolean }>(done => { resolve = done; }));
   const report = { summary: '', body: '[Delayed file](./notes.md)', blocks: null };
-  render(<section style={{ position: 'absolute', left: 200, top: 300, width: 504 }}>
+  render(<section style={{ position: 'absolute', left: 200, top: 450, width: 504 }}>
     <ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ trackId: 'file', report,
       files: { readFile, rawUrl: path => path } }} />
   </section>);
-  await page.getByRole('button', { name: 'Delayed file', exact: true }).hover();
+  const trigger = page.getByRole('button', { name: 'Delayed file', exact: true });
+  await trigger.hover();
   await expect.element(page.getByText('Loading file…', { exact: true })).toBeVisible();
   const card = page.getByRole('dialog').element() as HTMLElement;
   const actual = card.parentElement!;
   const slot = card.closest<HTMLElement>('[data-nc-preview-slot]')!;
   const reserved = slot.getBoundingClientRect();
+  expect(reserved.left).toBeGreaterThanOrEqual(trigger.element().getBoundingClientRect().right);
+  expect(reserved.width).toBeLessThan(448);
   const oldFrame = actual.getBoundingClientRect();
   const motion = card.getAnimations()[0]; motion.pause(); motion.currentTime = 80;
   const before = new DOMMatrix(getComputedStyle(card).transform);
@@ -291,7 +300,7 @@ it('keeps a delayed real file resource in one mounted tree through narrow side w
   expect(after.a).toBeCloseTo(before.a, 5);
   expect(after.e).toBeCloseTo(before.e, 3);
   expect(after.f).toBeCloseTo(before.f, 3);
-  await page.viewport(1020, 900);
+  await page.viewport(670, 900);
   await expect.poll(() => slot.getBoundingClientRect().width).toBeLessThan(reserved.width);
   expect(page.getByRole('heading', { name: 'Delayed contents', exact: true }).element().closest('[role="dialog"]')).toBe(card);
   expect(readFile).toHaveBeenCalledExactlyOnceWith('notes.md');

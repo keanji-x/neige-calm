@@ -86,9 +86,11 @@ it('previews chat evidence through the production router in the conversation tra
   expect(requests.filter(request => request.path.includes('/sources/') || request.path.includes('/workspace/readfile') || request.path === '/api/tracks/reference-demo')).toHaveLength(0);
   await page.getByRole('button', { name: 'Chat source', exact: true }).hover();
   await expect.element(page.getByRole('heading', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
-  const reading = document.querySelector('[data-nc-thread]')!.getBoundingClientRect();
+  const trigger = page.getByRole('button', { name: 'Chat source', exact: true }).element().getBoundingClientRect();
   const preview = page.getByRole('dialog', { name: 'Preview: Chat source' }).element().getBoundingClientRect();
-  expect(preview.right <= reading.left || preview.left >= reading.right).toBe(true);
+  const gap = Math.max(preview.left - trigger.right, trigger.left - preview.right, preview.top - trigger.bottom, trigger.top - preview.bottom);
+  expect(gap).toBeGreaterThanOrEqual(0);
+  expect(gap).toBeLessThanOrEqual(14);
   expect(requests.filter(request => request.path.includes('/sources/')).map(request => request.path))
     .toEqual(['/api/tracks/link-preview/sources/src_0971fbde']);
   await page.getByRole('button', { name: 'Chat report', exact: true }).hover();
@@ -102,6 +104,9 @@ it('previews chat evidence through the production router in the conversation tra
   await page.getByRole('button', { name: 'Chat file', exact: true }).hover();
   await expect.element(page.getByRole('heading', { name: 'Chat file contents', exact: true })).toBeVisible();
   expect(requests.some(request => request.path === '/api/tracks/link-preview/workspace/readfile?path=notes.md')).toBe(true);
+  // Nearby previews may cover other links; Escape restores the reading surface.
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => page.getByRole('dialog', { name: 'Preview: Chat file' }).query()).toBeNull();
   await page.getByRole('button', { name: 'Chat source', exact: true }).click();
   await expect.element(page.getByRole('complementary', { name: '来源正文预览 · 示例摘要', exact: true })).toBeVisible();
   await expect.poll(() => page.getByRole('dialog', { name: 'Preview: Chat file' }).query()).toBeNull();
