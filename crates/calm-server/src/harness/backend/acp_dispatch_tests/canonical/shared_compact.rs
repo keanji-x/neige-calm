@@ -206,12 +206,103 @@ async fn canonical_antigravity_compact_cancel_cannot_confirm_or_resend() {
         CompactSubmission::Unconfirmed { .. }
     ));
     assert_eq!(fx.prompts(), 2);
+    let executions: i64 = sqlx::query_scalar(concat!(
+        "SELECT count(*) FROM workspace_executions WHERE ",
+        "json_extract(intent_json,'$.consumer')='acp-planner' ",
+        "AND desired='retire' AND settled_at_ms IS NOT NULL",
+    ))
+    .fetch_one(fx.owner.repo.pool())
+    .await
+    .unwrap();
     assert_eq!(
-        fx.requests()
-            .iter()
-            .filter(|r| r["method"] == "session/close")
-            .count(),
-        1
+        executions, 2,
+        "the turn and canceled maintenance must both stop through Engine"
+    );
+    let token: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&fx.owner.worker)
+            .fetch_one(fx.owner.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        token.is_none(),
+        "canceled maintenance cannot retain tool authority"
     );
     fx.session.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn canonical_antigravity_compact_waits_for_its_delayed_catalog() {
+    for scenario in [
+        "agy-menu-late",
+        "agy-menu-empty",
+        "agy-menu-wrong",
+        "agy-menu-timeout",
+    ] {
+        let fx = Fixture::with_provider(AgentProvider::Antigravity, "reply", false).await;
+        fx.dispatch().await.unwrap();
+        fx.wait_end().await;
+        let receipt = fx.receipt_bytes(&fx.submission).await;
+        std::fs::write(fx.dir.path().join("scenario"), scenario).unwrap();
+        let target = MaintenanceTarget {
+            card_id: fx.owner.card.clone(),
+            track_id: fx.owner.track.clone(),
+            worker_session_id: fx.owner.worker.clone(),
+            thread_id: fx.owner.thread.clone(),
+            operation_id: crate::model::new_id(),
+        };
+        let admission = NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) }));
+        let handoff = fx.backend.handoff_for_test().await;
+        let compact = fx.backend.compact_canonical(
+            target.clone(),
+            CompactRequest {
+                selection: TurnModelSelection::inherit(),
+            },
+            &admission,
+            &handoff,
+        );
+        tokio::pin!(compact);
+        tokio::select! {
+            result = &mut compact => panic!("maintenance returned before the native catalog: {result:?}"),
+            ready = tokio::time::timeout(Duration::from_secs(20), async {
+                while !fx.dir.path().join("catalog-ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }) => ready.unwrap(),
+        }
+        assert_eq!(fx.prompts(), 1);
+        std::fs::write(fx.dir.path().join("release-catalog"), "").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(20), compact)
+            .await
+            .unwrap()
+            .unwrap();
+        if scenario == "agy-menu-late" {
+            assert!(matches!(result, CompactSubmission::Submitted { .. }));
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    if matches!(
+                        fx.backend.observe_maintenance(&target).await.unwrap(),
+                        Some(MaintenanceObservation::Turn {
+                            settled: Some(true),
+                            ..
+                        })
+                    ) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(fx.prompts(), 2);
+        } else {
+            assert!(
+                matches!(result, CompactSubmission::NotSubmitted { .. }),
+                "{scenario}: {result:?}"
+            );
+            assert_eq!(fx.prompts(), 1);
+        }
+        assert_eq!(fx.receipt_bytes(&fx.submission).await, receipt);
+        fx.session.shutdown().await.unwrap();
+    }
 }

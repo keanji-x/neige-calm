@@ -50,7 +50,10 @@ impl Configuration {
             .ok_or(Error::Protocol("invalid configuration options"))?;
         let mut decoded = Vec::new();
         for option in options {
-            if !matches!(option["category"].as_str(), Some("model" | "thought_level")) {
+            if !matches!(
+                option["category"].as_str(),
+                Some("model" | "thought_level" | "mode")
+            ) {
                 continue;
             }
             if option["type"] != "select" {
@@ -74,5 +77,27 @@ impl Configuration {
         self.options
             .iter()
             .find(|option| option.category == category)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn native_mode_uses_the_agents_declared_key_and_choices() {
+        let option = json!({"id":"vendor-mode", "category":"mode", "type":"select",
+            "currentValue":"default", "options":[{"value":"default","name":"Default"},
+                {"value":"accept-edits","name":"Edit workspace"}]});
+        let parsed =
+            Configuration::from_response(&json!({"configOptions":[option.clone()]})).unwrap();
+        let mode = parsed.category("mode").unwrap();
+        assert_eq!(mode.id, "vendor-mode");
+        assert!(mode.accepts("accept-edits"));
+        assert!(!mode.accepts("auto"));
+        assert!(
+            Configuration::from_response(&json!({"configOptions":[option.clone(),option]}))
+                .is_err()
+        );
     }
 }

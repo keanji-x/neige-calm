@@ -235,7 +235,7 @@ it('separates pending native acknowledgement from unresolved delivery without ch
 it('adapts only a required typed current terminal fact, without inventing a display identity', () => {
   expect(currentConversationOutcome(null)).toBeNull();
   const fact = {worker_session_id:'worker',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'turn',
-    status:'interrupted' as const,created_at_ms:20,duration_ms:null};
+    status:'interrupted' as const,created_at_ms:20,duration_ms:null,diagnostic_code:null};
   expect(currentConversationOutcome(fact)).toEqual({turnId:'turn',status:'interrupted',atMs:20,elapsedMs:null});
   const metadata = {input_contract:'canonical',runtime_state:'idle',history_replacement_supported:false,
     terminal_timeout:null,terminal_outcome:fact,pending_inputs:[],active_input:null,native_turn_id:null};
@@ -253,4 +253,11 @@ it('adapts only a required typed current terminal fact, without inventing a disp
   expect(schema.safeParse({...run,terminal_outcome:{...fact,worker_session_id:'other-worker'}}).success).toBe(false);
   expect(schema.safeParse({...run,terminal_outcome:{...fact,card_id:'other-card'}}).success).toBe(false);
   expect(schema.safeParse({...run,native_turn_id:'other-turn'}).success).toBe(false);
+});
+
+
+it('keeps the canonical permission diagnostic independently of transcript items', () => {
+  const fact = {worker_session_id:'worker',card_id:'card',track_id:'track',thread_id:'thread',turn_id:'turn',
+    status:'failed' as const,created_at_ms:20,duration_ms:null,diagnostic_code:'acp_permission_denied'};
+  expect(currentConversationOutcome(fact)).toMatchObject({status:'failed',code:'acp_permission_denied'});
 });

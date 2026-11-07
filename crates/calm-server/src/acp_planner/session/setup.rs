@@ -31,6 +31,22 @@ pub(super) async fn attach(
     admission: &NativePromptAdmission<'_>,
     usage: &mut provider::acp::usage::UsageTracker,
 ) -> std::result::Result<(String, provider::acp::configuration::Configuration), StartFailure> {
+    if let Some(native) = original_native.as_deref()
+        && super::super::profile::AcpAgentProfile::of(&params.provider)
+            .is_some_and(|profile| profile.global_native_identity)
+    {
+        let pool = params
+            .repo
+            .sqlite_db()
+            .ok_or(CalmError::ExecutionUnavailable)?;
+        ensure_native_owner(
+            pool.read_pool(),
+            &params.provider,
+            &params.worker_session_id,
+            native,
+        )
+        .await?;
+    }
     let (method, request) = attachment_request(
         &process.capabilities,
         &params.cwd,
@@ -100,7 +116,10 @@ impl Shared {
         params
             .host
             .record_configuration(&params.card_id, configuration.clone());
+        let native_mode = super::super::profile::AcpAgentProfile::of(&params.provider)
+            .and_then(|profile| profile.native_mode);
         for (category, value) in [
+            ("mode", native_mode),
             ("model", selection.model.as_deref()),
             ("thought_level", selection.effort.as_deref()),
         ] {
@@ -111,7 +130,7 @@ impl Shared {
                 .category(category)
                 .filter(|option| option.accepts(value))
                 .ok_or_else(|| {
-                    refused("The ACP agent did not declare that model or effort choice")
+                    refused("The ACP agent did not declare that session configuration choice")
                 })?;
             let result = setup_request(
                 connection,
@@ -128,7 +147,9 @@ impl Shared {
                 .category(category)
                 .is_none_or(|option| option.current_value != value)
             {
-                return Err(refused("ACP did not confirm the selected model or effort"));
+                return Err(refused(
+                    "ACP did not confirm the selected session configuration",
+                ));
             }
             params
                 .host
@@ -154,4 +175,26 @@ impl SessionParams {
                 .collect(),
         }
     }
+}
+
+pub(in crate::acp_planner) async fn ensure_native_owner<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+    provider: &AgentProvider,
+    worker: &str,
+    native: &str,
+) -> Result<()> {
+    let collision: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE provider=?1 AND agent_session_id=?2 AND id<>?3)",
+    )
+    .bind(provider.wire_name())
+    .bind(native)
+    .bind(worker)
+    .fetch_one(executor)
+    .await?;
+    if collision {
+        return Err(CalmError::Conflict(
+            "ACP native session belongs to another worker".into(),
+        ));
+    }
+    Ok(())
 }

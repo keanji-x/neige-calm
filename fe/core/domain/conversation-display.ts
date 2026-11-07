@@ -136,11 +136,11 @@ export type CurrentConversationOutcome = Omit<import('./conversation.js').Conver
 const terminalOutcomeSchema: z.ZodType<ConversationTerminalOutcome> = z.object({
   worker_session_id:z.string().min(1), card_id:z.string().min(1), track_id:z.string().min(1),
   thread_id:z.string().min(1), turn_id:z.string().min(1), status:z.enum(['completed','interrupted','failed']),
-  created_at_ms:z.number(), duration_ms:z.number().nonnegative().nullable(),
+  created_at_ms:z.number(), duration_ms:z.number().nonnegative().nullable(),diagnostic_code:z.string().nullable(),
 }).strict();
 export function currentConversationOutcome(fact:ConversationTerminalOutcome | null):CurrentConversationOutcome | null {
   return fact === null ? null : {turnId:fact.turn_id,status:fact.status,atMs:fact.created_at_ms,
-    elapsedMs:fact.duration_ms};
+    elapsedMs:fact.duration_ms,...(fact.diagnostic_code === null ? {} : {code:fact.diagnostic_code})};
 }
 
 export const conversationRunMetadataSchema = z.object({

@@ -1,6 +1,7 @@
 // Harness vocabulary shared across crates: phase tags and persisted header constants.
 
 pub mod budget;
+pub mod diagnostics;
 pub mod retained;
 pub mod snapshot;
 

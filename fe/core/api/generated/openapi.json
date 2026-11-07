@@ -16012,7 +16012,7 @@
       },
       "ConversationTerminalOutcome": {
         "type": "object",
-        "description": "A current execution's persisted terminal fact, independent of display pagination.",
+        "description": "A current execution's persisted terminal fact, independent of display pagination.\nThe nullable diagnostic code is closed kernel vocabulary, never native error text or input.",
         "required": [
           "worker_session_id",
           "card_id",
@@ -16021,7 +16021,8 @@
           "turn_id",
           "status",
           "created_at_ms",
-          "duration_ms"
+          "duration_ms",
+          "diagnostic_code"
         ],
         "properties": {
           "card_id": {
@@ -16030,6 +16031,12 @@
           "created_at_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "diagnostic_code": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "duration_ms": {
             "type": [

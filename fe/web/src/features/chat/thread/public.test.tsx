@@ -10,6 +10,7 @@ import {
   type ConversationTurn, type ConversationTurnOutcome,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread } from './public.tsx';
+import { currentConversationOutcome } from '../../../../../core/domain/conversation-display.ts';
 
 afterEach(cleanup);
 
@@ -1492,4 +1493,15 @@ it('shows current canonical terminal metadata without a transcript row and clear
   expect(screen.getByRole('status', {name:'Current response status'}).textContent).toContain('Running');
   view.rerender(<ChatThread {...props} currentResponseOutcome={null} />);
   expect(screen.queryByRole('status', {name:'Current response status'})).toBeNull();
+});
+
+
+it('explains a canonical permission refusal without native transcript rows', () => {
+  const outcome = currentConversationOutcome({worker_session_id:'worker',card_id:'card',track_id:'track',
+    thread_id:'thread',turn_id:'turn',status:'failed',created_at_ms:NOW,duration_ms:null,diagnostic_code:'acp_permission_denied'});
+  render(<ChatThread conversation={conversation()} turns={[]} cards={{}} stalled={false}
+    canContinue hasPendingMessages={false} currentResponseOutcome={outcome} />);
+  fireEvent.click(screen.getByRole('button', {name:'Failed',expanded:false}));
+  expect(screen.getByText('This conversation’s permission policy blocked a tool request. Other permitted tools remain available.')).toBeTruthy();
+  expect(screen.queryByText('No failure details are available.')).toBeNull();
 });

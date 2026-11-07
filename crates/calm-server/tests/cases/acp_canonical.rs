@@ -29,18 +29,18 @@ async fn assert_canonical(stack: &Stack, card: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn canonical_antigravity_cards_share_server_cancel_independently_and_revoke_archive() {
+async fn canonical_antigravity_cards_own_executions_cancel_independently_and_revoke_archive() {
     let root = Root::new("unused");
     let stack = boot_as(&root, "antigravity", json!({
-        "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0", "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
-    }), "1.5.0").await;
+        "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3", "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
+    }), "1.5.3").await;
     let (track, first) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     let (_, second) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
-    std::fs::write(root.path().join("scenario"), "shared-hold").unwrap();
+    std::fs::write(root.path().join("scenario"), "hold-until-released").unwrap();
     for card in [&first, &second] {
         let (status, body) = stack.post_input(card, "canonical concurrent request").await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -55,6 +55,14 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     let first_native = stack.runtime(&first).await.session_id.unwrap();
     let second_native = stack.runtime(&second).await.session_id.unwrap();
     assert_ne!(first_native, second_native);
+    let token = |native: &str| {
+        std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap()
+    };
+    let first_token = token(&first_native);
+    let second_token = token(&second_native);
+    assert!(stack.token_authenticates(&first_token).await);
+    assert!(stack.token_authenticates(&second_token).await);
+
     let (status, body) = stack
         .send(
             "POST",
@@ -67,6 +75,8 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         stack.wait_outcomes(&first, 1).await[0]["status"],
         "interrupted"
     );
+    assert!(stack.token_authenticates(&second_token).await);
+    std::fs::write(root.path().join(format!("release-{second_native}")), "").unwrap();
     assert_eq!(
         stack.wait_outcomes(&second, 1).await[0]["status"],
         "completed"
@@ -75,14 +85,8 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
         assert_canonical(&stack, card).await;
     }
-    let token = |native: &str| {
-        std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap()
-    };
-    let first_token = token(&first_native);
-    let second_token = token(&second_native);
-    assert!(stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
-    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    assert!(!stack.token_authenticates(&first_token).await);
+    assert!(!stack.token_authenticates(&second_token).await);
     let (status, body) = stack
         .send_with(
             axum::http::Request::builder()
@@ -95,13 +99,14 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let assistant = body["id"].as_str().unwrap();
-    assert_eq!(
-        stack.wait_outcomes(assistant, 1).await[0]["status"],
-        "completed"
-    );
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while requests(&root, "session/prompt").len() < 3 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
     let runtime = stack.runtime(assistant).await;
-    wait_phase(&stack, &runtime.id, "turn_completed").await;
-    assert_canonical(&stack, assistant).await;
     let assistant_token = token(runtime.session_id.as_deref().unwrap());
     let stream = tokio::net::UnixStream::connect(stack.mcp_socket())
         .await
@@ -114,6 +119,28 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         }
     })).await;
     assert!(initialized.get("result").is_some());
+    let busy_archive = stack
+        .send(
+            "PATCH",
+            &format!("/api/tracks/{track}/conversations/{assistant}/archive"),
+            Some(json!({"archived":true})),
+        )
+        .await;
+    assert_eq!(busy_archive.0, StatusCode::CONFLICT);
+    std::fs::write(
+        root.path().join(format!(
+            "release-{}",
+            runtime.session_id.as_deref().unwrap()
+        )),
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        stack.wait_outcomes(assistant, 1).await[0]["status"],
+        "completed"
+    );
+    wait_phase(&stack, &runtime.id, "turn_completed").await;
+    assert_canonical(&stack, assistant).await;
     let (status, body) = stack
         .send(
             "PATCH",
@@ -123,8 +150,8 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     assert!(!stack.token_authenticates(&assistant_token).await);
-    assert!(stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
+    assert!(!stack.token_authenticates(&first_token).await);
+    assert!(!stack.token_authenticates(&second_token).await);
     assert!(
         mcp_exchange(
             &mut stream,
@@ -136,10 +163,13 @@ async fn canonical_antigravity_cards_share_server_cancel_independently_and_revok
     );
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(
+    assert_eq!(
         prompts
             .iter()
-            .all(|prompt| prompt["_pid"] == prompts[0]["_pid"])
+            .map(|p| p["_pid"].as_u64().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        prompts.len()
     );
     stack.shutdown().await;
 }
@@ -151,9 +181,9 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3"
         }),
-        "1.5.0",
+        "1.5.3",
         Some("full"),
     )
     .await;
@@ -167,6 +197,16 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
         stack.wait_outcomes(&card, 1).await[0]["status"],
         "completed"
     );
+    let settings: Value = serde_json::from_slice(
+        &std::fs::read(
+            root.path()
+                .join(".gemini/antigravity-cli/neige-unrestricted-v1/settings.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["enableTerminalSandbox"], false);
+    assert_eq!(settings["toolPermission"], "request-review");
     let log = std::fs::read_to_string(root.path().join("permission-log.jsonl")).unwrap();
     let reply: Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
     assert_eq!(
@@ -176,7 +216,7 @@ async fn canonical_antigravity_full_approves_permission_in_its_own_turn() {
     stack.shutdown().await;
 }
 
-/// One resident agent serves cards with different modes. A Full response must not approve a
+/// Concurrent managed executions keep their modes isolated. A Full response must not approve a
 /// concurrent Ask card, nor turn a Never denial into a silent successful completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain_early_stop() {
@@ -186,9 +226,9 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3"
         }),
-        "1.5.0",
+        "1.5.3",
     )
     .await;
     let (ask_track, ask) = stack
@@ -267,10 +307,26 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     ] {
         wait_phase(&stack, &stack.runtime(card).await.id, "turn_completed").await;
         assert_eq!(stack.outcomes(card).await[0]["error"]["code"], code);
+        let (status, run) = stack
+            .send(
+                "GET",
+                &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(run["terminal_outcome"]["diagnostic_code"], code);
     }
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
-    assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|p| p["_pid"].as_u64().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
     stack.shutdown().await;
 }
 
@@ -281,9 +337,9 @@ async fn canonical_antigravity_ask_approval_continues_and_cancel_stays_interrupt
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0"
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3"
         }),
-        "1.5.0",
+        "1.5.3",
         Some("ask"),
     )
     .await;
@@ -340,5 +396,64 @@ async fn canonical_antigravity_ask_approval_continues_and_cancel_stays_interrupt
         }
         wait_phase(&stack, &stack.runtime(&card).await.id, "turn_completed").await;
     }
+    stack.shutdown().await;
+}
+
+/// An Assistant keeps Never even when this provider's Planner creation default is Full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_assistant_never_exposes_refusal_in_current_metadata() {
+    let root = Root::new("unused");
+    let stack = boot_as_with_creation_mode(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.3",
+        Some("full"),
+    )
+    .await;
+    let (track, _) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    std::fs::write(root.path().join("scenario"), "antigravity-permissions").unwrap();
+    let (status, body) = stack
+        .send_with(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/tracks/{track}/conversations"))
+                .header("x-calm-actor", "user")
+                .header("idempotency-key", uuid::Uuid::new_v4().to_string()),
+            Some(json!({"provider":"antigravity", "text":"Review the report independently"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let assistant = body["id"].as_str().unwrap();
+    let outcome = stack.wait_outcomes(assistant, 1).await[0].clone();
+    assert_eq!(outcome["status"], "failed");
+    assert_eq!(outcome["error"]["code"], "acp_permission_denied");
+    wait_phase(&stack, &stack.runtime(assistant).await.id, "turn_completed").await;
+    let (status, run) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{assistant}/planner/run?contract=conversation_v1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(run["permission_mode"].is_null());
+    assert_eq!(run["terminal_outcome"]["status"], "failed");
+    assert_eq!(
+        run["terminal_outcome"]["diagnostic_code"],
+        "acp_permission_denied"
+    );
+    let settings: Value = serde_json::from_slice(
+        &std::fs::read(
+            root.path()
+                .join(".gemini/antigravity-cli/neige-sandboxed-v1/settings.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["enableTerminalSandbox"], true);
+    assert_eq!(settings["toolPermission"], "proceed-in-sandbox");
     stack.shutdown().await;
 }

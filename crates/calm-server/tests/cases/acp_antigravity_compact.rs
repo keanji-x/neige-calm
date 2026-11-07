@@ -7,10 +7,10 @@ async fn agy(root: &Root) -> Stack {
         root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0",
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3",
             "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"
         }),
-        "1.5.0",
+        "1.5.3",
     )
     .await
 }
@@ -44,12 +44,12 @@ fn owned_closes(root: &Root) -> Vec<Value> {
         .filter(|r| sessions.contains(r["params"]["sessionId"].as_str().unwrap()))
         .collect()
 }
-fn assert_one_prompt_process(root: &Root) {
+fn assert_distinct_prompt_processes(root: &Root) {
     let pids: std::collections::HashSet<_> = requests(root, "session/prompt")
         .into_iter()
         .map(|r| r["_pid"].as_u64().unwrap())
         .collect();
-    assert_eq!(pids.len(), 1);
+    assert_eq!(pids.len(), requests(root, "session/prompt").len());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -98,7 +98,7 @@ async fn canonical_antigravity_compact_preserves_inputs_receipts_and_session_gra
         assert_eq!(after["canonical_inputs"], before["canonical_inputs"]);
         assert_eq!(human_state(&stack, card).await, human);
         assert_eq!(receipts(&stack, &runtime.id).await, journal);
-        assert!(stack.token_authenticates(&token).await);
+        assert!(!stack.token_authenticates(&token).await);
         assert_eq!(
             stack.runtime(card).await.session_id.as_deref(),
             Some(native.as_str())
@@ -110,7 +110,7 @@ async fn canonical_antigravity_compact_preserves_inputs_receipts_and_session_gra
         );
     }
     assert_eq!(compact_requests(&root).len(), 2);
-    assert_one_prompt_process(&root);
+    assert_distinct_prompt_processes(&root);
     assert!(owned_closes(&root).is_empty());
     stack.shutdown().await;
 }
@@ -145,17 +145,22 @@ async fn canonical_antigravity_compact_errors_cannot_complete_and_revoke_only_ow
             "completed"
         );
         assert!(!stack.token_authenticates(&first_token).await, "{scenario}");
-        assert!(stack.token_authenticates(&second_token).await, "{scenario}");
+        assert!(
+            !stack.token_authenticates(&second_token).await,
+            "{scenario}"
+        );
         std::fs::write(root.path().join("scenario"), "reply").unwrap();
         assert_eq!(
             turn(&stack, &second, "sibling continues", 2).await["status"],
             "completed"
         );
         assert_eq!(compact_requests(&root).len(), 1);
-        assert_one_prompt_process(&root);
-        let closes = owned_closes(&root);
-        assert_eq!(closes.len(), 1);
-        assert_eq!(closes[0]["params"]["sessionId"], first_native);
+        assert_distinct_prompt_processes(&root);
+        assert!(owned_closes(&root).is_empty());
+        assert_eq!(
+            stack.runtime(&first).await.session_id.as_deref(),
+            Some(first_native.as_str())
+        );
         stack.shutdown().await;
     }
 }
@@ -213,7 +218,7 @@ async fn canonical_antigravity_two_compacts_route_independent_results() {
         "completed"
     );
     assert_eq!(compact_requests(&root).len(), 2);
-    assert_one_prompt_process(&root);
+    assert_distinct_prompt_processes(&root);
     assert!(owned_closes(&root).is_empty());
     stack.shutdown().await;
 }
