@@ -75,8 +75,10 @@ mod tests {
 
     #[test]
     fn antigravity_launch_is_managed_and_sandbox_tracks_permission() {
+        let profile =
+            AcpAgentProfile::of(&calm_types::runtime::AgentProvider::Antigravity).unwrap();
         assert!(
-            !PROFILE.shared_server,
+            !profile.shared_server,
             "each turn must own its execution policy"
         );
         for (mode, sandbox) in [
@@ -84,7 +86,7 @@ mod tests {
             (PlannerPermissionMode::Ask, "--sandbox=true"),
             (PlannerPermissionMode::Full, "--sandbox=false"),
         ] {
-            let argv = PROFILE.argv(Some(PROFILE.launch(mode))).collect::<Vec<_>>();
+            let argv = profile.argv(Some(profile.launch(mode))).collect::<Vec<_>>();
             assert_eq!(argv.first(), Some(&"acp"));
             assert!(argv.contains(&sandbox), "{mode:?}: {argv:?}");
         }
