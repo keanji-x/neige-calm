@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn track_history_drill_ins_are_hidden_but_registered() {
+    fn track_history_drill_ins_are_listed_only_for_assistant() {
         let mut registry = ToolRegistry::new();
         crate::mcp_server::tools::register_default_tools(&mut registry);
         let hidden = [
@@ -708,8 +708,9 @@ mod tests {
                     .map(|descriptor| descriptor.name)
                     .collect::<Vec<_>>();
                 assert!(
-                    !names.iter().any(|visible| visible == name),
-                    "{name} must be hidden from {role:?} tools/list: {names:?}"
+                    names.iter().any(|visible| visible == name)
+                        == (role == CardRole::Assistant && !name.starts_with("neige_admin_")),
+                    "{name} listing for {role:?}: {names:?}"
                 );
             }
         }

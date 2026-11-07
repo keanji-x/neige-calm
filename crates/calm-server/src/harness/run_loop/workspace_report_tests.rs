@@ -52,7 +52,7 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             expected,
             "workspace capability instructions stay outside input segments; only Planner adds budget context"
         );
-        // Same native session: revoke the fixture's live grant after a real granted turn.
+        // Same native session: managed scope changes do not revoke role-based reads.
         let turn_id = inner.last_turn_id.lock().await.clone().unwrap();
         let live = inner.live_claim.writer();
         on_notification(
@@ -106,13 +106,14 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             panic!("expected text")
         };
         assert!(text.contains("Continue after revocation"));
-        assert!(!text.contains("neige_workspace_ls"));
+        assert!(text.contains("neige_workspace_ls"));
     }
 }
 
 #[tokio::test]
-async fn ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants() {
+async fn ordinary_recorders_receive_workspace_instructions_but_workers_do_not() {
     for (role, scope) in [
+        (CardRole::Planner, None),
         (CardRole::Assistant, None),
         (CardRole::Assistant, Some("area")),
         (CardRole::Worker, Some("workspace")),
@@ -138,6 +139,10 @@ async fn ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants() {
         let InputItem::Text { text } = &sent[0].1[0] else {
             panic!("expected text")
         };
-        assert!(!text.contains("neige_workspace_ls"), "{role:?} / {scope:?}");
+        assert_eq!(
+            text.contains("neige_workspace_ls"),
+            role != CardRole::Worker,
+            "{role:?} / {scope:?}"
+        );
     }
 }

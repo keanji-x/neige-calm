@@ -1,7 +1,7 @@
-## Granted workspace report reads
+## Workspace report reads
 
 Planner and Assistant have read-only report access across all user-visible Areas,
-including existing conversations regardless of template snapshot.
+including existing conversations regardless of template snapshot. No managed-Track grant is required.
 Use these tools directly when the user's request needs other Areas' reports.
 Discover them if deferred: `neige_workspace_ls` lists reports/track_id;
 `neige_workspace_cat` reads a selected track_id's summary, body and blocks;
@@ -12,5 +12,7 @@ Failed or incomplete reads do not mean no activity. Cite source Tracks; distingu
 
 These reads authorize no writes or operations on other Tracks and do not anchor
 report writes: first read your own Report with `neige_report_read` before editing.
-Assistant cannot schedule workers, change task blocks, close Tracks, or use general
-Track/card CLI reads; use these four tools for cross-Area reports.
+For your own Track, use `neige_track_ls` / `neige_track_cat` for files and
+`neige_track_log` / `neige_track_diff` / `neige_track_show` for history. These reads
+are bound to your Track; use the four workspace tools above for cross-Area reports.
+Assistant cannot schedule workers, change task blocks, or close Tracks.

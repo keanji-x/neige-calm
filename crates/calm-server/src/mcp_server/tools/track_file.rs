@@ -59,8 +59,8 @@ fn ls_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner, CardRole::Worker],
-        listed_for: &[],
+        roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
+        listed_for: &[CardRole::Assistant],
     }
 }
 
@@ -92,8 +92,8 @@ fn cat_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner, CardRole::Worker],
-        listed_for: &[],
+        roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
+        listed_for: &[CardRole::Assistant],
     }
 }
 

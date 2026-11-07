@@ -1,4 +1,4 @@
-//! Trusted creation metadata. Display names and templates never grant report access.
+//! Trusted creation metadata and live role-bound workspace report reads.
 
 use crate::db::{Repo, RouteRepo};
 use crate::error::{CalmError, Result};
@@ -99,10 +99,10 @@ pub(crate) async fn bind_tx(
     Ok(())
 }
 
-/// Eligible roles still need the Track's live kernel-issued workspace grant.
+/// Workspace reports are read-only for these live, bound roles.
 pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
-/// Shared by authorization and capability teaching. Neither a title nor a template grants access.
+/// Shared by authorization and capability teaching. Managed metadata only supplies timezone.
 async fn workspace_report_grant(
     repo: &dyn RouteRepo,
     pool: Option<crate::db::sqlite::SqliteDb>,
@@ -125,14 +125,18 @@ async fn workspace_report_grant(
         return Ok(None);
     };
     let zone: Option<String> = sqlx::query_scalar(
-        "SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1 AND report_read_scope='workspace'"
-    ).bind(track_id).fetch_optional(pool.read_pool()).await?;
+        "SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1",
+    )
+    .bind(track_id)
+    .fetch_optional(pool.read_pool())
+    .await?;
     zone.map(|zone| {
         zone.parse()
             .map(|zone| (zone, role))
             .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))
     })
     .transpose()
+    .map(|grant| Some(grant.unwrap_or((crate::workspace_reports::TIME_ZONE, role))))
 }
 
 /// Refresh on each turn, including resumed conversations whose startup template is immutable.
@@ -157,12 +161,13 @@ pub(crate) async fn workspace_report_instructions(
     )
 }
 
-/// Check the live bound card and its declared read grant on every call. No write ledger entry.
+/// Check the live bound card and role on every call. No write ledger entry.
 pub(crate) async fn require_workspace_reports(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
 ) -> std::result::Result<Tz, RpcError> {
-    let denied = || RpcError::forbidden("workspace report reads require a kernel-issued grant");
+    let denied =
+        || RpcError::forbidden("workspace report reads require a live bound Planner or Assistant");
     let card = ctx
         .repo
         .card_get(&identity.card_id)

@@ -12,7 +12,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use std::time::Duration;
 
-pub const TIME_ZONE: Tz = chrono_tz::Asia::Shanghai;
+pub const TIME_ZONE: Tz = crate::workspace_reports::TIME_ZONE;
 const OWNER: &str = "daily-planner";
 
 pub fn spawn(state: RouteState) {

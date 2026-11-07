@@ -1759,7 +1759,7 @@
   },
   {
     "name": "neige_track_cat",
-    "description_sha256": "f42365f918065e0619811c105b17e0187d24634db96ad1d53e90bf31410d881b",
+    "description_sha256": "67ca02b6472e903a08a0e9fb6939b11216b6370898f718b7bb3c6f00e1d81cd3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1798,9 +1798,12 @@
     },
     "roles": [
       "planner",
-      "worker"
+      "worker",
+      "assistant"
     ],
-    "listed_for": []
+    "listed_for": [
+      "assistant"
+    ]
   },
   {
     "name": "neige_track_close",
@@ -1837,7 +1840,7 @@
   },
   {
     "name": "neige_track_diff",
-    "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
+    "description_sha256": "4383dadcfdda27cd5b742ad731eb0c8c74ecd33fb7c21d874b4f36fa01fdc56c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1861,13 +1864,16 @@
     },
     "roles": [
       "planner",
-      "worker"
+      "worker",
+      "assistant"
     ],
-    "listed_for": []
+    "listed_for": [
+      "assistant"
+    ]
   },
   {
     "name": "neige_track_log",
-    "description_sha256": "c2cdb7dc9466ba7ad27a61a922cc52476fc8dc62171e9b1e64de142193910357",
+    "description_sha256": "20277aa33e322a5e346af3eeac6755a2eaf965f43f7b4f5d9fedc006cf2318b7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1889,13 +1895,16 @@
     },
     "roles": [
       "planner",
-      "worker"
+      "worker",
+      "assistant"
     ],
-    "listed_for": []
+    "listed_for": [
+      "assistant"
+    ]
   },
   {
     "name": "neige_track_ls",
-    "description_sha256": "890cfb0f14e71fe974933c7d3b18c303edbc43f2cc75d9f864485ec09326eec2",
+    "description_sha256": "7270f517ff3a8daa44bd8a92684019bd3e45f0792076e3f2ca15cafec7f7ee74",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1910,9 +1919,12 @@
     },
     "roles": [
       "planner",
-      "worker"
+      "worker",
+      "assistant"
     ],
-    "listed_for": []
+    "listed_for": [
+      "assistant"
+    ]
   },
   {
     "name": "neige_track_rename",
@@ -1949,7 +1961,7 @@
   },
   {
     "name": "neige_track_show",
-    "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
+    "description_sha256": "326ac527e79da068405caa9323ed7c94204f735ed40b3a48ba005ab77efc73a8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1971,9 +1983,12 @@
     },
     "roles": [
       "planner",
-      "worker"
+      "worker",
+      "assistant"
     ],
-    "listed_for": []
+    "listed_for": [
+      "assistant"
+    ]
   },
   {
     "name": "neige_track_status",
@@ -2090,7 +2105,7 @@
   },
   {
     "name": "neige_workspace_cat",
-    "description_sha256": "2c052d2a7601a0b9c30d34f97f6215e8abbe406c37fed2fda9c9d5ee7daf274c",
+    "description_sha256": "3b804d3bb0c0073f5d433a421c7ca717786fa2db8f7f3e3d547ecb6666cd6ee4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2117,7 +2132,7 @@
   },
   {
     "name": "neige_workspace_diff",
-    "description_sha256": "47ef066261878808f0400449a083e5a538f91b712c33d879381950dae3c4cf26",
+    "description_sha256": "4db380ed0ea88078e7666b0a0d824cb2d0f2e45b4a2699ffefbebd4f8f7d4104",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2151,7 +2166,7 @@
   },
   {
     "name": "neige_workspace_log",
-    "description_sha256": "508e57127e27f356a7bb10c24ab00c65658537fac1b4bdfb5ef0a8d2c0bcefa1",
+    "description_sha256": "47e44af57a61399f9682726858004cafdf07fa261eb14aaeb7dfc987e0c89220",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -2190,7 +2205,7 @@
   },
   {
     "name": "neige_workspace_ls",
-    "description_sha256": "30fa9840544c36128809bfc4e31defb9ec4424f9c743b263896a78da2130eeb5",
+    "description_sha256": "3e33443d7fd7279c9cbb98e9ed51f1bec6dee72611d60faa5a412e4963acbe90",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

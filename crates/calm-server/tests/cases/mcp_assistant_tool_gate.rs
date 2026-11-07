@@ -23,6 +23,11 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "neige_workspace_diff",
     "neige_workspace_log",
     "neige_report_read",
+    "neige_track_ls",
+    "neige_track_cat",
+    "neige_track_diff",
+    "neige_track_show",
+    "neige_track_log",
     "neige_report_describe",
     "neige_report_commit",
     "neige_report_write",
@@ -94,14 +99,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Opening a terminal card is the Planner's; the role gate keeps an Assistant's writes to its
     // own card.
     "neige_terminal_open",
-    // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
-    "neige_track_ls",
-    "neige_track_cat",
     // `neige report tag report.md` (Planner lists and changes, Worker lists; never Assistant).
     "neige_report_tag",
-    "neige_track_diff",
-    "neige_track_show",
-    "neige_track_log",
     // Planning, review, admin.
     "neige_task_cancel",
     "neige_task_ls",
