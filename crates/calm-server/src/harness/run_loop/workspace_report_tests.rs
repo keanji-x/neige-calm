@@ -4,7 +4,7 @@ use super::*;
 use crate::model::CardRole;
 
 #[tokio::test]
-async fn resumed_planner_and_assistant_receive_live_workspace_report_instructions() {
+async fn managed_report_context_refreshes_historical_resumed_turns() {
     for role in [CardRole::Planner, CardRole::Assistant] {
         let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
@@ -52,7 +52,7 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             expected,
             "workspace capability instructions stay outside input segments; only Planner adds budget context"
         );
-        // Same native session: managed scope changes do not revoke role-based reads.
+        // Same native session: revoke the fixture's live grant after a real granted turn.
         let turn_id = inner.last_turn_id.lock().await.clone().unwrap();
         let live = inner.live_claim.writer();
         on_notification(
@@ -106,12 +106,12 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
             panic!("expected text")
         };
         assert!(text.contains("Continue after revocation"));
-        assert!(text.contains("neige_workspace_ls"));
+        assert!(!text.contains("neige_workspace_ls"));
     }
 }
 
 #[tokio::test]
-async fn ordinary_recorders_receive_workspace_instructions_but_workers_do_not() {
+async fn ordinary_readers_and_workers_do_not_receive_managed_report_context() {
     for (role, scope) in [
         (CardRole::Planner, None),
         (CardRole::Assistant, None),
@@ -139,10 +139,6 @@ async fn ordinary_recorders_receive_workspace_instructions_but_workers_do_not() 
         let InputItem::Text { text } = &sent[0].1[0] else {
             panic!("expected text")
         };
-        assert_eq!(
-            text.contains("neige_workspace_ls"),
-            role != CardRole::Worker,
-            "{role:?} / {scope:?}"
-        );
+        assert!(!text.contains("neige_workspace_ls"), "{role:?} / {scope:?}");
     }
 }

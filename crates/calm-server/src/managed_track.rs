@@ -102,13 +102,19 @@ pub(crate) async fn bind_tx(
 /// Workspace reports are read-only for these live, bound roles.
 pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
-/// Shared by authorization and capability teaching. Managed metadata only supplies timezone.
-async fn workspace_report_grant(
+struct WorkspaceReportReader {
+    zone: Tz,
+    role: CardRole,
+    managed_context: bool,
+}
+
+/// Read authority follows the live role; managed metadata configures calendar and context.
+async fn workspace_report_reader(
     repo: &dyn RouteRepo,
     pool: Option<crate::db::sqlite::SqliteDb>,
     card_id: &str,
     track_id: &str,
-) -> Result<Option<(Tz, CardRole)>> {
+) -> Result<Option<WorkspaceReportReader>> {
     let Some(card) = repo.card_get(card_id).await? else {
         return Ok(None);
     };
@@ -124,22 +130,28 @@ async fn workspace_report_grant(
     let Some(pool) = pool else {
         return Ok(None);
     };
-    let zone: Option<String> = sqlx::query_scalar(
-        "SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1",
+    let metadata: Option<(String, String)> = sqlx::query_as(
+        "SELECT report_time_zone,report_read_scope FROM managed_track_identities WHERE track_id=?1",
     )
     .bind(track_id)
     .fetch_optional(pool.read_pool())
     .await?;
-    zone.map(|zone| {
-        zone.parse()
-            .map(|zone| (zone, role))
-            .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))
-    })
-    .transpose()
-    .map(|grant| Some(grant.unwrap_or((crate::workspace_reports::TIME_ZONE, role))))
+    let (zone, managed_context) = match metadata {
+        Some((zone, scope)) => (
+            zone.parse()
+                .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))?,
+            scope == "workspace",
+        ),
+        None => (crate::workspace_reports::TIME_ZONE, false),
+    };
+    Ok(Some(WorkspaceReportReader {
+        zone,
+        role,
+        managed_context,
+    }))
 }
 
-/// Refresh on each turn, including resumed conversations whose startup template is immutable.
+/// Preserve the managed report-planning context without adding text to ordinary turns.
 pub(crate) async fn workspace_report_instructions(
     repo: &dyn Repo,
     card_id: &str,
@@ -152,9 +164,10 @@ pub(crate) async fn workspace_report_instructions(
         include_str!("../prompts/workspace-operations.md")
     );
     Ok(
-        workspace_report_grant(repo, repo.sqlite_db(), card_id, track_id)
+        workspace_report_reader(repo, repo.sqlite_db(), card_id, track_id)
             .await?
-            .map(|(_, role)| match role {
+            .filter(|reader| reader.managed_context)
+            .map(|reader| match reader.role {
                 CardRole::Planner => PLANNER_REPORTS,
                 _ => REPORTS,
             }),
@@ -194,7 +207,7 @@ pub(crate) async fn require_workspace_reports(
     if track.area_id.as_str() != identity.area_id {
         return Err(denied());
     }
-    workspace_report_grant(
+    workspace_report_reader(
         ctx.repo.as_ref(),
         ctx.sqlite_db.clone(),
         &identity.card_id,
@@ -202,7 +215,7 @@ pub(crate) async fn require_workspace_reports(
     )
     .await
     .map_err(crate::mcp_server::framing::calm_error)?
-    .map(|(zone, _)| zone)
+    .map(|reader| reader.zone)
     .ok_or_else(denied)
 }
 
