@@ -18,7 +18,10 @@ pub struct TurnTranslator {
     sequence: u64,
     current: Option<(String, String)>,
     text_bytes: usize,
-    replied_after_tool_failure: bool,
+    // Failure barriers distinguish a later recovery tool from an already-running sibling.
+    unanswered_tool_failures: BTreeMap<String, u64>,
+    tool_starts: BTreeMap<String, u64>,
+    tool_sequence: u64,
 }
 impl TurnTranslator {
     pub fn new(context: TurnContext) -> Self {
@@ -30,7 +33,9 @@ impl TurnTranslator {
             sequence: 0,
             current: None,
             text_bytes: 0,
-            replied_after_tool_failure: false,
+            unanswered_tool_failures: BTreeMap::new(),
+            tool_starts: BTreeMap::new(),
+            tool_sequence: 0,
         }
     }
     pub fn started(&self) -> PlannerEvent {
@@ -77,7 +82,7 @@ impl TurnTranslator {
                     .as_str()
                     .ok_or(Error::Protocol("missing text chunk"))?;
                 if kind == "agent_message_chunk" && !delta.trim().is_empty() {
-                    self.replied_after_tool_failure = true;
+                    self.unanswered_tool_failures.clear();
                 }
                 let native = update.get("messageId").and_then(Value::as_str);
                 let id = if let Some(id) = native {
@@ -135,6 +140,10 @@ impl TurnTranslator {
                 if kind == "tool_call" && self.tools.contains_key(id) {
                     return Err(Error::Protocol("duplicate tool call"));
                 }
+                if kind == "tool_call" {
+                    self.tool_sequence += 1;
+                    self.tool_starts.insert(id.to_owned(), self.tool_sequence);
+                }
                 let mut tool = if kind == "tool_call" {
                     json!({"toolCallId":id,"status":"pending"})
                 } else {
@@ -183,7 +192,18 @@ impl TurnTranslator {
                         .get(id)
                         .is_none_or(|previous| previous["status"] != "failed")
                 {
-                    self.replied_after_tool_failure = false;
+                    self.unanswered_tool_failures
+                        .insert(id.to_owned(), self.tool_sequence);
+                }
+                if status == "completed"
+                    && self
+                        .tools
+                        .get(id)
+                        .is_none_or(|old| old["status"] != "completed")
+                {
+                    let started = self.tool_starts[id];
+                    self.unanswered_tool_failures
+                        .retain(|_, failed_at| *failed_at >= started);
                 }
                 self.tools.insert(id.into(), tool);
             }
@@ -209,6 +229,28 @@ impl TurnTranslator {
         }
         Ok(events)
     }
+    /// Keep an explicit interruption authoritative; explain a silent failure only when its tool
+    /// identity matches a permission this turn declined.
+    pub fn finish_after_permission(
+        &self,
+        reason: StopReason,
+        declined: Option<&super::approvals::DeclinedPermission>,
+        at_ms: i64,
+    ) -> Vec<PlannerEvent> {
+        if matches!(
+            reason,
+            StopReason::EndTurn | StopReason::MaxTokens | StopReason::MaxTurnRequests
+        ) && let Some(declined) = declined
+            && self
+                .unanswered_tool_failures
+                .contains_key(&declined.tool_call_id)
+        {
+            let (code, message) = declined.diagnostic.diagnostic();
+            return self.terminal("failed", json!({"code":code, "message":message}), at_ms);
+        }
+        self.finish(reason, at_ms)
+    }
+
     pub fn finish(&self, reason: StopReason, at_ms: i64) -> Vec<PlannerEvent> {
         let (status, error) = match reason {
             StopReason::Cancelled => ("interrupted", Value::Null),
@@ -216,14 +258,10 @@ impl TurnTranslator {
             StopReason::EndTurn | StopReason::MaxTokens | StopReason::MaxTurnRequests => {
                 // The stop reason closes the prompt. The tool results and reply tell us whether
                 // the agent left the user with a result or an explanation.
-                if !self.replied_after_tool_failure
-                    && !self.tools.is_empty()
-                    && self.tools.values().all(|tool| tool["status"] == "failed")
-                {
-                    return self.fail(
-                        "The assistant stopped after its tool calls failed and did not reply.",
-                        at_ms,
-                    );
+                if !self.unanswered_tool_failures.is_empty() {
+                    let (code, message) =
+                        super::diagnostics::AcpDiagnostic::SilentToolFailure.diagnostic();
+                    return self.terminal("failed", json!({"code":code,"message":message}), at_ms);
                 }
                 ("completed", Value::Null)
             }

@@ -2,6 +2,7 @@
 pub mod approvals;
 pub mod compaction;
 pub mod configuration;
+pub mod diagnostics;
 pub mod grok_compaction;
 pub mod permission;
 pub mod protocol;
@@ -20,3 +21,6 @@ mod compaction_tests;
 
 #[cfg(test)]
 mod usage_tests;
+
+#[cfg(test)]
+mod permission_outcome_tests;

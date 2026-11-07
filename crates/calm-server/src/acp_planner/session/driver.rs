@@ -237,7 +237,8 @@ pub(super) async fn collect_turn(
                     && let Some(reason)=approvals.declined() {
                     return Ok(translator.fail(&reason,crate::model::now_ms()));
                 }
-                return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
+                let declined = stop_at.is_none().then(|| approvals.declined_permission()).flatten();
+                return Ok::<_,CalmError>(translator.finish_after_permission(response.stop_reason,declined.as_ref(),crate::model::now_ms()));
             },
             changed=cancelled.changed(),if stop_at.is_none()=>{
                 if changed.is_err() || !matches!(*cancelled.borrow(), CancelRequest::Running) {

@@ -33,6 +33,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     // command its own classifier reads as read-only runs without asking, and with no sandbox.
     ask: NOTHING,
     // No sandbox and no asks: the account's own access.
+    full_requests: provider::acp::approvals::FullPermissionRequests::Native,
     full: ModeLaunch {
         env: &[],
         agent_options: &["--always-approve"],

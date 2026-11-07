@@ -390,6 +390,7 @@ fn own_tools() -> AgentAsks {
             ["neige_report_commit", "neige_report_read"],
         ),
         decline_ends_turn: false,
+        full_requests: FullPermissionRequests::Native,
     }
 }
 
@@ -620,4 +621,113 @@ async fn a_reject_the_person_chose_names_why_the_turn_ended() {
 
 fn allow() -> crate::send_boundary::PreSendGate<'static> {
     crate::send_boundary::PreSendGate::new(|| Box::pin(async { Ok(()) }))
+}
+
+fn client_full() -> AgentAsks {
+    AgentAsks {
+        full_requests: FullPermissionRequests::AllowOnce,
+        decline_ends_turn: true,
+        ..AgentAsks::default()
+    }
+}
+
+#[tokio::test]
+async fn client_full_selects_only_one_call_grants_and_never_holds_requests() {
+    let mut peer = peer_with(PlannerPermissionMode::Full, client_full());
+    peer.request(1, shell()).await;
+    assert_eq!(peer.read().await, answer(1, permission::selected("once")));
+    assert!(peer.held.try_recv().is_err());
+    assert_eq!(peer.approvals.declined(), None);
+}
+
+#[tokio::test]
+async fn client_full_refuses_malformed_and_ambiguous_requests_without_promoting_always() {
+    let mut peer = peer_with(PlannerPermissionMode::Full, client_full());
+    let mut no_once = shell();
+    no_once["options"].as_array_mut().unwrap().remove(0);
+    let mut ambiguous = shell();
+    ambiguous["options"][1]["optionId"] = json!("once");
+    let mut duplicate = shell();
+    duplicate["options"][1]["kind"] = json!("allow_once");
+    let mut empty = shell();
+    empty["toolCall"]["toolCallId"] = json!("");
+    for params in [json!({}), no_once, ambiguous, duplicate, empty] {
+        peer.request(2, params).await;
+        assert_eq!(peer.read().await, answer(2, permission::cancelled()));
+    }
+    peer.approvals
+        .request(json!(3), "terminal/create", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(peer.read().await["error"]["code"], -32601);
+    assert!(peer.held.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn client_full_never_approves_after_cancel_or_settlement() {
+    for cancelled in [false, true] {
+        let mut peer = peer_with(PlannerPermissionMode::Full, client_full());
+        if cancelled {
+            peer.approvals.cancel("native", &allow()).await.unwrap();
+            assert_eq!(peer.read().await["method"], "session/cancel");
+        } else {
+            peer.approvals.close().await;
+        }
+        peer.request(4, shell()).await;
+        assert_eq!(peer.read().await, answer(4, permission::cancelled()));
+        assert_eq!(peer.approvals.declined(), None);
+        assert!(peer.held.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn client_full_policy_preserves_ask_and_never_modes() {
+    let mut never = peer_with(PlannerPermissionMode::Never, client_full());
+    never.request(5, shell()).await;
+    assert_eq!(never.read().await, answer(5, permission::cancelled()));
+    let declined = never.approvals.declined_permission().unwrap();
+    assert_eq!(declined.tool_call_id, "call_12");
+    assert!(declined.reason.contains("`never`"));
+    let mut ask = peer_with(PlannerPermissionMode::Ask, client_full());
+    ask.request(6, shell()).await;
+    let responder = expect_open(ask.next_held().await, 6);
+    responder.respond(0);
+    assert_eq!(ask.read().await, answer(6, permission::selected("once")));
+    assert_eq!(ask.approvals.declined(), None);
+}
+
+/// The canonical interrupt handle and the reader use the same approvals concurrently. Hold native
+/// cancel at writer admission; an arriving Full request must wait, then be refused after cancel.
+#[tokio::test]
+async fn client_full_serializes_a_concurrent_request_with_native_cancel() {
+    let mut peer = peer_with(PlannerPermissionMode::Full, client_full());
+    let entered = tokio::sync::Notify::new();
+    let release = tokio::sync::Notify::new();
+    let gate = crate::send_boundary::PreSendGate::new(|| {
+        Box::pin(async {
+            entered.notify_one();
+            release.notified().await;
+            Ok(())
+        })
+    });
+    let cancel = peer.approvals.cancel("native", &gate);
+    let request = async {
+        entered.notified().await;
+        let mut answer = Box::pin(
+            peer.approvals
+                .request(json!(7), permission::METHOD, shell()),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), answer.as_mut())
+                .await
+                .is_err(),
+            "permission replies must not overtake the in-flight cancel"
+        );
+        release.notify_one();
+        answer.await.unwrap();
+    };
+    let (cancelled, ()) = tokio::join!(cancel, request);
+    cancelled.unwrap();
+    assert_eq!(peer.read().await["method"], "session/cancel");
+    assert_eq!(peer.read().await, answer(7, permission::cancelled()));
 }

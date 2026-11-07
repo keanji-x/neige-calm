@@ -48,6 +48,30 @@ pub struct PermissionOption {
 }
 
 impl PermissionRequest {
+    /// A single unambiguous one-call grant. Never promote allow_always or a duplicate option ID.
+    pub fn allow_once(&self) -> Option<&str> {
+        if self.tool_call.tool_call_id.is_empty() {
+            return None;
+        }
+        let mut once = self
+            .options
+            .iter()
+            .filter(|option| option.kind == "allow_once");
+        let option = once.next()?;
+        if once.next().is_some()
+            || option.option_id.is_empty()
+            || self
+                .options
+                .iter()
+                .filter(|other| other.option_id == option.option_id)
+                .count()
+                != 1
+        {
+            return None;
+        }
+        Some(&option.option_id)
+    }
+
     pub fn decode(params: Value) -> Result<Self, Error> {
         super::protocol::decode(params)
     }
