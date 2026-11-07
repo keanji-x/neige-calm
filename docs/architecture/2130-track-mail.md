@@ -4,7 +4,7 @@
 
 Deployment owners set **Sending limit** in **Settings → Mail**. The
 default is five messages per sending Track in a rolling 60-minute window.
-Enter a rate such as `5/h`. The count can be 1 to 1000, and changes apply
+Enter the hourly count, such as `5`. The count can be 1 to 1000, and changes apply
 to subsequent sends as soon as they are saved.
 Direct mail, replies and the first mail to a Planner-created Track share the
 sender's quota across turns and recipients. The writer counts recent stored

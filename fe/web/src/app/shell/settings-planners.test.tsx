@@ -335,7 +335,7 @@ it('shares Settings availability with the shell notice through Recheck and Codex
 
 it('edits the Track mail quota through Settings and restores its default', async () => {
   let settings: Record<string, string> = {};
-  const { sent } = renderPlanners(undefined, (request) => {
+  const { sent, client } = renderPlanners(undefined, (request) => {
     if (request.method === 'PUT') {
       const { mail_per_hour } = (request.body as { settings: { mail_per_hour: string | null } }).settings;
       settings = mail_per_hour === null ? {} : { mail_per_hour };
@@ -343,24 +343,37 @@ it('edits the Track mail quota through Settings and restores its default', async
     return Promise.resolve({ status: 200, statusText: 'OK', body: { settings } });
   });
   await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
-  expect(screen.queryByRole('textbox', { name: 'Messages per hour' })).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'Sending limit (messages per hour)' })).toBeNull();
   await userEvent.click(screen.getByRole('button', { name: 'Mail' }));
-  const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Messages per hour' });
+  const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Sending limit (messages per hour)' });
   expect(screen.queryByRole('textbox', { name: 'Maximum turn duration (minutes)' })).toBeNull();
-  expect(field.value).toBe('5/h');
+  expect(field.value).toBe('5');
   const user = userEvent.setup();
   await user.clear(field);
-  await user.type(field, '5/m{Enter}');
+  await user.type(field, '0{Enter}');
   expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(0);
   await user.clear(field);
-  await user.type(field, '12/h{Enter}');
+  await user.type(field, '12{Enter}');
   await waitFor(() => expect(settings).toEqual({ mail_per_hour: '12/h' }));
-  const reset = screen.getByRole('button', { name: 'Restore default mail limit' });
+  const reset = screen.getByRole('button', { name: 'Reset mail sending limit to default' });
   await waitFor(() => expect((reset as HTMLButtonElement).disabled).toBe(false));
   await user.click(reset);
-  await waitFor(() => expect(field.value).toBe('5/h'));
+  await waitFor(() => expect(field.value).toBe('5'));
   expect(sent.filter((request) => request.method === 'PUT').map((request) => request.body)).toEqual([
     { settings: { mail_per_hour: '12/h' } },
     { settings: { mail_per_hour: null } },
   ]);
+  // A bare stored number is invalid even when it equals a confirmed draft.
+  for (const [index, count] of ['5', '7'].entries()) {
+    settings = { mail_per_hour: count };
+    await client.invalidateQueries({ queryKey: queryKeys.settings() });
+    await waitFor(() => expect(field.getAttribute('aria-invalid')).toBe('true'));
+    expect(screen.queryByText('Saved.')).toBeNull();
+    await user.click(field);
+    await user.tab();
+    expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(2 + index);
+    await user.type(field, '{Enter}');
+    await waitFor(() => expect(settings).toEqual({ mail_per_hour: '5/h' }));
+    await waitFor(() => expect(field.getAttribute('aria-invalid')).not.toBe('true'));
+  }
 });

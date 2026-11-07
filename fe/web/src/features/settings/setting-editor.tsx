@@ -1,5 +1,6 @@
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
+import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useRef } from 'react';
 
 import { SETTINGS_FAILURES, SETTINGS_TEXT } from '../../../../core/domain/settings.ts';
@@ -20,6 +21,8 @@ export type SettingEditorProps = Readonly<{
   onSave: (value: string | null) => Promise<void>;
 }>;
 
+type SettingParser = (value: string | undefined) => Readonly<{ ok: true; text: string }> | Readonly<{ ok: false; error: string }>;
+
 export type SettingEditorCopy = Readonly<{
   label: string;
   unit: string;
@@ -27,7 +30,8 @@ export type SettingEditorCopy = Readonly<{
   name: string;
   description?: string;
   resetLabel: string;
-  parse: (value: string | undefined) => Readonly<{ ok: true; text: string }> | Readonly<{ ok: false; error: string }>;
+  parse: SettingParser;
+  parseStored?: SettingParser;
 }>;
 
 function settingText(parse: SettingEditorCopy['parse'], value: string | undefined): string {
@@ -37,15 +41,18 @@ function settingText(parse: SettingEditorCopy['parse'], value: string | undefine
 
 type SettingSave =
   | Readonly<{ phase: 'idle' }>
-  | Readonly<{ phase: 'pending' | 'saved'; value: string }>
+  | Readonly<{ phase: 'pending'; value: string; readRevision: number }>
+  | Readonly<{ phase: 'saved'; value: string }>
   | Readonly<{ phase: 'failed'; value: string; message: string }>;
 
-export function SettingEditor({ value, readRevision, loaded, loadError, onRetryLoad, onSave, copy, inlineActions = false }:
-  SettingEditorProps & { copy: SettingEditorCopy; inlineActions?: boolean }) {
-  const { label, unit, inputMode, name, description, resetLabel, parse } = copy;
+export function SettingEditor({ value, readRevision, loaded, loadError, onRetryLoad, onSave, copy, inline = false }:
+  SettingEditorProps & { copy: SettingEditorCopy; inline?: boolean }) {
+  const { label, unit, inputMode, name, description, resetLabel, parse, parseStored = parse } = copy;
+  const valueSuffix = inline ? unit : ` ${unit}`;
   const [seed, setSeed] = useState({ loaded, value, readRevision });
-  const [draft, setDraft] = useState(loaded ? settingText(parse, value) : '');
+  const [draft, setDraft] = useState(loaded ? settingText(parseStored, value) : '');
   const [changedElsewhere, setChangedElsewhere] = useState(false);
+  const [edited, setEdited] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [save, setSave] = useState<SettingSave>({ phase: 'idle' });
   // One active write. Editing stays available, but no queued or automatically replayed PUT exists.
@@ -54,40 +61,47 @@ export function SettingEditor({ value, readRevision, loaded, loadError, onRetryL
   const latestRead = useRef({ value, readRevision });
   latestRead.current = { value, readRevision };
   if (loaded && (!seed.loaded || seed.value !== value || seed.readRevision !== readRevision)) {
-    const incoming = settingText(parse, value);
-    const clean = !seed.loaded || draft === settingText(parse, seed.value);
+    const incoming = settingText(parseStored, value);
+    const clean = !seed.loaded || draft === settingText(parseStored, seed.value);
     setSeed({ loaded, value, readRevision });
     acknowledged.current = undefined;
     if (clean && !busy.current && save.phase === 'idle') {
       setDraft(incoming);
+      setEdited(false);
       setChangedElsewhere(false);
       setSave({ phase: 'idle' });
       setValidationError(null);
     } else {
       setChangedElsewhere(draft !== incoming && !(save.phase === 'pending' && save.value === incoming));
-      if (save.phase === 'saved' && save.value !== incoming) setSave({ phase: 'idle' });
+      if (save.phase === 'saved' && (!parseStored(value).ok || save.value !== incoming)) setSave({ phase: 'idle' });
     }
   }
   const commit = (reset: boolean, explicit: boolean) => {
     if (busy.current || !loaded) return;
+    if (!reset && !explicit && !edited && !parseStored(value).ok) return;
     const parsed = parse(reset ? undefined : draft);
     if (!parsed.ok) { setValidationError(parsed.error); return; }
     const text = parsed.text;
     // Leaving a failed field is not permission to silently retry it.
     if (!reset && !explicit && save.phase === 'failed' && save.value === text) return;
     if (!reset && save.phase !== 'failed' && (text === acknowledged.current
-      || (parse(value).ok && text === settingText(parse, value)))) return;
+      || (parseStored(value).ok && text === settingText(parseStored, value)))) {
+      setEdited(false);
+      return;
+    }
     busy.current = true;
     setDraft(text);
+    setEdited(false);
     setChangedElsewhere(false);
     setValidationError(null);
-    setSave({ phase: 'pending', value: text });
+    setSave({ phase: 'pending', value: text, readRevision });
     const submittedRevision = readRevision;
     void (async () => {
       try {
         await onSave(reset ? null : text);
         const read = latestRead.current;
-        if (read.readRevision !== submittedRevision && settingText(parse, read.value) !== text) {
+        const readValue = parseStored(read.value);
+        if (read.readRevision !== submittedRevision && (!readValue.ok || readValue.text !== text)) {
           acknowledged.current = undefined;
           setSave({ phase: 'idle' });
           return;
@@ -101,30 +115,40 @@ export function SettingEditor({ value, readRevision, loaded, loadError, onRetryL
       } finally { busy.current = false; }
     })();
   };
-  const stored = parse(value);
+  const stored = parseStored(value);
   const parsedDraft = parse(draft);
-  const inputError = parsedDraft.ok ? null
-    : !stored.ok && draft === settingText(parse, value)
-      ? `Stored ${name} is invalid. ${stored.error} Restore default to repair it.`
-      : validationError ?? parsedDraft.error;
+  // A submitted repair supersedes its old malformed read. A later read must
+  // validate on its own before the editor can acknowledge the save.
+  const repairingStored = (save.phase === 'saved'
+    || (save.phase === 'pending' && save.readRevision === readRevision)) && save.value === draft;
+  const inputError = !stored.ok && !repairingStored && (!edited || draft === settingText(parseStored, value))
+    ? `Stored ${name} is invalid. ${stored.error} Restore default to repair it.`
+    : parsedDraft.ok ? null : validationError ?? parsedDraft.error;
+  const saved = save.phase === 'saved' && save.value === draft && inputError === null;
   return <div className={styles.durationControl}>
     {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
     {!loaded ? loadError === null && <span role="status">Loading {name}…</span> : <>
-      <div className={inlineActions ? styles.mailActions : styles.durationControl}>
-        <AstryxTextInput label={label} value={draft} width={inlineActions ? 160 : CONTROL_WIDTH}
+      <div className={inline ? styles.actions : styles.durationControl}>
+        {inline && <AstryxVisuallyHidden role="status">{saved ? 'Saved.' : ''}</AstryxVisuallyHidden>}
+        <AstryxTextInput label={label} isLabelHidden={inline} value={draft} width={inline ? '5.5rem' : CONTROL_WIDTH}
           ref={(input) => { if (input !== null) input.inputMode = inputMode; }}
           description={description}
-          status={inputError === null ? undefined : { type: 'error', message: inputError }}
-          onChange={(next) => { setDraft(next); setValidationError(null); }}
+          status={inputError !== null ? { type: 'error', message: inputError }
+            : inline && saved ? { type: 'success' } : undefined}
+          statusVariant={inline ? 'tooltip' : undefined}
+          onChange={(next) => { setDraft(next); setEdited(true); setValidationError(null); }}
           onBlur={() => commit(false, false)}
           onEnter={() => commit(false, true)} />
-        <AstryxButton label={resetLabel} variant="secondary" isDisabled={save.phase === 'pending'}
-          onPointerDown={(event) => event.preventDefault()} onClick={() => commit(true, true)}>Restore default</AstryxButton>
+        {inline && <span className={styles.rowTitleSuffix} aria-hidden="true">{unit}</span>}
+        <AstryxButton label={resetLabel} variant={inline ? 'ghost' : 'secondary'} isDisabled={save.phase === 'pending'}
+          onPointerDown={(event) => event.preventDefault()} onClick={() => commit(true, true)}>
+          {inline ? 'Reset' : 'Restore default'}
+        </AstryxButton>
       </div>
-      {save.phase === 'failed' && <p className={styles.error} role="alert">{save.value}{inputMode === 'numeric' ? ` ${unit}` : ''}: {save.message} Press Enter to try again or restore default.</p>}
-      <span role="status">{save.phase === 'pending' ? `Saving ${save.value}${inputMode === 'numeric' ? ` ${unit}` : ''}…`
-        : save.phase === 'saved' && save.value === draft ? 'Saved.'
-          : draft !== settingText(parse, value) ? 'Your edit is not saved.' : ''}</span>
+      {save.phase === 'failed' && <p className={styles.error} role="alert">{save.value}{valueSuffix}: {save.message} Press Enter to try again or restore default.</p>}
+      <span className={inline ? styles.inlineSettingStatus : undefined} role="status">{save.phase === 'pending' ? `Saving ${save.value}${valueSuffix}…`
+        : saved ? inline ? '' : 'Saved.'
+          : draft !== settingText(parseStored, value) ? 'Your edit is not saved.' : ''}</span>
       {save.phase === 'pending' && save.value !== draft && <span role="status">Your new edit is not saved. Press Enter after this save finishes.</span>}
       {changedElsewhere && <span role="status">Changed elsewhere. Your edit is retained; review it before saving.</span>}
     </>}
