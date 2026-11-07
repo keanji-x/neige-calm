@@ -45,4 +45,5 @@
 // Revision 43 (#3318): recovery holds may declare an unconfirmed Claude identity.
 // Revision 44 (#3363): explicit known-terminal carrier recovery.
 // Revision 45 (#3531): managed ACP adds the Antigravity provider identity.
-pub const REST_API_VERSION: &str = "45";
+// Revision 46: exact canonical terminal metadata includes a required nullable diagnostic code.
+pub const REST_API_VERSION: &str = "46";

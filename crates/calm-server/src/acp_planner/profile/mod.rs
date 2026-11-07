@@ -29,8 +29,18 @@ pub(crate) struct ContractCompaction {
     pub(crate) assistant: Option<CompactionWire>,
 }
 
+pub(crate) type PrepareLaunch =
+    fn(&super::config::AcpAgentConfig, PlannerPermissionMode) -> crate::error::Result<()>;
+
 pub(crate) struct AcpAgentProfile {
+    pub(crate) owned_options: &'static [&'static str],
     pub(crate) shared_server: bool,
+    /// Native identities are account-wide even when each turn owns a process.
+    pub(crate) global_native_identity: bool,
+    /// Profile-owned native settings preparation, before minting process authority.
+    pub(crate) prepare_launch: Option<PrepareLaunch>,
+    /// Required execution behavior selected through the advertised ACP configuration.
+    pub(crate) native_mode: Option<&'static str>,
     pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
@@ -109,6 +119,22 @@ const NOTHING: ModeLaunch = ModeLaunch {
 };
 
 impl AcpAgentProfile {
+    /// Only native argv ownership is checked here; environment payload validation
+    /// remains at execution admission, including registrations from earlier binaries.
+    pub(crate) fn validate_options(&self, args: &[String]) -> crate::error::Result<()> {
+        if args.iter().any(|arg| {
+            let option = arg
+                .split_once('=')
+                .map_or(arg.as_str(), |(option, _)| option);
+            self.owned_options.contains(&option)
+        }) {
+            return Err(crate::error::CalmError::BadRequest(
+                "ACP registration overrides a profile-owned native option".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn admit_identity(
         &self,
         response: &InitializeResponse,

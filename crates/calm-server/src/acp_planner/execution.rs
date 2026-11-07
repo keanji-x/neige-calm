@@ -211,6 +211,9 @@ pub(super) struct Process {
 /// Validate even registrations read by an earlier binary before minting authority.
 pub(super) fn validate_registration(registration: Registration<'_>) -> Result<()> {
     use crate::operation::stdin_payload::{KeySource, validate_key};
+    registration
+        .profile
+        .validate_options(&registration.config.args)?;
     for key in registration.config.env.keys() {
         validate_key(key, KeySource::Operator)?;
     }
@@ -228,6 +231,9 @@ pub(super) async fn intent(
     use crate::operation::stdin_payload::{KeySource, PayloadKeys};
     use std::{collections::BTreeMap, ffi::OsString};
     validate_registration(registration)?;
+    if let Some(prepare) = registration.profile.prepare_launch {
+        prepare(registration.config, permission)?;
+    }
     let launch = registration.profile.launch(permission);
     // Merge first, preserving each final value's source. Profile/kernel values
     // override registrations, exactly as the native Command::envs path did.

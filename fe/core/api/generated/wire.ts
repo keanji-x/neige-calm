@@ -218,8 +218,9 @@ attempt: ConversationAttemptDelivery | null, };
 
 /**
  * A current execution's persisted terminal fact, independent of display pagination.
+ * The nullable diagnostic code is closed kernel vocabulary, never native error text or input.
  */
-export type ConversationTerminalOutcome = { worker_session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, status: ConversationTerminalStatus, created_at_ms: number, duration_ms: number | null, };
+export type ConversationTerminalOutcome = { worker_session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, status: ConversationTerminalStatus, created_at_ms: number, duration_ms: number | null, diagnostic_code: string | null, };
 
 export type ConversationTerminalStatus = "completed" | "interrupted" | "failed";
 

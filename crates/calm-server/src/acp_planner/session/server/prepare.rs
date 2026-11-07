@@ -80,7 +80,7 @@ pub(super) async fn prepare(
                     "Shared ACP native session is owned by another card",
                 ));
             }
-            ensure_native_owner(
+            super::super::setup::ensure_native_owner(
                 pool.read_pool(),
                 &params.provider,
                 &params.worker_session_id,
@@ -133,7 +133,7 @@ pub(super) async fn prepare(
                             "Shared ACP returned a session already owned by another card",
                         ));
                     }
-                    ensure_native_owner(
+                    super::super::setup::ensure_native_owner(
                         pool.read_pool(),
                         &params.provider,
                         &params.worker_session_id,

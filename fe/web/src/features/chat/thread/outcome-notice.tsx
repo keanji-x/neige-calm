@@ -10,6 +10,11 @@ import styles from './thread.module.css';
 
 /** One plain sentence for the `codexErrorInfo` values a reader can act on; every other code is shown as the token codex sent. */
 const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
+  acp_permission_denied: 'This conversation’s permission policy blocked a tool request. Other permitted tools remain available.',
+  acp_permission_rejected: 'The tool request was declined, and the agent stopped without replying.',
+  acp_permission_unexpected: 'The agent requested permission despite its full configuration. The unexpected request was declined.',
+  acp_tool_failure: 'The agent stopped after a tool failed and did not reply.',
+  provider_error: 'The provider ended this response with an error.',
   contextWindowExceeded: 'The conversation no longer fits in the model’s context window.',
   usageLimitExceeded: 'The usage limit for this account has been reached.',
   rateLimitExceeded: 'Requests are being rate-limited; try again in a moment.',

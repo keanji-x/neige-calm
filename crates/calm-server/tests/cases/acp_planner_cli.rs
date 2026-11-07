@@ -3,16 +3,44 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_cli_uses_the_current_card_context_and_rotates_it_on_load() {
+    verify_cli_context("opencode").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canonical_antigravity_cli_uses_fresh_authority_on_resume() {
+    verify_cli_context("antigravity").await;
+}
+
+async fn verify_cli_context(provider: &str) {
     let root = Root::new("unused");
-    let stack = boot(&root).await;
-    let (track, card) = create(&stack).await;
+    let stack = if provider == "antigravity" {
+        boot_as(
+            &root,
+            provider,
+            json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server",
+            "ACP_FIXTURE_VERSION":"1.5.3"}),
+            "1.5.1",
+        )
+        .await
+    } else {
+        boot(&root).await
+    };
+    let (track, card) = if provider == "antigravity" {
+        stack
+            .create_canonical_track_with(json!({"planner_provider":provider}))
+            .await
+    } else {
+        create(&stack).await
+    };
     let worker = stack.runtime(&card).await.id;
     std::fs::write(root.path().join("scenario"), "cli").unwrap();
     for n in 1..=2 {
-        assert_eq!(
-            turn(&stack, &card, "CLI check", n).await["status"],
-            "completed"
-        );
+        let outcome = if provider == "antigravity" {
+            super::acp_compact::turn(&stack, &card, "CLI check", n).await
+        } else {
+            turn(&stack, &card, "CLI check", n).await
+        };
+        assert_eq!(outcome["status"], "completed");
         let records = std::fs::read_to_string(root.path().join("cli-results.jsonl")).unwrap();
         let record: Value = serde_json::from_str(records.lines().last().unwrap()).unwrap();
         assert_eq!(
@@ -36,8 +64,19 @@ async fn native_cli_uses_the_current_card_context_and_rotates_it_on_load() {
                 .unwrap();
         assert!(hash.is_none(), "a settled turn cannot keep CLI authority");
     }
-    assert_eq!(requests(&root, "session/new").len(), 1);
-    assert_eq!(requests(&root, "session/resume").len(), 1);
+    // Read-only model discovery also creates a native session, without this card's MCP context.
+    let owned_attachments = |method| {
+        requests(&root, method)
+            .into_iter()
+            .filter(|request| {
+                request["params"]["mcpServers"]
+                    .as_array()
+                    .is_some_and(|servers| !servers.is_empty())
+            })
+            .count()
+    };
+    assert_eq!(owned_attachments("session/new"), 1);
+    assert_eq!(owned_attachments("session/resume"), 1);
     stack.shutdown().await;
 }
 

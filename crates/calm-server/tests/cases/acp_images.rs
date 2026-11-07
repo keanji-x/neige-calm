@@ -9,8 +9,8 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
     let stack = boot_as(
         &root,
         "antigravity",
-        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0", "ACP_FIXTURE_IMAGES":"1"}),
-        "1.5.0",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3", "ACP_FIXTURE_IMAGES":"1"}),
+        "1.5.3",
     ).await;
     let (_, card) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
@@ -71,7 +71,12 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
             .map(|r| r["_pid"].clone())
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        1
+        2
+    );
+    let continued = requests(&root, "session/prompt");
+    assert_eq!(
+        continued[0]["params"]["sessionId"],
+        continued[1]["params"]["sessionId"]
     );
     stack.shutdown().await;
 }
@@ -79,9 +84,9 @@ async fn antigravity_dispatches_bound_image_bytes_through_the_existing_attachmen
 async fn rejected_image_does_not_create_a_receipt(images: bool, sizes: &[usize]) {
     let root = Root::new("unused");
     let stack = boot_as(&root, "antigravity", json!({
-        "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.0",
+        "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3",
         "ACP_FIXTURE_IMAGES": if images { "1" } else { "0" }, "ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1",
-    }), "1.5.0").await;
+    }), "1.5.3").await;
     let (_, card) = stack
         .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
         .await;

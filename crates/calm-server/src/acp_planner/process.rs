@@ -655,3 +655,39 @@ sys.stdin.read()
         );
     }
 }
+
+/// A menu may follow the setup result. Consume only declarations owned by this process;
+/// requests during setup/maintenance never receive tool authority.
+pub(super) async fn wait_command_catalog(
+    connection: &mut Connection,
+    commands: &Commands,
+    native: &str,
+    owns: impl Fn(&str) -> bool,
+) -> std::result::Result<(), StartFailure> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !commands.declared(native) {
+            let frame = connection.incoming.recv().await.ok_or_else(|| {
+                StartFailure::Failed(CalmError::Conflict(
+                    "ACP command catalog was not declared".into(),
+                ))
+            })?;
+            if let Incoming::Notification { params, .. } = &frame
+                && params["sessionId"].as_str().is_some_and(&owns)
+            {
+                commands.observe(&frame);
+            }
+            if let Incoming::Request { id, method, .. } = frame {
+                refuse(&connection.client, id, &method)
+                    .await
+                    .map_err(|error| {
+                        StartFailure::Failed(CalmError::Conflict(error.to_string()))
+                    })?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| {
+        StartFailure::Failed(CalmError::Conflict("ACP command catalog timed out".into()))
+    })?
+}

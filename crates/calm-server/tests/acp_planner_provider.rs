@@ -81,6 +81,9 @@ async fn boot_as_with_creation_mode(
     let config_path = root.path().join("acp.json");
     let mut env = env;
     env["ACP_FIXTURE_ROOT"] = json!(root.path());
+    if provider == "antigravity" {
+        env["HOME"] = json!(root.path());
+    }
     let mut agent = json!({"provider":provider,"command":"/usr/bin/python3","args":["-u",PEER],"env":env,"min_agent_version":min_agent_version});
     if let Some(mode) = mode {
         agent["default_permission_mode"] = json!(mode);
@@ -880,222 +883,59 @@ async fn c4_consecutive_acp_turns_launch_with_distinct_execution_aliases() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
+async fn antigravity_historical_resume_and_reset_preserve_sibling_identity() {
     let root = Root::new("unused");
     let stack = boot_as(
         &root,
         "antigravity",
         json!({
-            "ACP_FIXTURE_AGENT_NAME": "Antigravity ACP Server",
-            "ACP_FIXTURE_VERSION": "1.5.0",
-            "ACP_FIXTURE_CAPTURE_SHARED_TOKEN": "1",
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server", "ACP_FIXTURE_VERSION":"1.5.3"
         }),
-        "1.5.0",
+        "1.5.1",
     )
     .await;
-    let (first_track, first) = stack
-        .create_historical_track_with(json!({
-            "planner_provider": "antigravity", "title": "First AGY card",
-        }))
+    let (_, first) = stack
+        .create_historical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
     let (_, second) = stack
-        .create_historical_track_with(json!({
-            "planner_provider": "antigravity", "title": "Second AGY card",
-        }))
+        .create_historical_track_with(json!({"planner_provider":"antigravity"}))
         .await;
-
     assert_eq!(
         turn(&stack, &first, "first", 1).await["status"],
         "completed"
     );
-    let first_native = stack.runtime(&first).await.session_id.unwrap();
+    let original = stack.runtime(&first).await.session_id.unwrap();
     assert_eq!(
-        turn(&stack, &first, "second", 2).await["status"],
+        turn(&stack, &first, "continue", 2).await["status"],
         "completed"
     );
     assert_eq!(
         stack.runtime(&first).await.session_id.as_deref(),
-        Some(first_native.as_str())
-    );
-
-    std::fs::write(root.path().join("scenario"), "shared-hold").unwrap();
-    assert_eq!(
-        stack.post_input(&first, "cancel this card").await.0,
-        StatusCode::OK
+        Some(original.as_str())
     );
     assert_eq!(
-        stack.post_input(&second, "leave this card running").await.0,
-        StatusCode::OK
-    );
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while requests(&root, "session/prompt").len() < 4 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
-
-    let second_native = stack.runtime(&second).await.session_id.unwrap();
-    let (status, body) = stack
-        .send(
-            "POST",
-            &format!("/api/cards/{first}/planner/interrupt"),
-            None,
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        stack.wait_outcomes(&first, 3).await[2]["status"],
-        "interrupted"
-    );
-    assert_eq!(
-        stack.wait_outcomes(&second, 1).await[0]["status"],
+        turn(&stack, &second, "sibling", 1).await["status"],
         "completed"
     );
-
-    // The reset endpoint must revoke the old session before returning success.
-    let first_token =
-        std::fs::read_to_string(root.path().join(format!("{first_native}.test-token"))).unwrap();
-    let second_token =
-        std::fs::read_to_string(root.path().join(format!("{second_native}.test-token"))).unwrap();
-    assert!(stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
-    let stream = tokio::net::UnixStream::connect(stack.mcp_socket())
-        .await
-        .unwrap();
-    let mut stream = tokio::io::BufReader::new(stream);
-    let initialized = mcp_exchange(
-        &mut stream,
-        json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                "clientInfo": {"name": "shared-acp-test", "version": "1"},
-                "_meta": {"dev.neige/auth": {"token": first_token}}}
-        }),
-    )
-    .await;
-    assert!(initialized.get("result").is_some());
-    let listed = mcp_exchange(
-        &mut stream,
-        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-    )
-    .await;
-    let tools = listed["result"]["tools"]
-        .as_array()
-        .expect("listed MCP tools");
-    for (number, name, args) in [
-        (10, "neige_track_status", json!({})),
-        (11, "neige_track_cat", json!({"path": "guide/report.md"})),
-    ] {
-        assert!(
-            tools.iter().any(|tool| tool["name"] == name),
-            "{name} missing"
-        );
-        let response = mcp_exchange(
-            &mut stream,
-            json!({
-                "jsonrpc": "2.0", "id": number, "method": "tools/call",
-                "params": {"name": name, "arguments": args}
-            }),
-        )
-        .await;
-        assert!(
-            response["result"].is_object() && response["result"]["isError"] != true,
-            "{response}"
-        );
-    }
+    let sibling = stack.runtime(&second).await.session_id.unwrap();
     let (status, body) = stack.reset(&first).await;
     assert!(status.is_success(), "{body}");
-    assert!(!stack.token_authenticates(&first_token).await);
-    assert!(stack.token_authenticates(&second_token).await);
-    assert!(
-        mcp_exchange(
-            &mut stream,
-            json!({
-                "jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}
-            })
-        )
-        .await
-        .get("error")
-        .is_some()
-    );
-    let prompts = requests(&root, "session/prompt");
-    assert_eq!(prompts.len(), 4);
-    assert!(
-        prompts
-            .iter()
-            .all(|prompt| prompt["_pid"] == prompts[0]["_pid"])
-    );
-    assert_eq!(prompts[0]["params"]["sessionId"], first_native);
-    assert_eq!(prompts[1]["params"]["sessionId"], first_native);
-    assert!(
-        prompts[2..]
-            .iter()
-            .any(|prompt| prompt["params"]["sessionId"] == second_native)
-    );
-    std::fs::write(root.path().join("scenario"), "reply").unwrap();
-    let (status, body) = stack
-        .send_with(
-            axum::http::Request::builder()
-                .method("POST")
-                .uri(format!("/api/tracks/{first_track}/conversations"))
-                .header("x-calm-actor", "user")
-                .header("idempotency-key", uuid::Uuid::new_v4().to_string()),
-            Some(json!({"provider": "antigravity", "text": "assistant reply"})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let assistant = body["id"].as_str().unwrap();
     assert_eq!(
-        stack.wait_outcomes(assistant, 1).await[0]["status"],
+        turn(&stack, &first, "after reset", 1).await["status"],
         "completed"
     );
-    let runtime = stack.runtime(assistant).await;
-    acp_compact::wait_phase(&stack, &runtime.id, "turn_completed").await;
-    let native = runtime.session_id.unwrap();
-    let token = std::fs::read_to_string(root.path().join(format!("{native}.test-token"))).unwrap();
-    assert!(stack.token_authenticates(&token).await);
-    let assistant_stream = tokio::net::UnixStream::connect(stack.mcp_socket())
-        .await
-        .unwrap();
-    let mut assistant_stream = tokio::io::BufReader::new(assistant_stream);
-    assert!(
-        mcp_exchange(
-            &mut assistant_stream,
-            json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                    "clientInfo": {"name": "shared-acp-test", "version": "1"},
-                    "_meta": {"dev.neige/auth": {"token": token}}}
-            })
-        )
-        .await
-        .get("result")
-        .is_some()
+    assert_ne!(
+        stack.runtime(&first).await.session_id.as_deref(),
+        Some(original.as_str())
     );
-
-    let (status, body) = stack
-        .send(
-            "PATCH",
-            &format!("/api/tracks/{first_track}/conversations/{assistant}/archive"),
-            Some(json!({"archived": true})),
-        )
-        .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert!(!stack.token_authenticates(&token).await);
-    assert!(
-        mcp_exchange(
-            &mut assistant_stream,
-            json!({
-                "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
-            })
-        )
-        .await
-        .get("error")
-        .is_some()
+    assert_eq!(
+        turn(&stack, &second, "sibling continues", 2).await["status"],
+        "completed"
     );
-
-    assert!(stack.token_authenticates(&second_token).await);
+    assert_eq!(
+        stack.runtime(&second).await.session_id.as_deref(),
+        Some(sibling.as_str())
+    );
     stack.shutdown().await;
 }
 
