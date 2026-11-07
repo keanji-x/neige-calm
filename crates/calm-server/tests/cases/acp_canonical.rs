@@ -275,17 +275,19 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     stack.shutdown().await;
     // Model a crash after durable receipt settlement but before transcript projection. Recovery
     // must rebuild the reason from the receipt, rather than relying on the earlier live row.
-    for card in [&ask, &never] {
-        db.writer()
-            .execute(
-                sqlx::query(
-                    "DELETE FROM harness_items WHERE card_id=?1 AND method='turn/completed'",
-                )
-                .bind(card),
-            )
-            .await
-            .unwrap();
-    }
+    let cards = [ask.clone(), never.clone()];
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                for card in cards {
+                    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
+                }
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
     let stack = boot_as(
         &root,
         "antigravity",
