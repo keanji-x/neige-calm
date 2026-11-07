@@ -49,5 +49,5 @@ mod pre_c4_boot_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod readiness_command_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) mod protocol_tests;

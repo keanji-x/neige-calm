@@ -2,7 +2,7 @@
 //! Compiled as an ACP owner unit-test module; Rust excludes this file from production.
 #![cfg(test)]
 #[cfg(target_os = "macos")]
-use super::config::{AcpPlannerHost, boot};
+use super::config::AcpPlannerHost;
 use crate::config::Config;
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
