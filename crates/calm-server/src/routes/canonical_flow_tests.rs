@@ -17,7 +17,7 @@ use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
 use crate::harness::{BootRows, HarnessPhaseTag};
 use crate::shared_codex_appserver::native_owner_tests::{
-    connect, notify_thread, request as native_request, send,
+    connect, notify_thread, request as native_request, send, try_request as native_try_request,
 };
 use crate::state::AppState;
 use calm_types::conversation::InputDeliveryFact;
@@ -25,11 +25,13 @@ use calm_types::harness::snapshot::CanonicalHarnessSnapshot;
 
 /// Actual production boot refreshes the MCP catalog when the peer becomes Running.
 /// Reply only to this owned maintenance protocol; execution RPCs stay observable.
-async fn request(peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) -> Value {
+async fn try_request(
+    peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer,
+) -> std::result::Result<Value, tokio::time::error::Elapsed> {
     loop {
-        let call = native_request(peer).await;
+        let call = native_try_request(peer).await?;
         if call["method"] != "config/mcpServer/reload" {
-            return call;
+            return Ok(call);
         }
         assert!(
             call["params"].is_null(),
@@ -37,6 +39,10 @@ async fn request(peer: &mut crate::shared_codex_appserver::native_owner_tests::P
         );
         send(peer, json!({"id":call["id"],"result":{}})).await;
     }
+}
+
+async fn request(peer: &mut crate::shared_codex_appserver::native_owner_tests::Peer) -> Value {
+    try_request(peer).await.unwrap()
 }
 
 const FIRST_BODY: &str = "Preserve this accepted input through native activation";

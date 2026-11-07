@@ -3,6 +3,7 @@ use super::*;
 use calm_truth::db::RepoRead;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 const SEED: &str = "u11 child durable seed";
+mod diagnostics;
 async fn until(mut check: impl AsyncFnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !check().await {
@@ -191,7 +192,7 @@ async fn child_flow(window: Window) {
                         send(&mut peer, json!({"id":call["id"],"error":{"code":-32603,"message":"catalog unavailable"}})).await;
                     }
                     "thread/start" | "turn/start" => break call,
-                    other => panic!("unexpected native request before Workspace readiness: {other}"),
+                    _ => panic!("unexpected native request before Workspace readiness category={}", diagnostics::method_label(call["method"].as_str())),
                 }
             }
         }).await;
@@ -329,10 +330,14 @@ async fn child_flow(window: Window) {
         }
     });
     let mut starts = 0;
+    // Maintenance reloads have already been drained by the canonical receive helper.
+    let mut last_bootstrap_method = "none";
+    let mut thread_start_reply_sent = false;
     let mut reset = None;
     let call = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let call = request(&mut peer).await;
+            let call = try_request(&mut peer).await?;
+            last_bootstrap_method = diagnostics::method_label(call["method"].as_str());
             let result = match call["method"].as_str().unwrap() {
                 "config/read" => json!({"config":{}}),
                 "thread/start" => {
@@ -360,16 +365,38 @@ async fn child_flow(window: Window) {
                     }
                     json!({"thread":{"id":THREAD}})
                 }
-                "turn/start" => break call,
+                "turn/start" => break Ok::<_, tokio::time::error::Elapsed>(call),
                 "model/list" => {
                     send(&mut peer, json!({"id":call["id"],"error":{"code":-32603,"message":"catalog unavailable"}})).await;
                     continue;
                 },
-                other => panic!("unexpected Child native request {other}: {call}"),
+                _ => panic!("unexpected Child native request category={last_bootstrap_method}"),
             };
             send(&mut peer, json!({"id":call["id"],"result":result})).await;
+            if call["method"] == "thread/start" {
+                thread_start_reply_sent = true;
+            }
         }
-    }).await.expect("System bootstrap reaches native peer");
+    }).await;
+    let call = match call {
+        Ok(Ok(call)) => call,
+        timed_out => {
+            let timeout_kind = if timed_out.is_err() {
+                "bootstrap_10s"
+            } else {
+                "receive_5s"
+            };
+            let sweep_finished_after_timeout = sweep.is_finished();
+            let observations = diagnostics::observe(&fixture, &state, &task, &original.2).await;
+            panic!(
+                "System bootstrap timed out kind={timeout_kind} \
+                 last_bootstrap_method={last_bootstrap_method} starts={starts} \
+                 thread_start_reply_sent={thread_start_reply_sent} \
+                 sweep_finished_after_timeout={sweep_finished_after_timeout} \
+                 sequential_observations_after_timeout={observations}"
+            );
+        }
+    };
     assert_eq!(starts, 1);
     assert_eq!(call["params"]["input"].to_string().matches(SEED).count(), 1);
     let human_in_initial = call["params"]["input"]
