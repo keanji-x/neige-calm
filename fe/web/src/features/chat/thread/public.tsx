@@ -49,6 +49,7 @@ import { QuietSyncFold } from './quiet-sync.tsx';
 import type { ReplyImageFiles, ReplyLinkRenderer } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
 import styles from './thread.module.css';
+import composerLayoutStyles from './composer-layout.module.css';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice, HistoricalOutcomeNotice } from './outcome-notice.tsx';
 import { SizeMotion } from '../../../ui/motion/size.tsx';
@@ -530,7 +531,7 @@ export function ChatComposer({
   return (
     <div
       ref={rootRef}
-      className={`${styles.composer} ${layout === 'mobile' ? mobileStyles.composer : ''}`}
+      className={`${styles.composer} ${layout === 'mobile' ? mobileStyles.composer : composerLayoutStyles.standard}`}
       data-nc-composer=""
       /* Programmatic focus only: the perch the send effect parks on so focus taken off a disabling Send is not on `<body>`. */
       tabIndex={-1}
@@ -583,7 +584,7 @@ export function ChatComposer({
     >
       <SizeMotion motionKey={editing !== undefined}>
         <AstryxChatComposer
-          className={layout === 'mobile' ? `${mobileStyles.vendorComposer} ${floatingControlMaterialClassName}` : undefined}
+          className={layout === 'mobile' ? `${mobileStyles.vendorComposer} ${floatingControlMaterialClassName}` : composerLayoutStyles.vendor}
           density="compact"
           elevation="none"
           value={draft}
@@ -612,7 +613,7 @@ export function ChatComposer({
             <>{sendAdornment}{sendDoor}</>
           )}
           input={(
-            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : styles.input}><ChatComposerInput
+            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : `${styles.input} ${composerLayoutStyles.input}`}><ChatComposerInput
               /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
               maxRows={3}
               onFiles={disabled ? undefined : onFiles}

@@ -12,16 +12,17 @@
   }
 
   .notice > [role='separator'] { margin-block-end: var(--space-1); }
-  .row { display: flex; align-items: flex-start; gap: var(--space-2); }
-  .state { flex: 1; min-inline-size: 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); }
+  .state { flex: 1 1 auto; min-inline-size: 0; max-inline-size: 100%; }
   .state:focus-visible { outline: var(--rule-h) solid var(--accent); outline-offset: var(--space-half); border-radius: var(--radius-sm); }
   .normal { min-block-size: var(--control-h); display: flex; align-items: center; }
-  .summary { display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; }
-  .label { font-size: var(--font-step-1-size); font-weight: var(--weight-normal); color: var(--text-3); }
+  .summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); max-inline-size: 100%; }
+  .label { min-inline-size: 0; overflow-wrap: anywhere; font-size: var(--font-step-1-size); font-weight: var(--weight-normal); color: var(--text-3); }
   .warning .label { color: var(--warn-text); }
   .error .label { color: var(--error-text); }
-  .clock { color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .clock { color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .actions {
+    margin-inline-start: auto;
     display: flex;
     flex-shrink: 0;
     align-items: center;
