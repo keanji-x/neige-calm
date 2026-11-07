@@ -1,9 +1,13 @@
 //! Persisted process evidence must remain distinct from signal authority.
+//! The pure helper below specifies Linux physical-PID classification on any test
+//! host. It is never a macOS group-empty proof; native_macos_recovery_tests
+//! exercises that production path with live descendants and failed enumeration.
 use super::*;
 use crate::db::{RepoOutOfDomain, RepoRead};
 
 fn record() -> crate::db::SharedCodexDaemonRecord {
     crate::db::SharedCodexDaemonRecord {
+        recovery: calm_truth::db::DaemonRecovery::LegacyUntracked,
         state: SharedDaemonState::Failed,
         pid: None,
         pgid: None,
@@ -132,6 +136,7 @@ async fn persisted_unknown_identity_blocks_each_state_without_signaling() {
         repo.shared_daemon_runtime_set(
             "default",
             SharedCodexDaemonUpdate {
+                recovery: calm_truth::db::RecoveryWrite::Legacy,
                 state,
                 pid: Some(pid),
                 pgid: Some(pid),
@@ -161,12 +166,33 @@ async fn persisted_unknown_identity_blocks_each_state_without_signaling() {
             .expect_err("unknown identity must prevent replacement");
         assert!(matches!(error, CalmError::CodexAppServer(_)));
         let after = repo.shared_daemon_runtime_get("default").await.unwrap();
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(after.state, SharedDaemonState::Failed);
+        #[cfg(target_os = "macos")]
+        {
+            // Non-adoption errors carry only Existing, so the active row cannot
+            // be rewritten as a cleanup scope. Idle/Failed enter reconciliation.
+            let existing = matches!(
+                state,
+                SharedDaemonState::Starting | SharedDaemonState::Running
+            );
+            assert_eq!(
+                after.state,
+                if existing {
+                    state
+                } else {
+                    SharedDaemonState::Failed
+                }
+            );
+            assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Failed);
+            assert!(daemon.status_snapshot().runtime.is_none());
+        }
         assert_eq!(after.pid, before.pid);
         assert_eq!(after.pgid, before.pgid);
         assert_eq!(after.process_start_time, before.process_start_time);
         assert_eq!(after.boot_id, before.boot_id);
         assert_eq!(after.sock_path, before.sock_path);
+        #[cfg(not(target_os = "macos"))]
         assert!(
             after
                 .last_error
@@ -174,6 +200,24 @@ async fn persisted_unknown_identity_blocks_each_state_without_signaling() {
                 .unwrap()
                 .starts_with(UNRECONCILED_PREFIX)
         );
+        #[cfg(target_os = "macos")]
+        if matches!(
+            state,
+            SharedDaemonState::Starting | SharedDaemonState::Running
+        ) {
+            assert_eq!(
+                after.last_error, before.last_error,
+                "Existing grants no durable failure-write authority"
+            );
+        } else {
+            assert!(
+                after
+                    .last_error
+                    .as_deref()
+                    .unwrap()
+                    .starts_with(UNRECONCILED_PREFIX)
+            );
+        }
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "unknown identity granted signal authority"

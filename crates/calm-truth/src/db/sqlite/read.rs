@@ -7,9 +7,7 @@ use super::{
 };
 use crate::card_role_cache::CardRoleCache;
 use crate::db::rows::{TRACK_SELECT_COLUMNS, TRACK_SELECT_COLUMNS_W};
-use crate::db::{
-    RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, SharedDaemonState, WorkspaceLease,
-};
+use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
 use crate::error::{CalmError, Result};
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::model::*;
@@ -775,50 +773,7 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn shared_daemon_runtime_get(&self, backend_id: &str) -> Result<SharedCodexDaemonRecord> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<i32>,
-                Option<i32>,
-                Option<Vec<u8>>,
-                Option<Vec<u8>>,
-                Option<i64>,
-                Option<String>,
-                Option<i64>,
-                i64,
-                i64,
-                Option<String>,
-                Option<String>,
-                bool,
-            ),
-        >(
-            r#"SELECT state, pid, pgid, sock_path, codex_home_path, process_start_time,
-                      boot_id, started_at, updated_at, restart_count, last_error,
-                      daemon_env_signature, paths_are_legacy_display
-               FROM codex_backend_daemons
-               WHERE backend_id = ?1"#,
-        )
-        .bind(backend_id)
-        .fetch_one(self.db.read_pool())
-        .await?;
-        Ok(SharedCodexDaemonRecord {
-            state: SharedDaemonState::try_from(row.0).map_err(|e| {
-                CalmError::Internal(format!("shared_codex_daemon.state decode: {e}"))
-            })?,
-            pid: row.1,
-            pgid: row.2,
-            paths_are_legacy_display: row.12,
-            sock_path: row.3,
-            codex_home_path: row.4,
-            process_start_time: row.5.and_then(|v| u64::try_from(v).ok()),
-            boot_id: row.6,
-            started_at: row.7,
-            updated_at: row.8,
-            restart_count: row.9,
-            last_error: row.10,
-            daemon_env_signature: row.11,
-        })
+        super::shared_daemon_runtime::read(self.db.read_pool(), backend_id).await
     }
 
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {

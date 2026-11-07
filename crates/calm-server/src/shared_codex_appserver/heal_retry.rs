@@ -88,6 +88,23 @@ fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u64) -
     initial.saturating_mul(factor).min(max)
 }
 
+/// A terminal failure carries the original caller error independently of the
+/// authoritative recovery classification and durable diagnostic.
+pub(super) struct FailureReport {
+    pub(super) error: super::CalmError,
+    pub(super) class: FailureClass,
+    pub(super) message: String,
+}
+impl FailureReport {
+    pub(super) fn from_error(error: super::CalmError) -> Self {
+        Self {
+            class: classify_spawn_failure(&error),
+            message: error.to_string(),
+            error,
+        }
+    }
+}
+
 /// Failure classification for the heal lanes: the Transient messages are exactly the
 /// cold-start poll failures plus the crash-watcher exit shape; everything else is slow-lane.
 pub(crate) fn classify_spawn_failure(err: &impl std::fmt::Display) -> FailureClass {

@@ -151,6 +151,7 @@ async fn agent_backend_takeover_revalidates_before_touching_runtime() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Running,
             pid: Some(i32::try_from(std::process::id()).unwrap()),
             pgid: None,
@@ -329,6 +330,7 @@ async fn agent_backend_rejects_replaceable_ancestors_on_startup_and_recheck() {
     repo.shared_daemon_runtime_set(
         "default",
         SharedCodexDaemonUpdate {
+            recovery: calm_truth::db::RecoveryWrite::Legacy,
             state: SharedDaemonState::Idle,
             pid: None,
             pgid: None,
@@ -682,6 +684,51 @@ async fn agent_backend_multi_shared_database_rejects_different_data_dir() {
 }
 
 #[tokio::test]
+async fn agent_backend_recovery_pending_preserves_runtime_path_fences() {
+    use calm_truth::db::{RecoveryId, RecoveryWrite, SharedCodexDaemonUpdate, SharedDaemonState};
+    for backend in ["default", "other"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let cfg = config(
+            &root,
+            &[
+                ("default", root.join("codex-home")),
+                ("other", root.join("other")),
+            ],
+        );
+        let isolation = BackendIsolation::prepare(&cfg, &repo).await.unwrap();
+        let id = RecoveryId::fresh();
+        repo.shared_daemon_runtime_set(
+            backend,
+            SharedCodexDaemonUpdate {
+                recovery: RecoveryWrite::Begin { id },
+                state: SharedDaemonState::Starting,
+                pid: None,
+                pgid: None,
+                paths_are_legacy_display: false,
+                sock_path: Some(root.join("different.sock").as_os_str().as_bytes().to_vec()),
+                codex_home_path: None,
+                process_start_time: None,
+                boot_id: None,
+                started_at: None,
+                last_error: None,
+                increment_restart_count: false,
+                daemon_env_signature: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            isolation
+                .verify_backend(repo.as_ref(), &backend.to_owned().try_into().unwrap())
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn persisted_unknown_cannot_skip_default_or_nondefault_path_checks() {
     use super::identity::RuntimePathError;
     use calm_truth::db::{SharedCodexDaemonUpdate, SharedDaemonState};
@@ -704,6 +751,7 @@ async fn persisted_unknown_cannot_skip_default_or_nondefault_path_checks() {
             repo.shared_daemon_runtime_set(
                 backend,
                 SharedCodexDaemonUpdate {
+                    recovery: calm_truth::db::RecoveryWrite::Legacy,
                     state: SharedDaemonState::Running,
                     pid: Some(std::process::id() as i32),
                     pgid: None,

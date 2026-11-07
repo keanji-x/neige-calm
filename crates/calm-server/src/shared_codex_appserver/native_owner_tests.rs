@@ -41,6 +41,7 @@ pub(crate) async fn publish_replay(
     daemon
         .start_new_process_typestate(|_| async move {
             Ok(LaunchedSharedDaemon {
+                recovery: calm_truth::db::DaemonRecovery::LegacyUntracked,
                 child: None,
                 client: launched,
                 replay,

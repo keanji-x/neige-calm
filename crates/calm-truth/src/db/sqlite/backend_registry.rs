@@ -88,7 +88,7 @@ pub async fn reconcile(
                 .bind(&new.provider).bind(&new.backend_id).bind(&new.protocol)
                 .bind(&new.configured_home).bind(&new.canonical_home)
                 .execute(&mut **tx).await?;
-            sqlx::query("INSERT OR IGNORE INTO codex_backend_daemons (backend_id, state, updated_at, paths_are_legacy_display) VALUES (?, 'idle', 0, ?)")
+            sqlx::query("INSERT OR IGNORE INTO codex_backend_daemons (backend_id, state, updated_at, paths_are_legacy_display, recovery_phase, recovery_id) VALUES (?, 'idle', 0, ?, 'legacy', NULL)")
                 .bind(&new.backend_id).bind(false).execute(&mut **tx).await?;
         }
         tx.commit().await?;
