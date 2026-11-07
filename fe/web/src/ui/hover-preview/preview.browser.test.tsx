@@ -378,7 +378,8 @@ describe('preview in a real browser', () => {
   it('allows slow travel to a distant side card without intercepting the original link', async () => {
     await page.viewport(1440, 900);
     const onRead = vi.fn();
-    render(<><section style={{ position: 'absolute', left: 100, top: 100, width: 480, paddingTop: 100 }}>
+    render(<><div data-nc-preview-slot="" style={{ position: 'fixed', left: 240, top: 0, width: 340, height: 900, pointerEvents: 'none' }} />
+    <section style={{ position: 'absolute', left: 100, top: 100, width: 480, paddingTop: 100 }}>
       <HoverPreview title="Side notes" getReadingSurface={(trigger) => trigger.closest<HTMLElement>('section')}
         trigger={(activate) => <button onClick={activate}>Side notes</button>}>
         <button type="button" onClick={onRead}>Read details</button>
@@ -570,8 +571,8 @@ it('revokes old children and admits new interaction after a parent close and reo
 });
 
 it('observes fractional intrinsic growth after clamp and shrink without moving its slot or replaying entry', async () => {
-  await page.viewport(1040, 900);
-  render(<section style={{ position: 'absolute', left: 200, top: 100, width: 504 }}>
+  await page.viewport(336, 900);
+  render(<section style={{ position: 'absolute', left: 20, top: 100, width: 296 }}>
     <HoverPreview title="Intrinsic" getReadingSurface={trigger => trigger.closest('section')}
       trigger={activate => <button onClick={activate}>Intrinsic</button>}>
       <div data-testid="flow" style={{ height: 1000.25 }}>Long content</div>

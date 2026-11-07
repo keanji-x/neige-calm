@@ -17,7 +17,7 @@ function clamp(value: number, low: number, high: number): number {
   return Math.max(low, Math.min(value, high));
 }
 
-/** Protect the source first, then existing previews and the host's reading area.
+/** Protect the source and existing previews, then prefer positions near the source.
  * Side space may narrow the card. Vertical fallbacks scroll within the available
  * height; no legal placement means no popup, rather than hiding its own trigger. */
 export function placePreview({ anchor, reading, readingAreas, obstacles, viewport }: Readonly<{
@@ -30,7 +30,7 @@ export function placePreview({ anchor, reading, readingAreas, obstacles, viewpor
   const width = Math.max(0, Math.min(PREVIEW_WIDTH, viewport.width - 2 * PREVIEW_GAP));
   const height = Math.max(0, Math.min(PREVIEW_MAX_HEIGHT, viewport.height - 2 * PREVIEW_GAP));
   if (width === 0 || height === 0) return null;
-  type Candidate = Readonly<{ placement: Placement; occupied: number; reading: number; sideRank: number; lost: number; order: number }>;
+  type Candidate = Readonly<{ placement: Placement; occupied: number; distance: number; reading: number; sideRank: number; lost: number; order: number }>;
   const candidates: Candidate[] = [];
   const areas = readingAreas ?? (reading === null ? [] : [reading]);
   const boundaries = [reading ?? anchor, anchor, ...obstacles, ...areas];
@@ -43,6 +43,8 @@ export function placePreview({ anchor, reading, readingAreas, obstacles, viewpor
     const side: Side = reserved.left >= anchor.right ? 'right' : reserved.right <= anchor.left ? 'left'
       : reserved.top >= anchor.bottom ? 'below' : 'above';
     candidates.push({ placement: { ...placement, side }, occupied: obstacles.reduce((area, obstacle) => area + overlap(reserved, obstacle), 0),
+      distance: Math.max(0, (side === 'right' ? reserved.left - anchor.right : side === 'left' ? anchor.left - reserved.right
+        : side === 'below' ? reserved.top - anchor.bottom : anchor.top - reserved.bottom) - PREVIEW_GAP),
       reading: areas.reduce((area, occupied) => area + overlap(reserved, occupied), 0),
       sideRank: side === 'right' || side === 'left' ? 0 : 1,
       lost: width * height - placement.width * placement.maxHeight, order: candidates.length });
@@ -62,7 +64,7 @@ export function placePreview({ anchor, reading, readingAreas, obstacles, viewpor
     }
     if (candidates.length > 0) break;
   }
-  candidates.sort((a, b) => a.occupied - b.occupied || a.reading - b.reading || a.sideRank - b.sideRank || a.lost - b.lost || a.order - b.order);
+  candidates.sort((a, b) => a.occupied - b.occupied || a.distance - b.distance || a.lost - b.lost || a.reading - b.reading || a.sideRank - b.sideRank || a.order - b.order);
   return candidates[0]?.placement ?? null;
 }
 
