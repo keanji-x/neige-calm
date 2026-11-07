@@ -132,8 +132,9 @@ fn peer_env(
         ),
         AgentProvider::Antigravity => env.extend(
             [
-                ("ACP_FIXTURE_AGENT_NAME", "Antigravity ACP Server"),
-                ("ACP_FIXTURE_VERSION", "1.5.0"),
+                ("ACP_FIXTURE_AGENT_NAME", "antigravity-acp"),
+                ("ACP_FIXTURE_CLOSE", "0"),
+                ("ACP_FIXTURE_VERSION", "1.4.5"),
                 ("ACP_FIXTURE_CAPTURE_SHARED_TOKEN", "1"),
             ]
             .map(|(key, value)| (key.to_owned(), value.to_owned())),

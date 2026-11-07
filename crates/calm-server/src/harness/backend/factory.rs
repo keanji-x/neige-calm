@@ -56,20 +56,6 @@ impl<'a> PlannerFactory<'a> {
         }
     }
 
-    pub(crate) async fn prepare_archive(
-        &self,
-        runtime: &calm_types::runtime::WorkerSessionProjection,
-    ) -> Result<()> {
-        if runtime
-            .agent_provider
-            .as_ref()
-            .is_some_and(|provider| provider.protocol() == AgentProtocol::Acp)
-        {
-            crate::acp_planner::session::detach_worker(self.acp, &runtime.id).await?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn worker_contract(
         binding: &crate::harness::profile::PlannerBinding,
     ) -> Option<calm_types::worker::WorkerContract> {

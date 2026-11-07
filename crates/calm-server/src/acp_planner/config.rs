@@ -56,6 +56,8 @@ struct NativeSessionKey<'a> {
     args: &'a [String],
     env: &'a BTreeMap<String, String>,
     cwd: &'a Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract: Option<&'static str>,
 }
 
 impl AcpAgentConfig {
@@ -77,6 +79,8 @@ impl AcpAgentConfig {
             args,
             env,
             cwd,
+            contract: AcpAgentProfile::of(provider)
+                .and_then(|profile| profile.native_session_contract),
         };
         Ok(hex::encode(sha2::Sha256::digest(serde_json::to_vec(&key)?)))
     }
@@ -200,7 +204,6 @@ pub struct AcpPlannerHost {
     tool_names: Option<crate::mcp_server::transport::SessionToolNames>,
     /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
     /// next launch.
-    pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
     pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
     pub(super) discovery: super::catalog::DiscoveryCache,
@@ -231,7 +234,6 @@ impl AcpPlannerHost {
             mcp_shim,
             mcp_socket,
             tool_names: None,
-            shared_server: Default::default(),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
             discovery: Default::default(),
@@ -396,9 +398,6 @@ pub async fn sweep_track(
         })
     })
     .await?;
-    for worker in &ids {
-        super::session::detach_worker(host, worker).await?;
-    }
     let executions = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             let mut executions = Vec::new();
@@ -673,5 +672,45 @@ mod tests {
             assert_ne!(digest(changed, "/work"), base, "{field}");
         }
         assert_ne!(digest(opencode(), "/elsewhere"), base, "cwd");
+    }
+}
+
+#[cfg(test)]
+mod native_contract_tests {
+    use super::*;
+    use sha2::Digest as _;
+
+    fn released_key(provider: &str) -> String {
+        // Released native binding bytes, before the standalone contract namespace existed.
+        let record = format!(
+            r#"{{"provider":"{provider}","command":"/service","args":[],"env":{{}},"cwd":"/workspace"}}"#
+        );
+        hex::encode(sha2::Sha256::digest(record.as_bytes()))
+    }
+
+    fn registration(provider: &str) -> AcpAgentConfig {
+        serde_json::from_value(serde_json::json!({"provider":provider,
+            "command":"/service","args":[],"env":{},"min_agent_version":"1.0.0"}))
+        .unwrap()
+    }
+
+    #[test]
+    fn standalone_contract_changes_cli_bindings_even_at_the_same_executable_path() {
+        let key = registration("antigravity")
+            .native_session_digest(Path::new("/workspace"))
+            .unwrap();
+        assert_ne!(key, released_key("antigravity"));
+    }
+
+    #[test]
+    fn unchanged_acp_contracts_preserve_their_released_bindings() {
+        for provider in ["opencode", "grok"] {
+            assert_eq!(
+                registration(provider)
+                    .native_session_digest(Path::new("/workspace"))
+                    .unwrap(),
+                released_key(provider)
+            );
+        }
     }
 }

@@ -1,5 +1,5 @@
 //! One issue lock owns admission, setup, receipt preparation and driver handoff.
-use super::dispatch::{self, Carrier, PreparedTurn, TurnInput};
+use super::dispatch::{self, PreparedTurn, TurnInput};
 use super::*;
 use base64::Engine as _;
 
@@ -179,18 +179,6 @@ impl AcpPlannerSession {
             permission,
             held,
         };
-        if registration.profile.shared_server {
-            return super::server::issue(
-                shared,
-                registration,
-                row.agent_session_id,
-                &selection,
-                dispatch,
-                receipt_turn,
-                track_fence,
-            )
-            .await;
-        }
         // Neige's server under this launch's own key and, for an agent that asks before its
         // tools, the tools it lists the session now.
         let server = registration.profile.mcp_server_key();
@@ -310,7 +298,7 @@ impl AcpPlannerSession {
                         usage,
                         asks,
                     },
-                    Carrier::Managed(&mut guard),
+                    &mut guard,
                     receipt_turn,
                 )
                 .await

@@ -269,7 +269,7 @@ for line in sys.stdin:
         if (root / 'scenario').read_text().strip() == 'catalog_cancel_initialize':
             hold_catalog()
         capabilities = {'loadSession': (root / 'scenario').read_text().strip() not in ['unsupported-load', 'resume-only']}
-        if (root / 'scenario').read_text().strip() != 'catalog_no_close':
+        if (root / 'scenario').read_text().strip() != 'catalog_no_close' and os.environ.get('ACP_FIXTURE_CLOSE', '1') == '1':
             capabilities['sessionCapabilities'] = {'close': {}}
         if not xai and (root / 'scenario').read_text().strip() not in ['unsupported-load', 'load-only', 'load-error', 'load-replay-lost']:
             capabilities.setdefault('sessionCapabilities', {})['resume'] = {}
