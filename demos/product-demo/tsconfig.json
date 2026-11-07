@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "typeRoots": ["../../fe/node_modules/@types"],
+    "paths": {
+      "react": ["../../fe/node_modules/@types/react"],
+      "react/jsx-runtime": ["../../fe/node_modules/@types/react/jsx-runtime"]
+    }
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}
