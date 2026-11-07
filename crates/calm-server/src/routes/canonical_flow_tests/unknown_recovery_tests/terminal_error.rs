@@ -193,14 +193,25 @@ async fn terminal_error(scenario: &str) {
             )
             .await;
         }
-        // Input acceptance commits before the old actor publishes its feedback
-        // event. Establish a settled owner for success; the event-race scenario
-        // below separately verifies that later durable ingress refuses recovery.
+        // Request a pass after both durable admissions, then hold its return.
+        // The event-race scenario below still checks later durable ingress.
+        let advance = crate::test_seams::PausePoint::default();
+        let _release_advance = ReleaseOwnerOnDrop(advance.clone());
+        crate::test_seams::install_pause_for_test(
+            "canonical-before-progress-advance",
+            &card,
+            advance.clone(),
+        );
+        state.harness.get(&worker).unwrap().request_progress();
+        tokio::time::timeout(Duration::from_secs(5), advance.entered.notified())
+            .await
+            .unwrap();
         crate::test_seams::install_pause_for_test(
             "canonical-tick-returned",
             &card,
             owner_held.clone(),
         );
+        advance.release.notify_one();
         tokio::time::timeout(Duration::from_secs(5), owner_held.entered.notified())
             .await
             .unwrap();
