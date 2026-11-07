@@ -6,6 +6,8 @@ mod execution_lifecycle;
 mod execution_private;
 #[path = "execution_registration.rs"]
 mod execution_registration;
+#[path = "execution_resources.rs"]
+mod execution_resources;
 mod execution_support;
 #[cfg(target_os = "macos")]
 #[path = "native_macos.rs"]

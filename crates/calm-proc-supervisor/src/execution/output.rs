@@ -4,7 +4,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -15,7 +15,8 @@ pub(super) struct OutputLog {
     reader_end: tokio::sync::watch::Sender<Option<Result<(), String>>>,
 }
 struct Data {
-    file: File,
+    writer: Option<File>,
+    path: PathBuf,
     cursor: u64,
     limit: usize,
 }
@@ -30,18 +31,51 @@ impl OutputLog {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
+        Self::from_file(path, limit, file, true)
+    }
+    /// Restart validates existing history without creating or retaining a writable file.
+    pub fn open_history(path: &Path, limit: usize) -> anyhow::Result<Arc<Self>> {
+        Self::from_file(path, limit, Self::history_file(path)?, false)
+    }
+    fn history_file(path: &Path) -> std::io::Result<File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            // A corrupt FIFO must be rejected, not block startup waiting for a writer.
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "historical output log is not a regular file",
+            ));
+        }
+        Ok(file)
+    }
+    fn from_file(
+        path: &Path,
+        limit: usize,
+        file: File,
+        writable: bool,
+    ) -> anyhow::Result<Arc<Self>> {
         let cursor = file.metadata()?.len();
         let (reader_end, _) = tokio::sync::watch::channel(None);
         Ok(Arc::new(Self {
             stop_reader: std::sync::atomic::AtomicBool::new(false),
             wake: Mutex::new(None),
             data: Mutex::new(Data {
-                file,
+                writer: writable.then_some(file),
+                path: path.to_owned(),
                 cursor,
                 limit: limit.clamp(1024, 4 * 1024 * 1024),
             }),
             reader_end,
         }))
+    }
+    /// The owner calls this only after output completion has been persisted, under its scope gate.
+    pub fn close_writer(&self) -> anyhow::Result<()> {
+        self.data.lock().map_err(super::poison)?.writer.take();
+        Ok(())
     }
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
         *self.wake.lock().expect("output wake") = Some(Box::new(wake));
@@ -51,15 +85,28 @@ impl OutputLog {
         let cursor = data.cursor;
         let start = cursor.saturating_sub(data.limit as u64);
         let from = from.unwrap_or(start).clamp(start, cursor);
-        data.file.seek(SeekFrom::Start(from))?;
+        let mut history;
+        let Data { writer, path, .. } = &mut *data;
+        let file = match writer {
+            Some(writer) => writer,
+            None => {
+                history = Self::history_file(path)?;
+                &mut history
+            }
+        };
+        file.seek(SeekFrom::Start(from))?;
         let mut bytes = vec![0; (cursor - from) as usize];
-        data.file.read_exact(&mut bytes)?;
+        file.read_exact(&mut bytes)?;
         Ok((cursor, bytes))
     }
     fn append(&self, bytes: &[u8]) -> anyhow::Result<()> {
         let mut data = self.data.lock().map_err(super::poison)?;
-        data.file.seek(SeekFrom::End(0))?;
-        data.file.write_all(bytes)?;
+        let file = data
+            .writer
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("output writer closed"))?;
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(bytes)?;
         data.cursor += bytes.len() as u64;
         drop(data);
         if let Some(wake) = self.wake.lock().map_err(super::poison)?.as_ref() {
@@ -117,7 +164,7 @@ impl OutputLog {
             }
         }
     }
-    /// Called only after persisted Drained and helper reap; never while holding a scope gate.
+    /// Called after the platform's native reap; never while holding a scope gate.
     pub async fn finish(&self) -> OutputEnd {
         let mut end = self.reader_end.subscribe();
         let result = loop {
@@ -132,7 +179,12 @@ impl OutputLog {
             return OutputEnd::Incomplete { reason };
         }
         match self.data.lock() {
-            Ok(data) => match data.file.sync_all() {
+            Ok(data) => match data
+                .writer
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("output writer closed before completion"))
+                .and_then(File::sync_all)
+            {
                 Ok(()) => OutputEnd::Complete {
                     final_cursor: data.cursor,
                 },
@@ -168,6 +220,42 @@ mod tests {
         .await
         .expect("native output reader must end even without EOF");
         assert!(matches!(end, OutputEnd::Incomplete { .. }), "{end:?}");
+    }
+
+    #[test]
+    fn history_preserves_tail_cursor_and_propagates_read_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(OutputLog::open_history(temp.path(), 1024).is_err());
+        let path = temp.path().join("log");
+        let log = OutputLog::open(&path, 1024).unwrap();
+        log.append(&vec![b'a'; 2048]).unwrap();
+        log.append(b"tail").unwrap();
+        log.close_writer().unwrap();
+        for log in [log, OutputLog::open_history(&path, 1024).unwrap()] {
+            let (cursor, tail) = log.snapshot(None).unwrap();
+            assert_eq!(cursor, 2052);
+            assert_eq!(tail.len(), 1024);
+            assert!(tail.ends_with(b"tail"));
+            assert_eq!(log.snapshot(Some(0)).unwrap(), (cursor, tail));
+            assert_eq!(
+                log.snapshot(Some(2048)).unwrap(),
+                (cursor, b"tail".to_vec())
+            );
+            assert_eq!(log.snapshot(Some(u64::MAX)).unwrap(), (cursor, Vec::new()));
+        }
+        let log = OutputLog::open_history(&path, 1024).unwrap();
+        std::fs::write(&path, b"short").unwrap();
+        assert!(log.snapshot(None).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(log.snapshot(None).is_err());
+        assert!(OutputLog::open_history(&path, 1024).is_err());
+        assert!(!path.exists());
+        let other = temp.path().join("other");
+        std::fs::write(&other, b"unrelated").unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(OutputLog::open_history(&path, 1024).is_err());
+        assert!(log.snapshot(None).is_err());
+        assert_eq!(std::fs::read(&other).unwrap(), b"unrelated");
     }
 
     #[tokio::test]

@@ -658,3 +658,6 @@ async fn cleanup_mode_lookup_failure_is_not_success() {
         "an unavailable mode predicate must stop a deleting caller"
     );
 }
+
+#[path = "terminal_io/stop.rs"]
+mod stop;

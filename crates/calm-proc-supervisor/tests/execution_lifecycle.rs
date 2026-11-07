@@ -228,7 +228,7 @@ async fn host_reboot_is_no_child() {
     );
 }
 
-async fn escaped_output(
+pub(super) async fn escaped_output(
     h: &Harness,
     mode: IoMode,
 ) -> (

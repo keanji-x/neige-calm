@@ -1866,8 +1866,14 @@ impl Scheduler {
     /// Sweep `running`-terminal arm: a recorded exit gets the SAME guarded completion tx as
     /// the live exit hook; first writer wins via the status guard.
     async fn reconcile_running_terminal(&self, task: Task) {
-        if terminal_completion::terminal_task_uses_pipe(self.repo.as_ref(), &task.id).await {
-            return;
+        match terminal_completion::terminal_task_uses_pipe(self.repo.as_ref(), &task.id).await {
+            Ok(false) => {}
+            Ok(true) => return,
+            Err(e) => {
+                tracing::warn!(task_id = %task.id, error = %e,
+                    "scheduler sweep: terminal Pipe lookup failed; next sweep retries");
+                return;
+            }
         }
         let worker_card_id = match &task.worker_card_id {
             Some(id) => Some(id.clone()),
@@ -2100,6 +2106,7 @@ impl TerminalTaskHook {
     /// Live exit path: resolve terminal → card → payload `idempotency_key` to a plan-task row
     /// and run the shared guarded completion tx. The payload walk only FINDS the candidate;
     /// ownership is proven inside the tx (card payloads are patchable, so they are not proof).
+    /// Legitimate no-ops succeed; lookup and completion errors remain failures for the caller.
     pub async fn on_terminal_exit(
         &self,
         terminal_id: &str,
@@ -2107,22 +2114,22 @@ impl TerminalTaskHook {
         signal_killed: bool,
         pty_output: &str,
         pty_output_truncated: bool,
-    ) {
+    ) -> Result<()> {
         let terminal = match self.repo.terminal_get(terminal_id).await {
             Ok(Some(term)) => term,
-            Ok(None) => return,
+            Ok(None) => return Ok(()),
             Err(e) => {
                 tracing::warn!(terminal_id, error = %e, "terminal task hook: terminal_get failed");
-                return;
+                return Err(e.into());
             }
         };
         let card_id = terminal.card_id.clone();
         let card = match self.repo.card_get(card_id.as_str()).await {
             Ok(Some(card)) => card,
-            Ok(None) => return,
+            Ok(None) => return Ok(()),
             Err(e) => {
                 tracing::warn!(terminal_id, error = %e, "terminal task hook: card_get failed");
-                return;
+                return Err(e.into());
             }
         };
         let Some(task_id) = card
@@ -2131,26 +2138,26 @@ impl TerminalTaskHook {
             .and_then(Value::as_str)
             .map(str::to_string)
         else {
-            return;
+            return Ok(());
         };
         let task = match self.repo.task_get(&task_id).await {
             Ok(Some(task)) => task,
-            Ok(None) => return, // legacy dispatch key — no plan row
+            Ok(None) => return Ok(()), // legacy dispatch key — no plan row
             Err(e) => {
                 tracing::warn!(terminal_id, error = %e, "terminal task hook: task_get failed");
-                return;
+                return Err(e.into());
             }
         };
         if task.status.is_terminal() {
-            return;
+            return Ok(());
         }
         // Only TERMINAL-kind tasks are mechanically reconcilable from a PTY exit code; a codex
         // PTY exiting 0 says nothing about the task.
         if task.kind != TaskKind::Terminal {
-            return;
+            return Ok(());
         }
-        if terminal_completion::terminal_task_uses_pipe(self.repo.as_ref(), &task.id).await {
-            return;
+        if terminal_completion::terminal_task_uses_pipe(self.repo.as_ref(), &task.id).await? {
+            return Ok(());
         }
         if let Err(e) = complete_terminal_task(
             self.repo.as_ref(),
@@ -2172,7 +2179,9 @@ impl TerminalTaskHook {
                 error = %e,
                 "terminal task hook: completion tx failed; the sweep's running-terminal arm retries"
             );
+            return Err(e);
         }
+        Ok(())
     }
 }
 

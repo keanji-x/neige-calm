@@ -191,6 +191,8 @@ mod tests {
         let mut record = executor.record(&id).unwrap();
         record.host_boot_id.clear();
         executor.persist(record).unwrap();
+        // This scenario has an empty historical log; restart must not fabricate missing output.
+        std::fs::write(executor.store.output_path(&id), b"").unwrap();
         let config = executor.config.clone();
         drop(executor);
         let executor = Executor::open(config).unwrap();

@@ -112,7 +112,8 @@ async fn terminal_exit_waits_for_the_admitted_input_ack() {
     let (control, queue) = mpsc::unbounded_channel();
     let mut user = client(barrier, registry, control, events.clone()).await;
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let (exited, exit_persisted) = tokio::sync::watch::channel(false);
+    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue, exit_persisted);
     user.input
         .send(ClientMsg::Input {
             data: vec![3],
@@ -141,6 +142,7 @@ async fn terminal_exit_waits_for_the_admitted_input_ack() {
     );
     tokio::time::pause();
     events.send(exit.clone()).unwrap();
+    exited.send(true).unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(100), user.output.recv())
             .await
@@ -162,8 +164,14 @@ async fn terminal_exit_waits_for_the_admitted_input_ack() {
         Some(DaemonMsg::InputAck { input_seq: 1 })
     );
     assert_eq!(user.output.recv().await, Some(exit));
-    task.abort();
-    let _ = task.await;
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        read_frame::<ControlReply, _>(&mut peer).await.is_err(),
+        "writer retained its UDS after the final ACK"
+    );
 }
 
 #[tokio::test]
@@ -174,7 +182,12 @@ async fn terminal_exit_does_not_fabricate_an_ack_for_cancelled_write() {
     let (control, queue) = mpsc::unbounded_channel();
     let mut user = client(barrier.clone(), registry, control, events.clone()).await;
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     user.input
         .send(ClientMsg::Input {
             data: vec![3],
@@ -239,7 +252,12 @@ async fn terminal_exit_closes_direct_replies_before_draining_backpressure() {
     let replies = queued.ack.clone().unwrap();
     control.send(SupervisorControl::Write(queued)).unwrap();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     let ControlMsg::WriteStdin(write) = read_frame::<ControlMsg, _>(&mut peer).await.unwrap()
     else {
         panic!("expected physical write")
@@ -324,7 +342,12 @@ async fn queued_connection_input_is_revoked_before_the_supervisor_write() {
     owner_changed(&mut next).await;
     control.send(queued).unwrap();
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     let outcome = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             tokio::select! {
@@ -353,7 +376,12 @@ async fn takeover_waits_for_the_in_flight_physical_write_acknowledgement() {
     .await;
     let mut next = client(barrier.clone(), registry.clone(), control.clone(), events).await;
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     old.input
         .send(ClientMsg::Input {
             data: b"accepted".to_vec(),
@@ -401,7 +429,12 @@ async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
     .await;
     let mut next = client(barrier.clone(), registry.clone(), control.clone(), events).await;
     let (writer, mut peer) = UnixStream::pair().unwrap();
-    let task = spawn_supervisor_control_writer(writer, "term:fence".into(), queue);
+    let task = spawn_supervisor_control_writer(
+        writer,
+        "term:fence".into(),
+        queue,
+        tokio::sync::watch::channel(false).1,
+    );
     old.input
         .send(ClientMsg::Input {
             data: b"uncertain".to_vec(),
@@ -438,3 +471,6 @@ async fn lost_acknowledgement_blocks_new_control_and_queued_writes() {
 mod split_tests;
 #[cfg(test)]
 mod task_scope_tests;
+
+#[cfg(test)]
+mod stop_tests;

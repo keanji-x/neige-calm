@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use calm_session::terminal_model::ScrollbackLimit;
 use calm_session::terminal_session::{Effect, SessionContext, TerminalSessionState};
 use calm_session::{ClientMsg, DaemonMsg};
@@ -510,7 +508,7 @@ pub async fn run_client_pump_with_commands(
                 }
                 Effect::KillChild => {
                     tracing::info!("client requested Kill; signaling child");
-                    signal_child(&supervisor_tx);
+                    let _ = supervisor_tx.send(SupervisorControl::Stop);
                 }
                 Effect::SendProtocolError {
                     code,
@@ -616,17 +614,4 @@ fn request_resize(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>, cols
         return;
     }
     let _ = supervisor_tx.send(SupervisorControl::Resize { cols, rows });
-}
-
-fn signal_child(supervisor_tx: &mpsc::UnboundedSender<SupervisorControl>) {
-    let _ = supervisor_tx.send(SupervisorControl::Signal(
-        calm_session::control::ProcSignal::Hup,
-    ));
-    let supervisor_tx = supervisor_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let _ = supervisor_tx.send(SupervisorControl::Signal(
-            calm_session::control::ProcSignal::Kill,
-        ));
-    });
 }
