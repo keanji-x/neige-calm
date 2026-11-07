@@ -462,6 +462,53 @@ fn text_tool_text_have_distinct_identities_and_complete_in_execution_order() {
 fn update(value: Value) -> Value {
     json!({"sessionId":"native","update":value})
 }
+
+#[test]
+fn acp_turn_reports_failure_when_all_tools_fail_and_the_agent_stops_silently() {
+    let mut translator = translator();
+    for frame in [
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I'll inspect the workspace."}}),
+        json!({"sessionUpdate":"tool_call","toolCallId":"list","title":"List files","status":"in_progress"}),
+        json!({"sessionUpdate":"tool_call_update","toolCallId":"list","status":"failed","rawOutput":{"output":""}}),
+        json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Checking what happened"}}),
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" \n"}}),
+    ] {
+        translator.update(&update(frame), 10).unwrap();
+    }
+
+    let events = translator.finish(protocol::StopReason::EndTurn, 20);
+    let PlannerEventKind::TurnCompleted { turn } = &events.last().unwrap().kind else {
+        panic!("expected a turn outcome");
+    };
+    assert_eq!(turn["status"], "failed");
+    assert!(
+        turn["error"]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+    );
+}
+
+#[test]
+fn acp_turn_can_finish_after_reporting_or_recovering_from_a_failed_tool() {
+    for recovery in [
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"The command failed."}}),
+        json!({"sessionUpdate":"tool_call","toolCallId":"fallback","title":"Read workspace","status":"completed"}),
+    ] {
+        let mut translator = translator();
+        for frame in [
+            json!({"sessionUpdate":"tool_call","toolCallId":"list","title":"List files","status":"failed"}),
+            recovery,
+        ] {
+            translator.update(&update(frame), 10).unwrap();
+        }
+        let events = translator.finish(protocol::StopReason::EndTurn, 20);
+        let PlannerEventKind::TurnCompleted { turn } = &events.last().unwrap().kind else {
+            panic!("expected a turn outcome");
+        };
+        assert_eq!(turn["status"], "completed");
+    }
+}
+
 #[test]
 fn streaming_reply_starts_empty_and_accumulates_exact_text_once() {
     let mut translator = translator();
