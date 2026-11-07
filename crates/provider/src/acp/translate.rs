@@ -18,6 +18,7 @@ pub struct TurnTranslator {
     sequence: u64,
     current: Option<(String, String)>,
     text_bytes: usize,
+    replied_after_tool_failure: bool,
 }
 impl TurnTranslator {
     pub fn new(context: TurnContext) -> Self {
@@ -29,6 +30,7 @@ impl TurnTranslator {
             sequence: 0,
             current: None,
             text_bytes: 0,
+            replied_after_tool_failure: false,
         }
     }
     pub fn started(&self) -> PlannerEvent {
@@ -74,6 +76,9 @@ impl TurnTranslator {
                 let delta = content["text"]
                     .as_str()
                     .ok_or(Error::Protocol("missing text chunk"))?;
+                if kind == "agent_message_chunk" && !delta.trim().is_empty() {
+                    self.replied_after_tool_failure = true;
+                }
                 let native = update.get("messageId").and_then(Value::as_str);
                 let id = if let Some(id) = native {
                     format!("acp-{}-{kind}-native-{id}", self.context.turn_id)
@@ -172,6 +177,14 @@ impl TurnTranslator {
                 if self.tools.len() >= 4096 && !self.tools.contains_key(id) {
                     return Err(Error::Protocol("turn tool count exceeds limit"));
                 }
+                if status == "failed"
+                    && self
+                        .tools
+                        .get(id)
+                        .is_none_or(|previous| previous["status"] != "failed")
+                {
+                    self.replied_after_tool_failure = false;
+                }
                 self.tools.insert(id.into(), tool);
             }
             "plan" => {
@@ -201,6 +214,17 @@ impl TurnTranslator {
             StopReason::Cancelled => ("interrupted", Value::Null),
             StopReason::Refusal => ("failed", json!({"message":"ACP agent refused the turn"})),
             StopReason::EndTurn | StopReason::MaxTokens | StopReason::MaxTurnRequests => {
+                // The stop reason closes the prompt. The tool results and reply tell us whether
+                // the agent left the user with a result or an explanation.
+                if !self.replied_after_tool_failure
+                    && !self.tools.is_empty()
+                    && self.tools.values().all(|tool| tool["status"] == "failed")
+                {
+                    return self.fail(
+                        "The assistant stopped after its tool calls failed and did not reply.",
+                        at_ms,
+                    );
+                }
                 ("completed", Value::Null)
             }
         };
