@@ -18,6 +18,7 @@ enum Window {
 enum Fault {
     Read,
     Phase,
+    Path,
 }
 
 #[derive(Debug)]
@@ -31,7 +32,7 @@ struct Refusal {
 }
 
 async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: bool) {
-    let mut fixture = Fixture::new(false, "default").await;
+    let mut fixture = Fixture::new(matches!(fault, Fault::Path), "default").await;
     fixture
         .config
         .shared_codex_appserver_restart_initial_delay_ms = 1;
@@ -132,20 +133,33 @@ async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: 
                     .map_err(|error| error.to_string())?;
                 fault_applied = true;
             }
-            Fault::Phase => {
-                // Claim the actual row, preserving its real identity and paths.
-                let mut update = fixture.update(
-                    RecoveryWrite::ClaimLegacy {
+            Fault::Phase | Fault::Path => {
+                // Preserve the real identity while refusing its phase or backend path.
+                let recovery = match fault {
+                    Fault::Phase => RecoveryWrite::ClaimLegacy {
                         id: RecoveryId::fresh(),
                     },
-                    before.state,
-                );
+                    Fault::Path => RecoveryWrite::Legacy,
+                    Fault::Read => unreachable!(),
+                };
+                let mut update = fixture.update(recovery, before.state);
                 update.pid = before.pid;
                 update.pgid = before.pgid;
                 update.process_start_time = before.process_start_time;
                 update.boot_id = before.boot_id.clone();
                 update.started_at = before.started_at;
                 update.daemon_env_signature = before.daemon_env_signature.clone();
+                if matches!(fault, Fault::Path) {
+                    update.codex_home_path = Some(
+                        fixture
+                            .root
+                            .path()
+                            .join("other-home")
+                            .as_os_str()
+                            .as_bytes()
+                            .to_vec(),
+                    );
+                }
                 fixture
                     .repo
                     .shared_daemon_runtime_set("default", update)
@@ -234,6 +248,14 @@ async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: 
                     let snapshot = fixture.repo.shared_daemon_runtime_get("default").await;
                     // Restore the injected phase only; never overwrite a runtime tuple.
                     sqlx::query("UPDATE codex_backend_daemons SET recovery_phase = 'legacy', recovery_id = NULL WHERE backend_id = 'default'")
+                        .execute(&mut writer).await.map_err(|error| error.to_string())?;
+                    refused_row = Some(snapshot.map_err(|error| error.to_string())?);
+                }
+                Fault::Path => {
+                    let snapshot = fixture.repo.shared_daemon_runtime_get("default").await;
+                    // Restore only the injected path, retaining the runtime tuple.
+                    sqlx::query("UPDATE codex_backend_daemons SET codex_home_path = ? WHERE backend_id = 'default'")
+                        .bind(before.codex_home_path.as_deref())
                         .execute(&mut writer).await.map_err(|error| error.to_string())?;
                     refused_row = Some(snapshot.map_err(|error| error.to_string())?);
                 }
@@ -346,7 +368,7 @@ async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: 
         assert_eq!(
             refusal.code,
             Some(match fault {
-                Fault::Read => "codex_app_server",
+                Fault::Read | Fault::Path => "codex_app_server",
                 Fault::Phase => "conflict",
             })
         );
@@ -430,4 +452,18 @@ async fn replace_second_phase_refusal_terminalizes_without_effects() {
 async fn replace_detached_phase_refusal_terminalizes_without_effects() {
     let _env = ENV_LOCK.lock().await;
     post_consumption(Source::Replace, Window::Detached, Fault::Phase, false).await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "requires the real Linux consumer")]
+async fn replace_second_path_refusal_terminalizes_and_heals() {
+    let _env = ENV_LOCK.lock().await;
+    post_consumption(Source::Replace, Window::StartBody, Fault::Path, false).await;
+}
+
+#[tokio::test]
+#[cfg_attr(not(target_os = "linux"), ignore = "requires the real Linux consumer")]
+async fn replace_detached_path_refusal_terminalizes_and_heals() {
+    let _env = ENV_LOCK.lock().await;
+    post_consumption(Source::Replace, Window::Detached, Fault::Path, false).await;
 }
