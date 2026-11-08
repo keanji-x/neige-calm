@@ -1,6 +1,6 @@
-//! MCP side of #2130 mail: `neige_mail_send` (listed for the Planner) and the hidden views
-//! `neige_mail_ls` / `neige_mail_cat`, served as `neige mail ls|cat`. The checks, the write and
-//! the hop rule live in [`crate::mail`].
+//! MCP side of #2130 mail: `neige_mail_send`, `neige_mail_ls` and `neige_mail_cat` are listed
+//! for the Planner in MCP `tools/list`. The views also support `neige mail ls|cat`. The checks,
+//! the write and the hop rule live in [`crate::mail`].
 
 use std::sync::Arc;
 
@@ -62,7 +62,7 @@ fn send_descriptor() -> ToolDescriptor {
     }
 }
 
-/// Served through `neige mail ls`: hidden from every role's `tools/list`.
+/// Listed for the Planner in MCP `tools/list`; also served through `neige mail ls`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_MAIL_LS.into(),
@@ -76,11 +76,12 @@ fn ls_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner],
-        listed_for: &[],
+        listed_for: &[CardRole::Planner],
     }
 }
 
-/// Served through `neige mail cat <mail_id>`: hidden; a view whose only write is the read stamp.
+/// Listed for the Planner in MCP `tools/list`; also served through `neige mail cat <mail_id>`.
+/// A view whose only write is the read stamp.
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_MAIL_CAT.into(),
@@ -95,7 +96,7 @@ fn cat_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner],
-        listed_for: &[],
+        listed_for: &[CardRole::Planner],
     }
 }
 

@@ -244,7 +244,9 @@ mod tests {
         // #3481 Track plugin authorization adds one kernel tool: 709 description + 181 schema
         // bytes. Its canonical user-confirmation workflow cannot be a plugin-owned tool.
         // Keep the measured aggregate bound and the existing per-description cap.
-        const SURFACE_MAX_BYTES: usize = 41_252;
+        // Listing `neige_mail_ls` and `neige_mail_cat` for the Planner adds 849 bytes of
+        // description/schema to the existing surface; the measured aggregate cap is 42,097.
+        const SURFACE_MAX_BYTES: usize = 42_097;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
