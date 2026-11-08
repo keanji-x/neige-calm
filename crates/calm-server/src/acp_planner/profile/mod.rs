@@ -18,6 +18,9 @@ mod opencode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CompactionWire {
     StandardPrompt,
+    /// Bare advertised slash command completes when its matching prompt ends normally.
+    /// The native agent does not publish standard compaction lifecycle updates.
+    CommandPrompt,
     XaiExtension,
 }
 
@@ -27,8 +30,7 @@ pub(crate) struct ContractCompaction {
 }
 
 pub(crate) struct AcpAgentProfile {
-    /// A new namespace fences a breaking native-session contract; None preserves unchanged bindings.
-    pub(crate) native_session_contract: Option<&'static str>,
+    pub(crate) shared_server: bool,
     pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
@@ -255,7 +257,11 @@ mod tests {
         use calm_types::worker::WorkerContract;
         for (profile, planner, assistant) in [
             (&grok::PROFILE, Some(CompactionWire::XaiExtension), None),
-            (&antigravity::PROFILE, None, None),
+            (
+                &antigravity::PROFILE,
+                Some(CompactionWire::CommandPrompt),
+                Some(CompactionWire::CommandPrompt),
+            ),
             (
                 &opencode::PROFILE,
                 Some(CompactionWire::StandardPrompt),
@@ -279,7 +285,7 @@ mod tests {
         };
         for (provider, planner, assistant) in [
             (AgentProvider::Grok, true, false),
-            (AgentProvider::Antigravity, false, false),
+            (AgentProvider::Antigravity, true, true),
             (AgentProvider::OpenCode, true, true),
         ] {
             for (profile, expected) in [

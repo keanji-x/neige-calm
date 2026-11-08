@@ -6,6 +6,7 @@ mod cleanup;
 mod compact;
 mod completion;
 mod shared;
+mod shared_compact;
 
 mod continuation;
 mod control;
