@@ -40,7 +40,8 @@ pub fn terminal_input(
             hangup.add(Signal::SIGHUP);
             sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&hangup), None)
                 .map_err(std::io::Error::from)?;
-            if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) == -1 {
+            // libc's request constant and ioctl argument widths differ on Darwin.
+            if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) == -1 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
