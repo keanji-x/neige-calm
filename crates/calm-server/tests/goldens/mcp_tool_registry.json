@@ -217,7 +217,9 @@
     "roles": [
       "planner"
     ],
-    "listed_for": []
+    "listed_for": [
+      "planner"
+    ]
   },
   {
     "name": "neige_mail_ls",
@@ -237,7 +239,9 @@
     "roles": [
       "planner"
     ],
-    "listed_for": []
+    "listed_for": [
+      "planner"
+    ]
   },
   {
     "name": "neige_mail_send",
