@@ -13,6 +13,7 @@ pub(super) struct Process {
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
+    pub version: Option<semver::Version>,
     #[cfg(all(test, feature = "fixtures"))]
     stop_scope: String,
 }
@@ -80,10 +81,11 @@ impl Process {
                 .ok_or_else(|| CalmError::Internal("ACP stdin missing".into()))?,
         );
         match negotiate(&connection.client, registration, false).await {
-            Ok(capabilities) => Ok(Self {
+            Ok(negotiated) => Ok(Self {
                 child,
                 connection,
-                capabilities,
+                capabilities: negotiated.capabilities,
+                version: negotiated.version,
                 commands: Commands::default(),
                 #[cfg(all(test, feature = "fixtures"))]
                 stop_scope: host.agent_logs.to_string_lossy().into_owned(),
@@ -175,11 +177,16 @@ async fn open_log(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
 
 /// `initialize`, then the profile's identity at the registered minimum version, then its
 /// authentication: the agent's capabilities, or why the launch is refused.
+pub(super) struct Negotiated {
+    pub capabilities: protocol::AgentCapabilities,
+    pub version: Option<semver::Version>,
+}
+
 pub(super) async fn negotiate(
     client: &provider::acp::Client,
     Registration { config, profile }: Registration<'_>,
     compaction: bool,
-) -> std::result::Result<protocol::AgentCapabilities, String> {
+) -> std::result::Result<Negotiated, String> {
     let response = protocol::initialize_with_compaction(
         client,
         "neige",
@@ -211,10 +218,13 @@ pub(super) async fn negotiate(
             .await
             .map_err(|error| signed_out(format!("authenticate `{method}`: {error}")))?;
     }
-    Ok(response.agent_capabilities)
+    Ok(Negotiated {
+        version: profile.reported_version(&response),
+        capabilities: response.agent_capabilities,
+    })
 }
 
-async fn reap(child: &mut GroupChild) -> Result<()> {
+pub(super) async fn reap(child: &mut GroupChild) -> Result<()> {
     // Cancellation/timeout leaves GroupChild armed. A cleanup attempt alone is
     // not exit evidence for canonical Keep or generation retirement.
     let (status, group) =

@@ -250,7 +250,7 @@ impl AcpPlannerSession {
                     .process
                     .as_mut()
                     .expect("admitted process")
-                    .capabilities = capabilities
+                    .capabilities = capabilities.capabilities
             }
             Err(refusal) => {
                 guard.finish().await?;

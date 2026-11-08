@@ -6,6 +6,7 @@ use super::{
 };
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
+    context_snapshot: true,
     shared_server: true,
     usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: ContractCompaction {

@@ -57,7 +57,7 @@ pub struct SessionParams {
     pub instructions: String,
 }
 #[derive(Clone, Copy)]
-enum CancelRequest {
+pub(super) enum CancelRequest {
     Running,
     Requested,
     /// The external control owner finished its attempt, with any outcome.

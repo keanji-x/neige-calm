@@ -43,6 +43,7 @@ picker. Upgrading Neige does not install or sign in to AGY automatically.
 | Read/write approval requests | Routed through Neige's existing approval flow when AGY requests approval |
 | Running-turn steer | Not enabled |
 | Manual compaction | Existing `/compact` command for canonical Planner and Assistant conversations |
+| Context usage | Existing context ring, with optional supplementary readings from AGY 1.5.3 onward |
 | Canonical input | New Planner and Assistant conversations use canonical messages, original submission receipts and retained execution recovery |
 | History replacement | Not enabled |
 | Per-card OS sandbox | Not provided by this integration |
@@ -71,6 +72,33 @@ successful tool, Neige shows the denial as the turn's failure reason, even when
 earlier tools succeeded. An explicit user interruption remains interrupted.
 These modes govern requests AGY emits; they do not change Neige MCP authorization
 or grant ordinary cards cross-workspace report access.
+
+## Context usage
+
+When the native ACP stream reports context occupancy, Neige uses it directly.
+AGY 1.5.3 reports per-turn token consumption but does not send that context
+notification in the tested sessions. For normally completed model turns, Neige
+can read the same CLI conversation through the documented
+[`statusLine` callback](https://antigravity.google/docs/cli/statusline/).
+This uses the confirmed model and effort, adds no prompt, and feeds the existing
+context ring and its percentage policy. It does not sum billing tokens or guess
+model capacities.
+
+The reader is enabled from AGY 1.5.3 in the supported 1.x line; older agents keep
+their existing conversation support. No separate server, account or session
+migration is required. The original CLI native session identifier, registration
+fingerprint and MCP authorization stay unchanged.
+
+Each normal model turn triggers at most one bounded read, with one query at a
+time per host. Its six-second collection budget includes waiting for that slot.
+An unconfirmed spawn or exit retains its turn fence until cleanup is confirmed.
+The query uses temporary settings, disables its own automatic updater and logs,
+and receives no Neige MCP grant. Query failure does not fail a completed model
+turn; without a new reading, the previous valid reading remains unchanged.
+
+Compaction does not trigger a supplementary read: AGY can still report the old
+occupancy immediately after compacting. Neige keeps its existing usage-not-updated
+state until a later model turn supplies a valid reading.
 
 ## Compact a conversation
 

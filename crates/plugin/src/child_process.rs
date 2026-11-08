@@ -8,6 +8,46 @@ mod timed;
 pub use bounded::{BoundedRunError, run_bounded};
 pub use env::inherited_env;
 pub use timed::{ChildFinishError, finish_within};
+
+/// Keep the returned master alive for a child that needs terminal input but no rendered output.
+/// Call `set_process_group_leader` first: the input becomes its controlling terminal after
+/// setsid. If the owner crashes, closing the last master hangs up the foreground child group.
+/// Spawning, process groups and normal cleanup remain owned by `GroupChild`.
+#[cfg(unix)]
+pub fn terminal_input(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<std::os::fd::OwnedFd> {
+    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    use std::os::fd::AsRawFd;
+    let terminal = nix::pty::openpty(None, None).map_err(std::io::Error::from)?;
+    // openpty does not promise CLOEXEC. Neither end may leak into an unrelated spawn.
+    for fd in [&terminal.master, &terminal.slave] {
+        fcntl(fd.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
+            .map_err(std::io::Error::from)?;
+    }
+    command.stdin(std::process::Stdio::from(terminal.slave));
+    // SAFETY: ioctl is a direct syscall on the child's already-installed stdin, without
+    // allocation or shared locks. The preceding setsid pre_exec established this session.
+    unsafe {
+        command.pre_exec(|| {
+            use nix::sys::signal::{
+                SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal, sigaction, sigprocmask,
+            };
+            // An owner's nohup/blocked HUP state must not disable terminal ownership in the child.
+            let default = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+            sigaction(Signal::SIGHUP, &default).map_err(std::io::Error::from)?;
+            let mut hangup = SigSet::empty();
+            hangup.add(Signal::SIGHUP);
+            sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&hangup), None)
+                .map_err(std::io::Error::from)?;
+            if libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(terminal.master)
+}
 #[cfg(test)]
 pub(crate) use timed::{TEST_DRAIN_STARTED, TEST_REAP_STARTED, TestPhaseObserver};
 
@@ -127,17 +167,26 @@ impl Drop for GroupChild {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpawnTimedOut;
 
+/// Start the same guarded spawn as `spawn_within`, retaining its join until the caller has
+/// consumed and cleaned up a possibly late child. Owners with an admission fence must retain
+/// this handle after cancellation/deadline; a detached spawn is not cleanup confirmation.
+pub fn spawn_tracked(
+    mut cmd: tokio::process::Command,
+) -> tokio::task::JoinHandle<std::io::Result<GroupChild>> {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let _guard = handle.enter();
+        cmd.spawn().map(GroupChild::new)
+    })
+}
+
 /// Spawn `cmd` off the async path, bounded by `deadline`. With `pre_exec` set, `Command::spawn` is `fork` + `execve` and the parent blocks until the child's `execve` returns, so a timeout around an inline `spawn()` can never fire; the `Handle::enter()` guard is load-bearing because `PollEvented` registration panics without a runtime context.
 /// The closure builds a [`GroupChild`], so the group is swept by that value's `Drop` wherever it ends up. Residuals: tokio can return `Err` after forking (pipe/reaper registration failure) and that process leaks; a `fork` wedged on a dead mount cannot be cancelled and occupies a blocking thread; a tool that daemonizes properly (own `fork` + `setsid`) leaves the group.
 pub async fn spawn_within(
-    mut cmd: tokio::process::Command,
+    cmd: tokio::process::Command,
     deadline: tokio::time::Instant,
 ) -> Result<std::io::Result<GroupChild>, SpawnTimedOut> {
-    let handle = tokio::runtime::Handle::current();
-    let mut join = tokio::task::spawn_blocking(move || {
-        let _guard = handle.enter();
-        cmd.spawn().map(GroupChild::new)
-    });
+    let mut join = spawn_tracked(cmd);
 
     match tokio::time::timeout_at(deadline, &mut join).await {
         Ok(Ok(res)) => Ok(res),
@@ -178,6 +227,32 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_input_is_a_tty_without_replacing_group_lifecycle() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "test -t 0"]);
+        set_process_group_leader(&mut command);
+        let terminal = terminal_input(&mut command).unwrap();
+        use std::os::fd::AsRawFd;
+        let flags = nix::fcntl::fcntl(terminal.as_raw_fd(), nix::fcntl::FcntlArg::F_GETFD).unwrap();
+        assert_ne!(
+            flags & nix::fcntl::FdFlag::FD_CLOEXEC.bits(),
+            0,
+            "a terminal master must not leak to an unrelated exec"
+        );
+        let mut child = spawn_within(
+            command,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(3),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let (status, group) = child.wait_and_release_group().await;
+        group.sweep();
+        assert!(status.unwrap().success());
+    }
+
     #[test]
     fn read_capped_future_fits_its_byte_budget() {
         let mut reader = tokio::io::empty();
@@ -188,5 +263,214 @@ mod tests {
         // in every parent future, including commands whose output is not capped.
         let bytes = std::mem::size_of_val(&future);
         assert!(bytes < 1024, "bounded reader future uses {bytes} bytes");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tracked_spawn_retains_a_child_blocked_past_the_deadline() {
+        use std::os::fd::AsRawFd;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (parent, child) = std::os::unix::net::UnixStream::pair().unwrap();
+        parent.set_nonblocking(true).unwrap();
+        let mut parent = tokio::net::UnixStream::from_std(parent).unwrap();
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        command.arg("300").kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        // SAFETY: the child uses only async-signal-safe read/write on its pre-created socket.
+        unsafe {
+            command.pre_exec(move || {
+                let mut byte = 1_u8;
+                if libc::write(child.as_raw_fd(), (&byte as *const u8).cast(), 1) != 1
+                    || libc::read(child.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) != 1
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut pending = spawn_tracked(command);
+        let mut byte = [0];
+        parent.read_exact(&mut byte).await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        assert!(
+            !pending.is_finished(),
+            "deadline does not confirm absence of the late child"
+        );
+        parent.write_all(&[1]).await.unwrap();
+        let mut child = pending.await.unwrap().unwrap();
+        child.kill_group();
+        let (status, group) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            child.wait_and_release_group(),
+        )
+        .await
+        .unwrap();
+        group.sweep();
+        assert!(!status.unwrap().success());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_master_closure_hangs_up_the_owned_child_group() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        command.arg("300").kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        // SAFETY: mutate signal state only in the forked child, never the concurrent test host.
+        unsafe {
+            command.pre_exec(|| {
+                use nix::sys::signal::{
+                    SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal, sigaction,
+                    sigprocmask,
+                };
+                let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+                sigaction(Signal::SIGHUP, &ignore).map_err(std::io::Error::from)?;
+                let mut blocked = SigSet::empty();
+                blocked.add(Signal::SIGHUP);
+                sigprocmask(SigmaskHow::SIG_BLOCK, Some(&blocked), None)
+                    .map_err(std::io::Error::from)?;
+                Ok(())
+            });
+        }
+        let terminal = terminal_input(&mut command).unwrap();
+        let mut child = spawn_within(
+            command,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(3),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(terminal);
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            child.wait_and_release_group(),
+        )
+        .await;
+        if finished.is_err() {
+            child.kill_group();
+            let (_, group) = child.wait_and_release_group().await;
+            group.sweep();
+            panic!("closing the owner's terminal must stop its child after an owner crash");
+        }
+        let (status, group) = finished.unwrap();
+        group.sweep();
+        assert_eq!(status.unwrap().signal(), Some(libc::SIGHUP));
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn terminal_hangup_reaches_foreground_descendants_without_a_group_sweep() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("leaf");
+        let mut command = tokio::process::Command::new("/usr/bin/python3");
+        command
+            .args([
+                "-c",
+                concat!(
+                    "import subprocess,sys,pathlib,time; ",
+                    "p=subprocess.Popen(['/bin/sleep','300']); ",
+                    "pathlib.Path(sys.argv[1]).write_text(str(p.pid)); ",
+                    "time.sleep(300)"
+                ),
+            ])
+            .arg(&leaf)
+            .kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        let terminal = terminal_input(&mut command).unwrap();
+        let mut child = spawn_within(
+            command,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(3),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !leaf.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pid = std::fs::read_to_string(leaf).unwrap();
+        drop(terminal);
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+                if stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z') {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        child.kill_group();
+        let (_, group) = child.wait_and_release_group().await;
+        group.sweep();
+        assert!(
+            observed.is_ok(),
+            "terminal ownership stops descendants even when its process owner cannot sweep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_hangup_stops_late_exec_after_the_owner_master_closed() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::ExitStatusExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (parent, child_socket) = std::os::unix::net::UnixStream::pair().unwrap();
+        parent.set_nonblocking(true).unwrap();
+        let mut parent = tokio::net::UnixStream::from_std(parent).unwrap();
+        let mut command = tokio::process::Command::new("/bin/sleep");
+        command.arg("300").kill_on_drop(true);
+        set_process_group_leader(&mut command);
+        let terminal = terminal_input(&mut command).unwrap();
+        // SAFETY: only direct read/write/getpid syscalls, on an already-created child socket.
+        unsafe {
+            command.pre_exec(move || {
+                let ready = libc::getpid().to_ne_bytes();
+                let mut release = 0_u8;
+                if libc::write(child_socket.as_raw_fd(), ready.as_ptr().cast(), ready.len())
+                    != ready.len() as isize
+                    || libc::read(
+                        child_socket.as_raw_fd(),
+                        (&mut release as *mut u8).cast(),
+                        1,
+                    ) != 1
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let pending = spawn_tracked(command);
+        let mut ready = [0; 4];
+        parent.read_exact(&mut ready).await.unwrap();
+        let pid = i32::from_ne_bytes(ready);
+        drop(terminal);
+        parent.write_all(&[1]).await.unwrap();
+        match pending.await.unwrap() {
+            Ok(mut child) => {
+                let ended = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    child.wait_and_release_group(),
+                )
+                .await;
+                if ended.is_err() {
+                    child.kill_group();
+                    let (_, group) = child.wait_and_release_group().await;
+                    group.sweep();
+                    panic!("a late exec must not retain the dead owner's terminal master");
+                }
+                let (status, group) = ended.unwrap();
+                group.sweep();
+                assert_eq!(status.unwrap().signal(), Some(libc::SIGHUP));
+            }
+            Err(_) => assert_eq!(
+                nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+                Err(nix::errno::Errno::ESRCH)
+            ),
+        }
     }
 }

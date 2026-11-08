@@ -18,6 +18,7 @@ pub struct TurnTranslator {
     sequence: u64,
     current: Option<(String, String)>,
     text_bytes: usize,
+    context_received: bool,
     // Failure barriers distinguish a later recovery tool from an already-running sibling.
     unanswered_tool_failures: BTreeMap<String, u64>,
     tool_starts: BTreeMap<String, u64>,
@@ -33,6 +34,7 @@ impl TurnTranslator {
             sequence: 0,
             current: None,
             text_bytes: 0,
+            context_received: false,
             unanswered_tool_failures: BTreeMap::new(),
             tool_starts: BTreeMap::new(),
             tool_sequence: 0,
@@ -42,6 +44,9 @@ impl TurnTranslator {
         self.event(PlannerEventKind::TurnStarted {
             turn_id: self.context.turn_id.clone(),
         })
+    }
+    pub fn context_received(&self) -> bool {
+        self.context_received
     }
     /// Compaction state keyed by the native ID, including settled replay upserts.
     /// The caller must establish operation ownership separately; there is no "latest" ID.
@@ -63,6 +68,7 @@ impl TurnTranslator {
         }
         let mut events = Vec::new();
         if let Some((used, size)) = self.context.usage.reading(params) {
+            self.context_received = true;
             events.push(self.event(PlannerEventKind::TokenUsage {
                 params: json!({"turnId": self.context.turn_id, "tokenUsage": {
                     "last": {"totalTokens": used}, "modelContextWindow": size,
