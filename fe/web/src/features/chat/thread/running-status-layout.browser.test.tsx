@@ -27,12 +27,12 @@ function indicatorBesideStatus(container: HTMLElement) {
   expect(iconBox.right).toBeLessThanOrEqual(labelBox.left);
 }
 
-it.each([[192, 16], [320, 16], [232, 32]])('keeps completed Thought separate from a single inline Running indicator (%ipx, %ipx text)', (width, font) => {
+it.each([[192, 16, false], [192, 16, true], [320, 16, false], [320, 16, true], [232, 32, false], [232, 32, true]] as const)('keeps completed Thought separate from one inline Running indicator (%ipx, %ipx text, grouped: %s)', (width, font, grouped) => {
   document.documentElement.style.fontSize = `${font}px`;
   const { container } = render(<div style={{ width }}><ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
-    conversation={conversation} turns={[thought('one'), thought('two')]} pending /></div>);
-  const group = screen.getByRole('group', { name: '2 tool calls' });
-  const header = within(group).getByRole('button', { name: /Thought/ });
+    conversation={conversation} turns={grouped ? [thought('one'), thought('two')] : [thought('one')]} pending /></div>);
+  const entry = container.querySelector<HTMLElement>('[data-nc-entry]')!;
+  const header = within(entry).getByRole('button', { name: /Thought/ });
   expect(header.querySelector('svg')!.checkVisibility()).toBe(true);
   indicatorBesideStatus(container);
   const marker = container.querySelector<HTMLElement>('[data-nc-activity="working"]')!;
