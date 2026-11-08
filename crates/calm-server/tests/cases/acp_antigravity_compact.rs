@@ -461,7 +461,7 @@ async fn antigravity_context_snapshot_uses_confirmed_model_and_effort_after_swit
         turn(&stack, &card, "use confirmed selection", 1).await["status"],
         "completed"
     );
-    let snapshot = completed(&stack, &card).await;
+    let snapshot = context_reading(&stack, &card, 32_768).await;
     assert_eq!(
         snapshot["token_usage"]["context_window"], 131_072,
         "{snapshot}"

@@ -17,15 +17,27 @@ pub use timed::{ChildFinishError, finish_within};
 pub fn terminal_input(
     command: &mut tokio::process::Command,
 ) -> std::io::Result<std::os::fd::OwnedFd> {
-    use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    use nix::fcntl::OFlag;
+    #[cfg(test)]
     use std::os::fd::AsRawFd;
-    let terminal = nix::pty::openpty(None, None).map_err(std::io::Error::from)?;
-    // openpty does not promise CLOEXEC. Neither end may leak into an unrelated spawn.
-    for fd in [&terminal.master, &terminal.slave] {
-        fcntl(fd.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))
-            .map_err(std::io::Error::from)?;
-    }
-    command.stdin(std::process::Stdio::from(terminal.slave));
+    use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    // Both descriptors are close-on-exec at creation. openpty + a later fcntl would expose
+    // another thread's fork to the unprotected pair before the flags could be set.
+    let master = nix::pty::posix_openpt(OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_CLOEXEC)
+        .map_err(std::io::Error::from)?;
+    nix::pty::grantpt(&master).map_err(std::io::Error::from)?;
+    nix::pty::unlockpt(&master).map_err(std::io::Error::from)?;
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_CLOEXEC)
+        .open(terminal_slave_name(&master)?)?;
+    // SAFETY: into_raw_fd transfers this one owning descriptor; no borrowed alias is wrapped.
+    let master = unsafe { OwnedFd::from_raw_fd(master.into_raw_fd()) };
+    #[cfg(test)]
+    tests::observe_terminal_allocation(master.as_raw_fd(), slave.as_raw_fd());
+    command.stdin(std::process::Stdio::from(slave));
     // SAFETY: ioctl is a direct syscall on the child's already-installed stdin, without
     // allocation or shared locks. The preceding setsid pre_exec established this session.
     unsafe {
@@ -47,7 +59,49 @@ pub fn terminal_input(
             Ok(())
         });
     }
-    Ok(terminal.master)
+    Ok(master)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn terminal_slave_name(master: &nix::pty::PtyMaster) -> std::io::Result<std::path::PathBuf> {
+    nix::pty::ptsname_r(master)
+        .map(Into::into)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(target_os = "macos")]
+fn terminal_slave_name(master: &nix::pty::PtyMaster) -> std::io::Result<std::path::PathBuf> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    // Darwin's public ttycom.h defines TIOCPTYGNAME as an output of 128 bytes.
+    // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/ttycom.h
+    let mut name = [0_u8; 128];
+    // SAFETY: this request writes exactly the ABI-sized, initialized buffer above.
+    if unsafe {
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCPTYGNAME as _,
+            name.as_mut_ptr(),
+        )
+    } == -1
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let name = std::ffi::CStr::from_bytes_until_nul(&name)
+        .map_err(|_| std::io::Error::other("terminal name lacks a terminator"))?;
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        name.to_bytes(),
+    )))
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
+fn terminal_slave_name(_: &nix::pty::PtyMaster) -> std::io::Result<std::path::PathBuf> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic terminal input is unsupported on this platform",
+    ))
 }
 #[cfg(test)]
 pub(crate) use timed::{TEST_DRAIN_STARTED, TEST_REAP_STARTED, TestPhaseObserver};
@@ -227,6 +281,63 @@ pub fn signal_process_group(pgid: i32, signal: libc::c_int) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    type AllocationPause = (
+        std::sync::mpsc::SyncSender<(i32, i32)>,
+        std::sync::mpsc::Receiver<()>,
+    );
+    #[cfg(unix)]
+    std::thread_local! {
+        static ALLOCATION_PAUSE: std::cell::RefCell<Option<AllocationPause>> = const {std::cell::RefCell::new(None)};
+    }
+    #[cfg(unix)]
+    pub(super) fn observe_terminal_allocation(master: i32, slave: i32) {
+        ALLOCATION_PAUSE.with(|pause| {
+            if let Some((ready, release)) = pause.borrow_mut().take() {
+                ready.send((master, slave)).unwrap();
+                release.recv().unwrap();
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_creation_never_exposes_descriptors_to_a_concurrent_exec() {
+        let (ready, allocated) = std::sync::mpsc::sync_channel(1);
+        let (release, proceed) = std::sync::mpsc::sync_channel(1);
+        let owner = std::thread::spawn(move || {
+            ALLOCATION_PAUSE.with(|pause| *pause.borrow_mut() = Some((ready, proceed)));
+            let mut command = tokio::process::Command::new("/bin/sleep");
+            set_process_group_leader(&mut command);
+            let terminal = terminal_input(&mut command).unwrap();
+            drop(terminal);
+        });
+        let (master, slave) = allocated
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        let mut sibling = tokio::process::Command::new("/usr/bin/python3");
+        sibling
+            .args([
+                "-c",
+                "import os,sys; print(sum(os.isatty(int(fd)) for fd in sys.argv[1:]))",
+            ])
+            .arg(master.to_string())
+            .arg(slave.to_string())
+            .kill_on_drop(true);
+        set_process_group_leader(&mut sibling);
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(3), sibling.output()).await;
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        let output = output.unwrap().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            std::str::from_utf8(&output.stdout).unwrap().trim(),
+            "0",
+            "an unrelated exec must never inherit a query's terminal"
+        );
+    }
 
     #[cfg(unix)]
     #[tokio::test]

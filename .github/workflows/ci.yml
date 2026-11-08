@@ -525,6 +525,10 @@ jobs:
         run: |
           env -u NEIGE_CODEX_BIN cargo nextest run --locked -p calm-proc-supervisor --lib \
             -E 'test(/^execution::output::/)' --no-tests fail --test-threads 8
+      - name: control process terminal ownership
+        run: |
+          env -u NEIGE_CODEX_BIN cargo nextest run --locked -p plugin --lib \
+            -E 'test(/^child_process::/)' --no-tests fail --test-threads 8
       - name: build real renderer supervisor
         run: env -u NEIGE_CODEX_BIN cargo build --locked -p calm-proc-supervisor --bin calm-proc-supervisor
       - name: renderer retained resources
