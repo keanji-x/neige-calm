@@ -824,7 +824,7 @@ impl AppState {
             Arc::downgrade(&self.operation_runtime),
             self.dispatcher.scheduler().planner_recovery_locks.clone(),
             Arc::new(tokio::sync::Semaphore::new(8)),
-            TaskVerifyAdapter::default_gate_logs_dir(),
+            self.route.mcp_context.gate_logs_dir.clone(),
             crate::scheduler::WorkerLiveness::DEFAULT,
             crate::scheduler::WorkerIdleWake::with_route(
                 self.codex_backends.clone(),
@@ -941,6 +941,33 @@ impl AppState {
             card_role_cache,
             track_area_cache,
             None,
+            TaskVerifyAdapter::default_gate_logs_dir(),
+        )
+    }
+
+    /// Fixture construction with one explicit log root shared by adapters and log readers.
+    #[cfg(feature = "fixtures")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_with_gate_logs_dir(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        daemon: Arc<DaemonClient>,
+        plugin: Arc<PluginHost>,
+        codex: Arc<CodexClient>,
+        card_role_cache: Option<CardRoleCache>,
+        track_area_cache: Option<TrackAreaCache>,
+        gate_logs_dir: PathBuf,
+    ) -> Self {
+        Self::from_parts_inner(
+            repo,
+            events,
+            daemon,
+            plugin,
+            codex,
+            card_role_cache,
+            track_area_cache,
+            None,
+            gate_logs_dir,
         )
     }
 
@@ -966,6 +993,7 @@ impl AppState {
             card_role_cache,
             track_area_cache,
             Some(terminal_spawn_hook),
+            TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
 
@@ -979,6 +1007,7 @@ impl AppState {
         card_role_cache: Option<CardRoleCache>,
         track_area_cache: Option<TrackAreaCache>,
         terminal_spawn_hook: Option<SpawnHook>,
+        gate_logs_dir: PathBuf,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let acp_planner = Arc::new(AcpPlannerHost::unconfigured_scratch().expect("ACP host"));
@@ -1016,8 +1045,7 @@ impl AppState {
         let execution = crate::execution_quiesce::ExecutionLifecycle::default();
         terminal_renderer.set_execution(execution.clone());
         let teardown_targets = workspace_runtime::sweep::TeardownTargets::default();
-        let objective_checkout_root =
-            TaskVerifyAdapter::default_gate_logs_dir().with_file_name("objective-checks");
+        let objective_checkout_root = gate_logs_dir.with_file_name("objective-checks");
         let (adapters, planner_start_adapter) = build_operation_adapters(OperationAdapterInputs {
             teardown_targets: teardown_targets.clone(),
             execution: execution.clone(),
@@ -1034,7 +1062,7 @@ impl AppState {
             terminal_spawn_hook,
             harness: harness.clone(),
             mcp_server: None,
-            gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            gate_logs_dir: gate_logs_dir.clone(),
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             objective_checkout_root: objective_checkout_root.clone(),
             claude_planner: claude_planner.clone(),
@@ -1082,7 +1110,7 @@ impl AppState {
             None,
             plugin_host_cell,
             Arc::new(tokio::sync::OnceCell::new()),
-            TaskVerifyAdapter::default_gate_logs_dir(),
+            gate_logs_dir.clone(),
         );
         let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
         let dispatcher = Arc::new(Dispatcher::spawn_with_codex_backends(
@@ -1097,7 +1125,7 @@ impl AppState {
             operation_runtime.clone(),
             planner_recovery_locks.clone(),
             Dispatcher::permits_from_env(8),
-            TaskVerifyAdapter::default_gate_logs_dir(),
+            gate_logs_dir,
             crate::scheduler::WorkerLiveness::DEFAULT,
             crate::provider_registry::WorkerProviderRegistry::for_daemon(
                 &daemon,
@@ -1270,7 +1298,7 @@ impl AppState {
             terminal_spawn_hook: None,
             harness: self.harness.clone(),
             mcp_server: self.mcp_server.clone(),
-            gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            gate_logs_dir: self.route.mcp_context.gate_logs_dir.clone(),
             workspace_root: self.route.workspace_root.clone(),
             objective_checkout_root: self.route.objective_checkout_root.clone(),
             claude_planner: self.route.claude_planner.clone(),
