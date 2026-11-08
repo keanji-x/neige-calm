@@ -2,7 +2,7 @@ import '../../../styles/entry.css';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
-import type { ConversationActivity } from '../../../../../core/domain/conversation.ts';
+import type { ConversationActivity, ConversationTurn, ConversationTurnOutcome } from '../../../../../core/domain/conversation.ts';
 import { ChatThread } from './public.tsx';
 
 beforeEach(async () => { await commands.emulateReducedMotion(true); });
@@ -58,4 +58,36 @@ it('hands the live mark between the status row and an executing tool without dup
   indicatorBesideStatus(container);
   rerender(<ChatThread {...props} turns={[...done, { ...running, state: 'done' }]} />);
   expect(container.querySelector('[data-nc-activity="working"]')).toBeNull();
+});
+
+
+it.each([[192, 16], [320, 16], [232, 32]] as const)('keeps the streaming indicator beside Running for paragraphs, code and tables (%ipx, %ipx text)', (width, font) => {
+  document.documentElement.style.fontSize = `${font}px`;
+  const props = { hasPendingMessages: false, canContinue: false, cards: {}, stalled: false, conversation };
+  const reply: ConversationTurn = { id: 'reply', author: 'agent', text: 'First words', atMs: 2 };
+  const { container, rerender } = render(<div style={{ width }}><ChatThread {...props} turns={[reply]} pending /></div>);
+  for (const text of ['First words', 'Explanation.\n\n```ts\nconst answer = 42;\n```', '| A | B |\n|---|---|\n| one | two |']) {
+    rerender(<div style={{ width }}><ChatThread {...props} turns={[{ ...reply, text }]} pending /></div>);
+    indicatorBesideStatus(container);
+    expect(container.querySelector('[data-nc-turn="agent"] [data-nc-activity]')).toBeNull();
+    expect(container.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(1);
+  }
+  rerender(<div style={{ width }}><ChatThread {...props} turns={[reply]} /></div>);
+  expect(container.querySelector('[data-nc-activity="working"]')).toBeNull();
+});
+
+it.each([false, true])('shows a static, truthful status for unfinished calls after interruption (grouped: %s)', (grouped) => {
+  const running: ConversationActivity = { ...thought('tool'), verb: 'Calling tool', state: 'running', target: 'Read file' };
+  const interrupted: ConversationTurnOutcome = { id: 'end', author: 'turn', status: 'interrupted', turnId: 't1', elapsedMs: null, atMs: 3 };
+  const props = { hasPendingMessages: false, canContinue: false, cards: {}, stalled: false, conversation };
+  const calls = grouped ? [thought('done'), running] : [running];
+  const { container, rerender } = render(<ChatThread {...props} turns={calls} pending />);
+  rerender(<ChatThread {...props} turns={[...calls, interrupted]} />);
+  const entry = container.querySelector<HTMLElement>('[data-nc-entry]')!;
+  expect(entry.textContent).toContain('Completion unconfirmed');
+  const icon = [...entry.querySelectorAll('svg')].find(node => node.checkVisibility() && node.closest('[data-nc-unconfirmed]'));
+  expect(icon).toBeDefined();
+  for (const label of within(entry).queryAllByText('Running', { exact: true })) expect(label.checkVisibility()).toBe(false);
+  expect(container.querySelector('[data-nc-motion]')).toBeNull();
+  expect(within(screen.getByRole('status', { name: 'Current response status' })).getByText('Interrupted')).toBeTruthy();
 });

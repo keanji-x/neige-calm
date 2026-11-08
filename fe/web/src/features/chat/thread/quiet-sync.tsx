@@ -43,6 +43,8 @@ export type QuietSyncFoldProps = Readonly<{
 
 export function QuietSyncFold({ group, time, live, children, expanded, onExpandedChange }: QuietSyncFoldProps) {
   const line = quietSyncLine(group.author);
+  const completed = group.entries.some(entry => entry.author === 'turn' && entry.status === 'completed');
+  const phase = live ? 'Syncing' : completed ? 'Synced' : 'Sync';
   const verdict = group.outcome === null ? '' : ` · ${OUTCOME_LINE[group.outcome]}`;
   return (
     <details open={expanded} onToggle={(event) => onExpandedChange?.(event.currentTarget.open)}
@@ -51,10 +53,10 @@ export function QuietSyncFold({ group, time, live, children, expanded, onExpande
       data-nc-quiet-sync-author={group.author ?? 'unknown'}
       data-nc-quiet-sync-outcome={group.outcome ?? undefined}
     >
-      <summary className={styles.summary} title={`${line} · ${time}${verdict}`}>
+      <summary className={styles.summary} title={`${phase} · ${line} · ${time}${verdict}`}>
         <span className={styles.disclosure} aria-hidden="true">›</span>
         <span className={styles.label} data-nc-quiet-sync-label="">
-          Synced · {line} · <span className={styles.time}>{time}</span>{verdict}
+          {phase} · {line} · <span className={styles.time}>{time}</span>{verdict}
         </span>
         {live && <ActivityIndicator state="working" />}
       </summary>

@@ -3,6 +3,7 @@
 
 import { useLayoutEffect, useRef, type FocusEvent, type KeyboardEvent, type RefObject, type SyntheticEvent } from 'react';
 import { ChatToolCalls, type ChatToolCallItem } from '@astryxdesign/core/Chat';
+import { Icon } from '@astryxdesign/core/Icon';
 import { createPortal } from 'react-dom';
 
 import { useState } from '../../../ui/state/public.ts';
@@ -49,24 +50,26 @@ export type ToolCallGroupProps = Readonly<{
   ui: ToolCallGroupUi;
   onExpandedChange: (expanded: boolean) => void;
   onDetailOpenChange: (key: string, open: boolean) => void;
-  /** The group at the tail of a live transcript — the only one allowed to spin. */
+  /** Execution evidence for the tail of this transcript. */
   live: boolean;
+  /** A quiet-sync summary owns the motion while its active child keeps its status. */
+  showMotion: boolean;
 }>;
 
-export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpenChange, live }: ToolCallGroupProps) {
+export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpenChange, live, showMotion }: ToolCallGroupProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [motionHosts, setMotionHosts] = useState<readonly HTMLElement[]>([]);
+  const [statusHosts, setStatusHosts] = useState<readonly HTMLElement[]>([]);
   // Astryx owns row/detail focus. Replace only its status ink, using its semantic status slot.
   useLayoutEffect(() => {
     const root = rootRef.current;
     /* A lone call has no header: its one row is always the visible one. */
     const header = root === null ? null : headerOf(root);
-    const hosts = live && root !== null
+    const hosts = (!live || showMotion) && root !== null
       ? [...root.querySelectorAll<HTMLElement>('[role="status"]')]
-        .filter(host => ui.expanded || header === null || header.contains(host)) : [];
-    setMotionHosts(previous => previous.length === hosts.length && previous.every((host, index) => host === hosts[index])
+        .filter(host => !live || ui.expanded || header === null || header.contains(host)) : [];
+    setStatusHosts(previous => previous.length === hosts.length && previous.every((host, index) => host === hosts[index])
       ? previous : hosts);
-  }, [calls, live, ui.expanded]);
+  }, [calls, live, showMotion, ui.expanded]);
   /* True while this component is pressing rows itself, so the watcher below
      does not mistake its own presses for the reader's. */
   const replaying = useRef(false);
@@ -117,10 +120,12 @@ export function ToolCallGroup({ calls, entry, ui, onExpandedChange, onDetailOpen
           if (event.key === 'Enter' || event.key === ' ') noteToggle(event);
         }}
         data-nc-entry={entry}
-        {...(live ? { 'data-nc-live': '' } : {})}
+        {...(showMotion ? { 'data-nc-live': '' } : {})}
         calls={[...calls]}
       />
-      {live && motionHosts.map((host, index) => createPortal(<NeigeMotion kind="execution" />, host, String(index)))}
+      {statusHosts.map((host, index) => live
+        ? createPortal(<NeigeMotion kind="execution" />, host, String(index))
+        : host.parentElement !== null ? createPortal(<span className={styles.unconfirmed} data-nc-unconfirmed="" title="Completion unconfirmed" aria-hidden="true"><Icon icon="info" size="xsm" /></span>, host.parentElement, String(index)) : null)}
     </>
   );
 }

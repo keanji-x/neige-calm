@@ -7,14 +7,15 @@ import type { ThreadReadingView } from './reading-view.tsx';
 import styles from './activity-groups.module.css';
 
 /** Single quiet-sync activities keep their existing inline rendering, without a fresh array prop. */
-export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, updateGroup, live }: {
+export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, updateGroup, live, showMotion }: {
   activities: readonly ConversationActivity[] | ConversationActivity;
   entry: string;
   ui: ToolCallGroupUi;
   updateGroup: ThreadReadingView['updateGroup'];
   live: boolean;
+  showMotion: boolean;
 }) {
-  const calls = useMemo(() => 'author' in activities ? [toolCallOf(activities)] : activities.map(toolCallOf), [activities]);
+  const calls = useMemo(() => 'author' in activities ? [toolCallOf(activities, live)] : activities.map(activity => toolCallOf(activity, live)), [activities, live]);
   const onExpandedChange = useCallback((expanded: boolean) => {
     updateGroup(entry, previous => previous.expanded === expanded ? previous : { ...previous, expanded });
   }, [entry, updateGroup]);
@@ -22,7 +23,7 @@ export const ActivityRun = memo(function ActivityRun({ activities, entry, ui, up
     updateGroup(entry, previous => withDetailOpen(previous, key, open));
   }, [entry, updateGroup]);
   return <ToolCallGroup calls={calls} entry={entry} ui={ui} onExpandedChange={onExpandedChange}
-    onDetailOpenChange={onDetailOpenChange} live={live} />;
+    onDetailOpenChange={onDetailOpenChange} live={live} showMotion={showMotion} />;
 });
 
 /** A duration is printed only when the reader felt it. */
@@ -37,13 +38,13 @@ function formatActivityDuration(durationMs: number): string {
 }
 
 /** Feature-owned vendor conversion; the detail marker is also the existing replay/focus contract. */
-export function toolCallOf(activity: ConversationActivity): ChatToolCallItem {
+export function toolCallOf(activity: ConversationActivity, live = true): ChatToolCallItem {
   const duration = activity.durationMs !== null && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
     ? formatActivityDuration(activity.durationMs) : undefined;
   const body = [activity.detail, activity.content].filter(Boolean).join('\n\n');
   return {
     key: activity.id,
-    name: activity.verb,
+    name: !live && activity.state === 'running' ? `${activity.verb} · Completion unconfirmed` : activity.verb,
     target: activity.target ?? undefined,
     status: activity.state === 'done' ? 'complete' : activity.state === 'failed' ? 'error' : 'running',
     duration,
