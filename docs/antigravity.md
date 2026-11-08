@@ -30,6 +30,26 @@ if the service needs them. Sign-in and network readiness are checked before
 new conversations start. Once ready, select Antigravity in the existing model
 picker. Upgrading Neige does not install or sign in to AGY automatically.
 
+For sandboxed commands to proceed without an approval request, configure the
+service account's [AGY CLI settings](https://antigravity.google/docs/sandbox?tab=cli)
+in `~/.gemini/antigravity-cli/settings.json`. Merge these values into any
+existing settings; this file also affects other AGY CLI uses of that account:
+
+```json
+{
+  "agentMode": "",
+  "enableTerminalSandbox": true,
+  "toolPermission": "proceed-in-sandbox",
+  "allowNonWorkspaceAccess": false
+}
+```
+
+Neige launches its resident ACP server with `--sandbox`; the settings above
+also select how AGY handles sandboxed commands and access outside a workspace.
+Review the account's AGY permission rules as well: allow rules can change which
+operations require approval. Restart the resident server after changing its
+settings; that ends any background commands owned by the old server.
+
 ## Available capabilities
 
 | Capability | Behavior |
@@ -46,7 +66,7 @@ picker. Upgrading Neige does not install or sign in to AGY automatically.
 | Context usage | Existing context ring, with optional supplementary readings from AGY 1.5.3 onward |
 | Canonical input | New Planner and Assistant conversations use canonical messages, original submission receipts and retained execution recovery |
 | History replacement | Not enabled |
-| Per-card OS sandbox | Not provided by this integration |
+| Terminal sandbox | AGY's shared terminal-sandbox policy; availability depends on the host |
 
 Images use standard ACP image blocks and require the agent to negotiate image
 support. The existing upload limit is 8 MiB per file, but the complete ACP request
@@ -55,23 +75,30 @@ and all images. Use smaller images or fewer attachments when a message exceeds
 that limit. A local capability or size refusal leaves the input editable and
 creates no ACP send receipt; canonical input remains editable so the person can remove it and send a smaller message.
 
-Approval is not an OS sandbox. The shared process runs with the service account's
-access; AGY's own policy can allow an action without emitting an approval request.
+The terminal sandbox applies to AGY's commands, not every file or MCP operation.
+The shared process runs with the service account's access, and AGY's own policy
+can allow an action without emitting an approval request. This integration does
+not provide a Neige-enforced per-card OS isolation boundary. If the host cannot
+provide AGY's sandbox, AGY documents that `proceed-in-sandbox` behaves like
+`request-review`: in Never mode those requests are declined. Verify sandbox
+availability on the host rather than inferring it from the launch flag.
 
 ## Permission modes and early stops
 
 `full` selects the agent's single-call `allow_once` option for each permission
 request in that card's current turn. `ask` shows the request in Neige's existing
 approval flow and returns the option the person chooses. `never` declines requests.
-The resident AGY process keeps its default policy: no process-wide permission
-bypass is enabled for other cards. A stopped or settled turn cannot approve a
+The resident AGY process does not enable a process-wide permission bypass. A
+stopped or settled turn cannot approve a
 later request. Full requests without an unambiguous `allow_once` option are refused.
 
 If a denied tool fails and AGY ends without replying or recovering through a
 successful tool, Neige shows the denial as the turn's failure reason, even when
 earlier tools succeeded. An explicit user interruption remains interrupted.
 These modes govern requests AGY emits; they do not change Neige MCP authorization
-or grant ordinary cards cross-workspace report access.
+or grant ordinary cards cross-workspace report access. AGY may execute sandboxed
+commands and workspace edits without issuing a request even in Ask mode; Full
+can approve a sandbox bypass only when AGY requests one.
 
 ## Context usage
 

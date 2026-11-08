@@ -17,7 +17,7 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     canonical_assistant_inputs: true,
     entry: AgentEntry {
         before_options: &[],
-        after_options: &["acp"],
+        after_options: &["acp", "--sandbox"],
     },
     identity: AgentIdentity::AgentInfo {
         name: "Antigravity ACP Server",
