@@ -12,6 +12,31 @@ impl Drop for DaemonGroup {
     }
 }
 
+struct FixtureWorkingDirectory {
+    previous: std::path::PathBuf,
+    _root: tempfile::TempDir,
+}
+
+impl FixtureWorkingDirectory {
+    fn new() -> Self {
+        // Nextest isolates each test in a process. Relative-path fixtures need
+        // an owned cwd, independent of the checkout's ancestor ownership.
+        let root = tempfile::tempdir().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(root.path()).unwrap();
+        Self {
+            previous,
+            _root: root,
+        }
+    }
+}
+
+impl Drop for FixtureWorkingDirectory {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.previous).expect("restore fixture working directory");
+    }
+}
+
 #[tokio::test]
 async fn agent_backend_upgrade_0755_takes_over_the_original_default_daemon() {
     use std::os::unix::fs::PermissionsExt;
@@ -354,6 +379,8 @@ async fn agent_backend_adopted_crash_refusal_repair_heals() {
 #[tokio::test]
 async fn agent_backend_missing_relative_default_logs_resolve_from_cwd() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let _env = ENV_LOCK.lock().await;
+    let _cwd = FixtureWorkingDirectory::new();
     let root = tempfile::Builder::new()
         .prefix("backend-logs-")
         .tempdir_in(".")

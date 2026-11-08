@@ -2,7 +2,7 @@
 use super::*;
 
 /// The serial and this invocation's memory-completion responsibility travel together.
-/// Entry without Running, or consuming the installed source, owns failure completion.
+/// A prepared entry without Running, or consuming the source, owns failure completion.
 /// This responsibility grants no durable write, signal or endpoint authority.
 pub(super) struct StartTransition {
     serial: tokio::sync::OwnedMutexGuard<()>,

@@ -9,7 +9,7 @@ enum ColdEntry {
     CancelledDetachedBoot,
 }
 
-fn boot_state(
+pub(super) fn boot_state(
     fixture: &Fixture,
     daemon: Arc<SharedCodexAppServer>,
 ) -> calm_server::state::AppState {
@@ -55,6 +55,17 @@ async fn cold_admission(entry: ColdEntry) {
     fixture
         .write(fixture.update(RecoveryWrite::Legacy, SharedDaemonState::Idle))
         .await;
+    let thread = if matches!(entry, ColdEntry::Boot) {
+        let card = seed_card(&fixture.repo, 0).await;
+        let thread = "cold-boot-retained-thread";
+        seed_runtime_thread(&fixture.repo, &card, thread).await;
+        Some((thread, card))
+    } else {
+        None
+    };
+    let capture = fixture.root.path().join("boot-requests.ndjson");
+    unsafe { std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture) };
+    let _capture_guard = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
     let before = fixture.row().await;
     let daemon = fixture.daemon().await;
     assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Idle);
@@ -227,6 +238,13 @@ async fn cold_admission(entry: ColdEntry) {
     let recovered_birth = recovered
         .as_ref()
         .and_then(|row| row.pid.and_then(read_proc_start_time));
+    let cached_card = thread
+        .as_ref()
+        .and_then(|(thread, _)| daemon.cached_card_for_thread(thread));
+    let requests = optional_text(&capture)
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>();
     let execs = fixture.exec.pids();
     let cleanup_serial = tokio::time::timeout(
         Duration::from_secs(5),
@@ -242,7 +260,9 @@ async fn cold_admission(entry: ColdEntry) {
     let remaining = fixture.exec.reap_captured();
     drop(cleanup_serial);
     eprintln!(
-        "{entry:?}: repair={repair:?}, endpoint_reaped={endpoint_reaped}, remaining={remaining:?}, refusal={observation:?}, recovered={recovered:?}"
+        "{entry:?}: repair={repair:?}, endpoint_reaped={endpoint_reaped}, \
+         remaining={remaining:?}, refusal={observation:?}, recovered={recovered:?}, \
+         cached_card={cached_card:?}, requests={requests:?}"
     );
     assert!(repair.is_ok(), "schema restoration failed: {repair:?}");
     assert!(endpoint_reaped, "independent fixture child was not reaped");
@@ -287,6 +307,13 @@ async fn cold_admission(entry: ColdEntry) {
     assert_eq!(row.process_start_time, recovered_birth);
     assert!(recovered_ready.running);
     assert_eq!(execs, vec![row.pid.unwrap()]);
+    if let Some((thread, card)) = thread {
+        assert_eq!(cached_card, Some(card));
+        assert_eq!(
+            resume_count(&requests.expect("captured boot RPCs"), thread),
+            1
+        );
+    }
 }
 
 #[tokio::test]
