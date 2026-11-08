@@ -770,7 +770,8 @@ describe('ChatThread', () => {
         turns={[activity({ state: 'running', verb: 'Running', durationMs: 5_000 })]}
       />,
     );
-    expect(container.textContent).toBe('RunningRunningnpm test');
+    expect(container.textContent).toContain('npm test');
+    expect(screen.queryByText('5.0s')).toBeNull();
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {
@@ -850,7 +851,7 @@ describe('ChatThread', () => {
       />,
     );
     expect(workingMarks()).toHaveLength(1);
-    expect(workingMarks()[0]?.closest('[data-nc-turn="agent"]')).not.toBeNull();
+    expect(workingMarks()[0]?.closest('[data-nc-current-meta]')).not.toBeNull();
     expect(screen.getAllByText('Working')).toHaveLength(1);
 
     rerender(

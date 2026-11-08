@@ -76,3 +76,20 @@ describe('the quiet-sync fold in a real engine', () => {
     expect(getComputedStyle(disclosure).transform).not.toBe('none');
   });
 });
+
+
+it('names syncing as ongoing until a confirmed completion, and keeps the fold as indicator owner', () => {
+  const props = { hasPendingMessages: false, canContinue: false, cards: {}, stalled: false, conversation };
+  const { container, rerender } = render(<ChatThread {...props} turns={[wake, { ...read, state: 'running' }]} pending />);
+  const summary = container.querySelector('summary')!;
+  expect(summary.textContent).toMatch(/Syncing ·/);
+  expect(container.querySelector('[data-nc-turn="quiet-sync"]')!.textContent).not.toContain('Completion unconfirmed');
+  expect(summary.querySelector('[data-nc-activity="working"]')!.checkVisibility()).toBe(true);
+  expect(container.querySelector('[data-nc-current-meta] [data-nc-activity]')).toBeNull();
+  rerender(<ChatThread {...props} turns={[wake, read]} />);
+  expect(summary.textContent).toMatch(/Sync ·/);
+  expect(summary.textContent).not.toMatch(/Synced/);
+  rerender(<ChatThread {...props} turns={[wake, read, { id: 'end', author: 'turn', status: 'completed', turnId: 't1', elapsedMs: null, atMs: NOW }]} />);
+  expect(summary.textContent).toMatch(/Synced ·/);
+  expect(summary.querySelector('[data-nc-activity]')).toBeNull();
+});

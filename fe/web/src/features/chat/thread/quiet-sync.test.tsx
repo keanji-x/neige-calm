@@ -82,7 +82,7 @@ describe('QuietSyncFold in the thread', () => {
     expect(details?.open).toBe(false);
     expect(details?.getAttribute('data-nc-quiet-sync-author')).toBe('user');
     const label = details?.querySelector('[data-nc-quiet-sync-label]')?.textContent ?? '';
-    expect(label).toMatch(/^Synced · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
+    expect(label).toMatch(/^Sync · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
 
     const body = details?.querySelector('[data-nc-quiet-sync-body]');
     expect(body?.querySelector('[data-nc-turn="system"]')).not.toBeNull();
@@ -235,7 +235,7 @@ describe('QuietSyncFold in the thread', () => {
     expect(updated.text).toMatch(/ · updated the report$/);
     expect(updated.outcome).toBe('updated');
     const running = label([reportEdited('user'), activity('act1', { verb: 'Reading report', state: 'running' })]);
-    expect(running.text).toMatch(/^Synced · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
+    expect(running.text).toMatch(/^Sync · You edited the report · \d{1,2}:\d{2}(?: [AP]M)?$/);
     expect(running.hasOutcome).toBe(false);
     expect(running.outcome).toBeNull();
   });

@@ -181,16 +181,18 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   /* Where focus goes when the element under it goes; held on the transcript's element, which outlives every run's. */
   const focus = useToolCallFocus(
     transcriptGroups.filter(({ entry }) => entry.author !== 'turn'),
-    (activities) => activities.map(toolCallOf),
+    (activities) => activities.map(activity => toolCallOf(activity)),
     (key) => groupUi.get(key) ?? untouchedGroupUi,
   );
-  /* Whether visible transcript content already carries the live mark: the latest call when closed, every call when open. Otherwise the current status row carries it. */
+  /* Active tool rows and background-sync summaries own their local marks.
+     Waiting and streamed replies use the current status row, never Markdown.
+     A closed tool group shows only its latest call; an open group shows each call. */
   const tail = transcriptGroups[transcriptGroups.length - 1];
   const tailQuiet = tail?.body.quiet ?? null;
   const tailCarriesLiveMark = tail === undefined ? false
     : tailQuiet !== null ? tailQuiet.entries.some((entry) => entry === lastTurn)
-    : tail.activities === null ? tail.entry.author === 'agent'
-    : toolCallGroupShowsRunning(tail.activities.map(toolCallOf), groupUi.get(tail.key)?.expanded ?? false);
+    : tail.activities === null ? false
+    : toolCallGroupShowsRunning(tail.activities.map(activity => toolCallOf(activity)), groupUi.get(tail.key)?.expanded ?? false);
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
   const [scrollOverlay, setScrollOverlay] = useState<HTMLElement | null>(null);
@@ -246,7 +248,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   }, [scrollFollower, newestId, newestLength, noticeKind]);
 
   /* A run of calls, one or more, keyed by `key`: Astryx draws one call inline and two or more as a group. `runLive` is the live tail's alone — a run the conversation has moved past must not look like it resumed. */
-  const renderRun = (activities: readonly ConversationActivity[] | ConversationActivity, key: string, runLive: boolean): ReactNode => (
+  const renderRun = (activities: readonly ConversationActivity[] | ConversationActivity, key: string, runLive: boolean, showMotion = runLive): ReactNode => (
     <ActivityRun
       /* Carried by membership, not read off any one call, so the run keeps its element as calls are appended, prepended or dropped. */
       key={key}
@@ -255,6 +257,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       ui={groupUi.get(key) ?? untouchedGroupUi}
       updateGroup={updateGroupUi}
       live={runLive}
+      showMotion={showMotion}
     />
   );
 
@@ -262,7 +265,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const renderEntry = (turn: TranscriptEntry, key = turn.id, showLive = live): ReactNode => {
     const index = indexOf.get(turn) ?? -1;
     const last = index === turns.length - 1;
-    if (turn.author === 'activity') return renderRun(turn, key, showLive && last);
+    if (turn.author === 'activity') return renderRun(turn, key, live && last, showLive && last);
     if (turn.author === 'system') {
       return (
         <div key={turn.id} data-nc-entry={key}>
@@ -291,7 +294,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
-        working={showLive && last} imageFiles={imageFiles} renderLink={renderLink} />
+        imageFiles={imageFiles} renderLink={renderLink} />
     );
   };
 

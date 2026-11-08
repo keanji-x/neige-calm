@@ -2,7 +2,6 @@ import mobileStyles from './mobile-composer.module.css';
 import { memo } from 'react';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import { OutgoingMessage } from './outgoing-message.tsx';
-import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Reply, type ReplyImageFiles, type ReplyLinkRenderer } from './reply.tsx';
 import styles from './thread.module.css';
 
@@ -26,13 +25,12 @@ type MessageEntryProps = Readonly<{
   queued: boolean;
   edited: boolean;
   replacement: boolean;
-  working: boolean;
   imageFiles: ReplyImageFiles | null;
   renderLink?: ReplyLinkRenderer;
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, human, imported, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, imageFiles, renderLink, mobile, atMs, timestampFormatter,
+  opens, gapLabel, queued, edited, replacement, imageFiles, renderLink, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
     <div
@@ -73,7 +71,6 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, h
           <>{imported && <p className={styles.queuedNote}>Imported history</p>}</>
           <Reply text={text} imageFiles={imageFiles} renderLink={renderLink} />
           {timestampFormatter !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampFormatter.format(atMs)}</time>}
-          {working && <ActivityIndicator state="working" motion="thinking" />}
         </div>
       )}
     </div>

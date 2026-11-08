@@ -42,6 +42,18 @@
     display: none;
   }
 
+  /* The vendor has no unknown terminal status. Keep its unfinished status value,
+     replace the spinner slot with neutral ink, and suppress its stale Running
+     announcement; the feature's visible call name carries the truthful label. */
+  .group span:has(> [data-nc-unconfirmed]) > :not([data-nc-unconfirmed]) {
+    display: none;
+  }
+
+  .unconfirmed {
+    display: inline-flex;
+    color: var(--text-3);
+  }
+
   /* Preserve the vendor's status role and dimensions; its direct SVG is replaced by our execution mark, which is portalled in as a direct SVG child too and must stay painted. */
   .group [role='status'] > svg:not([data-nc-motion]) { display: none; }
 
