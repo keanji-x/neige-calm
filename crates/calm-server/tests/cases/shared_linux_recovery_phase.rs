@@ -57,6 +57,9 @@ mod post_consumption;
 #[path = "shared_linux_recovery_phase/cold_start.rs"]
 mod cold_start;
 
+#[path = "shared_linux_recovery_phase/boot_preparation.rs"]
+mod boot_preparation;
+
 struct Fixture {
     // Drop captured children before deleting their files.
     exec: ExecWitness,
