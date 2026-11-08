@@ -134,7 +134,8 @@ async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: 
                 fault_applied = true;
             }
             Fault::Phase | Fault::Path => {
-                // Preserve the real identity while refusing its phase or backend path.
+                // Phase refusal keeps the source tuple. Path refusal needs a live tuple:
+                // the reaped source would legitimately bypass path checks as proven absent.
                 let recovery = match fault {
                     Fault::Phase => RecoveryWrite::ClaimLegacy {
                         id: RecoveryId::fresh(),
@@ -150,6 +151,12 @@ async fn post_consumption(source: Source, window: Window, fault: Fault, cancel: 
                 update.started_at = before.started_at;
                 update.daemon_env_signature = before.daemon_env_signature.clone();
                 if matches!(fault, Fault::Path) {
+                    let live = endpoint.as_ref().unwrap();
+                    update.pid = Some(live.pid);
+                    update.pgid = Some(live.pid);
+                    update.process_start_time = Some(live.birth);
+                    update.boot_id = Some(live.boot.clone());
+                    update.started_at = Some(now_ms());
                     update.codex_home_path = Some(
                         fixture
                             .root
