@@ -271,6 +271,20 @@ async fn canonical_antigravity_permission_modes_are_isolated_and_denials_explain
     let prompts = requests(&root, "session/prompt");
     assert_eq!(prompts.len(), 3);
     assert!(prompts.iter().all(|p| p["_pid"] == prompts[0]["_pid"]));
+    let launches = std::fs::read_to_string(root.path().join("argv.jsonl")).unwrap();
+    let launches: Vec<Value> = launches
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!launches.is_empty());
+    for launch in launches {
+        let args = launch.as_array().unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == [json!("acp"), json!("--sandbox")]),
+            "unexpected ACP launch: {args:?}"
+        );
+    }
     stack.shutdown().await;
 }
 
