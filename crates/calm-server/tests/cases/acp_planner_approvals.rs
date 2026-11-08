@@ -362,3 +362,61 @@ async fn acp_full_mode_allows_the_agents_tools_and_refuses_a_stray_request() {
     assert!(rows(&stack, &track, "ask.requested").await.is_empty());
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_context_snapshot_keeps_finished_turn_approval_fenced() {
+    let root = Root::new("unused");
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.0",
+    )
+    .await;
+    let (track, card) = stack
+        .create_canonical_track_with(json!({"planner_provider":"antigravity"}))
+        .await;
+    assert_eq!(
+        stack
+            .send(
+                "PUT",
+                &format!("/api/cards/{card}/planner/permission-mode"),
+                Some(json!({"permission_mode":"ask"}))
+            )
+            .await
+            .0,
+        StatusCode::OK
+    );
+    std::fs::write(root.path().join("scenario"), "ask-settle").unwrap();
+    std::fs::write(root.path().join("context-silent"), "").unwrap();
+    assert_eq!(
+        stack.post_input(&card, "use a tool").await.0,
+        StatusCode::OK
+    );
+    let asked = wait_rows(&stack, &track, "ask.requested", 1).await;
+    let ask_id = hold_ask(&asked[0]);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !root.path().join("context-queries.jsonl").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/tracks/{track}/asks/{ask_id}/answer"),
+            Some(json!({"answers":[{"option":0}]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(
+        stack.wait_outcomes(&card, 1).await[0]["status"],
+        "completed"
+    );
+    assert_eq!(
+        permission_log(&root),
+        [json!({"event":"reply","outcome":{"outcome":"cancelled"}})]
+    );
+    stack.shutdown().await;
+}

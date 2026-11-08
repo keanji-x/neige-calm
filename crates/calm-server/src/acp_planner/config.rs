@@ -201,6 +201,7 @@ pub struct AcpPlannerHost {
     /// Where each agent process's stderr is kept, one bounded file per worker, overwritten by its
     /// next launch.
     pub(super) shared_server: tokio::sync::Mutex<Option<super::session::Server>>,
+    pub(super) context_queries: tokio::sync::Semaphore,
     pub(super) agent_logs: PathBuf,
     readiness: tokio::sync::Mutex<()>,
     pub(super) discovery: super::catalog::DiscoveryCache,
@@ -232,6 +233,7 @@ impl AcpPlannerHost {
             mcp_socket,
             tool_names: None,
             shared_server: Default::default(),
+            context_queries: tokio::sync::Semaphore::new(1),
             agent_logs: data_dir.join("acp-agent-logs"),
             readiness: tokio::sync::Mutex::new(()),
             discovery: Default::default(),

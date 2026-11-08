@@ -29,7 +29,7 @@ utoipa = "5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-nix = { version = "0.29", features = ["signal"] }
+nix = { version = "0.29", features = ["signal", "term", "fs"] }
 
 [dev-dependencies]
 futures-util = "0.3"

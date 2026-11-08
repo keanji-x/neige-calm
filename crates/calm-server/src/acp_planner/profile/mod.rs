@@ -30,6 +30,7 @@ pub(crate) struct ContractCompaction {
 }
 
 pub(crate) struct AcpAgentProfile {
+    pub(crate) context_snapshot: bool,
     pub(crate) shared_server: bool,
     pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
@@ -109,6 +110,14 @@ const NOTHING: ModeLaunch = ModeLaunch {
 };
 
 impl AcpAgentProfile {
+    pub(crate) fn reported_version(
+        &self,
+        response: &InitializeResponse,
+    ) -> Option<semver::Version> {
+        self.identity
+            .reported(response)
+            .and_then(|value| semver::Version::parse(value).ok())
+    }
     pub(crate) fn admit_identity(
         &self,
         response: &InitializeResponse,

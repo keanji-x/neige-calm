@@ -187,7 +187,7 @@ impl AcpPlannerSession {
                 .process
                 .as_mut()
                 .expect("admitted process")
-                .capabilities = capabilities;
+                .capabilities = capabilities.capabilities;
             let process = guard.process.as_mut().expect("ACP maintenance process");
             let owner = shared.admission(thread, Some(permission), Some(&native), None);
             let combined = admission.combined(&owner);

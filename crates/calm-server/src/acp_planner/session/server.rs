@@ -67,6 +67,7 @@ pub(super) struct Turn {
     pub capabilities: protocol::AgentCapabilities,
     commands: process::Commands,
     cleanup: CleanupWitness,
+    snapshot: Option<super::super::context_snapshot::Selection>,
 }
 
 pub(super) async fn issue(
@@ -121,6 +122,11 @@ pub(super) async fn issue(
         capabilities: server.process.capabilities.clone(),
         commands: server.process.commands.clone(),
         cleanup,
+        snapshot: super::super::context_snapshot::Selection::freeze(
+            registration,
+            server.process.version.as_ref(),
+            &binding.configuration,
+        ),
     });
     let prepared = PreparedTurn {
         native,
@@ -147,12 +153,15 @@ pub(super) async fn drive(
         approvals,
     } = driver;
     let Turn {
-        commands, cleanup, ..
+        commands,
+        cleanup,
+        snapshot,
+        ..
     } = turn;
     let mut retained = Vec::new();
     let overflow = incoming.overflow();
     let mut watch_overflow = overflow.clone();
-    let outcome = tokio::select! {
+    let mut outcome = tokio::select! {
         biased;
         _ = async {
             if watch_overflow.wait_for(|failed| *failed).await.is_err() {
@@ -168,7 +177,46 @@ pub(super) async fn drive(
             outcome
         },
     };
+    // A completed native turn can no longer accept answers to its earlier permission requests.
+    // Optional telemetry retains admission, never the approval window.
     approvals.close().await;
+    let snapshot_cancelled = cancelled.clone();
+    // Keep the native turn's active slot while sampling: the next input/maintenance cannot
+    // overtake this reading. Maintenance never enters this driver and keeps its invalidation.
+    if !translator.context_received()
+        && let Some(selection) = snapshot
+        && outcome.as_ref().is_ok_and(|events| {
+            events.iter().any(|event| matches!(
+            &event.kind, PlannerEventKind::TurnCompleted { turn } if turn["status"] == "completed"
+        ))
+        })
+        && snapshot_admitted(&shared, &receipt, &cleanup, &cancelled)
+        && let Ok(registration) = shared.params.host.registration(&shared.params.provider)
+        && let Some((used, window)) = super::super::context_snapshot::read(
+            registration,
+            &shared.params.cwd,
+            &receipt.native_session_id,
+            &selection,
+            &mut cancelled,
+            &shared.params.host.context_queries,
+            || snapshot_admitted(&shared, &receipt, &cleanup, &snapshot_cancelled),
+        )
+        .await
+        && snapshot_admitted(&shared, &receipt, &cleanup, &cancelled)
+    {
+        outcome.as_mut().expect("known native outcome").insert(
+            0,
+            PlannerEvent {
+                thread_id: Some(receipt.thread_id.clone()),
+                kind: PlannerEventKind::TokenUsage {
+                    params: serde_json::json!({
+                        "turnId":receipt.turn_id,
+                        "tokenUsage":{"last":{"totalTokens":used},"modelContextWindow":window}
+                    }),
+                },
+            },
+        );
+    }
     let cleaned = if outcome.is_err() {
         // A lost terminal response may leave native work running. Evidence
         // belongs to this exact attachment, never to a sibling's cleanup.
@@ -178,6 +226,25 @@ pub(super) async fn drive(
     };
     drop(incoming);
     settle(&shared, &receipt, retained, outcome, &cleanup, cleaned).await
+}
+
+fn snapshot_admitted(
+    shared: &Shared,
+    receipt: &AcpSubmission,
+    cleanup: &CleanupWitness,
+    cancelled: &watch::Receiver<CancelRequest>,
+) -> bool {
+    let state = shared.state.lock().expect("ACP state");
+    !state.closed
+        && !cleanup.confirmed()
+        && matches!(*cancelled.borrow(), CancelRequest::Running)
+        && !shared.params.seals.is_sealed(&receipt.thread_id)
+        && state.active.as_ref().is_some_and(|active| {
+            active.turn == receipt.turn_id
+                && active.thread == receipt.thread_id
+                && active.native_session_id == receipt.native_session_id
+                && active.execution_id.is_none()
+        })
 }
 
 async fn settle(

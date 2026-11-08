@@ -23,6 +23,25 @@ import hashlib
 import socket
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
+# A statusLine invocation is a separate public CLI entry, not an ACP prompt.
+if any(arg.startswith('--conversation=') for arg in sys.argv):
+    assert os.isatty(0), 'interactive CLI input requires a terminal'
+    args = dict(arg[2:].split('=', 1) for arg in sys.argv if arg.startswith('--') and '=' in arg)
+    with (root / 'context-queries.jsonl').open('a') as output:
+        output.write(json.dumps({'native': args['conversation'], 'model': args['model'],
+                                 'effort': args.get('effort'), 'pid': os.getpid(),
+                                 'has_mcp_grant': 'NEIGE_MCP_TOKEN' in os.environ,
+                                 'auto_update_disabled': os.environ.get('AGY_CLI_DISABLE_AUTO_UPDATE') == 'true'}) + '\n')
+    if (root / 'context-silent').exists():
+        while True: time.sleep(1)
+    payload = json.loads((root / 'context-reading.json').read_text())
+    payload.update(conversation_id=args['conversation'], version=os.environ['ACP_FIXTURE_VERSION'],
+                   model={'id':args['model'], 'effort':args.get('effort')})
+    settings = json.loads(args['settings'])
+    subprocess.run(settings['statusLine']['command'], input=json.dumps(payload),
+                   text=True, shell=True, check=True)
+    while True:
+        time.sleep(1)
 # Opt-in cold-recovery observer: one append-only, credential-free stream. The
 # workspace is supplied by the case, never inferred from a native session ID.
 cold_workspace = root / 'cold-observer-workspace'

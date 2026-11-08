@@ -217,3 +217,262 @@ async fn canonical_antigravity_two_compacts_route_independent_results() {
     assert!(owned_closes(&root).is_empty());
     stack.shutdown().await;
 }
+
+async fn context_reading(stack: &Stack, card: &str, used: i64) -> Value {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let value = snapshot(stack, card).await;
+            if value["token_usage"]["used_tokens"] == used {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the current native context reading reaches the existing snapshot")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_context_snapshot_refreshes_ring_and_preserves_compact_invalidation() {
+    let root = Root::new("unused");
+    std::fs::write(
+        root.path().join("context-reading.json"),
+        json!({"context_window":{
+            "context_window_size":200_000,"used_percentage":25.0,"remaining_percentage":75.0,
+            "current_usage":{"input_tokens":999_999,"output_tokens":99}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({
+            "ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"
+        }),
+        "1.5.0",
+    )
+    .await;
+    let (_, card) = planner(&stack).await;
+    turn(&stack, &card, "context reading", 1).await;
+    let native = stack.runtime(&card).await.session_id.unwrap();
+    let before = context_reading(&stack, &card, 50_000).await;
+    assert_eq!(before["token_usage"]["used_tokens"], 50_000, "{before}");
+    assert_eq!(before["token_usage"]["context_window"], 200_000);
+    let (status, run) = stack
+        .send(
+            "GET",
+            &format!("/api/cards/{card}/planner/run?contract=conversation_v1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["token_usage"]["used_tokens"], 50_000);
+    assert!(
+        (run["token_usage"]["percent"].as_f64().unwrap()
+            - (50_000.0 - 12_000.0) / (200_000.0 - 12_000.0) * 100.0)
+            .abs()
+            < 1e-9
+    );
+    let query_count = std::fs::read_to_string(root.path().join("context-queries.jsonl"))
+        .unwrap()
+        .lines()
+        .count();
+    std::fs::write(root.path().join("scenario"), "shared-compact-success").unwrap();
+    assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
+    let after = completed(&stack, &card).await;
+    assert_eq!(after["context_usage_invalidated"], true, "{after}");
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("context-queries.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        query_count
+    );
+    // An unavailable post-compaction sample cannot clear the existing stale state or fail chat.
+    std::fs::write(
+        root.path().join("context-reading.json"),
+        json!({"context_window":{
+            "context_window_size":200_000,"used_percentage":200.0,"remaining_percentage":-100.0,
+            "current_usage":{"input_tokens":999_999}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    assert_eq!(
+        turn(&stack, &card, "sample unavailable", 2).await["status"],
+        "completed"
+    );
+    assert_eq!(
+        completed(&stack, &card).await["context_usage_invalidated"],
+        true
+    );
+    std::fs::write(
+        root.path().join("context-reading.json"),
+        json!({"context_window":{
+            "context_window_size":200_000,"used_percentage":10.0,"remaining_percentage":90.0,
+            "current_usage":{"input_tokens":999_999,"output_tokens":99}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    turn(&stack, &card, "after compact", 3).await;
+    let after = context_reading(&stack, &card, 20_000).await;
+    assert_eq!(after["token_usage"]["used_tokens"], 20_000, "{after}");
+    assert_eq!(after["context_usage_invalidated"], false);
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+    for query in std::fs::read_to_string(root.path().join("context-queries.jsonl"))
+        .unwrap()
+        .lines()
+    {
+        let query: Value = serde_json::from_str(query).unwrap();
+        assert_eq!(query["native"], native);
+        assert_eq!(query["model"], "fixture/model-a");
+        assert_eq!(query["effort"], "normal");
+        assert_eq!(query["has_mcp_grant"], false);
+        assert_eq!(query["auto_update_disabled"], true);
+    }
+    let queries_before_restart =
+        std::fs::read_to_string(root.path().join("context-queries.jsonl")).unwrap();
+    stack.shutdown().await;
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.0",
+    )
+    .await;
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("context-queries.jsonl")).unwrap(),
+        queries_before_restart,
+        "restart does not reissue a native prompt or context query"
+    );
+    assert_eq!(
+        turn(&stack, &card, "resume the original native conversation", 4).await["status"],
+        "completed"
+    );
+    assert_eq!(
+        stack.runtime(&card).await.session_id.as_deref(),
+        Some(native.as_str())
+    );
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_context_snapshot_defers_to_standard_usage_without_a_query() {
+    let root = Root::new("unused");
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.0",
+    )
+    .await;
+    let (_, card) = planner(&stack).await;
+    std::fs::write(root.path().join("scenario"), "usage").unwrap();
+    assert_eq!(
+        turn(&stack, &card, "native context", 1).await["status"],
+        "completed"
+    );
+    let reading = context_reading(&stack, &card, 24_100).await;
+    assert_eq!(reading["token_usage"]["used_tokens"], 24_100, "{reading}");
+    assert!(!root.path().join("context-queries.jsonl").exists());
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_context_snapshot_interrupt_does_not_cancel_a_known_native_result() {
+    let root = Root::new("unused");
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.0",
+    )
+    .await;
+    let (_, card) = planner(&stack).await;
+    std::fs::write(root.path().join("context-silent"), "").unwrap();
+    assert_eq!(
+        stack.post_input(&card, "native reply before query").await.0,
+        StatusCode::OK
+    );
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !root.path().join("context-queries.jsonl").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let native = stack.runtime(&card).await.session_id;
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    assert_eq!(
+        stack.wait_outcomes(&card, 1).await[0]["status"],
+        "completed"
+    );
+    assert_eq!(stack.runtime(&card).await.session_id, native);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn antigravity_context_snapshot_uses_confirmed_model_and_effort_after_switch() {
+    let root = Root::new("unused");
+    std::fs::write(
+        root.path().join("context-reading.json"),
+        json!({"context_window":{
+            "context_window_size":131_072,"used_percentage":25.0,"remaining_percentage":75.0,
+            "current_usage":{"input_tokens":1}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let stack = boot_as(
+        &root,
+        "antigravity",
+        json!({"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3"}),
+        "1.5.0",
+    )
+    .await;
+    let (_, card) = planner(&stack).await;
+    let (status, body) = stack
+        .send(
+            "PUT",
+            &format!("/api/cards/{card}/planner/model"),
+            Some(json!({"model":"fixture/model-b","reasoning_effort":"deep"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        turn(&stack, &card, "use confirmed selection", 1).await["status"],
+        "completed"
+    );
+    let snapshot = context_reading(&stack, &card, 32_768).await;
+    assert_eq!(
+        snapshot["token_usage"]["context_window"], 131_072,
+        "{snapshot}"
+    );
+    assert_eq!(snapshot["token_usage"]["used_tokens"], 32_768);
+    let queries: Vec<Value> = std::fs::read_to_string(root.path().join("context-queries.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(queries.last().unwrap()["model"], "fixture/model-b");
+    assert_eq!(queries.last().unwrap()["effort"], "deep");
+    stack.shutdown().await;
+}

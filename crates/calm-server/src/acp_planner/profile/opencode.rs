@@ -48,6 +48,7 @@ const FULL_PERMISSION: (&str, &str) = (
 );
 
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
+    context_snapshot: false,
     shared_server: false,
     usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: super::ContractCompaction {

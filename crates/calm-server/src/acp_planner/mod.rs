@@ -5,6 +5,7 @@ mod catalog;
 #[cfg(all(test, target_os = "linux"))]
 mod catalog_lifecycle_tests;
 pub mod config;
+mod context_snapshot;
 pub(crate) mod execution;
 pub(crate) mod lifecycle;
 mod process;
