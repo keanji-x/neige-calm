@@ -49,11 +49,12 @@ function elapsedText(ms: number): string {
 }
 
 /** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
-export function ThreadStatusNotice({ historical = false, heading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
+export function ThreadStatusNotice({ historical = false, heading, leading, children, clock, sending = false, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
   historical?: boolean;
   heading: ReactNode;
+  leading?: ReactNode;
   children?: ReactNode;
   clock: ConversationMetaClock;
   sending?: boolean;
@@ -82,7 +83,7 @@ export function ThreadStatusNotice({ historical = false, heading, children, cloc
   const showTime = timestamp !== null && (hovered || focused);
   const timeText = timestamp === null ? null
     : new Date(timestamp.atMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-  const title = <span className={styles.summary}><span className={styles.label}>{heading}</span>
+  const title = <span className={styles.summary}><span className={styles.heading}>{leading ? <span className={styles.leading}>{leading}</span> : null}<span className={styles.label}>{heading}</span></span>
     {showTime && timestamp !== null ? <span className={styles.clock}>· <time dateTime={new Date(timestamp.atMs).toISOString()}
       aria-label={`${timestamp.kind === 'paused' ? 'Paused' : 'Finished'} at ${timeText}`}>{timeText}</time></span>
       : clock.elapsedMs !== null && <span className={styles.clock} data-nc-meta-duration="">· {elapsedText(clock.elapsedMs)}</span>}

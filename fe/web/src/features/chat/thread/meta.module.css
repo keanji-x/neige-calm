@@ -17,6 +17,8 @@
   .state:focus-visible { outline: var(--rule-h) solid var(--accent); outline-offset: var(--space-half); border-radius: var(--radius-sm); }
   .normal { min-block-size: var(--control-h); display: flex; align-items: center; }
   .summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); max-inline-size: 100%; }
+  .heading { display: inline-flex; align-items: center; gap: calc(var(--space-1) + var(--space-half)); min-inline-size: 0; max-inline-size: 100%; }
+  .leading { display: inline-flex; align-items: center; justify-content: center; flex: none; inline-size: var(--type-metadata-line); block-size: var(--type-metadata-line); }
   .label { min-inline-size: 0; overflow-wrap: anywhere; font-size: var(--font-step-1-size); font-weight: var(--weight-normal); color: var(--text-3); }
   .warning .label { color: var(--warn-text); }
   .error .label { color: var(--error-text); }

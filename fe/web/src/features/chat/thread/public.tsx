@@ -153,9 +153,6 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
       // Enter immediately. Presentation must not delay edit state or the caret.
       editMessage(currentOutcome);
     } };
-  const currentMeta = <CurrentStatusNotice detailsExpanded={reading.expanded.get('current-status') ?? false}
-    onDetailsExpandedChange={expanded => reading.setExpanded('current-status', expanded)} outcome={currentResponseOutcome ?? currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} sending={sending} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
-    hasPendingInputs={hasPendingInputs} stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -187,7 +184,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     (activities) => activities.map(toolCallOf),
     (key) => groupUi.get(key) ?? untouchedGroupUi,
   );
-  /* Whether the end of the transcript already says "working", so the placeholder mark stays down: a run's *visible* rows count — the latest call when closed, every call when open. */
+  /* Whether visible transcript content already carries the live mark: the latest call when closed, every call when open. Otherwise the current status row carries it. */
   const tail = transcriptGroups[transcriptGroups.length - 1];
   const tailQuiet = tail?.body.quiet ?? null;
   const tailCarriesLiveMark = tail === undefined ? false
@@ -300,6 +297,11 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
 
   const empty = turns.length === 0 && noticeKind === null && !hasPendingMessages && heldInputs.length === 0;
 
+  const currentMeta = <CurrentStatusNotice detailsExpanded={reading.expanded.get('current-status') ?? false}
+    leading={live && !empty && !tailCarriesLiveMark ? <ActivityIndicator state="working" motion="thinking" /> : undefined}
+    onDetailsExpandedChange={expanded => reading.setExpanded('current-status', expanded)} outcome={currentResponseOutcome ?? currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} sending={sending} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
+    hasPendingInputs={hasPendingInputs} stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
+
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
   </div>;
@@ -325,11 +327,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
           if (activities !== null) return renderRun(activities, key, live && activities.at(-1) === lastTurn);
           return renderEntry(turn, key);
         })}
-        {/* A reply that has not arrived yet still gets a place to arrive in; the placeholder keeps the one mark visible unless the tail carries it. */}
-        {live && !empty && !tailCarriesLiveMark && (
-          <p className={styles.reply}><ActivityIndicator state="working" motion="thinking" /></p>
-        )}
-        {/* The drawer's one accessible "in motion" fact: every indicator is decorative. It sits after the placeholder because the stylesheet spaces `.thread`'s children by adjacency (`.exchange + *`). */}
+        {/* Decorative marks follow the visible activity or the current status row; this is the single spoken Working fact. */}
         {live && <VisuallyHidden>{activityLabelOf('working')}</VisuallyHidden>}
         {currentMeta}
         <div key="pending-messages" className={styles.pendingMessages}>
