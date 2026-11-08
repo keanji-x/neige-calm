@@ -66,7 +66,12 @@ impl Process {
         })?
         .map_err(|error| StartFailure::Failed(error.into()))?;
         keep_stderr(child.stderr(), stderr_log(host, worker));
-        let connection = Connection::new(
+        let connect = if profile.shared_server {
+            Connection::new_shared
+        } else {
+            Connection::new
+        };
+        let connection = connect(
             child
                 .stdout()
                 .ok_or_else(|| CalmError::Internal("ACP stdout missing".into()))?,
@@ -263,12 +268,24 @@ impl Commands {
             .get(session)
             .is_some_and(|names| names.iter().any(|name| name == command))
     }
+    pub(super) fn declared(&self, session: &str) -> bool {
+        self.0.lock().expect("ACP commands").contains_key(session)
+    }
+    pub(super) fn retain_sessions(&self, sessions: &std::collections::HashSet<&str>) {
+        self.0
+            .lock()
+            .expect("ACP commands")
+            .retain(|id, _| sessions.contains(id.as_str()));
+    }
     pub(super) fn observe_for(&self, session: &str, frame: &Incoming) {
         if let Incoming::Notification { params, .. } = frame
             && params["sessionId"].as_str() == Some(session)
         {
             self.observe(frame);
         }
+    }
+    pub(super) fn forget(&self, session: &str) {
+        self.0.lock().expect("ACP commands").remove(session);
     }
     pub(super) fn observe(&self, frame: &Incoming) {
         let Incoming::Notification { method, params } = frame else {

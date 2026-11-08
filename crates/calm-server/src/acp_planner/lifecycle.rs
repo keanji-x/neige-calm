@@ -40,6 +40,7 @@ pub(crate) async fn stop_session(
             std::time::Duration::from_secs(12),
         )
         .await?;
+    super::session::detach_worker(host, session).await?;
     // Registered settlement cannot prove absence of an unregistered pre-C4 process.
     if !host
         .pre_c4

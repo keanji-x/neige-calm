@@ -290,11 +290,6 @@ async fn canonical_acp_unsupported_load_and_registration_drift_refuse_without_ne
     unsupported_load_and_registration_drift_refuse_without_new(AgentProvider::OpenCode).await;
 }
 
-#[tokio::test]
-async fn canonical_antigravity_unsupported_load_and_registration_drift_refuse_without_new() {
-    unsupported_load_and_registration_drift_refuse_without_new(AgentProvider::Antigravity).await;
-}
-
 pub(super) async fn unsupported_load_and_registration_drift_refuse_without_new(
     provider: AgentProvider,
 ) {
