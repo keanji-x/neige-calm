@@ -1073,11 +1073,17 @@ impl SharedCodexAppServer {
         // the `_locked` chain by value and released only after the terminal Running/Failed write.
         // Thread resume runs after the serial is released (not a transition).
         let serial = Arc::clone(&self.transition_serial).lock_owned().await;
-        let paths = self.verify_backend_isolation().await?;
-        self.start_authentication_monitor();
-        self.rebuild_thread_cache_from_db().await?;
         #[cfg(not(target_os = "macos"))]
-        let serial = StartTransition::unconsumed(serial);
+        let serial = StartTransition::at_entry(self, serial).await;
+        let paths = self.verify_backend_isolation().await;
+        #[cfg(not(target_os = "macos"))]
+        let paths = serial.terminalize_error(self, paths).await;
+        let paths = paths?;
+        self.start_authentication_monitor();
+        let cache = self.rebuild_thread_cache_from_db().await;
+        #[cfg(not(target_os = "macos"))]
+        let cache = serial.terminalize_error(self, cache).await;
+        cache?;
         let _via = self.start_body_locked(serial, paths, false, None).await?;
         self.resume_cached_threads().await;
         Ok(())
@@ -2250,7 +2256,12 @@ impl SharedCodexAppServer {
     ) -> Result<ReplaceOutcome> {
         let _via = {
             let serial = Arc::clone(&self.transition_serial).lock_owned().await;
-            let paths = self.verify_backend_isolation().await?;
+            #[cfg(not(target_os = "macos"))]
+            let serial = StartTransition::at_entry(self, serial).await;
+            let paths = self.verify_backend_isolation().await;
+            #[cfg(not(target_os = "macos"))]
+            let paths = serial.terminalize_error(self, paths).await;
+            let paths = paths?;
             #[cfg(not(target_os = "macos"))]
             let record = {
                 let core = self.core.lock().await;
@@ -2258,7 +2269,8 @@ impl SharedCodexAppServer {
                     return Ok(ReplaceOutcome::PreconditionFailed);
                 }
                 drop(core);
-                self.read_admitted_daemon_record(&paths).await?
+                let record = self.read_admitted_daemon_record(&paths).await;
+                serial.terminalize_error(self, record).await?
             };
             let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
@@ -2291,7 +2303,7 @@ impl SharedCodexAppServer {
                 (parts, core.generation)
             };
             #[cfg(not(target_os = "macos"))]
-            let serial = StartTransition::after_source_consumed(serial);
+            let serial = serial.after_source_consumed();
             // Transition ENTRY: invalidate readiness NOW with the outgoing generation, else
             // claim-boundary consumers would accept a transitional daemon. Every arm re-publishes the
             // terminal value before the serial is released.
@@ -4269,9 +4281,12 @@ impl SharedCodexAppServer {
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
         let this = Arc::clone(self);
         async move {
-            let paths = this.verify_backend_isolation().await?;
             #[cfg(not(target_os = "macos"))]
-            let serial = StartTransition::unconsumed(serial);
+            let serial = StartTransition::at_entry(&this, serial).await;
+            let paths = this.verify_backend_isolation().await;
+            #[cfg(not(target_os = "macos"))]
+            let paths = serial.terminalize_error(&this, paths).await;
+            let paths = paths?;
             this.spawn_process_transition(
                 serial,
                 paths,
