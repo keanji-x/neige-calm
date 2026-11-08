@@ -64,7 +64,7 @@ impl Harness {
         .with_execution(executor.lifecycle.clone());
         let adapter =
             TerminalWorkerAdapter::new(db.clone(), CardRoleCache::new(), TrackAreaCache::new())
-                .with_log_directory(root.path().join("logs"));
+                .with_log_directory(root.path().join("logs/terminal-workers"));
         let runtime = OperationRuntime::new(
             ops.clone(),
             vec![Arc::new(adapter.clone())],

@@ -39,7 +39,7 @@ impl Harness {
             .await
             .unwrap(),
         );
-        AppState::from_parts(
+        AppState::from_parts_with_gate_logs_dir(
             self.db.clone(),
             events,
             Arc::new(DaemonClient::new_stub()),
@@ -47,6 +47,7 @@ impl Harness {
             Arc::new(CodexClient::new_stub()),
             Some(roles),
             Some(areas),
+            self.root.path().join("logs"),
         )
         .with_operation_runtime(runtime)
         .with_workspace_root(self.root.path().join("workspaces"))
