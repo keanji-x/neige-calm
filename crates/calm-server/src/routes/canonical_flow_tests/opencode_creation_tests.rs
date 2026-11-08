@@ -62,7 +62,7 @@ pub(super) fn configure(fixture: &mut Fixture) {
         "env":{"ACP_FIXTURE_ROOT":grok,"ACP_FIXTURE_IDENTITY":"meta","ACP_FIXTURE_VENDOR":"xai","ACP_FIXTURE_AUTH_METHODS":"cached_token","ACP_FIXTURE_VERSION":"1.0.62"},"min_agent_version":"1.0.0"},
         {"provider":"antigravity","command":"/usr/bin/python3",
         "args":["-u",concat!(env!("CARGO_MANIFEST_DIR"),"/tests/fixtures/acp_planner/agent.py")],
-        "env":{"ACP_FIXTURE_ROOT":antigravity,"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.0","ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"},"min_agent_version":"1.5.0"}
+        "env":{"HOME":antigravity,"ACP_FIXTURE_ROOT":antigravity,"ACP_FIXTURE_AGENT_NAME":"Antigravity ACP Server","ACP_FIXTURE_VERSION":"1.5.3","ACP_FIXTURE_CAPTURE_SHARED_TOKEN":"1"},"min_agent_version":"1.5.1"}
     ]}).to_string()).unwrap();
     fixture.acp_config = Some(config);
 }
