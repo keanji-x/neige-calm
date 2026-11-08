@@ -41,6 +41,10 @@ mod connection_recovery;
 mod crash_recovery;
 #[cfg(not(target_os = "macos"))]
 mod recovery_admission;
+#[cfg(not(target_os = "macos"))]
+use recovery_admission::StartTransition;
+#[cfg(target_os = "macos")]
+type StartTransition = tokio::sync::OwnedMutexGuard<()>;
 mod resume_replay;
 use resume_replay::{ConnectionReplay, ReplayPlan};
 #[cfg(test)]
@@ -1068,6 +1072,8 @@ impl SharedCodexAppServer {
         let paths = self.verify_backend_isolation().await?;
         self.start_authentication_monitor();
         self.rebuild_thread_cache_from_db().await?;
+        #[cfg(not(target_os = "macos"))]
+        let serial = StartTransition::unconsumed(serial);
         let _via = self.start_body_locked(serial, paths, false, None).await?;
         self.resume_cached_threads().await;
         Ok(())
@@ -2244,6 +2250,8 @@ impl SharedCodexAppServer {
                 };
                 (parts, core.generation)
             };
+            #[cfg(not(target_os = "macos"))]
+            let serial = StartTransition::after_source_consumed(serial);
             // Transition ENTRY: invalidate readiness NOW with the outgoing generation, else
             // claim-boundary consumers would accept a transitional daemon. Every arm re-publishes the
             // terminal value before the serial is released.
@@ -2287,99 +2295,6 @@ impl SharedCodexAppServer {
         Err(CalmError::CodexAppServer(
             "backend isolation is required for process effects".into(),
         ))
-    }
-
-    /// The ONE shared start body: phase admission → guard → record reconciliation → takeover
-    /// probe → spawn. The by-value `serial` token is dropped only after the terminal write; the
-    /// spawn path moves it into the detached transition task.
-    #[cfg(not(target_os = "macos"))]
-    async fn start_body_locked(
-        self: &Arc<Self>,
-        serial: tokio::sync::OwnedMutexGuard<()>,
-        paths: VerifiedRuntimePaths,
-        increment_restart_count: bool,
-        last_error: Option<String>,
-    ) -> Result<StartedVia> {
-        let record = self.read_admitted_daemon_record(&paths).await?;
-        // Boot guard: refuse before touching the process, and never strand a previously-live
-        // polluted daemon running unsupervised.
-        if let Err(guard_err) = SharedCodexHome::new(paths.paths().home.clone())
-            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
-        {
-            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
-            self.record_guard_refusal(&paths, &record, &msg).await;
-            return Err(CalmError::CodexAppServer(msg));
-        }
-        // A `failed` row with ANY identity column present is an unreconciled possible survivor;
-        // the spawn path is unreachable until the per-shape resolution proves absence.
-        let takeover_eligible = !matches!(
-            record.state,
-            SharedDaemonState::Idle | SharedDaemonState::Failed
-        ) && record.pid.is_some()
-            && record.pgid == record.pid
-            && record.process_start_time.is_some()
-            && record.boot_id.is_some()
-            && record.started_at.is_some()
-            && record.sock_path.is_some();
-        if persisted_identity_present(&record) && !takeover_eligible {
-            match self.resolve_persisted_shape(&paths, &record).await {
-                ShapeResolution::ProvenAbsent => {
-                    // Durable proof-of-absence transition: NULL the identity
-                    // columns so the row classifies SafeToRetry even if the
-                    // spawn below never completes.
-                    let proven_error = record
-                        .last_error
-                        .as_deref()
-                        .map(strip_unreconciled_prefix)
-                        .unwrap_or("unreconciled survivor proven absent")
-                        .to_string();
-                    self.persist_failed_deduped(
-                        &proven_error,
-                        FailureClass::Persistent,
-                        FailedIdentity::proven_absent(&paths.paths().socket, &paths.paths().home),
-                    )
-                    .await;
-                }
-                ShapeResolution::Unreconciled { needs_operator } => {
-                    let msg =
-                        unreconciled_message(self.backend_id.as_str(), &record, needs_operator);
-                    self.persist_failed_deduped(
-                        &msg,
-                        FailureClass::Unreconciled,
-                        FailedIdentity::retained(&record),
-                    )
-                    .await;
-                    self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
-                        .await;
-                    return Err(CalmError::CodexAppServer(msg));
-                }
-            }
-        }
-        // `try_takeover_live` skips Idle/Failed rows itself — a refused
-        // survivor is never adopted.
-        if self.try_takeover_live(&paths, &record).await? {
-            return Ok(StartedVia::Takeover);
-        }
-        // Running/Starting can lose their leader during takeover. They require the same
-        // durable reconciliation as Failed before a stale socket can be removed or reused.
-        #[cfg(target_os = "macos")]
-        if let ShapeResolution::Unreconciled { needs_operator } =
-            self.resolve_persisted_shape(&paths, &record).await
-        {
-            let message = unreconciled_message(self.backend_id.as_str(), &record, needs_operator);
-            self.persist_failed_deduped(
-                &message,
-                FailureClass::Unreconciled,
-                FailedIdentity::retained(&record),
-            )
-            .await;
-            self.fail_in_memory_and_arm_heal(message.clone(), FailureClass::Unreconciled)
-                .await;
-            return Err(CalmError::CodexAppServer(message));
-        }
-        self.spawn_process_transition(serial, paths, increment_restart_count, last_error)
-            .await?;
-        Ok(StartedVia::Spawn)
     }
 
     /// Boot-guard refusal arm (home pollution): a verified owned survivor is reaped; anything
@@ -2681,7 +2596,7 @@ impl SharedCodexAppServer {
     /// half-done transition. `tokio::spawn` is synchronous, so the task exists before the first await.
     async fn spawn_process_transition(
         self: &Arc<Self>,
-        serial: tokio::sync::OwnedMutexGuard<()>,
+        serial: StartTransition,
         paths: VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
@@ -2728,7 +2643,12 @@ impl SharedCodexAppServer {
                 .await
             }
             .await;
+            #[cfg(not(target_os = "macos"))]
+            let result = serial.terminalize_error(&this, result).await;
             // Release the serial BEFORE publishing the result so an observer never races a still-held serial.
+            #[cfg(not(target_os = "macos"))]
+            serial.release();
+            #[cfg(target_os = "macos")]
             drop(serial);
             // Send failure = the caller was cancelled after detachment;
             // deliberately ignored — the transition is already terminal.
@@ -4298,6 +4218,8 @@ impl SharedCodexAppServer {
         let this = Arc::clone(self);
         async move {
             let paths = this.verify_backend_isolation().await?;
+            #[cfg(not(target_os = "macos"))]
+            let serial = StartTransition::unconsumed(serial);
             this.spawn_process_transition(
                 serial,
                 paths,
