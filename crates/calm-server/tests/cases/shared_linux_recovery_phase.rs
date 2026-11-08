@@ -54,6 +54,9 @@ mod admission_errors;
 #[path = "shared_linux_recovery_phase/post_consumption.rs"]
 mod post_consumption;
 
+#[path = "shared_linux_recovery_phase/cold_start.rs"]
+mod cold_start;
+
 struct Fixture {
     // Drop captured children before deleting their files.
     exec: ExecWitness,

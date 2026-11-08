@@ -2,26 +2,31 @@
 use super::*;
 
 /// The serial and this invocation's memory-completion responsibility travel together.
-/// Only replacement entry may mint the consumed-source form; neither a later row nor
-/// a generation/state observation grants that responsibility or any process authority.
+/// Entry without Running, or consuming the installed source, owns failure completion.
+/// This responsibility grants no durable write, signal or endpoint authority.
 pub(super) struct StartTransition {
     serial: tokio::sync::OwnedMutexGuard<()>,
-    source_consumed: bool,
+    complete_failure: bool,
 }
 
 impl StartTransition {
-    pub(super) fn unconsumed(serial: tokio::sync::OwnedMutexGuard<()>) -> Self {
+    pub(super) async fn at_entry(
+        owner: &SharedCodexAppServer,
+        serial: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Self {
+        let complete_failure = !matches!(
+            owner.core.lock().await.state,
+            SupervisorState::Running { .. }
+        );
         Self {
             serial,
-            source_consumed: false,
+            complete_failure,
         }
     }
 
-    pub(super) fn after_source_consumed(serial: tokio::sync::OwnedMutexGuard<()>) -> Self {
-        Self {
-            serial,
-            source_consumed: true,
-        }
+    pub(super) fn after_source_consumed(mut self) -> Self {
+        self.complete_failure = true;
+        self
     }
 
     /// Finish an otherwise-unhandled error before releasing this transition's serial.
@@ -33,7 +38,7 @@ impl StartTransition {
         result: Result<T>,
     ) -> Result<T> {
         match result {
-            Err(error) if self.source_consumed => {
+            Err(error) if self.complete_failure => {
                 let already_failed = matches!(
                     owner.core.lock().await.state,
                     SupervisorState::Failed { .. }
