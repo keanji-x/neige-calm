@@ -53,7 +53,7 @@ it.each([[192, 20], [232, 32], [288, 16]])('separates status text and actions at
   const meta = screen.getByRole('status', { name: 'Current response status' });
   const label = screen.getByText('Interrupted', { exact: true });
   const check = () => {
-    const text = label.parentElement!.getBoundingClientRect();
+    const text = label.parentElement!.parentElement!.getBoundingClientRect();
     const actions = screen.getByRole('group', { name: 'Response actions' }).getBoundingClientRect();
     const overlapX = Math.min(text.right, actions.right) - Math.max(text.left, actions.left);
     const overlapY = Math.min(text.bottom, actions.bottom) - Math.max(text.top, actions.top);

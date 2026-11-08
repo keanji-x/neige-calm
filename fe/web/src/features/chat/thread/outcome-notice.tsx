@@ -17,7 +17,9 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, hasPendingInputs = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, sending = false, hasPendingInputs = false, statusUnconfirmed, statusLoading, stalled, stalledReason, recovery, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange, leading }: {
+  /** Decorative activity supplied by the transcript owner, which also suppresses duplicate marks. */
+  leading?: ReactNode;
   hasPendingInputs?: boolean;
   detailsExpanded?: boolean;
   onDetailsExpandedChange?: (expanded: boolean) => void;
@@ -82,7 +84,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, sending = fals
     clock = { elapsedMs: outcome.elapsedMs, timestamp: { kind: 'finished', atMs: outcome.atMs } };
     if (terminal !== 'completed') details = <OutcomeDetails outcome={outcome} canContinue={canContinue} />;
   } else return null;
-  return <ThreadStatusNotice detailsExpanded={detailsExpanded} onDetailsExpandedChange={onDetailsExpandedChange} heading={heading} sending={sending && heading !== 'Sending…'} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+  return <ThreadStatusNotice leading={leading} detailsExpanded={detailsExpanded} onDetailsExpandedChange={onDetailsExpandedChange} heading={heading} sending={sending && heading !== 'Sending…'} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
 }
 
 /** Imported outcomes remain at their historical position, with no execution actions. */
