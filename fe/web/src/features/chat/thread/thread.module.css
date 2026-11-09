@@ -406,7 +406,7 @@
   }
 
   /* Kernel observations are context for the exchange, not a third speaker.
-   * Their stable label stays in the reading flow and the native disclosure
+   * Their stable label stays in the reading flow and the disclosure
    * keeps the full observation reachable without turning it into a bubble. */
   .system {
     font-size: var(--font-step-1-size);
@@ -416,40 +416,28 @@
     color: var(--text-3);
   }
 
-  .systemSummary {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
+  .system [role='button'] {
     min-block-size: var(--control-h);
-    min-inline-size: 0;
-    cursor: pointer;
-    list-style: none;
-    text-align: start;
   }
 
-  .systemSummary::-webkit-details-marker {
+  /* The vendor's status slot always describes a tool execution. A system
+     observation gets its own icon through the public stats slot instead. */
+  .system [role='button'] > span:first-child {
     display: none;
   }
 
-  .systemDisclosure {
-    flex: none;
-    inline-size: 10px;
-    transform-origin: center;
+  .system [role='button'] > span:has(> [data-nc-system-icon]) {
+    order: -1;
   }
 
-  .system[open] > .systemSummary .systemDisclosure {
-    transform: rotate(90deg);
-  }
-
-  .systemLabel {
-    overflow: hidden;
-    min-inline-size: 0;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .system [data-nc-system-icon] {
+    display: inline-flex;
+    justify-content: center;
+    inline-size: var(--glyph);
   }
 
   .systemDetail {
-    margin: var(--space-2) 0 0;
+    margin: 0;
     overflow-wrap: anywhere;
     color: var(--text-3);
     text-align: start;

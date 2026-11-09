@@ -40,7 +40,7 @@ describe('tool groups alongside quiet syncs and turn outcomes', () => {
       { id: 'you', author: 'you', text: 'Continue', atMs: 4 },
       activity('after-1'), activity('after-2'),
     ]} />);
-    const groups = container.querySelectorAll<HTMLElement>('[aria-expanded]');
+    const groups = screen.getAllByRole('group', { name: '2 tool calls' });
     expect(groups).toHaveLength(2);
     expect(groups[0]?.textContent).toContain('before-2');
     expect(groups[1]?.textContent).toContain('after-2');
@@ -52,7 +52,7 @@ describe('tool groups alongside quiet syncs and turn outcomes', () => {
     fireEvent.click(fold.querySelector('summary')!);
     expect(fold.open).toBe(true);
     expect(quiet.checkVisibility()).toBe(true);
-    expect(fold.querySelector('[aria-expanded]')).toBeNull();
+    expect(fold.querySelector('[role="group"][aria-label="2 tool calls"]')).toBeNull();
     expect(container.querySelector('[data-nc-turn="outcome"]')).toBeNull();
   });
 
