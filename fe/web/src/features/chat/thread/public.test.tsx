@@ -149,11 +149,10 @@ describe('ChatThread', () => {
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[systemEntry()]} />,
     );
     const system = container.querySelector('[data-nc-turn="system"]');
-    const summary = system?.querySelector('button') as HTMLElement;
+    const summary = system?.querySelector('[role="button"]') as HTMLElement;
     expect(summary.closest('[title]')?.getAttribute('title'))
       .toBe('The report changed in the kernel.');
-    expect(summary.querySelector('[data-nc-system-label]')?.textContent?.trim())
-      .toBe('· Report edited ·');
+    expect(summary.textContent).toContain('Report edited');
     expect(summary.getAttribute('aria-expanded')).toBe('false');
     await user.click(summary);
     expect(summary.getAttribute('aria-expanded')).toBe('true');

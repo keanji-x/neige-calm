@@ -413,41 +413,31 @@
     font-weight: var(--weight-normal);
     line-height: var(--font-step-1-line);
     margin: 0;
-    margin-inline-start: calc(-1 * var(--space-1));
     color: var(--text-3);
   }
 
-  .system [class~='astryx-collapsible-trigger'] {
-    gap: var(--space-1);
-    inline-size: 100%;
+  .system [role='button'] {
     min-block-size: var(--control-h);
-    min-inline-size: 0;
-    padding: 0;
-    padding-inline-start: calc(var(--glyph-sm) + var(--space-3));
-    color: inherit;
-    font: inherit;
-    text-align: start;
   }
 
-  .system [class~='astryx-collapsible-trigger'] > [class~='astryx-icon'] {
-    margin-inline-start: auto;
+  /* The vendor's status slot always describes a tool execution. A system
+     observation gets its own icon through the public stats slot instead. */
+  .system [role='button'] > span:first-child {
+    display: none;
   }
 
-  .system [class~='astryx-collapsible-trigger'] > :has(> [data-nc-system-label]) {
-    min-inline-size: 0;
+  .system [role='button'] > span:has(> [data-nc-system-icon]) {
+    order: -1;
   }
 
-  .systemLabel {
-    display: block;
-    overflow: hidden;
-    min-inline-size: 0;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .system [data-nc-system-icon] {
+    display: inline-flex;
+    justify-content: center;
+    inline-size: var(--glyph);
   }
 
   .systemDetail {
-    margin: var(--space-2) 0 0;
-    margin-inline-start: calc(var(--glyph-sm) + var(--space-3));
+    margin: 0;
     overflow-wrap: anywhere;
     color: var(--text-3);
     text-align: start;

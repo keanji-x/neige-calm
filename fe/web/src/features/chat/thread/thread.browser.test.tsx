@@ -557,6 +557,26 @@ async function frame() {
 }
 
 describe('the structured system disclosure in a real engine', () => {
+  it('keeps system notices independent from neighboring tool calls and marks them as system notices', async () => {
+    const activity: ConversationActivity = { id: 'tool', author: 'activity', verb: 'Read', target: 'file', state: 'done', durationMs: null, detail: 'Tool result', tool: null, atMs: 0 };
+    const notices: ConversationSystemEntry[] = [
+      { id: 'usage', author: 'system', label: 'Planner context usage', text: 'Usage details', atMs: 1 },
+      { id: 'failed', author: 'system', label: 'Task failed', text: 'Failure details', atMs: 2 },
+    ];
+    render(<RailPane turns={[activity, { ...activity, id: 'tool-2', target: 'another file' }, ...notices]} />);
+    await frame();
+    expect(screen.getByRole('group', { name: '2 tool calls' })).toBeTruthy();
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-nc-turn="system"]')];
+    expect(rows).toHaveLength(2);
+    expect(rows.every(row => row.querySelector<HTMLElement>('[data-nc-system-icon]')?.checkVisibility())).toBe(true);
+    const first = screen.getByRole('button', { name: 'Planner context usage', expanded: false });
+    const second = screen.getByRole('button', { name: 'Task failed', expanded: false });
+    await userEvent.click(first);
+    expect(first.getAttribute('aria-expanded')).toBe('true');
+    expect(second.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByText('Usage details').checkVisibility()).toBe(true);
+  });
+
   it('keeps the disclosure arrow visible when the system label is long', async () => {
     const system: ConversationSystemEntry = {
       id: 'long-system', author: 'system', label: 'Long system update '.repeat(20), text: 'Details', atMs: 1,
@@ -564,12 +584,12 @@ describe('the structured system disclosure in a real engine', () => {
     render(<RailPane turns={[system]} />);
     await frame();
     const button = screen.getByRole('button', { name: /Long system update/ });
-    const icon = button.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    const icon = [...button.querySelectorAll<HTMLElement>('[data-size="xsm"]')].at(-1)!;
     expect(icon.getBoundingClientRect().right).toBeLessThanOrEqual(button.getBoundingClientRect().right);
     expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
   });
 
-  it('aligns with tool calls and springs open and closed', async () => {
+  it('aligns with tool calls and responds to press and expansion', async () => {
     const tool: ConversationActivity = { id: 'tool', author: 'activity', verb: 'Read', target: 'file', state: 'done', durationMs: null, detail: 'Tool result', tool: null, atMs: 0 };
     const system: ConversationSystemEntry = { id: 'system', author: 'system', label: 'Task failed', text: 'Failure details', atMs: 1 };
     render(<><DepthFeedback /><RailPane turns={[tool, system]} /></>);
@@ -578,21 +598,17 @@ describe('the structured system disclosure in a real engine', () => {
     const button = screen.getByRole('button', { name: /Task failed/, expanded: false });
     expect(Math.abs(button.getBoundingClientRect().left - toolRow.getBoundingClientRect().left)).toBeLessThan(1);
     const toolLabel = screen.getByText('Read', { exact: true });
-    const systemLabel = button.querySelector<HTMLElement>('[data-nc-system-label]')!;
+    const systemLabel = screen.getByText('Task failed', { exact: true });
     expect(Math.abs(systemLabel.getBoundingClientRect().left - toolLabel.getBoundingClientRect().left)).toBeLessThan(1);
     fireEvent.pointerDown(button, { pointerId: 1, isPrimary: true, button: 0 });
     expect(button.getAnimations().length).toBeGreaterThan(0);
     fireEvent.pointerUp(button, { pointerId: 1 });
     expect(button.getAnimations().length).toBeGreaterThan(0);
-    const motion = button.closest('[data-nc-turn="system"]')!.querySelector<HTMLElement>('[data-nc-size-motion]')!;
     fireEvent.click(button);
     expect(button.getAttribute('aria-expanded')).toBe('true');
-    expect(motion.getAnimations().length).toBeGreaterThan(0);
-    await frame();
-    await frame();
+    expect(screen.getByText('Failure details').checkVisibility()).toBe(true);
     fireEvent.click(button);
     expect(button.getAttribute('aria-expanded')).toBe('false');
-    expect(motion.getAnimations().length).toBeGreaterThan(0);
   });
 
   it('has a full control-height target and toggles from the keyboard', async () => {
@@ -605,14 +621,13 @@ describe('the structured system disclosure in a real engine', () => {
     await frame();
 
     const details = document.querySelector<HTMLElement>('[data-nc-turn="system"]')!;
-    const summary = details.querySelector<HTMLElement>('button')!;
-    const disclosure = summary.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    const summary = details.querySelector<HTMLElement>('[role="button"]')!;
     expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
 
     summary.focus();
     await userEvent.keyboard('{Enter}');
     expect(summary.getAttribute('aria-expanded')).toBe('true');
-    expect(disclosure.getAnimations().length).toBeGreaterThan(0);
+    expect(screen.getByText(system.text).checkVisibility()).toBe(true);
   });
 });
 
@@ -637,7 +652,7 @@ describe('a failed turn in a real engine', () => {
     const outcome = outcomes[0];
     expect(outcome.dataset['ncTurnOutcome']).toBe('failed');
     expect(screen.getByText('Failed', { exact: true }).checkVisibility()).toBe(true);
-    const disclosure = screen.getByRole('button', { name: 'Failed', expanded: false });
+    const disclosure = screen.getByRole('button', { name: /^Failed(?: ·|$)/, expanded: false });
     disclosure.focus();
     await userEvent.keyboard('{Enter}');
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');

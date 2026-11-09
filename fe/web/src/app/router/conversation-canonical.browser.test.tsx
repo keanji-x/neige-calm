@@ -85,7 +85,7 @@ it.each([false,true])('keeps the two canonical pending refs separate from one AC
     await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
     await expect.element(page.getByText('H1 running input',{exact:true})).toBeVisible();
     await expect.element(page.getByText('1 input is waiting for execution.',{exact:true})).toBeVisible();
-    await page.getByText('· System update ·',{exact:true}).click();
+    await page.getByText('System update',{exact:true}).click();
     await expect.element(page.getByText(text,{exact:true})).toBeVisible();
     const field=page.getByRole('combobox',{name:'Message'});
     await userEvent.type(field,text);
@@ -123,7 +123,7 @@ it('renders canonical System facts once through the existing disclosure and coun
       {kind:'human',message_id:'unloaded-human',revision:2,queue_position:1,queued_at_ms:21},
       {kind:'system',observation_id:'observation',queue_position:2,queued_at_ms:22}]});
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
-  await expect.element(page.getByText('· System update ·',{exact:true})).toBeVisible();
+  await expect.element(page.getByText('System update',{exact:true})).toBeVisible();
   await expect.element(page.getByText('3 inputs are waiting for execution.',{exact:true})).toBeVisible();
   expect(screen.queryByText('Waiting for execution',{exact:true})).toBeNull();
   expect(screen.queryByRole('status',{name:'Current response status'})).toBeNull();
@@ -133,7 +133,7 @@ it('renders canonical System facts once through the existing disclosure and coun
   expect(document.querySelectorAll('[data-nc-pending-entry]')).toHaveLength(0);
   expect(screen.queryByRole('button',{name:'Edit queued message'})).toBeNull();
   expect(screen.queryByRole('button',{name:'Delete this message'})).toBeNull();
-  await page.getByText('· System update ·',{exact:true}).click();
+  await page.getByText('System update',{exact:true}).click();
   await expect.element(page.getByText('A frozen system observation',{exact:true})).toBeVisible();
   const reads=f.requests.filter(request=>request.path.includes('/harness/items?')).length;
   await f.client.invalidateQueries({queryKey:['harness-items','daily-planner']});
@@ -155,7 +155,7 @@ it('does not infer a quiet reply batch from one canonical report observation',as
       params:JSON.stringify({item:{type:'agentMessage',text:'The response to the human request'}}),created_at_ms:124,turn_error_text:null}}}],
     {state:'idle',phase:'idle',blockedReason:null,terminalTimeout:null,pendingInputs:[]});
   await page.getByRole('button',{name:/Conversation Daily Planner conversation/}).click();
-  await expect.element(page.getByText('· Report edited ·',{exact:true})).toBeVisible();
+  await expect.element(page.getByText('Report edited',{exact:true})).toBeVisible();
   await expect.element(page.getByText('The response to the human request',{exact:true})).toBeVisible();
   expect(document.querySelector('[data-nc-turn="quiet-sync"]')).toBeNull();
   expect(document.querySelectorAll('[data-nc-turn="you"]')).toHaveLength(1);
