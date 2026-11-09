@@ -177,7 +177,7 @@ describe('chat reading intent across layout changes', () => {
     }]} />);
     await frames();
     const before = pane().scrollHeight;
-    await page.getByText('· Details ·', { exact: true }).click();
+    await page.getByRole('button', { name: 'Details', exact: true }).click();
     await frames();
     expect(pane().scrollHeight).toBeGreaterThan(before + 100);
     expect(remaining()).toBeLessThanOrEqual(1);
