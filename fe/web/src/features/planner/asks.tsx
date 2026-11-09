@@ -116,15 +116,17 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     <h3 className={styles.title}>{question.title}</h3>
     {question.detail !== undefined && <pre className={styles.detail} aria-label="Question details">{question.detail}</pre>}
     <div className={styles.questions} data-nc-ask-questions="">
-      {question.options.map((option, index) => <Button key={index} ref={index === 0 ? firstOption : undefined} label={option} variant="secondary"
-        className={`${styles.option} ${draft.choice === index && draft.own.trim() === '' ? styles.optionSelected : ''}`}
-        aria-pressed={draft.choice === index && draft.own.trim() === ''} isDisabled={busy}
-        onClick={() => { void advance(drafts.map((item, at) => at === page ? { choice: index, own: '' } : item)); }}>
-        <span className={styles.optionContent}>
-          <span className={styles.optionLabel}>{option}</span>
-          {draft.choice === index && draft.own.trim() === '' && <AstryxIcon icon="check" size="sm" color="accent" />}
-        </span>
-      </Button>)}
+      {question.options.length > 0 && <div className={styles.optionList} data-nc-ask-options="">
+        {question.options.map((option, index) => <Button key={index} ref={index === 0 ? firstOption : undefined} label={option} variant="secondary"
+          className={`${styles.option} ${draft.choice === index && draft.own.trim() === '' ? styles.optionSelected : ''}`}
+          aria-pressed={draft.choice === index && draft.own.trim() === ''} isDisabled={busy}
+          onClick={() => { void advance(drafts.map((item, at) => at === page ? { choice: index, own: '' } : item)); }}>
+          <span className={styles.optionContent}>
+            <span className={styles.optionLabel}>{option}</span>
+            {draft.choice === index && draft.own.trim() === '' && <AstryxIcon icon="check" size="sm" color="accent" />}
+          </span>
+        </Button>)}
+      </div>}
       {!takesOptionsOnly(ask) && <div className={styles.own} role="group" aria-label="Your answer">
         <TextInput ref={ownInput} label={question.title} isLabelHidden
           className={styles.answerInput} placeholder={question.options.length > 0 ? 'Or your own answer…' : 'Your answer…'} size="sm"

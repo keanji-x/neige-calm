@@ -1,5 +1,27 @@
 @layer features {
   .reportIntro { display: none; }
+  .subviewHeader {
+    display: flex;
+    align-items: center;
+    margin-block-end: var(--space-2);
+  }
+  .backToToday {
+    font: var(--type-ui);
+    letter-spacing: var(--type-ui-tracking);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding-block: var(--space-1);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-highlight);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+  .backToToday:hover,
+  .backToToday:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
   @media (width < 60rem) {
     .reportIntro { display: block; margin-block: 0 var(--space-6); }
     .reportIntro h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }

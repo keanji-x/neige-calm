@@ -94,6 +94,16 @@ function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrac
     getNextPageParam: (last) => last.next_cursor === null ? undefined : { cursor: last.next_cursor, through: last.through_event_id },
   });
   return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
+    {open && <div className={styles.subviewHeader}>
+      <button type="button" className={styles.backToToday} onClick={(event) => {
+        const details = event.currentTarget.closest('details');
+        if (details !== null) details.open = false;
+        setOpen(false);
+      }}>
+        <Icon name="arrow-left" size="sm" />
+        <span>Back to Today</span>
+      </button>
+    </div>}
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={readErrorText(changes.error, 'Report changes could not be loaded.')} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <EmptyState variant="compact" icon={<Icon name="file" />} title="No report changes recorded for visible Tracks on this day." description="这一天的报告更新会显示在这里。" />}

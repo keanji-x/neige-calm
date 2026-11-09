@@ -205,7 +205,7 @@ export function Sidebar({
             onClick={() => onGo({ name: 'today' })}
           >
             <span className={rowLayout('leading')}><span className={styles.brandMark} aria-hidden="true" /></span>
-            <span className={styles.brandText}>Today</span>
+            <span className={styles.brandText}>Neige</span>
           </button>
         )}
         {collapsed && (
@@ -238,7 +238,7 @@ export function Sidebar({
               aria-expanded="true"
               onClick={onToggleCollapsed}
             >
-              <Icon name="chevron-left" />
+              <Icon name="panel-left" />
             </button>
           </div>
         )}
@@ -354,6 +354,7 @@ export function Sidebar({
                 </button>
               )}
             />
+            {!collapsed && <span className={styles.userName} aria-hidden="true">{userLabel}</span>}
       </div>
 
       <DeleteConfirmDialog confirm={trackConfirm} copy={DELETE_TRACK_COPY} />

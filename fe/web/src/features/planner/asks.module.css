@@ -59,6 +59,16 @@
     min-inline-size: 0;
   }
 
+  .optionList {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    max-block-size: min(18dvh, 8.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   /* Buttons own activation, focus and pending state. These classes only arrange the option rows. */
   .option {
     font-weight: var(--weight-normal);

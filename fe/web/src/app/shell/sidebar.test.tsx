@@ -375,7 +375,7 @@ describe('collapse toggle', () => {
     const onGo = vi.fn();
     renderSidebar({ onGo });
     const today = screen.getByRole('button', { name: 'Go to Today' });
-    expect(today.textContent).toBe('Today');
+    expect(today.textContent).toBe('Neige');
     expect(today.querySelector('[aria-hidden="true"]')).toBeTruthy();
     await userEvent.click(today);
     expect(onGo).toHaveBeenCalledWith({ name: 'today' });

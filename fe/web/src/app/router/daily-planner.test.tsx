@@ -39,6 +39,8 @@ it('reads yesterday’s report changes and individual edits with the server snap
   await userEvent.click(screen.getByText('After', { exact: true }));
   await screen.findByRole('heading', { name: 'After release' });
   expect(requests.some((request) => request.path === '/api/today/report-edits?date=2026-10-03&track_id=project&through_event_id=42')).toBe(true);
+  await userEvent.click(screen.getByRole('button', { name: 'Back to Today' }));
+  expect((screen.getByText('Report changes').closest('details') as HTMLDetailsElement).open).toBe(false);
 });
 
 it('keeps report history failures distinct from no changes', async () => {

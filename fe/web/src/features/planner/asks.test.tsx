@@ -177,6 +177,35 @@ describe('PlannerAskDrawer', () => {
     finish();
     await screen.findByRole('heading', { name: 'Which branch?' });
   });
+  it('wraps multi-option choices in a bounded scrollable list and steps through 4 questions without unrolling all questions', async () => {
+    const FOUR_BY_SIX: OpenAsk = {
+      askId: 44,
+      delivery: 'wake',
+      questions: [
+        { title: 'Q1: Primary goal?', options: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'] },
+        { title: 'Q2: Target layer?', options: ['B1', 'B2', 'B3', 'B4', 'B5', 'B6'] },
+        { title: 'Q3: Verification scope?', options: ['C1', 'C2', 'C3', 'C4', 'C5', 'C6'] },
+        { title: 'Q4: Rollout mode?', options: ['D1', 'D2', 'D3', 'D4', 'D5', 'D6'] },
+      ],
+    };
+    const { container, onAnswer } = setup([FOUR_BY_SIX]);
+    expect(screen.getByText('1 / 4')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Q2: Target layer?' })).toBeNull();
+    const optionList = container.querySelector('[data-nc-ask-options]');
+    expect(optionList).toBeTruthy();
+    expect(optionList?.querySelectorAll('button')).toHaveLength(6);
+    await userEvent.click(screen.getByRole('button', { name: 'A5' }));
+    expect(screen.getByText('2 / 4')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'B4' }));
+    expect(screen.getByText('3 / 4')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'C6' }));
+    expect(screen.getByText('4 / 4')).toBeTruthy();
+    expect(onAnswer).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'D2' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(44, [
+      { option: 4 }, { option: 3 }, { option: 5 }, { option: 1 },
+    ]));
+  });
 });
 
 it('offers only the two explicit choices for a lifecycle question, with no ambiguous own-answer input', () => {

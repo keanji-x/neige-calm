@@ -566,8 +566,20 @@
     margin-block: auto calc(-1 * var(--account-bottom-gutter));
     display: flex;
     align-items: center;
+    gap: var(--space-2);
     padding-block: var(--space-2) var(--account-bottom-gutter);
     background: var(--surface-rail);
+  }
+
+  .userName {
+    font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-2);
+    pointer-events: none;
   }
 
   .menuWrap {
