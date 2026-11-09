@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Close regressions use authenticated HTTP and the actual native protocol peer.
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
@@ -634,7 +635,6 @@ async fn close_p1_missing_blank_or_foreign_thread_refuses_the_whole_close() {
     }
 }
 
-#[path = "close_p1/historical.rs"]
 mod historical;
 
 #[tokio::test]
@@ -732,5 +732,4 @@ async fn unaddressed_native_execution(after_completed: bool) {
     fixture.shutdown_process(&state).await;
 }
 
-#[path = "close_p1/installed_stop_tests.rs"]
 mod installed_stop_tests;
