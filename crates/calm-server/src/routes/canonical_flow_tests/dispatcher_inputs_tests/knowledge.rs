@@ -98,8 +98,7 @@ async fn finish(mut flow: Flow) {
 
 async fn next_timeout_diagnostics(flow: &Flow) -> String {
     let mut carrier = "unavailable".to_owned();
-    let mut cached_native_active = "unavailable".to_owned();
-    // Sample only after next has failed. Neither read grants another success chance.
+    // Sample only after next has failed. This read grants no other success chance.
     let status = match tokio::time::timeout(Duration::from_secs(1), async {
         let frame = crate::db::sqlite::conversation::runtime_frame_observation(
             flow.fixture.repo.pool(),
@@ -121,7 +120,9 @@ async fn next_timeout_diagnostics(flow: &Flow) -> String {
             InputDeliveryFact::Accepted { .. } => "accepted",
         });
         carrier = format!(
-            "phase={:?} pending={} attempts={} active_submissions={} head_envelope={:?} last_turn={:?} active_logical_turn={:?} active_native_turn={:?} active_delivery={delivery:?}",
+            "phase={:?} pending={} attempts={} active_submissions={} \
+             head_envelope={:?} last_turn={:?} active_logical_turn={:?} \
+             active_native_turn={:?} active_delivery={delivery:?}",
             frame.header.phase,
             inputs.pending.len(),
             inputs.attempts.len(),
@@ -131,12 +132,6 @@ async fn next_timeout_diagnostics(flow: &Flow) -> String {
             active.map(|active| active.logical_turn_id.as_str()),
             attempt.and_then(|attempt| attempt.correlation.native_turn_id.as_deref()),
         );
-        let daemon = flow.state.shared_codex_appserver.clone();
-        // Bound even the synchronous cache lock without blocking the async timer.
-        let native = tokio::task::spawn_blocking(move || daemon.active_turn_id_for_thread(THREAD))
-            .await
-            .ok()?;
-        cached_native_active = format!("{native:?}");
         Some(())
     })
     .await
@@ -145,7 +140,7 @@ async fn next_timeout_diagnostics(flow: &Flow) -> String {
         Ok(None) => "unavailable(read_error)",
         Err(_) => "unavailable(timeout_1s)",
     };
-    format!("diagnostics={status} carrier=({carrier}) cached_native_active={cached_native_active}")
+    format!("diagnostics={status} carrier=({carrier})")
 }
 
 #[tokio::test]
