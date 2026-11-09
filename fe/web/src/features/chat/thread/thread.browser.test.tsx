@@ -1748,8 +1748,8 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 });
 
-/* Astryx's `Markdown` blocks take family, size and leading from its own variables; `.reply` overrides the three, and an upstream rename would disconnect it silently. */
-describe('the reply’s type, through Astryx’s markdown', () => {
+/* Check the rendered Markdown blocks rather than only the outer reply container. */
+describe('the reply’s type, through shared markdown', () => {
   const MARKDOWN_REPLY: ConversationTurn[] = [
     { id: 'you-0', author: 'you', text: 'Ask', atMs: 0 },
     {
@@ -1760,7 +1760,7 @@ describe('the reply’s type, through Astryx’s markdown', () => {
     },
   ];
 
-  /** The block Astryx painted the words into — never `.reply` itself, which carries the plain declarations and would make the case vacuous. */
+  /** The block containing the words, not `.reply` itself. */
   /* Two functions rather than one taking a selector: `architecture/no-class-dom-query` requires every runtime query to be a static string. */
   function paintedParagraph(): HTMLElement {
     const found = replies()[0].querySelector<HTMLElement>('[role="paragraph"], p');
@@ -2012,4 +2012,20 @@ it('renders three distinct command icons and runs compact by keyboard', async ()
   await userEvent.keyboard('{Enter}');
   expect(compact).toHaveBeenCalledOnce();
   expect(send).not.toHaveBeenCalled();
+});
+
+
+it('keeps mobile reply paragraphs spaced and native list markers indented', async () => {
+  await page.viewport(390, 900);
+  render(<RailPane turns={[{ id: 'mobile-lists', author: 'agent', atMs: 0,
+    text: 'First paragraph.\n\nSecond paragraph.\n\n- Bullet\n  - Nested bullet\n\n1. Numbered',
+  }]} />);
+  const reply = replies()[0];
+  const paragraphs = reply.querySelectorAll('p');
+  expect(getComputedStyle(paragraphs[0]).marginBlockStart).toBe('0px');
+  expect(getComputedStyle(paragraphs[1]).marginBlockStart).toBe('12px');
+  for (const list of reply.querySelectorAll('ul, ol')) {
+    expect(getComputedStyle(list).paddingInlineStart).toBe('24px');
+    expect(list.firstElementChild!.getBoundingClientRect().left - list.getBoundingClientRect().left).toBeGreaterThanOrEqual(24);
+  }
 });

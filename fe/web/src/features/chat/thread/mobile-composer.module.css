@@ -26,10 +26,9 @@
     .transcript > .userTurn + [data-nc-entry] { margin-block-start: var(--space-5); }
     .reply.reply { font-family: var(--font-serif); font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); --font-family-body: var(--type-reading-family); --font-family-heading: var(--type-reading-family); --text-body-size: var(--type-reading-size); --text-body-leading: var(--type-reading-leading); }
     .reply.reply :is(p, li, [role='paragraph']) { font-family: inherit; font-size: inherit !important; line-height: inherit !important; }
-    .reply.reply div:has(> :is(ul, ol)) { margin-inline: 0 !important; }
-    .reply.reply :is(ul, ol) { gap: 0 !important; margin-inline: 0 !important; padding-inline: 0 !important; }
-    .reply.reply > div > [role='paragraph'], .reply.reply > div > div:has(> :is(ul, ol)) { margin-block: var(--space-3) 0 !important; }
-    .reply.reply > div > :first-child { margin-block-start: 0 !important; }
+    .reply.reply :is(ul, ol) { gap: 0 !important; margin-inline: 0 !important; padding-inline-end: 0 !important; }
+    .reply.reply > :is(p, ul, ol) { margin-block: var(--space-3) 0 !important; }
+    .reply.reply > :first-child { margin-block-start: 0 !important; }
     .reply.reply li { font-weight: var(--weight-normal) !important; padding: 0 !important; min-block-size: 0 !important; }
     .reply.reply ol > li { gap: var(--space-1) !important; }
     .reply.reply li > span { font-weight: inherit !important; font-size: inherit !important; line-height: inherit !important; }

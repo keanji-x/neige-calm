@@ -503,6 +503,9 @@ describe('dragged conversation width', () => {
       const own = sidewaysScroller(element);
       expect(own, name).not.toBeNull();
       expect(own!.scrollWidth, name).toBeGreaterThan(own!.clientWidth);
+      own!.scrollLeft = 20;
+      expect(own!.scrollLeft, name).toBe(20);
+      expect(scroller().scrollLeft).toBe(0);
     }
   }
 

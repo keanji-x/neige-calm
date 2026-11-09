@@ -1,0 +1,5 @@
+@layer ui {
+  .table { overflow-wrap: break-word; word-break: normal; }
+  .display { max-inline-size: 100%; overflow-x: auto; overflow-y: hidden; }
+  .invalid { max-inline-size: 100%; overflow-x: auto; white-space: pre-wrap; }
+}

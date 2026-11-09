@@ -1,6 +1,9 @@
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
+import { mathFromMarkdown } from 'mdast-util-math';
+import { math } from 'micromark-extension-math';
+import { decodeNamedCharacterReference } from 'decode-named-character-reference';
 
 export type MarkdownDepth = 1 | 2 | 3 | 4 | 5 | 6;
 export type MarkdownPosition = Readonly<{
@@ -11,6 +14,8 @@ type Positioned<T> = Readonly<T & { position: MarkdownPosition }>;
 
 export type NormalizedText = Positioned<{ type: 'text'; value: string }>;
 export type NormalizedInlineCode = Positioned<{ type: 'inlineCode'; value: string }>;
+export type NormalizedInlineMath = Positioned<{ type: 'inlineMath'; value: string }>;
+export type NormalizedMath = Positioned<{ type: 'math'; value: string }>;
 export type NormalizedImage = Positioned<{
   type: 'image'; alt: string; destination: string; title: string | null; referenceSource?: string;
 }>;
@@ -29,6 +34,7 @@ export type NormalizedHtml = Positioned<{ type: 'html'; value: string }>;
 export type NormalizedInline =
   | NormalizedText
   | NormalizedInlineCode
+  | NormalizedInlineMath
   | NormalizedImage
   | NormalizedLink
   | NormalizedDelete
@@ -70,6 +76,7 @@ export type NormalizedBlock =
   | NormalizedHeading
   | NormalizedParagraph
   | NormalizedCode
+  | NormalizedMath
   | NormalizedBlockquote
   | NormalizedList
   | NormalizedHtml
@@ -142,10 +149,11 @@ export const fileViewerHeadingIdPolicy: HeadingIdPolicy<undefined> = Object.free
   createId: ({ globalOrdinal }) => `md-h-${globalOrdinal}`,
 });
 
-export type SanitizeAstPolicy = Readonly<{ rawHtml: 'drop' }>;
+export type SanitizeAstPolicy = Readonly<{ rawHtml: 'drop' | 'literal' }>;
 export type SafeInline =
   | NormalizedText
   | NormalizedInlineCode
+  | NormalizedInlineMath
   | NormalizedImage
   | NormalizedBreak
   | Positioned<{
@@ -156,6 +164,7 @@ export type SafeBlock =
   | Positioned<{ type: 'heading'; depth: MarkdownDepth; children: readonly SafeInline[] }>
   | Positioned<{ type: 'paragraph'; children: readonly SafeInline[] }>
   | NormalizedCode
+  | NormalizedMath
   | Positioned<{ type: 'blockquote'; children: readonly SafeBlock[] }>
   | Positioned<{
     type: 'list'; ordered: boolean; start: number | null; spread: boolean;
@@ -219,6 +228,7 @@ function normalizeInline(node: MdNode, definitions: ReadonlyMap<string, Definiti
   switch (node.type) {
     case 'text': return { type: 'text', value: node.value ?? '', position: positionOf(node) };
     case 'inlineCode': return { type: 'inlineCode', value: node.value ?? '', position: positionOf(node) };
+    case 'inlineMath': return { type: 'inlineMath', value: node.value ?? '', position: positionOf(node) };
     case 'image': return { type: 'image', alt: node.alt ?? '', destination: node.url ?? '', title: node.title ?? null, position: positionOf(node) };
     case 'link': return { type: 'link', destination: node.url ?? '', title: node.title ?? null, children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'linkReference': {
@@ -269,6 +279,7 @@ function normalizeBlock(node: MdNode, definitions: ReadonlyMap<string, Definitio
       return { type: 'heading', depth: node.depth as MarkdownDepth, children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'paragraph': return { type: 'paragraph', children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'code': return { type: 'code', language: node.lang ?? null, meta: node.meta ?? null, value: node.value ?? '', position: positionOf(node) };
+    case 'math': return { type: 'math', value: node.value ?? '', position: positionOf(node) };
     case 'blockquote': return { type: 'blockquote', children: normalizeBlocks(node.children, definitions), position: positionOf(node) };
     case 'list': return {
       type: 'list', ordered: node.ordered ?? false, start: node.start ?? null, spread: node.spread ?? false,
@@ -426,6 +437,119 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
   return null;
 }
 
+function isInvalidInlineMath(source: string, start: number, end: number, boundaries: readonly (readonly [number, number])[] = []): boolean {
+  const raw = source.slice(start, end);
+  return raw.startsWith('$') && !raw.startsWith('$$') && (
+    /\s/.test(raw[1] ?? '') || /\s/.test(raw[raw.length - 2] ?? '')
+    || /\d/.test(source[start - 1] ?? '') || /\d/.test(source[end] ?? '') || raw.includes('\n')
+    || boundaries.some(([bStart, bEnd]) => (start < bStart && end > bStart) || (start < bEnd && end > bEnd))
+  );
+}
+
+function mathExtension(source: string, boundaries: readonly (readonly [number, number])[]) {
+  const extension = math();
+  const base = extension.text?.[36];
+  if (base !== undefined && 'tokenize' in base) {
+    extension.text = { ...extension.text, 36: {
+      ...base,
+      tokenize(effects, ok, nok) {
+        const startOffset = this.now().offset;
+        return base.tokenize.call(this, effects, code => (
+          isInvalidInlineMath(source, startOffset, this.now().offset, boundaries) ? nok(code) : ok(code)
+        ), nok);
+      },
+    } };
+  }
+  return extension;
+}
+
+function disambiguateSegment(source: string, mask: string | undefined, boundaries: readonly (readonly [number, number])[]): MdNode {
+  let input = source;
+  let root: MdNode;
+  for (let attempt = 0; ; attempt += 1) {
+    const options = { extensions: [gfm(), mathExtension(input, boundaries)], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] };
+    root = fromMarkdown(input, options) as MdNode;
+    const invalid: number[] = [];
+    const visit = (node: MdNode, inReference = false): void => {
+      if (node.type === 'inlineMath' && node.position?.start.offset !== undefined && node.position.end.offset !== undefined) {
+        const start = node.position.start.offset;
+        const end = node.position.end.offset;
+        if (isInvalidInlineMath(source, start, end) && !inReference) {
+          // A dollar immediately before a number belongs to currency; mask that delimiter
+          // first so a preceding reference label keeps matching its definition.
+          invalid.push(/\d/.test(source[end] ?? '') ? end - 1 : start);
+        }
+      }
+      for (const child of node.children ?? []) visit(child, inReference || node.type === 'linkReference' || node.type === 'imageReference');
+    };
+    visit(root);
+    if (invalid.length === 0 || mask === undefined || attempt === 8) break;
+    const position = invalid[0];
+    input = `${input.slice(0, position)}${mask}${input.slice(position + 1)}`;
+  }
+  return root;
+}
+
+/** Reject currency-like dollar pairs without changing source offsets used by report anchors. */
+function mathRoot(source: string): MdNode {
+  const options = { extensions: [gfm(), math()], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] };
+  if (!source.includes('$')) return fromMarkdown(source, options) as MdNode;
+  // Currency symbols have the same Unicode punctuation class as '$'; pick one absent from the input.
+  const references = new Set([...source.matchAll(/&(#x[\da-f]+|#\d+|[a-z][\da-z]+);/gi)].flatMap(([, reference]) => {
+    if (reference.startsWith('#')) {
+      const hex = reference[1]?.toLowerCase() === 'x';
+      const value = Number.parseInt(reference.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return Number.isFinite(value) && value > 0 && value <= 0x10ffff ? [String.fromCodePoint(value)] : [];
+    }
+    const decoded = decodeNamedCharacterReference(reference);
+    return decoded === false ? [] : [decoded];
+  }));
+  const mask = Array.from('£¥€₩₹₽₺₴₦₱₫₭₲₵₸₼₾₿').find(symbol => !source.includes(symbol) && !references.has(symbol));
+  const boundaries: [number, number][] = [];
+  if (source.includes('[')) {
+    // Resolve GFM boundaries on the original source so math cannot consume across them.
+    const gfmRoot = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as MdNode;
+    const visit = (node: MdNode): void => {
+      for (const child of node.children ?? []) visit(child);
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (start === undefined || end === undefined) return;
+      if (node.type === 'definition' || node.type === 'linkReference' || node.type === 'imageReference'
+        || node.type === 'link' || node.type === 'image') {
+        boundaries.push([start, end]);
+        const firstChildStart = node.children?.[0]?.position?.start.offset;
+        const lastChildEnd = node.children?.at(-1)?.position?.end.offset;
+        if (firstChildStart !== undefined && lastChildEnd !== undefined) boundaries.push([firstChildStart, lastChildEnd]);
+        if (node.referenceType === 'full' && node.label != null) {
+          const openBracket = end - node.label.length - 2;
+          boundaries.push([start, openBracket]);
+        }
+      }
+    };
+    visit(gfmRoot);
+  }
+  const root = disambiguateSegment(source, mask, boundaries);
+  const restore = (node: MdNode): MdNode => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (node.type === 'paragraph' && node.children?.length === 1 && node.children[0]?.type === 'inlineMath'
+      && start !== undefined && end !== undefined && /^\$\$(?!\$)[^\n]+\$\$[\t ]*$/.test(source.slice(start, end))) {
+      const value = node.children[0].value;
+      return { ...node, type: 'math', value: value === undefined || mask === undefined ? value : value.replaceAll(mask, '$'), children: undefined };
+    }
+    // If masking exhausted its budget, preserve unrecognized dollar pairs as literal text.
+    if (node.type === 'inlineMath' && start !== undefined && end !== undefined) {
+      const raw = source.slice(start, end);
+      if (isInvalidInlineMath(source, start, end)) return { ...node, type: 'text', value: raw };
+    }
+    const unmask = (value: string | null | undefined) => value === undefined || value === null || mask === undefined
+      ? value : value.replaceAll(mask, '$');
+    return { ...node, value: unmask(node.value) ?? undefined, alt: unmask(node.alt), url: unmask(node.url) ?? undefined,
+      title: unmask(node.title), identifier: unmask(node.identifier) ?? undefined, label: unmask(node.label), children: node.children?.map(restore) };
+  };
+  return restore(root);
+}
+
 export function parse(markdown: string): MarkdownParseResult {
   const limitDiagnostic = inputLimitDiagnostic(markdown);
   if (limitDiagnostic !== null) {
@@ -435,7 +559,7 @@ export function parse(markdown: string): MarkdownParseResult {
     };
   }
   try {
-    const root = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as MdNode;
+    const root = mathRoot(markdown);
     const definitions = new Map<string, Definition>();
     const collectDefinitions = (node: MdNode): void => {
       if (node.type === 'definition' && node.identifier !== undefined) {
@@ -464,7 +588,7 @@ export function parse(markdown: string): MarkdownParseResult {
 
 function inlineText(nodes: readonly NormalizedInline[], referenceText: 'visible' | 'source'): string {
   return nodes.map((node) => {
-    if (node.type === 'text' || node.type === 'inlineCode') return node.value;
+    if (node.type === 'text' || node.type === 'inlineCode' || node.type === 'inlineMath') return node.value;
     if (node.type === 'image') return referenceText === 'source' && node.referenceSource !== undefined
       ? node.referenceSource : node.alt;
     if (node.type === 'break') return ' ';
@@ -482,7 +606,7 @@ export function markdownExcerpt(markdown: string, readMarkdown: typeof parse = p
   if (parsed.status === 'failed') return '';
   const text = (nodes: readonly NormalizedBlock[]): string[] => nodes.flatMap(node => {
     if (node.type === 'paragraph') return [inlineText(node.children, 'visible')];
-    if (node.type === 'code') return [node.value];
+    if (node.type === 'code' || node.type === 'math') return [node.value];
     if (node.type === 'blockquote') return text(node.children);
     if (node.type === 'list') return node.children.flatMap(item => text(item.children));
     if (node.type === 'table') return node.children.flatMap(row => row.children.map(cell => inlineText(cell.children, 'visible')));
@@ -524,36 +648,38 @@ export function extractOutline<Context>(
   return outline;
 }
 
-function sanitizeInline(node: NormalizedInline): SafeInline | null {
-  if (node.type === 'html') return null;
+function sanitizeInline(node: NormalizedInline, policy: SanitizeAstPolicy): SafeInline | null {
+  if (node.type === 'html') return policy.rawHtml === 'drop' ? null : { type: 'text', value: node.value, position: node.position };
   if (node.type === 'link' || node.type === 'delete' || node.type === 'emphasis' || node.type === 'strong') {
     return { ...node, children: node.children.flatMap((child) => {
-      const safe = sanitizeInline(child);
+      const safe = sanitizeInline(child, policy);
       return safe === null ? [] : [safe];
     }) };
   }
   return node;
 }
 
-function sanitizeBlock(node: NormalizedBlock): SafeBlock | null {
-  if (node.type === 'html') return null;
+function sanitizeBlock(node: NormalizedBlock, policy: SanitizeAstPolicy): SafeBlock | null {
+  if (node.type === 'html') return policy.rawHtml === 'drop' ? null : {
+    type: 'paragraph', position: node.position, children: [{ type: 'text', value: node.value, position: node.position }],
+  };
   if (node.type === 'blockquote') {
     return { ...node, children: node.children.flatMap((child) => {
-      const safe = sanitizeBlock(child);
+      const safe = sanitizeBlock(child, policy);
       return safe === null ? [] : [safe];
     }) };
   }
   if (node.type === 'list') return {
     ...node,
     children: node.children.map((item) => ({ ...item, children: item.children.flatMap((child) => {
-      const safe = sanitizeBlock(child);
+      const safe = sanitizeBlock(child, policy);
       return safe === null ? [] : [safe];
     }) })),
   };
   if (node.type === 'heading' || node.type === 'paragraph') return {
     ...node,
     children: node.children.flatMap((child) => {
-      const safe = sanitizeInline(child);
+      const safe = sanitizeInline(child, policy);
       return safe === null ? [] : [safe];
     }),
   };
@@ -562,7 +688,7 @@ function sanitizeBlock(node: NormalizedBlock): SafeBlock | null {
     children: node.children.map((row) => ({ ...row, children: row.children.map((cell) => ({
       ...cell,
       children: cell.children.flatMap((child) => {
-        const safe = sanitizeInline(child);
+        const safe = sanitizeInline(child, policy);
         return safe === null ? [] : [safe];
       }),
     })) })),
@@ -572,12 +698,11 @@ function sanitizeBlock(node: NormalizedBlock): SafeBlock | null {
 
 /** This AST policy removes raw HTML nodes; it is not an HTML renderer allowlist. */
 export function sanitizeAstPolicy(ast: NormalizedMarkdownAst, policy: SanitizeAstPolicy): SafeMarkdownAst {
-  void policy;
   return {
     ...ast,
     sourceLines: ast.sourceLines,
     children: ast.children.flatMap((node) => {
-      const safe = sanitizeBlock(node);
+      const safe = sanitizeBlock(node, policy);
       return safe === null ? [] : [safe];
     }),
   };

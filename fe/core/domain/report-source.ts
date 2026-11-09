@@ -75,6 +75,7 @@ function inlineLabel(nodes: readonly SafeInline[]): string {
     switch (node.type) {
       case 'text':
       case 'inlineCode':
+      case 'inlineMath':
         return node.value;
       case 'image':
         return node.alt;

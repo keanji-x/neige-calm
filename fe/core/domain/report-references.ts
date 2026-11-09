@@ -36,7 +36,7 @@ export function reportReferenceRepository(markdown: readonly string[], readMarkd
         case 'blockquote': blocks(node.children); break;
         case 'list': for (const item of node.children) blocks(item.children); break;
         case 'table': for (const row of node.children) for (const cell of row.children) inlines(cell.children); break;
-        case 'code': case 'thematicBreak': break;
+        case 'code': case 'math': case 'thematicBreak': break;
       }
     }
   };

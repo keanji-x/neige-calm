@@ -1,5 +1,6 @@
 @import "@astryxdesign/core/astryx.css" layer(astryx);
 @import "@xterm/xterm/css/xterm.css" layer(vendor);
+@import "katex/dist/katex.min.css" layer(vendor);
 @import "react-grid-layout/css/styles.css" layer(vendor);
 @import "react-resizable/css/styles.css" layer(vendor);
 

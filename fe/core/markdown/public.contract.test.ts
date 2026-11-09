@@ -31,7 +31,7 @@ describe('core/markdown public contract', () => {
     expectTypeOf<NormalizedMarkdownAst['dialect']>().toEqualTypeOf<'gfm'>();
     expectTypeOf<NormalizedMarkdownAst['sourceLines']>().toEqualTypeOf<readonly string[]>();
     expectTypeOf<NormalizedMarkdownAst['children'][number]['type']>().toEqualTypeOf<
-      'heading' | 'paragraph' | 'code' | 'blockquote' | 'list' | 'html' | 'table' | 'thematicBreak'
+      'heading' | 'paragraph' | 'code' | 'math' | 'blockquote' | 'list' | 'html' | 'table' | 'thematicBreak'
     >();
     expectTypeOf<HeadingIdPolicy<unknown>['version']>().toEqualTypeOf<1>();
     expectTypeOf<TextPolicy>().toEqualTypeOf<'heading-label' | 'non-empty-heading-label'>();
@@ -182,4 +182,70 @@ describe('core/markdown public contract', () => {
     expect(serialized).not.toContain('"type":"html"');
     expect(serialized).not.toContain('<span>');
   });
+});
+
+
+it.each(['  ', '\t', ' \t '])('promotes standalone display math with trailing whitespace %j and preserves source positions', (suffix) => {
+  const source = `$$x^2$$${suffix}`;
+  expect(ready(source).children).toEqual([{
+    type: 'math', value: 'x^2',
+    position: { start: { line: 1, column: 1, offset: 0 }, end: { offset: source.length } },
+  }]);
+});
+
+it.each([
+  '[item $5] costs $10\n\n[item $5]: /url',
+  '[item $5]: /url "$10"\n\nSee [item $5]',
+  '[shown][item $5] costs $10\n\n[item $5]: /url',
+  '![item $5] costs $10\n\n[item $5]: /url',
+])('restores currency in reference identifiers and labels: %s', (source) => {
+  const block = ready(source).children[0];
+  expect(block?.type).toBe('paragraph');
+  if (block?.type !== 'paragraph') throw new Error('expected paragraph');
+  const reference = block.children.find(node => node.type === 'link' || node.type === 'image');
+  expect(reference).toMatchObject({ destination: '/url' });
+  expect(JSON.stringify(block)).not.toContain('£');
+});
+
+
+it.each([
+  ['[item $5] with', 'link', 1],
+  ['[item $5] costs $10 and', 'link', 1],
+  ['![item $5] costs $10 and', 'image', 1],
+  ['[shown][item $5] with', 'link', 1],
+  ['[item $5][] with', 'link', 1],
+  ['[item $5] with', 'link', 2],
+] as const)('resolves currency references beside real math: %s (%s, %i)', (prefix, type, count) => {
+  for (const formula of ['$x$', '$$\nx\n$$']) {
+    const source = `${prefix}${formula === '$x$' ? ' ' : '\n\n'}${formula}${count === 2 ? '\n\nSee [item $5]' : ''}\n\n[item $5]: /url`;
+    const ast = ready(source);
+    const references = ast.children.flatMap(block => block.type === 'paragraph'
+      ? block.children.filter(node => node.type === type) : []);
+    expect(references).toHaveLength(count);
+    for (const reference of references) expect(reference).toMatchObject({ type, destination: '/url' });
+    expect(JSON.stringify(ast)).toContain(`"type":"${formula === '$x$' ? 'inlineMath' : 'math'}","value":"x"`);
+    expect(JSON.stringify(ast)).not.toContain('£');
+  }
+});
+
+
+it.each([
+  ['[item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['![item \\$5] with $x$\n\n[item \\$5]: /url', 'image', 'item $5', true],
+  ['[shown \\$5][ref]\n\n[ref]: /url', 'link', 'shown $5', false],
+  ['[shown \\$5][item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'shown $5', true],
+  ['[item \\$5][] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['[item \\[1\\] $5] with $x$\n\n[item \\[1\\] $5]: /url', 'link', 'item [1] $5', true],
+] as const)('preserves escaped currency reference syntax: %s', (source, type, label, hasMath) => {
+  const ast = ready(source);
+  const block = ast.children[0];
+  if (block?.type !== 'paragraph') throw new Error('expected paragraph');
+  expect(ast.children).toHaveLength(1);
+  const reference = block.children.find(node => node.type === type);
+  expect(reference).toMatchObject({ type, destination: '/url' });
+  if (reference?.type === 'link') expect(reference.children).toMatchObject([{ type: 'text', value: label }]);
+  if (reference?.type === 'image') expect(reference.alt).toBe(label);
+  expect(block.children.filter(node => node.type === 'inlineMath').map(node => node.value))
+    .toEqual(hasMath ? ['x'] : []);
+  expect(JSON.stringify(ast)).not.toContain('£');
 });
