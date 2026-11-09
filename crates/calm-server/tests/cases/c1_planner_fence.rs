@@ -103,6 +103,13 @@ async fn c1_fence_planner_issuance_wins() {
     let pause = Pause::arm("c1-clean-sampled", &track);
     let cleaning = clean(b.clone());
     pause.entered().await;
+    // New issuance is legal only after reopening the sampled closed candidate.
+    b.repo
+        .db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(&track))
+        .await
+        .unwrap();
     enqueue(&handle, false).await;
     issued(&b, before).await;
     assert_eq!(status(&b, &runtime).await, "turn_pending");
@@ -120,6 +127,14 @@ async fn clean_wins(automatic: bool, rewind: bool) {
     let pause = Pause::arm("c1-clean-fenced", &track);
     let cleaning = clean(b.clone());
     pause.entered().await;
+    // Clean already holds Track. Reopen the fixture before testing that the
+    // next legal issuance still waits on that same filesystem fence.
+    b.repo
+        .db()
+        .writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(&track))
+        .await
+        .unwrap();
     let arrival = Pause::arm("key-lock-waiting", &track);
     enqueue(&handle, automatic).await;
     arrival.entered().await;

@@ -367,6 +367,12 @@ async fn race_with_history(provider: &str, entry: Entry, delete: bool, prime: bo
     if let Some(pause) = &clean_ready {
         pause.entered().await;
     }
+    // Clean has sampled the closed candidate and registered its teardown. Admit
+    // new work only on an open Track; the original occupancy/fence race remains.
+    pool.writer()
+        .execute(sqlx::query("UPDATE tracks SET closed_at=NULL WHERE id=?").bind(&track))
+        .await
+        .unwrap();
     if matches!(entry, Entry::Resume) {
         (pool)
             .writer()

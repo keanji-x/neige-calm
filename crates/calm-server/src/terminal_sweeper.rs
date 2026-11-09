@@ -87,6 +87,7 @@ pub const SETTLED_WORKER_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.car
        JOIN terminals te ON te.id = ws.terminal_run_id AND te.card_id = c.id \
        JOIN tracks t ON t.id = ws.track_id \
       WHERE ws.state = 'running' AND c.role = 'worker' \
+        AND json_type(ws.handle_state_json,'$.timeout_cleanup') IS NULL \
         AND ((t.closed_at IS NOT NULL AND ws.created_at_ms <= t.closed_at) \
           OR EXISTS (SELECT 1 FROM tasks owner WHERE owner.track_id = ws.track_id AND owner.worker_card_id = ws.card_id \
                       AND owner.status IN ('done','failed','canceled') \
@@ -157,6 +158,7 @@ pub async fn sweep(state: &AppState) -> Result<()> {
 
     // Retry existing obligations before creating new ones, once per tick.
     state.codex_backends.retry_hibernating_releases().await;
+    state.dispatcher.sweep_track_close_cleanups().await;
     crate::planner_hibernation::sweep(state).await?;
 
     let released = state.codex_backends.release_ended_threads().await?;

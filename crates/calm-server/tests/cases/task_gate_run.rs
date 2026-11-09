@@ -54,7 +54,14 @@ pub(super) async fn world_with(
     Arc::get_mut(&mut boot.ctx)
         .expect("the context is not shared yet")
         .gate_run_wait = GateRunWait::for_idle(idle);
-    let fx = fixture_on_with_adapters(boot, workspace, extra).await;
+    // Cancellation must reach the same native owner as the fixture's Codex
+    // sessions, even when a task is being played by the test rather than a worker.
+    let shared =
+        calm_server::shared_codex_appserver::SharedCodexAppServer::new_fake_running_with_pending(
+            boot.repo.clone(),
+            None,
+        );
+    let fx = fixture_on_with_runtime(boot, workspace, Some(shared), |boot, _| extra(boot)).await;
     fx.dispatcher.abort_event_listener_for_test();
     fx
 }
@@ -106,6 +113,15 @@ pub(super) struct Attempt {
 /// `steps`.
 pub(super) async fn running(fx: &Fx, key: &str, steps: Value) -> Attempt {
     let worker = fx.new_worker(key, AgentProvider::Codex).await;
+    fx.db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                .bind(&worker.thread_id)
+                .bind(&worker.session_id),
+        )
+        .await
+        .unwrap();
     let lease = fx.kernel_lease(&worker.card_id).await;
     let task = fx
         .running_task(

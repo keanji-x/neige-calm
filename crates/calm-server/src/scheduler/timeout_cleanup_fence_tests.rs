@@ -560,3 +560,95 @@ async fn w_timeout_cleanup_already_ended_session_converges() {
             .expect("independent write operation")
     }
 }
+
+async fn close_running_fixture_worker(f: &Fixture) {
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tasks SET status='running',status_detail=NULL WHERE id=?1")
+                .bind(&f.task.id),
+        )
+        .await
+        .unwrap();
+    f.repo.db().writer().execute(sqlx::query("UPDATE worker_sessions SET handle_state_json=json_remove(handle_state_json,'$.timeout_cleanup') WHERE id='session-a'")).await.unwrap();
+    let track: TrackId = f.task.track_id.clone().into();
+    write_with_actor_events_typed(
+        f.repo.as_ref(),
+        None,
+        &f.scheduler.events,
+        &f.scheduler.write,
+        move |tx| {
+            Box::pin(async move {
+                let closed =
+                    crate::track_close::close_subtree_tx(tx, &track, ActorId::User, None).await?;
+                Ok(((), closed.events))
+            })
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn close_cancels_running_retains_lease_until_existing_owner_stops_worker() {
+    let f = Fixture::new(TaskAccess::ReadOnly).await;
+    let mut worker = attach_worker(&f, "session-a").await;
+    close_running_fixture_worker(&f).await;
+    assert_eq!(
+        f.repo.task_get(&f.task.id).await.unwrap().unwrap().status,
+        TaskStatus::Canceled
+    );
+    assert_eq!(f.lease_state().await, "held");
+    assert!(worker.try_wait().unwrap().is_none());
+    let competing = sqlx::query(crate::terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL)
+        .bind(crate::terminal_sweeper::SETTLED_WORKER_GRACE_MS)
+        .fetch_all(f.repo.pool())
+        .await
+        .unwrap();
+    assert!(
+        competing.is_empty(),
+        "the strict cleanup owner retains this worker until stop confirms"
+    );
+    f.scheduler.sweep_timeout_worker_cleanups().await;
+    assert!(worker.wait().await.is_ok());
+    assert_eq!(f.lease_state().await, "released");
+    assert_eq!(f.marker().await, None);
+}
+
+#[tokio::test]
+async fn close_cancels_running_cleanup_retains_lease_until_binding_is_recovered() {
+    let f = Fixture::new(TaskAccess::ReadOnly).await;
+    let mut worker = attach_worker(&f, "session-a").await;
+    let terminal: String =
+        sqlx::query_scalar("SELECT terminal_run_id FROM worker_sessions WHERE id='session-a'")
+            .fetch_one(f.repo.pool())
+            .await
+            .unwrap();
+    close_running_fixture_worker(&f).await;
+    f.repo
+        .db()
+        .writer()
+        .execute(sqlx::query(
+            "UPDATE worker_sessions SET terminal_run_id=NULL WHERE id='session-a'",
+        ))
+        .await
+        .unwrap();
+    f.scheduler.sweep_timeout_worker_cleanups().await;
+    assert!(worker.try_wait().unwrap().is_none());
+    assert_eq!(f.lease_state().await, "held");
+    assert!(f.marker().await.is_some());
+    f.repo
+        .db()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET terminal_run_id=?1 WHERE id='session-a'")
+                .bind(terminal),
+        )
+        .await
+        .unwrap();
+    f.scheduler.sweep_timeout_worker_cleanups().await;
+    assert!(worker.wait().await.is_ok());
+    assert_eq!(f.lease_state().await, "released");
+    assert_eq!(f.marker().await, None);
+}

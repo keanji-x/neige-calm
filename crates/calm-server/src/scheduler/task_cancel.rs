@@ -14,7 +14,7 @@ use crate::scheduler::{
 };
 
 /// Keyed refusal sentences (`prompts/plan-cancel/refusals.md`); Rust only maps a refusal to a key.
-const REFUSALS: &str = include_str!("../../../../prompts/plan-cancel/refusals.md");
+const REFUSALS: &str = include_str!("../../prompts/plan-cancel/refusals.md");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refusal {
@@ -68,7 +68,7 @@ impl Refusal {
     }
 }
 
-pub(super) fn status_str(status: TaskStatus) -> String {
+pub(crate) fn status_str(status: TaskStatus) -> String {
     serde_json::to_value(status)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -99,7 +99,7 @@ fn refused_for(key: &str, current: &Task, running_refusal: Refusal) -> CalmError
 /// Returns rows moved — `0` means a concurrent cancel already canceled it (the caller's idempotent
 /// path) — and the lease events when no live session was left to mark and the lease was released
 /// here. Any other state the CAS did not move is refused with its current status.
-pub(super) async fn cancel_running_in_tx(
+pub(crate) async fn cancel_running_in_tx(
     tx: &mut Tx<'_>,
     current: &Task,
     key: &str,
@@ -137,6 +137,55 @@ pub(super) async fn cancel_running_in_tx(
         );
     }
     Ok((rows, mark.released))
+}
+
+pub(crate) async fn require_worker_binding_in_tx(
+    tx: &mut Tx<'_>,
+    task: &crate::model::Task,
+) -> Result<(), CalmError> {
+    if task.spawn != calm_types::task_recovery::TASK_IN_TRACK_ROUTE {
+        return Err(CalmError::Conflict(
+            "close-subtree-uncancellable-work".into(),
+        ));
+    }
+    let Some(card) = task.worker_card_id.as_deref() else {
+        return Err(CalmError::Conflict("close-subtree-unbound-worker".into()));
+    };
+    let provider = match task.kind {
+        crate::model::TaskKind::Codex => "codex",
+        crate::model::TaskKind::Claude => "claude",
+        _ => {
+            return Err(CalmError::Conflict(
+                "close-subtree-uncancellable-work".into(),
+            ));
+        }
+    };
+    let session: Option<String> = sqlx::query_scalar(
+        "SELECT ws.id FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id \
+         WHERE c.id=?1 AND c.track_id=?2 AND c.role='worker' AND ws.card_id=c.id AND ws.track_id=c.track_id \
+           AND ws.contract='executor' AND ws.provider=?3 AND ws.state IN ('starting','running','idle','turn_pending')",
+    ).bind(card).bind(&task.track_id).bind(provider).fetch_optional(&mut **tx).await?;
+    let Some(session_id) = session else {
+        return Err(CalmError::Conflict("close-subtree-unbound-worker".into()));
+    };
+    let session = crate::db::sqlite::session_get_tx(tx, &session_id.into())
+        .await?
+        .ok_or_else(|| CalmError::Conflict("close-subtree-unbound-worker".into()))?;
+    let bound = calm_truth::worker_binding::session_owns_attempt_tx(tx, &session, &task.id, card)
+        .await?
+        == Some(true);
+    if !bound {
+        return Err(CalmError::Conflict("close-subtree-unbound-worker".into()));
+    }
+    let runtime = crate::db::sqlite::session_projection_by_id_tx(tx, &session.id.0)
+        .await?
+        .ok_or_else(|| CalmError::Conflict("close-subtree-unbound-worker".into()))?;
+    let terminal = crate::db::sqlite::terminal_get_by_card_tx(tx, card).await?;
+    crate::harness::backend::factory::PlannerFactory::require_worker_stop_binding(
+        &runtime,
+        terminal.as_ref(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

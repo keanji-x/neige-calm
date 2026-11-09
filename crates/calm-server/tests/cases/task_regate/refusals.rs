@@ -313,15 +313,19 @@ async fn regate_refuses_rows_that_cannot_rerun() {
     )
     .await;
 
-    // A closed Track.
-    call_tool(
-        &fx.boot,
-        "neige_track_close",
-        planner_identity(&fx.boot),
-        json!({"message": "done for now"}),
-    )
-    .await
-    .unwrap();
+    // A closed Track. This refusal fixture deliberately includes unbound
+    // worker rows above; seed the closed state without requesting their Stop.
+    fx.boot
+        .repo
+        .track_update(
+            fx.boot.track_id.as_str(),
+            calm_server::model::TrackPatch {
+                closed: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     refused(&fx, &passed_by.id, -32409, "the track is closed").await;
 
     assert!(

@@ -39,6 +39,7 @@ async fn failed_release_after_owner_change(change: &str) {
             json!({"thread":{"id":"reset-new-thread"},"model":"fake-model"}).to_string(),
         )
         .unwrap();
+        reopen_track(&boot).await;
     }
     let response = boot
         .app
@@ -132,7 +133,7 @@ async fn send_completed(boot: &Boot, card: &Card, runtime: &String, text: &str) 
 }
 
 #[tokio::test]
-async fn planner_hibernat_live_closed_owner_survives_daemon_replace() {
+async fn planner_hibernat_reopened_owner_survives_daemon_replace() {
     use calm_server::shared_codex_appserver::ReplacePrecondition;
     let _env = ENV_LOCK.lock().await;
     let boot = boot_shared().await;
@@ -159,6 +160,7 @@ async fn planner_hibernat_live_closed_owner_survives_daemon_replace() {
     let idle = json!({"thread":{"id":thread,"status":{"type":"idle"}}}).to_string();
     std::fs::write(sock.with_extension("thread-read"), &idle).unwrap();
     std::fs::write(sock.with_extension("thread-resume"), &idle).unwrap();
+    reopen_track(&boot).await;
     send_completed(&boot, &card, &runtime, "before replacement").await;
     boot.state
         .shared_codex_appserver

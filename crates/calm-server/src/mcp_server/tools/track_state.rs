@@ -426,35 +426,47 @@ async fn track_close(
     // The write adapter transports storage errors; preserve typed refusals across its rollback.
     let refusal = Arc::new(std::sync::OnceLock::<CloseError>::new());
     let refusal_in_tx = refusal.clone();
-    let written = crate::db::write_with_events_typed(
-        ctx.repo.as_ref(),
-        identity.to_actor_id(),
-        None,
-        &ctx.events,
-        &ctx.write,
-        move |tx| {
-            Box::pin(async move {
-                let result =
-                    close_authorized_tx(tx, recorder, track, target_id, other, message).await;
-                result.map_err(|error| match error {
-                    CloseError::Storage(error) => error,
-                    error => {
-                        let _ = refusal_in_tx.set(error);
-                        CalmError::Conflict("close refused".into())
-                    }
-                })
-            })
-        },
-    )
+    let actor = identity.to_actor_id();
+    let write_context = ctx.write.clone();
+    let written = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let result =
+                close_authorized_tx(tx, recorder, track, target_id, other, actor, message).await;
+            let (receipt, pending) = result.map_err(|error| match error {
+                CloseError::Storage(error) => error,
+                error => {
+                    let _ = refusal_in_tx.set(error);
+                    CalmError::Conflict("close refused".into())
+                }
+            })?;
+            let ids = if pending.is_empty() {
+                Vec::new()
+            } else {
+                crate::db::sqlite::append_actor_events_in_tx(tx, None, &write_context, &pending)
+                    .await?
+                    .0
+            };
+            Ok((receipt, ids, pending))
+        })
+    })
     .await;
-    let closed = match written {
-        Ok((closed_at, _)) => closed_at,
+    let (closed, executions) = match written {
+        Ok((receipt, ids, pending)) => {
+            crate::db::sqlite::broadcast_actor_events(&ctx.events, &ids, pending);
+            (receipt.closed_at, receipt.executions)
+        }
         Err(error) => match refusal.get() {
-            Some(CloseError::AlreadyClosed(closed_at)) => *closed_at,
+            Some(CloseError::AlreadyClosed(closed_at)) => (*closed_at, Vec::new()),
             Some(CloseError::Refusal(error)) => return Err(error.clone()),
             _ => return Err(crate::mcp_server::framing::calm_error(error)),
         },
     };
+    if let Some(runtime) = ctx.operation_runtime.get() {
+        runtime.execution().drive(executions);
+    }
+    if let Some(poke) = ctx.scheduler_poke.get() {
+        poke.poke_track_close_cleanups();
+    }
     Ok(json!({ "closed_at": crate::time_format::at(closed) }))
 }
 
@@ -465,8 +477,9 @@ async fn close_authorized_tx(
     caller: Track,
     target_id: crate::ids::TrackId,
     other: bool,
+    actor: crate::ids::ActorId,
     message: String,
-) -> Result<(i64, Vec<(EventScope, Event)>), CloseError> {
+) -> Result<(CloseReceipt, Vec<(crate::ids::ActorId, EventScope, Event)>), CloseError> {
     let detached_child: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM tracks child WHERE child.id=?1 AND child.parent_track_id=?2 \
          AND NOT EXISTS(SELECT 1 FROM current_tasks task WHERE task.track_id=?2 \
@@ -518,33 +531,39 @@ async fn close_authorized_tx(
     } else {
         target?
     };
-    if other && target.closed_at.is_none() {
-        use sqlx::Row;
-        let sql = format!(
-            "SELECT key, status FROM current_tasks WHERE track_id=?1 AND status IN {} ORDER BY key",
-            crate::planner_hibernation::RUNNING_WORK_STATUSES_SQL
-        );
-        let active: Vec<Value> = sqlx::query(&sql)
-            .bind(target.id.as_str())
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(CalmError::from)?
-            .into_iter()
-            .map(|row| {
-                json!({
-                    "key": row.get::<String,_>("key"), "status": row.get::<String,_>("status")
-                })
-            })
-            .collect();
-        if !active.is_empty() {
-            return Err(CloseError::Refusal(close_refusal(
-                -32409,
-                "active_work",
-                json!({"active": active}),
-            )));
-        }
+    // Presentation only: preserve the declared close-other conflict payload. Admission and
+    // cancellation policy remain exclusively in the shared close owner below.
+    use sqlx::Row;
+    let active: Vec<Value> = sqlx::query("SELECT key,status FROM current_tasks WHERE track_id=?1 AND status IN ('dispatched','running','verifying') ORDER BY key")
+        .bind(target.id.as_str()).fetch_all(&mut **tx).await.map_err(CalmError::from)?
+        .into_iter().map(|row| json!({"key":row.get::<String,_>("key"),"status":row.get::<String,_>("status")})).collect();
+    let closed = crate::track_close::close_subtree_tx(tx, &target.id, actor, Some(message))
+        .await
+        .map_err(|error| match error {
+            CalmError::Conflict(_) if other && !active.is_empty() => CloseError::Refusal(
+                close_refusal(-32409, "active_work", json!({"active":active})),
+            ),
+            error => CloseError::Storage(error),
+        })?;
+    let at = closed
+        .track
+        .closed_at
+        .ok_or_else(|| CalmError::Internal("close left target open".into()))?;
+    if closed.events.is_empty() && !closed.cleanup_requested {
+        return Err(CloseError::AlreadyClosed(at));
     }
-    close_tx(tx, target, message).await
+    Ok((
+        CloseReceipt {
+            closed_at: at,
+            executions: closed.executions,
+        },
+        closed.events,
+    ))
+}
+
+struct CloseReceipt {
+    closed_at: i64,
+    executions: Vec<workspace_runtime::execution::ExecutionId>,
 }
 
 enum CloseError {

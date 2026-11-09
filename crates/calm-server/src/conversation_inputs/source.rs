@@ -325,6 +325,7 @@ pub(crate) async fn authorize_execution_tx(
     calm_types::conversation::ConversationExecutionProvenance,
     calm_types::worker::WorkerSession,
 )> {
+    crate::track_close::require_planner_start(&mut **tx, carrier.card_id()).await?;
     let source = source.into();
     let owner = authorize_resource_tx(tx, &source, carrier).await?;
     plan.input_refs()

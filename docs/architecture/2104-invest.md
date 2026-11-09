@@ -169,8 +169,8 @@ value replaced is S's issued key, which becomes n+1. The call returns the new `t
 the Planner passes verbatim to `neige_track_add`.
 - **What renewal restores.** Renewal restores coverage. It does **not** close the old Track. A
   live superseded Track closes itself on its next call (`neige_track_close`). A silent one, such
-  as a dead Planner, stays open until a human closes it: `neige_track_close` closes only the
-  caller's own Track (`track_state.rs:237-245`).
+  as a dead Planner, stays open until a human or its authorized creator closes it.
+  Closing also stops its descendants; see [the close contract](../design/close-track-subtree.md).
 - **Cap refusals.** Silent Tracks count against the kernel cap. The cap's -32409 therefore lists
   the creator's open created Tracks as `{track_id, creator_key}` (immutable, already on the row),
   in the message and in `data` (§3.4).
@@ -209,7 +209,7 @@ Planner (owner 3).
 | Cap | `--track-add-max-open <u32>`, a clap arg on `Config` (`config.rs:8`, with a range like `:159-166`): 1..=256, default 16, no env var. It counts the creator's open created Tracks inside the create transaction's closure (`routes/tracks.rs:1281`). |
 | Cap and plugin limits | The plugin cannot read the cap (F15). It checks statically that `max_held + max_watched ≤ 255` (the cap range minus one spare renewal slot). The runbook sets the cap to at least `max_held + max_watched + 1`. A mismatch, or silent superseded Tracks (§3.3), show up as the -32409 above. S stays stale, and the Planner notifies the owner. |
 | Events and UI | The ordinary create events (`routes/tracks.rs:1567-1590`). No visible UI change; the generated `Track` type gains two fields. |
-| Creator closes | Nothing cascades. |
+| Creator closes | Tracks linked only by `creator_track_id` stay open; `parent_track_id` descendants close. |
 | Budget | 29,929 B: summed over the 30 Planner rows of `mcp_tool_registry.json`. Each row counts the description bytes (prompt `trim_end`; `task.verdict` rendered with its guidance; every SHA-256 matched the golden) plus the compact schema bytes. That leaves 71 B. K1 adds about 1.1 KB and trims at least that much from the largest descriptions (`report.commit` 1,535 B, `terminal.input` 1,479 B, `source.capture` 1,397 B, `plan.list` 1,362 B). It re-measures on its own base. |
 
 ### 3.5 Plugin standing instructions (kernel gap 2, D4)

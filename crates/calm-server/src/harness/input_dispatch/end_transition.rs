@@ -51,7 +51,12 @@ async fn sample_tx(
         || recorded_provider != provider
         || binding.profile != *profile
         || original.correlation.provider != *provider
-        || current.thread_id.as_deref() != Some(original.correlation.thread_id.as_str())
+        || crate::harness::effective_thread_id(
+            current.thread_id.as_deref(),
+            current.handle_state_json.as_ref(),
+        )
+        .as_deref()
+            != Some(original.correlation.thread_id.as_str())
     {
         return Ok(None);
     }
@@ -191,6 +196,53 @@ pub(crate) async fn complete_once(
         Box::pin(async move { consume_tx(tx, &provider, &sampled, &observed).await })
     })
     .await
+}
+
+/// A stopped physical owner grants no END. Close may retire its obligation only
+/// after this original fact owner has settled the unchanged execution. A moved
+/// or completed predecessor cannot revive or modify its successor.
+pub(crate) async fn settle_closed_execution(
+    repo: &dyn Repo,
+    observer: Option<&PlannerBackend>,
+    card: &str,
+    worker: &str,
+) -> Result<()> {
+    let db = repo
+        .sqlite_db()
+        .ok_or(crate::error::CalmError::ExecutionUnavailable)?;
+    let raw: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT ws.handle_state_json FROM cards c \
+         JOIN worker_sessions ws ON ws.id=c.session_id \
+         WHERE c.id=?1 AND ws.id=?2 AND ws.completed_at_ms IS NULL",
+    )
+    .bind(card)
+    .bind(worker)
+    .fetch_optional(db.read_pool())
+    .await?;
+    let Some(Some(raw)) = raw else {
+        return Ok(());
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    if value.get("canonical_inputs").is_none() {
+        return Ok(());
+    }
+    let frame: crate::harness::snapshot::CanonicalHarnessSnapshot = serde_json::from_value(value)?;
+    if frame.canonical_inputs.active.is_none() {
+        return Ok(());
+    }
+    let observer = observer.ok_or_else(|| {
+        crate::error::CalmError::Conflict("closed Planner execution END unavailable".into())
+    })?;
+    let _ = complete_once(repo, observer, card, worker).await?;
+    let after =
+        crate::db::sqlite::conversation::runtime_frame_observation(db.read_pool(), card, worker)
+            .await?;
+    if after.snapshot.canonical_inputs.active.is_some() {
+        return Err(crate::error::CalmError::Conflict(
+            "closed Planner execution END unconfirmed".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Accepted original execution, not authority to dispatch or control another turn.

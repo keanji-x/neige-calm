@@ -34,17 +34,30 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+#[path = "track_add/close_subtree/native_peer.rs"]
+mod close_native_peer;
+
 struct Boot {
     app: axum::Router,
+    harness: calm_server::harness::HarnessRegistry,
+    role_cache: CardRoleCache,
     /// The fake app-server, for a test that fails a start; not the `AppState`, which
     /// `track_creator_does_not_keep_the_state_alive` must be able to drop.
     codex: Arc<SharedCodexAppServer>,
+    native: Option<NativeBoot>,
     ctx: Arc<AppContext>,
     registry: ToolRegistry,
     repo: Arc<SqlxRepo>,
     area_id: String,
     recipe_id: String,
     _tmp: TempDir,
+}
+
+/// Native lifecycle fixtures explicitly drive the production periodic sweep.
+/// Ordinary creator fixtures retain no AppState, preserving their lifetime check.
+struct NativeBoot {
+    state: AppState,
+    peer: close_native_peer::NativePeer,
 }
 
 /// A Planner (or Worker) bound to one card of one Track, with a live session the role gate resolves.
@@ -68,6 +81,15 @@ async fn boot_with_plugins(
     max_open: u32,
     gate: Option<Arc<routes::tracks::TrackCreateMintGate>>,
     plugins: bool,
+) -> Boot {
+    boot_with_native(max_open, gate, plugins, false).await
+}
+
+async fn boot_with_native(
+    max_open: u32,
+    gate: Option<Arc<routes::tracks::TrackCreateMintGate>>,
+    plugins: bool,
+    native: bool,
 ) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -108,13 +130,15 @@ async fn boot_with_plugins(
             calm_server::state::WriteContext::new(roles.clone(), tracks.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
-        Some(roles),
+        Some(roles.clone()),
         Some(tracks),
     )
     .with_workspace_root(tmp.path().join("workspaces"))
-    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-        repo_dyn, None,
-    ));
+    .with_shared_codex_appserver(if native {
+        SharedCodexAppServer::new_stub_with_pending(repo_dyn, None)
+    } else {
+        SharedCodexAppServer::new_fake_running_with_pending(repo_dyn, None)
+    });
     if plugins {
         state.plugin.reconcile_builtins().await.unwrap();
         state.plugin.enable("gitforge").await.unwrap();
@@ -126,6 +150,15 @@ async fn boot_with_plugins(
     state.bind_track_creator(max_open);
     let ctx = state.mcp_context();
     let codex = state.shared_codex_appserver.clone();
+    let native = if native {
+        Some(NativeBoot {
+            state: state.clone(),
+            peer: close_native_peer::NativePeer::connect(&codex).await,
+        })
+    } else {
+        None
+    };
+    let harness = state.harness.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -152,7 +185,10 @@ async fn boot_with_plugins(
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
     Boot {
         app,
+        harness,
+        role_cache: roles,
         codex,
+        native,
         ctx,
         registry,
         repo,
@@ -776,6 +812,9 @@ mod admin;
 
 #[path = "track_add/close_admin.rs"]
 mod close_admin;
+
+#[path = "track_add/close_subtree.rs"]
+mod close_subtree;
 
 #[path = "track_add/rebuild.rs"]
 mod rebuild;

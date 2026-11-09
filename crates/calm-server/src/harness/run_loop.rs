@@ -1125,6 +1125,22 @@ impl PlannerHarness {
         self.shutdown_inner(false).await
     }
 
+    pub(crate) async fn shutdown_confirmed(&self) -> Result<()> {
+        self.shutdown_inner(true).await
+    }
+
+    pub(crate) async fn settle_closed_execution(&self) -> Result<()> {
+        // The loop has joined. Its existing END owner retains input authority;
+        // physical shutdown alone cannot clear an active canonical claim.
+        crate::harness::input_dispatch::end_transition::settle_closed_execution(
+            self.inner.repo.as_ref(),
+            Some(&self.inner.backend),
+            self.inner.card_id.as_str(),
+            &self.inner.worker_session_id,
+        )
+        .await
+    }
+
     /// Quiesce an owner that is preparing for deletion and return its retained
     /// thread seal. An error/panic releases the seal through the local guard;
     /// the caller owns it only after strict interruption succeeds.

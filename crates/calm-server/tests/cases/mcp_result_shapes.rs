@@ -253,6 +253,15 @@ fn is_rfc3339_ms_with_offset(text: &str) -> bool {
 #[tokio::test]
 async fn tool_result_times_are_rfc3339_with_an_offset() {
     let boot = boot_with_role(CardRole::Planner).await;
+    // The unrelated alternative-card identity is not a running task. End that
+    // unused fixture session before exercising the real subtree close owner.
+    boot.repo
+        .session_projection_complete_for_card(
+            &boot.other_card_id,
+            calm_server::session_projection_repo::WorkerSessionState::Failed,
+        )
+        .await
+        .unwrap();
     add_report(&boot).await;
     let track = boot.track_id.as_str();
     let body = format!("# Plan\n\nSee [this plan](neige://wave/{track}).\n");

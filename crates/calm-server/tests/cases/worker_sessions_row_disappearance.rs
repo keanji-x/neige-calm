@@ -144,6 +144,7 @@ const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("conversation_abandonments", "new_worker", "CASCADE"),
     ("conversation_abandonments", "old_worker", "CASCADE"),
     ("report_read_ledger", "worker_session_id", "CASCADE"),
+    ("track_close_cleanups", "worker_session_id", "CASCADE"),
     ("tracks", "root_session_id", "NO ACTION"),
     ("worker_flow_items", "worker_session_id", "SET NULL"),
     ("worker_session_backends", "worker_session_id", "CASCADE"),

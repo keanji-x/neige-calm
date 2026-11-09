@@ -8,6 +8,8 @@ use crate::state::AppState;
 use axum::extract::FromRef;
 use sqlx::Row;
 
+mod close_cleanup;
+
 pub(crate) use calm_truth::db::sqlite::RUNNING_WORK_STATUSES_SQL;
 
 /// Cheap lifecycle candidates. The harness input owner interprets the persisted
@@ -142,6 +144,8 @@ pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Re
 /// this context cannot retain their resources after the application is dropped.
 #[derive(Clone)]
 pub(crate) struct WakeContext {
+    tool_calls: crate::mcp_server::transport::carrier_quiescence::ToolCallAdmission,
+    backends: std::sync::Weak<crate::agent_backend_pool::codex::CodexBackends>,
     canonical_adapter: std::sync::Weak<
         crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter,
     >,
@@ -166,6 +170,8 @@ impl WakeContext {
         shell: crate::state::CodexShellState,
     ) -> Self {
         Self {
+            tool_calls: route.mcp_context.tool_calls.clone(),
+            backends: std::sync::Arc::downgrade(&shell.codex_backends),
             canonical_adapter: std::sync::Arc::downgrade(&route.planner_start_adapter),
             workspace_root: route.workspace_root.clone(),
             historical_source: None,
