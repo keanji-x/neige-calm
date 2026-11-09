@@ -96,6 +96,58 @@ async fn finish(mut flow: Flow) {
     flow.close().await;
 }
 
+async fn next_timeout_diagnostics(flow: &Flow) -> String {
+    let mut carrier = "unavailable".to_owned();
+    let mut cached_native_active = "unavailable".to_owned();
+    // Sample only after next has failed. Neither read grants another success chance.
+    let status = match tokio::time::timeout(Duration::from_secs(1), async {
+        let frame = crate::db::sqlite::conversation::runtime_frame_observation(
+            flow.fixture.repo.pool(),
+            &flow.card,
+            &flow.worker,
+        )
+        .await
+        .ok()?
+        .snapshot;
+        let inputs = &frame.canonical_inputs;
+        let active = inputs.active.as_ref();
+        let attempt = active
+            .and_then(|active| active.submission_ids.first())
+            .and_then(|id| inputs.attempt(id));
+        let delivery = attempt.map(|attempt| match &attempt.delivery {
+            InputDeliveryFact::CrossingUnknown => "crossing_unknown",
+            InputDeliveryFact::Unknown => "unknown",
+            InputDeliveryFact::NotDispatched { .. } => "not_dispatched",
+            InputDeliveryFact::Accepted { .. } => "accepted",
+        });
+        carrier = format!(
+            "phase={:?} pending={} attempts={} active_submissions={} head_envelope={:?} last_turn={:?} active_logical_turn={:?} active_native_turn={:?} active_delivery={delivery:?}",
+            frame.header.phase,
+            inputs.pending.len(),
+            inputs.attempts.len(),
+            active.map_or(0, |active| active.submission_ids.len()),
+            inputs.pending.first().and_then(PendingInput::envelope_id),
+            frame.header.last_turn_id,
+            active.map(|active| active.logical_turn_id.as_str()),
+            attempt.and_then(|attempt| attempt.correlation.native_turn_id.as_deref()),
+        );
+        let daemon = flow.state.shared_codex_appserver.clone();
+        // Bound even the synchronous cache lock without blocking the async timer.
+        let native = tokio::task::spawn_blocking(move || daemon.active_turn_id_for_thread(THREAD))
+            .await
+            .ok()?;
+        cached_native_active = format!("{native:?}");
+        Some(())
+    })
+    .await
+    {
+        Ok(Some(())) => "read",
+        Ok(None) => "unavailable(read_error)",
+        Err(_) => "unavailable(timeout_1s)",
+    };
+    format!("diagnostics={status} carrier=({carrier}) cached_native_active={cached_native_active}")
+}
+
 #[tokio::test]
 async fn report_knowledge_delta_canonical_sixty_interleaved_writes_freeze_without_own_echo() {
     let mut flow = Flow::running().await;
@@ -183,10 +235,20 @@ async fn report_knowledge_delta_canonical_sixty_interleaved_writes_freeze_withou
     // The real Dispatcher accepted all 64 external envelopes and the later edit.
     // Exercise each original claim through the native provider, including the header.
     for n in 0..65 {
-        let call = flow
-            .next()
-            .await
-            .expect("the accepted Report prefix reaches the provider");
+        let call = match flow.next().await {
+            Some(call) => call,
+            None => {
+                let previous_turn = if n == 0 {
+                    TURN.to_owned()
+                } else {
+                    format!("interleaved-report-{}", n - 1)
+                };
+                let diagnostics = next_timeout_diagnostics(&flow).await;
+                panic!(
+                    "the accepted Report prefix reaches the provider: n={n} previous_turn={previous_turn} {diagnostics}"
+                );
+            }
+        };
         let input = call["params"]["input"].to_string();
         assert!(
             input.contains(&external),
