@@ -417,30 +417,28 @@
     color: var(--text-3);
   }
 
-  .systemSummary {
-    display: flex;
-    align-items: center;
+  .system [class~='astryx-collapsible-trigger'] {
     gap: var(--space-1);
     inline-size: 100%;
     min-block-size: var(--control-h);
     min-inline-size: 0;
     padding: 0;
     padding-inline-start: calc(var(--glyph-sm) + var(--space-3));
-    border: 0;
-    background: transparent;
     color: inherit;
     font: inherit;
-    cursor: pointer;
     text-align: start;
   }
 
-  .systemDisclosure {
-    display: inline-flex;
-    flex: none;
+  .system [class~='astryx-collapsible-trigger'] > [class~='astryx-icon'] {
     margin-inline-start: auto;
   }
 
+  .system [class~='astryx-collapsible-trigger'] > :has(> [data-nc-system-label]) {
+    min-inline-size: 0;
+  }
+
   .systemLabel {
+    display: block;
     overflow: hidden;
     min-inline-size: 0;
     text-overflow: ellipsis;

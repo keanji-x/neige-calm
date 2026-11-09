@@ -150,7 +150,7 @@ describe('ChatThread', () => {
     );
     const system = container.querySelector('[data-nc-turn="system"]');
     const summary = system?.querySelector('button') as HTMLElement;
-    expect(summary.getAttribute('title'))
+    expect(summary.closest('[title]')?.getAttribute('title'))
       .toBe('The report changed in the kernel.');
     expect(summary.querySelector('[data-nc-system-label]')?.textContent?.trim())
       .toBe('· Report edited ·');

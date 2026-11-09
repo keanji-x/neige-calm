@@ -557,6 +557,18 @@ async function frame() {
 }
 
 describe('the structured system disclosure in a real engine', () => {
+  it('keeps the disclosure arrow visible when the system label is long', async () => {
+    const system: ConversationSystemEntry = {
+      id: 'long-system', author: 'system', label: 'Long system update '.repeat(20), text: 'Details', atMs: 1,
+    };
+    render(<RailPane turns={[system]} />);
+    await frame();
+    const button = screen.getByRole('button', { name: /Long system update/ });
+    const icon = button.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    expect(icon.getBoundingClientRect().right).toBeLessThanOrEqual(button.getBoundingClientRect().right);
+    expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
+  });
+
   it('aligns with tool calls and springs open and closed', async () => {
     const tool: ConversationActivity = { id: 'tool', author: 'activity', verb: 'Read', target: 'file', state: 'done', durationMs: null, detail: 'Tool result', tool: null, atMs: 0 };
     const system: ConversationSystemEntry = { id: 'system', author: 'system', label: 'Task failed', text: 'Failure details', atMs: 1 };
@@ -594,7 +606,7 @@ describe('the structured system disclosure in a real engine', () => {
 
     const details = document.querySelector<HTMLElement>('[data-nc-turn="system"]')!;
     const summary = details.querySelector<HTMLElement>('button')!;
-    const disclosure = summary.querySelector<HTMLElement>('[data-nc-spring-rotation]')!;
+    const disclosure = summary.querySelector<HTMLElement>('[aria-hidden="true"]')!;
     expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
 
     summary.focus();
