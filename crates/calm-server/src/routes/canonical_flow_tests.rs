@@ -57,6 +57,8 @@ mod catalog_readiness_tests;
 mod child_bootstrap_tests;
 mod child_journal_tests;
 mod claude_creation_tests;
+#[path = "canonical_flow_tests/close_p1_tests.rs"]
+mod close_p1;
 mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;

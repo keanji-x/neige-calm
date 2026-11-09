@@ -24,6 +24,7 @@ impl Boot {
         tokio::time::timeout(std::time::Duration::from_secs(5),async {
             loop {
                 let ready: bool = sqlx::query_scalar("SELECT COALESCE(json_array_length(handle_state_json,'$.canonical_inputs.attempts'),0)>0 \
+                    AND COALESCE(length(json_extract(handle_state_json,'$.last_turn_id')),0)>0 \
             FROM worker_sessions WHERE id=?1")
                     .bind(&caller.identity.session_id).fetch_one(self.repo.pool()).await.unwrap();
                 if ready {break;}

@@ -4,7 +4,7 @@ use calm_truth::db::sqlite::{
     session_complete_tx, session_get_tx, session_projection_by_id_tx, terminal_get_by_card_tx,
     worker_op_targets_card_tx,
 };
-use calm_truth::worker_binding::{operation_idempotency_key, session_is_card_current_tx};
+use calm_truth::worker_binding::{session_is_card_current_tx, session_owns_attempt_tx};
 use calm_types::worker::{WorkerSessionId, WorkerSessionState};
 
 #[derive(Clone, sqlx::FromRow)]
@@ -202,29 +202,10 @@ async fn timeout_cleanup_authority_tx(
     {
         return Ok(CleanupAuthority::Retire);
     }
-    let owns_attempt = match session.spawn_op_id.as_deref() {
-        Some(op) => {
-            let key = operation_idempotency_key(&mut **tx, op).await?;
-            let Some(key) = key else {
-                return Ok(CleanupAuthority::Retain);
-            };
-            key == cleanup.task_id
-        }
-        // A Legacy restart has no spawn op. Only the latest stamped attempt can
-        // authorize its stop; absent evidence retains both marker and lease.
-        None => {
-            let latest: Option<String> = sqlx::query_scalar(
-                "SELECT id FROM tasks WHERE worker_card_id = ?
-                 ORDER BY created_at_ms DESC, id DESC LIMIT 1",
-            )
-            .bind(&cleanup.card_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let Some(latest) = latest else {
-                return Ok(CleanupAuthority::Retain);
-            };
-            latest == cleanup.task_id
-        }
+    let Some(owns_attempt) =
+        session_owns_attempt_tx(tx, &session, &cleanup.task_id, &cleanup.card_id).await?
+    else {
+        return Ok(CleanupAuthority::Retain);
     };
     if !owns_attempt {
         return Ok(CleanupAuthority::Retire);
@@ -235,5 +216,9 @@ async fn timeout_cleanup_authority_tx(
     let terminal = terminal_get_by_card_tx(tx, &cleanup.card_id)
         .await?
         .filter(|term| projection.terminal_run_id.as_deref() == Some(term.id.as_str()));
+    crate::harness::backend::factory::PlannerFactory::require_worker_stop_binding(
+        &projection,
+        terminal.as_ref(),
+    )?;
     Ok(CleanupAuthority::Stop(Box::new((projection, terminal))))
 }

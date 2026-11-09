@@ -3,11 +3,33 @@
 use std::path::PathBuf;
 
 use super::PlannerFactory;
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::model::CardRole;
 use crate::shared_codex_appserver::{SharedThreadStartParams, ThreadConfig};
+use provider::control::NativeInterruptOutcome;
 
 impl PlannerFactory<'_> {
+    /// Protocol Stop confirmation for an already-bound native identity. Planner
+    /// and Worker callers retain their distinct identity/admission contracts.
+    pub(in crate::harness::backend) async fn stop_bound_native_thread(
+        shared: &crate::shared_codex_appserver::SharedCodexAppServer,
+        thread_id: &str,
+        persisted_turn: Option<&str>,
+    ) -> Result<()> {
+        let cached_turn = shared.active_turn_id_for_thread(thread_id);
+        // Cleanup owners retain their obligation after a failed interrupt
+        // unless the provider's own facts prove this bound execution stopped.
+        let interrupted = shared.interrupt_active_outcome(thread_id).await;
+        codex_interrupt_settled(shared, thread_id, interrupted).await?;
+        if cached_turn.is_none()
+            && let Some(persisted_turn) = persisted_turn
+        {
+            let interrupted = shared.interrupt_outcome(thread_id, persisted_turn).await;
+            codex_interrupt_settled(shared, thread_id, interrupted).await?;
+        }
+        Ok(())
+    }
+
     /// Registry-miss stop uses only the persisted runtime's binding and fallback fact.
     pub(super) async fn shutdown_codex_replay(
         &self,
@@ -148,4 +170,41 @@ impl PlannerFactory<'_> {
             }
         }
     }
+}
+
+/// Whether a Codex interrupt of a bound execution leaves it stopped (#1830 S2 D7).
+/// A daemon that is not Running counts as stopped ("daemon down — brain gone, no turn can run").
+/// A JSON-RPC refusal is told apart from a transport failure, and the daemon's own facts decide
+/// it: a thread that is `NotLoaded` (as after a daemon restart) or whose last turn ended counts as
+/// stopped. Only a transport failure while the daemon is Running, or a thread still active, is an
+/// `Err`, so the cleanup retries until the daemon answers or goes down.
+async fn codex_interrupt_settled(
+    shared: &crate::shared_codex_appserver::SharedCodexAppServer,
+    thread_id: &str,
+    interrupted: NativeInterruptOutcome<CalmError>,
+) -> Result<()> {
+    use provider::worker::{CodexDaemonProbe, ThreadStatusLite, TurnStatusLite};
+    let error = match interrupted {
+        NativeInterruptOutcome::NativeAck | NativeInterruptOutcome::NoTarget => return Ok(()),
+        NativeInterruptOutcome::Unconfirmed { error } => error,
+    };
+    if !shared.is_running_per_readiness() {
+        return Ok(());
+    }
+    if matches!(error, CalmError::CodexRefused(_))
+        && let Some(facts) = CodexDaemonProbe::read_liveness_facts(shared, thread_id).await
+        && (facts.status == ThreadStatusLite::NotLoaded
+            || facts.last_turn.is_some_and(|turn| {
+                matches!(
+                    turn.status,
+                    TurnStatusLite::Completed
+                        | TurnStatusLite::Interrupted
+                        | TurnStatusLite::Failed
+                )
+            }))
+    {
+        return Ok(());
+    }
+    tracing::warn!(thread_id, %error, "codex interrupt failed; its cleanup retries");
+    Err(error)
 }

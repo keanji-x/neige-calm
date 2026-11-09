@@ -1,6 +1,7 @@
 //! Task verification consumes the gate-owned execution and its durable release/decision record.
 use super::*;
 use crate::operation::gate_execution::{self as execution, Decision, Release, StopReason};
+use crate::operation::{Phase, Tx};
 use workspace_runtime::execution::{ExecutionState, Settlement};
 
 impl TaskVerifyAdapter {
@@ -313,4 +314,47 @@ pub(super) async fn require_prior_settled(
         ));
     }
     Ok(())
+}
+
+/// The close owner has authorized this child assignment. Delegate its exact gate's Stop to
+/// the existing Pipe owner, in the same transaction as the task cancellation; never steal
+/// the live observer's lease or reconstruct process identity.
+pub(crate) async fn cancel_child_gate_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+) -> Result<Vec<workspace_runtime::execution::ExecutionId>> {
+    let rows = sqlx::query(
+        "SELECT * FROM operations WHERE kind=?1 AND json_extract(payload_json,'$.task_id')=?2",
+    )
+    .bind(TASK_VERIFY_KIND)
+    .bind(task_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut stop = Vec::new();
+    for row in rows {
+        let op = crate::operation::repo_sqlite::operation_from_row(&row)?;
+        let has_record = op
+            .tx_output
+            .as_ref()
+            .is_some_and(|output| output.data.get(execution::KEY).is_some());
+        if !has_record {
+            if matches!(op.phase, Phase::SpawnStarted | Phase::Parked) {
+                return Err(CalmError::Conflict("close-subtree-unbound-gate".into()));
+            }
+            continue;
+        }
+        let record = execution::record(&op)?;
+        let metadata: workspace_runtime::execution::ExecutionMetadata = serde_json::from_str(
+            &calm_truth::db::sqlite::workspace_execution::intent_tx(
+                tx,
+                record.execution_id.as_str(),
+            )
+            .await?,
+        )?;
+        execution::CONFIG
+            .stop_for_disposal_tx(tx, &metadata)
+            .await?;
+        stop.push(record.execution_id);
+    }
+    Ok(stop)
 }

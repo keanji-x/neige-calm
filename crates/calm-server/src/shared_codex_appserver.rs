@@ -23,6 +23,8 @@ use harness_notifications::HarnessNotifications;
 mod metadata_reads;
 mod native_turns;
 mod prompt_attempt;
+#[cfg(any(test, feature = "fixtures"))]
+mod protocol_peer_fixture;
 mod revert;
 mod thread_mint;
 pub(crate) use native_turns::{CodexHarnessBinding, IdleDetachGuard, NativeInput, NativeSteer};

@@ -324,6 +324,10 @@ impl BootState {
                 self.repo.clone(),
                 codex_shell.clone(),
             ));
+        let _ = route
+            .mcp_context
+            .scheduler_poke
+            .set(Arc::new(Arc::downgrade(&self.dispatcher)));
         AppState {
             repo: route_repo,
             events: self.events,
@@ -1753,11 +1757,12 @@ impl AppState {
             cfg.worker_liveness(),
             provider_registry,
         ));
-        // The MCP tools' late-bound scheduler trigger (a running-task cancel reaps its worker):
-        // bound once the Dispatcher's scheduler exists.
+
+        // Worker cleanup is available as soon as the scheduler exists, including during boot.
+        // The Planner lifecycle context is bound by into_app_state before its regular sweep.
         let _ = mcp_context
             .scheduler_poke
-            .set(Arc::new(dispatcher.scheduler()));
+            .set(Arc::new(Arc::downgrade(&dispatcher)));
 
         // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.reconcile_builtins().await?;

@@ -1,8 +1,9 @@
-//! Closed conversations use the original sweep and native resource lifecycle.
+//! Hibernation-only fixtures retain the unsubscribe/idle contract. User Close
+//! now requests Stop; its real HTTP lifecycle regressions live in close_p1.
 use super::*;
 use crate::shared_codex_appserver::native_owner_tests::Peer;
 
-async fn patch_closed(app: &axum::Router, cookie: &str, track: &str, closed: bool) {
+pub(super) async fn patch_closed(app: &axum::Router, cookie: &str, track: &str, closed: bool) {
     let response = app
         .clone()
         .oneshot(
@@ -24,6 +25,22 @@ async fn patch_closed(app: &axum::Router, cookie: &str, track: &str, closed: boo
         "{}",
         String::from_utf8_lossy(&bytes)
     );
+}
+
+// A historical closed-idle candidate, without a new user Close/Stop request.
+// Keep testing the hibernation owner independently of the Close cleanup owner.
+async fn seed_closed(fixture: &Fixture, track: &str) {
+    fixture
+        .repo
+        .track_update(
+            track,
+            crate::model::TrackPatch {
+                closed: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 }
 
 async fn sweep(state: &AppState, peer: &mut Peer) -> usize {
@@ -52,7 +69,7 @@ async fn sweep_result(state: &AppState, peer: &mut Peer) -> crate::error::Result
     Ok(releases)
 }
 
-async fn shutdown(fixture: &Fixture, state: &AppState, worker: &str, peer: &mut Peer) {
+pub(super) async fn shutdown(fixture: &Fixture, state: &AppState, worker: &str, peer: &mut Peer) {
     if let Some(handle) = state.harness.remove(worker) {
         let stopping = handle.shutdown();
         tokio::pin!(stopping);
@@ -136,7 +153,7 @@ async fn production_http_closed_canonical_planner_sleeps_and_wakes_original_reco
         completed.canonical_inputs.attempts[0].delivery,
         InputDeliveryFact::Accepted { .. }
     ));
-    patch_closed(&app, &cookie, track, true).await;
+    seed_closed(&fixture, track).await;
     let releases = sweep(&state, &mut peer).await;
     let remains = state.harness.get(&worker).is_some();
     let cached = state.shared_codex_appserver.cached_card_for_thread(THREAD);
@@ -243,7 +260,7 @@ async fn production_http_closed_canonical_planner_sleeps_and_wakes_original_reco
     shutdown(&fixture, &state, &worker, &mut peer).await;
 }
 
-async fn create_track(app: &axum::Router, cookie: &str) -> Value {
+pub(super) async fn create_track(app: &axum::Router, cookie: &str) -> Value {
     let area = post(
         app,
         cookie,
@@ -275,7 +292,7 @@ async fn production_http_closed_canonical_pending_input_cannot_sleep() {
     assert_eq!(before.canonical_inputs.pending.len(), 1);
     assert!(before.canonical_inputs.active.is_none());
     assert!(before.canonical_inputs.attempts.is_empty());
-    patch_closed(&app, &cookie, track, true).await;
+    seed_closed(&fixture, track).await;
     let eligible = crate::planner_hibernation::eligible(fixture.repo.pool(), &worker)
         .await
         .unwrap();
@@ -336,7 +353,7 @@ async fn active_input_cannot_sleep(unknown: bool) {
     let before = fixture.carrier(track).await.2;
     assert!(before.canonical_inputs.active.is_some());
     assert_eq!(before.canonical_inputs.attempts.len(), 1);
-    patch_closed(&app, &cookie, track, true).await;
+    seed_closed(&fixture, track).await;
     assert!(
         !crate::planner_hibernation::eligible(fixture.repo.pool(), &worker)
             .await
@@ -394,7 +411,7 @@ async fn production_http_invalid_closed_snapshot_cannot_abort_other_planner_hibe
     .expect("the actual failed wake registered its accepted input");
     let route = crate::state::RouteState::from_ref(&state);
     drop(crate::per_card_lock::lock_card(&route.planner_recovery_locks, &bad_card).await);
-    patch_closed(&app, &cookie, bad_track, true).await;
+    seed_closed(&fixture, bad_track).await;
     let mut unsupported = serde_json::to_value(&original).unwrap();
     unsupported["schema_version"] = json!(99);
     (fixture.repo.db())
@@ -462,7 +479,7 @@ async fn production_http_invalid_closed_snapshot_cannot_abort_other_planner_hibe
     let completed = fixture
         .wait_phase(track, HarnessPhaseTag::TurnCompleted)
         .await;
-    patch_closed(&app, &cookie, track, true).await;
+    seed_closed(&fixture, track).await;
     let outcome = sweep_result(&state, &mut peer).await;
     let remains = state.harness.get(&worker).is_some();
     let after = fixture.carrier(track).await.2;

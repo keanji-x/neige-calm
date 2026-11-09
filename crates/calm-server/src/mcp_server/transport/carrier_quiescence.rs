@@ -1,4 +1,4 @@
-//! Per-worker tool admission, from resolved call identity until handler completion.
+//! Per-worker tool admission through the handler and transport reply flush.
 use super::RpcError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,6 +10,24 @@ struct State {
 }
 #[derive(Clone, Default)]
 pub struct ToolCallAdmission(Arc<Mutex<HashMap<String, State>>>);
+
+tokio::task_local! {
+    static REPLY_CALLS: std::cell::RefCell<Vec<ToolCallGuard>>;
+}
+
+/// The transport owns admitted calls until their result has been flushed to the caller.
+pub(super) async fn through_reply<F: std::future::Future>(reply: F) -> (F::Output, bool) {
+    let (result, calls) = REPLY_CALLS
+        .scope(Default::default(), async {
+            let result = reply.await;
+            let calls = REPLY_CALLS.with(|calls| calls.take());
+            (result, calls)
+        })
+        .await;
+    let admitted = !calls.is_empty();
+    drop(calls);
+    (result, admitted)
+}
 
 pub struct ToolCallGuard {
     owner: ToolCallAdmission,
@@ -51,6 +69,12 @@ impl ToolCallAdmission {
     }
 }
 impl ToolCallGuard {
+    pub(super) fn hold_until_reply(self) -> Option<Self> {
+        let mut call = Some(self);
+        let _ = REPLY_CALLS
+            .try_with(|calls| calls.borrow_mut().push(call.take().expect("admitted call")));
+        call
+    }
     pub fn worker(&self) -> &str {
         &self.worker
     }

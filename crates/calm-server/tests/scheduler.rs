@@ -721,18 +721,18 @@ async fn seed_codex_worker_card_with_terminal(
     label: &str,
 ) -> (String, String, String) {
     let card_id = format!("card-timeout-{label}-{}", new_id());
-    let runtime_id = format!("runtime-timeout-{label}-{}", new_id());
+    let worker_session_id = format!("runtime-timeout-{label}-{}", new_id());
     let track_id = boot.track_id.clone();
     let card_role_cache = boot.card_role_cache.clone();
     let result = calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
         let card_id = card_id.clone();
-        let runtime_id = runtime_id.clone();
+        let worker_session_id = worker_session_id.clone();
         move |tx| {
             Box::pin(async move {
                 let (_card, term, _mcp_token) = card_with_codex_create_tx(
                     tx,
                     card_id,
-                    &runtime_id,
+                    &worker_session_id,
                     None,
                     track_id,
                     None,
@@ -754,11 +754,26 @@ async fn seed_codex_worker_card_with_terminal(
     })
     .await
     .expect("seed codex worker card");
+    // A running native worker needs the thread identity its Stop owner uses.
+    // Keep the real timeout/lease assertions; do not turn a missing binding into
+    // a successful cleanup in production.
+    let thread = format!("thread-{worker_session_id}");
+    boot.repo
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE worker_sessions SET thread_id=?1 WHERE id=?2")
+                .bind(&thread)
+                .bind(&worker_session_id),
+        )
+        .await
+        .unwrap();
     boot.repo
         .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
         .await
         .expect("mark seeded worker runtime running");
-    (card_id, runtime_id, result)
+    (card_id, worker_session_id, result)
 }
 
 /// Seed a `held` workspace lease whose `path` exists on disk; the caller keeps the returned guard alive for the test.
@@ -10040,3 +10055,6 @@ mod recovery_3192;
 mod terminal_hook_persistence;
 #[path = "scheduler/terminal_pipe.rs"]
 mod terminal_pipe;
+
+#[path = "scheduler/close_subtree.rs"]
+mod close_subtree;
