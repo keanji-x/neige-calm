@@ -1,4 +1,12 @@
 @layer features {
+  .markdown :where(th, td):first-child {
+    padding-inline-start: 0;
+  }
+
+  .markdown :where(th, td):last-child {
+    padding-inline-end: 0;
+  }
+
   .image {
     display: block;
     max-inline-size: 100%;

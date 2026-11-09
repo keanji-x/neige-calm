@@ -45,5 +45,5 @@ export const Reply = memo(function Reply({ text, imageFiles, renderLink }: { tex
       <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />
     ),
   }), [imageFiles, previewsEnabled, renderLink]);
-  return <Markdown density="compact" headingLevelStart={3} components={components}>{text}</Markdown>;
+  return <Markdown className={styles.markdown} density="compact" contentWidth="100%" headingLevelStart={3} components={components}>{text}</Markdown>;
 });

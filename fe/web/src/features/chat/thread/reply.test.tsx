@@ -77,3 +77,11 @@ it('reuses a stored reply through unrelated parent updates and still accepts cha
   expect(screen.getByText('Added live words.')).toBeTruthy();
   expect(rawUrl.mock.calls.length).toBeGreaterThan(reads);
 });
+
+it('expands reply prose blocks to the full container width alongside tables', () => {
+  render(<Reply text={'## Heading\n\nParagraph text.\n\n| Col | Val |\n| --- | --- |\n| #1 | OK |'} imageFiles={null} />);
+  const heading = screen.getByRole('heading', { level: 4, name: 'Heading' });
+  const paragraph = screen.getByText('Paragraph text.');
+  expect(heading.style.getPropertyValue('--x-maxWidth')).toBe('100%');
+  expect(paragraph.style.getPropertyValue('--x-maxWidth')).toBe('100%');
+});
