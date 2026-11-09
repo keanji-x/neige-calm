@@ -13,6 +13,7 @@ pub(super) struct Stats {
     interrupted: Mutex<Vec<(String, String)>>,
     fail_stop: AtomicBool,
     hold: Mutex<Option<(Arc<Notify>, Arc<Notify>)>>,
+    hold_end: Mutex<Option<(Arc<Notify>, Arc<Notify>)>>,
 }
 
 impl Stats {
@@ -25,6 +26,11 @@ impl Stats {
     pub fn hold_stop(&self) -> (Arc<Notify>, Arc<Notify>) {
         let hold = (Arc::new(Notify::new()), Arc::new(Notify::new()));
         *self.hold.lock().unwrap() = Some(hold.clone());
+        hold
+    }
+    pub fn hold_end(&self) -> (Arc<Notify>, Arc<Notify>) {
+        let hold = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        *self.hold_end.lock().unwrap() = Some(hold.clone());
         hold
     }
 }
@@ -73,7 +79,23 @@ async fn drive(
     mut peer: tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
     stats: Arc<Stats>,
 ) {
-    while let Some(frame) = peer.next().await {
+    let mut pending_end: Option<(Value, Arc<Notify>)> = None;
+    loop {
+        // Hold only the END notification; RPC responses must keep flowing so
+        // the real cleanup owner can finish its ACK-only observation pass.
+        let frame = if let Some((end, release)) = &pending_end {
+            tokio::select! {
+                _ = release.notified() => {
+                    peer.send(Message::Text(end.to_string())).await.unwrap();
+                    pending_end = None;
+                    continue;
+                }
+                frame = peer.next() => frame,
+            }
+        } else {
+            peer.next().await
+        };
+        let Some(frame) = frame else { break };
         let Ok(Message::Text(frame)) = frame else {
             continue;
         };
@@ -131,10 +153,21 @@ async fn drive(
         ))
         .await
         .unwrap();
-        for notification in [started, terminal].into_iter().flatten() {
+        if let Some(notification) = started {
             peer.send(Message::Text(notification.to_string()))
                 .await
                 .unwrap();
+        }
+        if let Some(terminal) = terminal {
+            let hold = stats.hold_end.lock().unwrap().take();
+            if let Some((entered, release)) = hold {
+                assert!(pending_end.replace((terminal, release)).is_none());
+                entered.notify_one();
+            } else {
+                peer.send(Message::Text(terminal.to_string()))
+                    .await
+                    .unwrap();
+            }
         }
     }
 }

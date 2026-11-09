@@ -44,13 +44,20 @@ struct Boot {
     /// The fake app-server, for a test that fails a start; not the `AppState`, which
     /// `track_creator_does_not_keep_the_state_alive` must be able to drop.
     codex: Arc<SharedCodexAppServer>,
-    native: Option<close_native_peer::NativePeer>,
+    native: Option<NativeBoot>,
     ctx: Arc<AppContext>,
     registry: ToolRegistry,
     repo: Arc<SqlxRepo>,
     area_id: String,
     recipe_id: String,
     _tmp: TempDir,
+}
+
+/// Native lifecycle fixtures explicitly drive the production periodic sweep.
+/// Ordinary creator fixtures retain no AppState, preserving their lifetime check.
+struct NativeBoot {
+    state: AppState,
+    peer: close_native_peer::NativePeer,
 }
 
 /// A Planner (or Worker) bound to one card of one Track, with a live session the role gate resolves.
@@ -144,7 +151,10 @@ async fn boot_with_native(
     let ctx = state.mcp_context();
     let codex = state.shared_codex_appserver.clone();
     let native = if native {
-        Some(close_native_peer::NativePeer::connect(&codex).await)
+        Some(NativeBoot {
+            state: state.clone(),
+            peer: close_native_peer::NativePeer::connect(&codex).await,
+        })
     } else {
         None
     };

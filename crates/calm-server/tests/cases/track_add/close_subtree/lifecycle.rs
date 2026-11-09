@@ -5,7 +5,7 @@ async fn boot(max: u32) -> Boot {
     super::super::boot_with_native(max, None, false, true).await
 }
 fn native(boot: &Boot) -> &super::super::close_native_peer::Stats {
-    &boot.native.as_ref().unwrap().stats
+    &boot.native.as_ref().unwrap().peer.stats
 }
 fn turns(boot: &Boot) -> u64 {
     native(boot).turns.load(Ordering::SeqCst)
@@ -17,6 +17,22 @@ fn interrupted(boot: &Boot) -> Vec<(String, String)> {
     native(boot).interrupted()
 }
 
+async fn cleanup_pass_finished(
+    boot: &Boot,
+    planner: &Caller,
+) -> calm_server::mcp_server::transport::carrier_quiescence::ToolCallGuard {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Ok(guard) = boot.ctx.tool_calls.fence(&planner.identity.session_id) {
+                break guard;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the cleanup pass must finish")
+}
+
 async fn finish_planners(boot: &Boot) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while boot
@@ -24,6 +40,11 @@ async fn finish_planners(boot: &Boot) {
             .await
             != 0
         {
+            // The fixture has no periodic task. Await the real sweep so an
+            // ACK-only pass can retain cleanup and a later pass can consume END.
+            calm_server::terminal_sweeper::sweep(&boot.native.as_ref().unwrap().state)
+                .await
+                .unwrap();
             tokio::task::yield_now().await;
         }
     })
@@ -392,16 +413,7 @@ async fn close_cancels_running_planner_cleanup_retries_after_unconfirmed_stop() 
     .unwrap();
     // The RPC record precedes its response and factual reads. Wait for this
     // cleanup pass's admission fence before asserting failure or poking retry.
-    let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if let Ok(guard) = boot.ctx.tool_calls.fence(&planner.identity.session_id) {
-                break guard;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the unconfirmed Stop pass must finish");
+    let settled = cleanup_pass_finished(&boot, &planner).await;
     assert_eq!(
         boot.count("SELECT count(*) FROM track_close_cleanups")
             .await,
@@ -409,6 +421,11 @@ async fn close_cancels_running_planner_cleanup_retries_after_unconfirmed_stop() 
     );
     assert!(boot.harness.get(&planner.identity.session_id).is_some());
     // A failed Stop neither releases the obligation nor makes the native owner current again.
+    let before_turns = turns(&boot);
+    let before_threads = threads(&boot);
+    let original = interrupted(&boot)[0].clone();
+    let (acknowledged, release_end) = native(&boot).hold_end();
+    let mut notifications = boot.codex.subscribe_notifications();
     native(&boot).fail_stop(false);
     drop(settled);
     boot.ctx
@@ -416,8 +433,37 @@ async fn close_cancels_running_planner_cleanup_retries_after_unconfirmed_stop() 
         .get()
         .unwrap()
         .poke_track_close_cleanups();
+    tokio::time::timeout(std::time::Duration::from_secs(5), acknowledged.notified())
+        .await
+        .unwrap();
+    let settled = cleanup_pass_finished(&boot, &planner).await;
+    assert_eq!(
+        boot.count("SELECT count(*) FROM track_close_cleanups")
+            .await,
+        1,
+        "Stop ACK without the original END must retain cleanup"
+    );
+    assert!(boot.harness.get(&planner.identity.session_id).is_some());
+    release_end.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let calm_server::codex_appserver::Notification::TurnCompleted { thread_id, turn } =
+                notifications.recv().await.unwrap()
+                && thread_id == original.0
+                && turn["id"] == original.1
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the original END must reach the native owner");
+    drop(settled);
     finish_planners(&boot).await;
     assert!(boot.harness.get(&planner.identity.session_id).is_none());
+    assert_eq!(turns(&boot), before_turns);
+    assert_eq!(threads(&boot), before_threads);
+    assert!(interrupted(&boot).iter().all(|stop| stop == &original));
 }
 
 #[tokio::test]
