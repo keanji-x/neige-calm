@@ -527,3 +527,9 @@ it('shares destination admission through the public link capability and preserve
   expect(screen.getByText('Notes').tagName).toBe('STRONG');
   expect(open).toHaveBeenCalledTimes(1);
 });
+
+it('renders inline and display formulas in report prose while keeping code literal', () => {
+  const { container } = render(<ReportDocument report={flat('Inline $x^2$.\n\n$$\n\\frac{1}{2}\n$$\n\n`$x$`')} empty={EMPTY} />);
+  expect(container.querySelectorAll('math')).toHaveLength(2);
+  expect(container.querySelector('code')?.textContent).toBe('$x$');
+});

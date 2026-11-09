@@ -238,6 +238,7 @@ describe('architecture fixtures', () => {
     ['cards-public-entry-dynamic', 'cards-public-entry-only'],
     ['markdown-public-entry-dynamic', 'markdown-public-entry-only'],
     ['markdown-public-entry-core', 'markdown-public-entry-only'],
+    ['ui-markdown-web-whitelist', 'ui-markdown-core-whitelist'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
     ['core-no-node-global-buffer', 'Buffer'],

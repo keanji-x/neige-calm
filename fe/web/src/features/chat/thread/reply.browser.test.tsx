@@ -43,13 +43,49 @@ it('loads a local screenshot in streamed and stored replies and fits a narrow co
   }
 });
 
-it('shares the code contract with Astryx fences through the real chat renderer', async () => {
-  render(<Reply text="```rust\nfn main() {}\n```" imageFiles={null} />);
+it('shares the code contract with fenced code through the real chat renderer', async () => {
+  render(<Reply text={'```rust\nfn main() {}\n```'} imageFiles={null} />);
   await waitFor(() => {
     const content = screen.getByRole('textbox', { name: 'Code' });
     expect(EditorView.findFromDOM(content)?.state.facet(language)?.name).toBe('rust');
   }, { timeout: 10000 });
   expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
+});
+
+
+it('preserves readable heading typography and block spacing at every reply level', () => {
+  const { container } = render(<Reply imageFiles={null} text={'# First\n\ntext\n\n## Second\n\n### Third\n\n#### Fourth'} />);
+  const headings = [...container.querySelectorAll<HTMLElement>('h3, h4, h5, h6')];
+  for (const [index, heading] of headings.entries()) {
+    const painted = getComputedStyle(heading);
+    expect(painted.fontWeight).toBe('600');
+    const probe = document.createElement('span');
+    probe.style.fontSize = `var(--text-heading-${index + 3}-size)`;
+    probe.style.lineHeight = `var(--text-heading-${index + 3}-leading)`;
+    document.body.append(probe);
+    expect(painted.fontSize).toBe(getComputedStyle(probe).fontSize);
+    expect(painted.lineHeight).toBe(getComputedStyle(probe).lineHeight);
+    probe.remove();
+    expect(Number.parseFloat(painted.lineHeight)).toBeGreaterThan(Number.parseFloat(painted.fontSize));
+    expect(Number.parseFloat(painted.marginBlockStart)).toBe(index === 0 ? 0 : index < 3 ? 24 : 16);
+    expect(Number.parseFloat(painted.marginBlockEnd)).toBe(index < 3 ? 12 : 8);
+  }
+});
+
+it('keeps content-sized table columns readable inside their own narrow scroller', () => {
+  const { container } = render(<div style={{ inlineSize: 240, overflowWrap: 'anywhere' }}><Reply imageFiles={null}
+    text={'| ID | Medium label | Very long descriptive header | Extra |\n| - | - | - | - |\n| 1 | words | **long body value with spaces** | longunbrokentextvalue |'} /></div>);
+  const table = container.querySelector('table')!;
+  const wrap = table.parentElement!;
+  const widths = [...table.querySelectorAll('th')].map(cell => cell.getBoundingClientRect().width);
+  expect(widths[0]).toBeGreaterThanOrEqual(60);
+  expect(widths[1]).toBeGreaterThanOrEqual(80);
+  expect(widths[2]).toBeGreaterThanOrEqual(120);
+  expect(widths[3]).toBeGreaterThanOrEqual(120);
+  expect(wrap.scrollWidth).toBeGreaterThan(wrap.clientWidth);
+  wrap.scrollLeft = 50;
+  expect(wrap.scrollLeft).toBe(50);
+  expect(container.firstElementChild!.scrollWidth).toBeLessThanOrEqual(240);
 });
 
 it('aligns Markdown tables with surrounding reply prose on both inline edges while keeping inter-column padding', () => {

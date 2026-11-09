@@ -1,6 +1,6 @@
 # Conversation replies
 
-Stored and streamed agent replies use the same Astryx Markdown renderer. The app
+Stored and streamed agent replies use the shared Markdown parser and renderer. The app
 binds `ChatThread.imageFiles` to the open conversation's Track workspace, using
 `Track.agentCwd` and the existing Track-scoped raw image endpoint.
 

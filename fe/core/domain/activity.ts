@@ -83,7 +83,7 @@ export const DISMISS_TEXT: WriteText = Object.freeze({
 function inlinePlainText(nodes: readonly NormalizedInline[]): string {
   return nodes.map((node): string => {
     switch (node.type) {
-      case 'text': case 'inlineCode': return node.value;
+      case 'text': case 'inlineCode': case 'inlineMath': return node.value;
       case 'image': return node.alt;
       case 'break': return ' ';
       case 'html': return '';
@@ -95,7 +95,7 @@ function inlinePlainText(nodes: readonly NormalizedInline[]): string {
 function blockPlainText(block: NormalizedBlock): string {
   switch (block.type) {
     case 'heading': case 'paragraph': return inlinePlainText(block.children);
-    case 'code': return block.value;
+    case 'code': case 'math': return block.value;
     case 'blockquote': return block.children.map(blockPlainText).join(' ');
     case 'list': return block.children.map((item) => item.children.map(blockPlainText).join(' ')).join(' ');
     case 'table': return block.children

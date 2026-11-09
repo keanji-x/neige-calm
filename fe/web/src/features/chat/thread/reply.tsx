@@ -1,7 +1,7 @@
-import { MarkdownCode } from '../../../ui/code/public.tsx';
-import { memo, useMemo, type ReactNode } from 'react';
+import { MarkdownBlocks, markdownInlineText } from '../../../ui/markdown/public.tsx';
+import { parse, sanitizeAstPolicy } from '../../../../../core/markdown/public.ts';
+import { createElement, memo, useMemo, type ReactNode } from 'react';
 import { GitHubPreviewLink, useGitHubPreviewsEnabled } from '../../../systems/github-links/public.tsx';
-import { Markdown } from '@astryxdesign/core/Markdown';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { parseReportFileLink, reportFilePathRelativeToRoot } from '../../../../../core/domain/report-file.ts';
@@ -33,17 +33,36 @@ function ReplyImage({ src, alt, imageFiles }: {
     onError={() => { setFailed(true); }} />;
 }
 
-/** Stored and streamed replies share one renderer. The app injects link rendering
- * and Track-scoped images; MarkdownCode and copied responses retain their contracts.
- * `headingLevelStart={3}` leaves the page's h1 and sections' h2 above the reply. */
+/** Stored and streamed replies share one renderer and Track-scoped capabilities. */
 export const Reply = memo(function Reply({ text, imageFiles, renderLink }: { text: string; imageFiles: ReplyImageFiles | null; renderLink?: ReplyLinkRenderer }) {
   const previewsEnabled = useGitHubPreviewsEnabled();
-  const components = useMemo(() => ({
-    code: MarkdownCode,
-    ...(renderLink !== undefined ? { link: renderLink } : previewsEnabled ? { link: ({ href, children }: { href: string; children: ReactNode }) => <GitHubPreviewLink href={href}>{children}</GitHubPreviewLink> } : {}),
-    image: ({ src, alt }: { src: string; alt: string }) => (
-      <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />
-    ),
-  }), [imageFiles, previewsEnabled, renderLink]);
-  return <Markdown className={styles.markdown} density="compact" contentWidth="100%" headingLevelStart={3} components={components}>{text}</Markdown>;
+  const result = useMemo(() => parse(text), [text]);
+  if (result.status === 'failed') return <pre className={styles.raw}>{text}</pre>;
+  const ast = sanitizeAstPolicy(result.value, { rawHtml: 'literal' });
+  const headingIds = new Map<number, string>();
+  const counts = new Map<string, number>();
+  for (const block of ast.children) {
+    if (block.type !== 'heading') continue;
+    const slug = markdownInlineText(block.children, '').trim().toLowerCase().replace(/['"]/g, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'section';
+    const count = counts.get(slug) ?? 0;
+    counts.set(slug, count + 1);
+    headingIds.set(block.position.start.offset, count === 0 ? slug : `${slug}-${count}`);
+  }
+  return <MarkdownBlocks blocks={ast.children} presentation={{
+    classes: { paragraph: styles.paragraph, list: styles.list, item: styles.item, check: styles.check,
+      quote: styles.quote, inlineCode: styles.inlineCode, tableWrap: styles.tableWrap, table: styles.table,
+      cell: styles.cell, rule: styles.rule },
+    heading: (depth, offset, children) => createElement(`h${Math.min(depth + 2, 6)}`, { id: headingIds.get(offset), className: `${styles.heading} ${depth <= 3 ? styles.majorHeading : styles.minorHeading}` }, children),
+    link: (href, _label, children) => {
+      // Browsers ignore control characters within a scheme. Never turn unsafe destinations into links.
+      const normalized = Array.from(href).filter(char => char.charCodeAt(0) > 31 && char.charCodeAt(0) !== 127).join('').trim();
+      if (normalized === '' || /^(?:javascript|vbscript|data):/i.test(normalized)) return children;
+      if (renderLink !== undefined) return renderLink({ href: normalized, children });
+      if (previewsEnabled) return <GitHubPreviewLink href={normalized}>{children}</GitHubPreviewLink>;
+      const external = normalized.startsWith('https://') || normalized.startsWith('http://');
+      return <a className={styles.link} href={normalized} {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{children}</a>;
+    },
+    image: (src, alt) => <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />,
+  }} />;
 });

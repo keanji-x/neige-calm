@@ -99,6 +99,7 @@
 # Business-free UI primitives (§2, §6.1b/7). Each module prefix includes its
 # README, public entry, contract/behavior tests and colocated CSS Module.
 - { path: fe/web/src/ui/typography-scope, type: directory, owner: ui/typography-scope, readonly: false, basis: "generic generated font-scope adapter (#2713)" }
+- { path: fe/web/src/ui/markdown, type: directory, owner: ui/markdown, readonly: false, basis: "shared presentation of sanitized Markdown syntax" }
 - { path: fe/web/src/ui/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }
 - { path: fe/web/src/ui/public-consumer.contract.test.tsx, type: file, owner: ui/contracts, readonly: true, basis: "frozen interfaces §6.7" }
 - { path: fe/web/src/ui/state, type: directory, owner: ui/state, readonly: true, basis: "frozen interface §6.1b" }

@@ -138,6 +138,15 @@ it.each(['history', 'incremental'])('rejects malformed navigation hrefs without 
   await expect.poll(() => router.state.location.pathname).toBe('/');
 });
 
+it('keeps a readable preview title when a link label is a formula', async () => {
+  await setup({ historySuffix: '\n\n[$x^2$](./notes.md)' });
+  await expect.poll(() => document.querySelector('button:has(math)')).not.toBeNull();
+  const formulaLink = document.querySelector('button:has(math)');
+  expect(formulaLink).not.toBeNull();
+  await userEvent.hover(formulaLink!);
+  await expect.element(page.getByRole('dialog', { name: 'Preview: x^2' })).toBeVisible();
+});
+
 it('renders incremental links and keeps external loading explicit', async () => {
   const { append, requests } = await setup({ streaming: true });
   await expect.element(page.getByRole('button', { name: 'Chat file', exact: true })).toBeVisible();
