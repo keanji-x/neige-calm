@@ -149,16 +149,15 @@ describe('ChatThread', () => {
       <ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={[systemEntry()]} />,
     );
     const system = container.querySelector('[data-nc-turn="system"]');
-    expect(system?.tagName).toBe('DETAILS');
-    const summary = system?.querySelector('summary') as HTMLElement;
+    const summary = system?.querySelector('button') as HTMLElement;
     expect(summary.getAttribute('title'))
       .toBe('The report changed in the kernel.');
-    expect(summary.querySelector('[aria-hidden="true"]')?.textContent).toBe('›');
     expect(summary.querySelector('[data-nc-system-label]')?.textContent?.trim())
       .toBe('· Report edited ·');
-    expect(system?.querySelector('p')?.textContent).toBe('The report changed in the kernel.');
+    expect(summary.getAttribute('aria-expanded')).toBe('false');
     await user.click(summary);
-    expect((system as HTMLDetailsElement).open).toBe(true);
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
+    expect(system?.querySelector('p')?.textContent).toBe('The report changed in the kernel.');
     expect(container.querySelector('[data-nc-turn="you"]')).toBeNull();
     expect(container.querySelector('[data-nc-turn="agent"]')).toBeNull();
   });

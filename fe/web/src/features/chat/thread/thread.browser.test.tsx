@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 /* The whole cascade before the component: `thread.module.css` declares `@layer features` of its own, and whichever registers first wins. */
 import '../../../styles/entry.css';
 import { CardFrame } from '../../../ui/card-frame/public.tsx';
+import { DepthFeedback } from '../../../ui/motion/depth-feedback.tsx';
 
 import { ChatComposer, ChatThread } from './public.tsx';
 import type {
@@ -556,6 +557,32 @@ async function frame() {
 }
 
 describe('the structured system disclosure in a real engine', () => {
+  it('aligns with tool calls and springs open and closed', async () => {
+    const tool: ConversationActivity = { id: 'tool', author: 'activity', verb: 'Read', target: 'file', state: 'done', durationMs: null, detail: 'Tool result', tool: null, atMs: 0 };
+    const system: ConversationSystemEntry = { id: 'system', author: 'system', label: 'Task failed', text: 'Failure details', atMs: 1 };
+    render(<><DepthFeedback /><RailPane turns={[tool, system]} /></>);
+    await frame();
+    const toolRow = screen.getByRole('button', { name: /Read file/ });
+    const button = screen.getByRole('button', { name: /Task failed/, expanded: false });
+    expect(Math.abs(button.getBoundingClientRect().left - toolRow.getBoundingClientRect().left)).toBeLessThan(1);
+    const toolLabel = screen.getByText('Read', { exact: true });
+    const systemLabel = button.querySelector<HTMLElement>('[data-nc-system-label]')!;
+    expect(Math.abs(systemLabel.getBoundingClientRect().left - toolLabel.getBoundingClientRect().left)).toBeLessThan(1);
+    fireEvent.pointerDown(button, { pointerId: 1, isPrimary: true, button: 0 });
+    expect(button.getAnimations().length).toBeGreaterThan(0);
+    fireEvent.pointerUp(button, { pointerId: 1 });
+    expect(button.getAnimations().length).toBeGreaterThan(0);
+    const motion = button.closest('[data-nc-turn="system"]')!.querySelector<HTMLElement>('[data-nc-size-motion]')!;
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(motion.getAnimations().length).toBeGreaterThan(0);
+    await frame();
+    await frame();
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(motion.getAnimations().length).toBeGreaterThan(0);
+  });
+
   it('has a full control-height target and toggles from the keyboard', async () => {
     /* A task receipt, not a report edit: a `Report edited` entry opens a quiet-sync fold. */
     const system: ConversationSystemEntry = {
@@ -565,17 +592,15 @@ describe('the structured system disclosure in a real engine', () => {
     render(<RailPane turns={[system]} />);
     await frame();
 
-    const details = document.querySelector<HTMLDetailsElement>('[data-nc-turn="system"]')!;
-    const summary = details.querySelector<HTMLElement>('summary')!;
-    const disclosure = summary.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+    const details = document.querySelector<HTMLElement>('[data-nc-turn="system"]')!;
+    const summary = details.querySelector<HTMLElement>('button')!;
+    const disclosure = summary.querySelector<HTMLElement>('[data-nc-spring-rotation]')!;
     expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(24);
-    expect(getComputedStyle(summary).justifyContent).toBe('flex-start');
-    expect(disclosure.textContent).toBe('›');
 
     summary.focus();
     await userEvent.keyboard('{Enter}');
-    expect(details.open).toBe(true);
-    expect(getComputedStyle(disclosure).transform).not.toBe('none');
+    expect(summary.getAttribute('aria-expanded')).toBe('true');
+    expect(disclosure.getAnimations().length).toBeGreaterThan(0);
   });
 });
 

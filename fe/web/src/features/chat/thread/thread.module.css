@@ -406,39 +406,38 @@
   }
 
   /* Kernel observations are context for the exchange, not a third speaker.
-   * Their stable label stays in the reading flow and the native disclosure
+   * Their stable label stays in the reading flow and the disclosure
    * keeps the full observation reachable without turning it into a bubble. */
   .system {
     font-size: var(--font-step-1-size);
     font-weight: var(--weight-normal);
     line-height: var(--font-step-1-line);
     margin: 0;
+    margin-inline-start: calc(-1 * var(--space-1));
     color: var(--text-3);
   }
 
   .systemSummary {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    gap: var(--space-1);
+    inline-size: 100%;
     min-block-size: var(--control-h);
     min-inline-size: 0;
+    padding: 0;
+    padding-inline-start: calc(var(--glyph-sm) + var(--space-3));
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
-    list-style: none;
     text-align: start;
   }
 
-  .systemSummary::-webkit-details-marker {
-    display: none;
-  }
-
   .systemDisclosure {
+    display: inline-flex;
     flex: none;
-    inline-size: 10px;
-    transform-origin: center;
-  }
-
-  .system[open] > .systemSummary .systemDisclosure {
-    transform: rotate(90deg);
+    margin-inline-start: auto;
   }
 
   .systemLabel {
@@ -450,6 +449,7 @@
 
   .systemDetail {
     margin: var(--space-2) 0 0;
+    margin-inline-start: calc(var(--glyph-sm) + var(--space-3));
     overflow-wrap: anywhere;
     color: var(--text-3);
     text-align: start;

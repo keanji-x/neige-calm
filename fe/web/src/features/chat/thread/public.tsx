@@ -60,6 +60,7 @@ import {
   toolCallGroupShowsRunning, untouchedToolCallGroup, useToolCallFocus,
 } from './activity-groups.tsx';
 import { ActivityRun, toolCallOf } from './activity-run.tsx';
+import { SystemDisclosure } from './system-disclosure.tsx';
 
 /** Shared by an unsent draft and a persisted conversation with no transcript. */
 export function ChatEmpty({ working = false, children }: Readonly<{ working?: boolean; children?: ReactNode }>) {
@@ -272,18 +273,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
           {opensAfterGap(turns, index) && index > 0 && (
             <p className={styles.gap}>{clockTime(gapClock, turn.atMs)}</p>
           )}
-          <details
-            className={styles.system}
-            data-nc-turn="system"
-          >
-            <summary className={styles.systemSummary} title={turn.text}>
-              <span className={styles.systemDisclosure} aria-hidden="true">›</span>
-              <span className={styles.systemLabel} data-nc-system-label="">
-                · {turn.label} ·
-              </span>
-            </summary>
-            <p className={styles.systemDetail}>{turn.text}</p>
-          </details>
+          <SystemDisclosure turn={turn} />
         </div>
       );
     }
