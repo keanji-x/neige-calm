@@ -606,6 +606,14 @@
     color: var(--text);
   }
 
+  .cell:first-child {
+    padding-inline-start: 0;
+  }
+
+  .cell:last-child {
+    padding-inline-end: 0;
+  }
+
   .rule {
     block-size: 1px;
     margin-block: var(--space-5);

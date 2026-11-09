@@ -54,6 +54,16 @@
     vertical-align: baseline;
   }
 
+  .head:first-child,
+  .cell:first-child {
+    padding-inline-start: 0;
+  }
+
+  .head:last-child,
+  .cell:last-child {
+    padding-inline-end: 0;
+  }
+
   /* Right-aligned columns are the numeric ones, and digits only line up if they
      are all the same width. This pairing is the whole reason a table beats a
      list. */

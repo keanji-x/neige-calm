@@ -112,3 +112,65 @@ it('shows a mobile empty state for outline-only prose and restores the report wh
   expect(browserPage.getByText('进展会整理在这里', { exact: true }).query()).toBeNull();
   await browserPage.viewport(1280, 800);
 });
+
+it('aligns prose Markdown table and native table block outer columns flush with prose edges', async () => {
+  await browserPage.viewport(1200, 800);
+  const markdown = [
+    'Leading prose paragraph.',
+    '',
+    '| Metric | Delta | Value |',
+    '| :--- | :---: | ---: |',
+    '| Revenue | +4% | 128.4 |',
+  ].join('\n');
+  render(
+    <Page
+      blocks={[
+        prose('b_prose', markdown),
+        {
+          id: 'b_table',
+          kind: 'table',
+          payload: {
+            columns: [
+              { key: 'metric', label: 'Metric' },
+              { key: 'delta', label: 'Delta' },
+              { key: 'value', label: 'Value', align: 'right' },
+            ],
+            rows: [{ metric: 'Margin', delta: '+1%', value: '42.0' }],
+          },
+        },
+      ]}
+    />,
+  );
+
+  const paragraphBox = document.querySelector('#b_prose p')!.getBoundingClientRect();
+  const textBox = (element: Element): DOMRect => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return range.getBoundingClientRect();
+  };
+
+  for (const table of [
+    document.querySelector<HTMLElement>('#b_prose table')!,
+    document.querySelector<HTMLElement>('#b_table table')!,
+  ]) {
+    const firstCells = table.querySelectorAll<HTMLElement>('tr > :first-child');
+    const middleCells = table.querySelectorAll<HTMLElement>('tr > :nth-child(2)');
+    const lastCells = table.querySelectorAll<HTMLElement>('tr > :last-child');
+    expect(firstCells.length).toBeGreaterThanOrEqual(2);
+    for (const cell of firstCells) {
+      expect(getComputedStyle(cell).paddingInlineStart).toBe('0px');
+      expect(parseFloat(getComputedStyle(cell).paddingInlineEnd)).toBeGreaterThan(0);
+      expect(Math.abs(textBox(cell).left - paragraphBox.left)).toBeLessThanOrEqual(1);
+    }
+    for (const cell of middleCells) {
+      expect(parseFloat(getComputedStyle(cell).paddingInlineStart)).toBeGreaterThan(0);
+      expect(parseFloat(getComputedStyle(cell).paddingInlineEnd)).toBeGreaterThan(0);
+    }
+    for (const cell of lastCells) {
+      expect(parseFloat(getComputedStyle(cell).paddingInlineStart)).toBeGreaterThan(0);
+      expect(getComputedStyle(cell).paddingInlineEnd).toBe('0px');
+    }
+    const rightAlignedValue = table.querySelector<HTMLElement>('tbody tr > :last-child')!;
+    expect(Math.abs(textBox(rightAlignedValue).right - paragraphBox.right)).toBeLessThanOrEqual(1);
+  }
+});
