@@ -153,3 +153,21 @@ it('renders a currency reference image alongside real math', () => {
   expect(container.textContent).toContain('costs $10 and');
   expect(container.textContent).not.toContain('£');
 });
+
+
+it.each([
+  ['[item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['![item \\$5] with $x$\n\n[item \\$5]: /url', 'image', 'item $5', true],
+  ['[shown \\$5][ref]\n\n[ref]: /url', 'link', 'shown $5', false],
+  ['[shown \\$5][item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'shown $5', true],
+  ['[item \\$5][] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['[item \\[1\\] $5] with $x$\n\n[item \\[1\\] $5]: /url', 'link', 'item [1] $5', true],
+] as const)('renders escaped currency references intact: %s', (text, type, label, hasMath) => {
+  const { container } = render(<Reply imageFiles={imageFiles('/')} text={text} />);
+  if (type === 'link') expect(screen.getByRole('link', { name: label }).getAttribute('href')).toBe('/url');
+  else expect(screen.getByRole('img', { name: label }).getAttribute('src'))
+    .toBe('/api/tracks/track-1/workspace/readfile-raw?path=url');
+  expect(container.querySelectorAll('math')).toHaveLength(hasMath ? 1 : 0);
+  if (hasMath) expect(container.querySelector('annotation')?.textContent).toBe('x');
+  expect(container.textContent).not.toContain('£');
+});

@@ -437,18 +437,37 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
   return null;
 }
 
-function isInvalidInlineMath(source: string, start: number, end: number): boolean {
+function isInvalidInlineMath(source: string, start: number, end: number, boundaries: readonly (readonly [number, number])[] = []): boolean {
   const raw = source.slice(start, end);
   return raw.startsWith('$') && !raw.startsWith('$$') && (
     /\s/.test(raw[1] ?? '') || /\s/.test(raw[raw.length - 2] ?? '')
     || /\d/.test(source[start - 1] ?? '') || /\d/.test(source[end] ?? '') || raw.includes('\n')
+    || boundaries.some(([bStart, bEnd]) => (start < bStart && end > bStart) || (start < bEnd && end > bEnd))
   );
 }
 
-function disambiguateSegment(source: string, mask: string | undefined, options: Parameters<typeof fromMarkdown>[1]): MdNode {
+function mathExtension(source: string, boundaries: readonly (readonly [number, number])[]) {
+  const extension = math();
+  const base = extension.text?.[36];
+  if (base !== undefined && 'tokenize' in base) {
+    extension.text = { ...extension.text, 36: {
+      ...base,
+      tokenize(effects, ok, nok) {
+        const startOffset = this.now().offset;
+        return base.tokenize.call(this, effects, code => (
+          isInvalidInlineMath(source, startOffset, this.now().offset, boundaries) ? nok(code) : ok(code)
+        ), nok);
+      },
+    } };
+  }
+  return extension;
+}
+
+function disambiguateSegment(source: string, mask: string | undefined, boundaries: readonly (readonly [number, number])[]): MdNode {
   let input = source;
   let root: MdNode;
   for (let attempt = 0; ; attempt += 1) {
+    const options = { extensions: [gfm(), mathExtension(input, boundaries)], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] };
     root = fromMarkdown(input, options) as MdNode;
     const invalid: number[] = [];
     const visit = (node: MdNode, inReference = false): void => {
@@ -471,24 +490,6 @@ function disambiguateSegment(source: string, mask: string | undefined, options: 
   return root;
 }
 
-function maskSegmentNonMathDollars(segment: string, mask: string, options: Parameters<typeof fromMarkdown>[1]): string {
-  const root = disambiguateSegment(segment, mask, options);
-  const kept = new Set<number>();
-  const visit = (node: MdNode): void => {
-    const start = node.position?.start.offset;
-    const end = node.position?.end.offset;
-    if (start !== undefined && end !== undefined && (
-      node.type === 'math' || node.type === 'code' || node.type === 'inlineCode'
-      || (node.type === 'inlineMath' && !isInvalidInlineMath(segment, start, end))
-    )) {
-      for (let index = start; index < end; index += 1) kept.add(index);
-    }
-    for (const child of node.children ?? []) visit(child);
-  };
-  visit(root);
-  return segment.replace(/\$/g, (dollar, offset: number) => kept.has(offset) ? dollar : mask);
-}
-
 /** Reject currency-like dollar pairs without changing source offsets used by report anchors. */
 function mathRoot(source: string): MdNode {
   const options = { extensions: [gfm(), math()], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] };
@@ -504,39 +505,30 @@ function mathRoot(source: string): MdNode {
     return decoded === false ? [] : [decoded];
   }));
   const mask = Array.from('£¥€₩₹₽₺₴₦₱₫₭₲₵₸₼₾₿').find(symbol => !source.includes(symbol) && !references.has(symbol));
-  let seeded = source;
-  if (mask !== undefined && source.includes('[')) {
-    // Resolve bracket boundaries without math first, so currency is masked consistently
-    // in reference uses and definitions before dollars elsewhere can pair with it.
+  const boundaries: [number, number][] = [];
+  if (source.includes('[')) {
+    // Resolve GFM boundaries on the original source so math cannot consume across them.
     const gfmRoot = fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as MdNode;
-    const spans: [number, number][] = [];
     const visit = (node: MdNode): void => {
       for (const child of node.children ?? []) visit(child);
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
       if (start === undefined || end === undefined) return;
-      if (node.type === 'definition' && node.label != null) {
-        const open = source.indexOf('[', start);
-        spans.push([open + 1, open + 1 + node.label.length]);
-      } else if (node.type === 'linkReference' || node.type === 'imageReference') {
-        const prefix = node.type === 'imageReference' ? 2 : 1;
+      if (node.type === 'definition' || node.type === 'linkReference' || node.type === 'imageReference'
+        || node.type === 'link' || node.type === 'image') {
+        boundaries.push([start, end]);
+        const firstChildStart = node.children?.[0]?.position?.start.offset;
+        const lastChildEnd = node.children?.at(-1)?.position?.end.offset;
+        if (firstChildStart !== undefined && lastChildEnd !== undefined) boundaries.push([firstChildStart, lastChildEnd]);
         if (node.referenceType === 'full' && node.label != null) {
-          const labelStart = end - 1 - node.label.length;
-          spans.push([start + prefix, labelStart - 2], [labelStart, end - 1]);
-        } else {
-          spans.push([start + prefix, end - (node.referenceType === 'collapsed' ? 3 : 1)]);
+          const openBracket = end - node.label.length - 2;
+          boundaries.push([start, openBracket]);
         }
       }
     };
     visit(gfmRoot);
-    for (const [start, end] of spans) {
-      const segment = seeded.slice(start, end);
-      if (segment.includes('$')) {
-        seeded = seeded.slice(0, start) + maskSegmentNonMathDollars(segment, mask, options) + seeded.slice(end);
-      }
-    }
   }
-  const root = disambiguateSegment(seeded, mask, options);
+  const root = disambiguateSegment(source, mask, boundaries);
   const restore = (node: MdNode): MdNode => {
     const start = node.position?.start.offset;
     const end = node.position?.end.offset;

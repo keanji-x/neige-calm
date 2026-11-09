@@ -227,3 +227,25 @@ it.each([
     expect(JSON.stringify(ast)).not.toContain('£');
   }
 });
+
+
+it.each([
+  ['[item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['![item \\$5] with $x$\n\n[item \\$5]: /url', 'image', 'item $5', true],
+  ['[shown \\$5][ref]\n\n[ref]: /url', 'link', 'shown $5', false],
+  ['[shown \\$5][item \\$5] with $x$\n\n[item \\$5]: /url', 'link', 'shown $5', true],
+  ['[item \\$5][] with $x$\n\n[item \\$5]: /url', 'link', 'item $5', true],
+  ['[item \\[1\\] $5] with $x$\n\n[item \\[1\\] $5]: /url', 'link', 'item [1] $5', true],
+] as const)('preserves escaped currency reference syntax: %s', (source, type, label, hasMath) => {
+  const ast = ready(source);
+  const block = ast.children[0];
+  if (block?.type !== 'paragraph') throw new Error('expected paragraph');
+  expect(ast.children).toHaveLength(1);
+  const reference = block.children.find(node => node.type === type);
+  expect(reference).toMatchObject({ type, destination: '/url' });
+  if (reference?.type === 'link') expect(reference.children).toMatchObject([{ type: 'text', value: label }]);
+  if (reference?.type === 'image') expect(reference.alt).toBe(label);
+  expect(block.children.filter(node => node.type === 'inlineMath').map(node => node.value))
+    .toEqual(hasMath ? ['x'] : []);
+  expect(JSON.stringify(ast)).not.toContain('£');
+});
