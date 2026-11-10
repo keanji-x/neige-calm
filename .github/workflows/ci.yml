@@ -1241,7 +1241,9 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: fe/package-lock.json
+          cache-dependency-path: |
+            fe/package-lock.json
+            mobile/package-lock.json
 
       - uses: actions/setup-go@v5
         with:
