@@ -35,7 +35,7 @@ test.afterEach(async ({ request }) => {
 });
 
 test('starts a conversation from a track page and sends the first message to that track', async ({ page, request }) => {
-  const errors = captureFirstMessageErrors(page, () => runUrl);
+  const errors = await captureFirstMessageErrors(page, () => runUrl);
   const area = await createArea(request);
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id, `FE e2e conversation track ${Date.now()}`);
