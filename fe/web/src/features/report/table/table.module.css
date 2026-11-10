@@ -34,7 +34,6 @@
      the label register rather than a bolder version of the data. */
   .head {
     padding-block: var(--space-1) var(--space-2);
-    padding-inline: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--hairline-strong);
     color: var(--text-3);
     letter-spacing: var(--type-label-tracking);
@@ -47,21 +46,10 @@
   .cell {
     overflow-wrap: normal;
     padding-block: var(--space-2);
-    padding-inline: var(--space-2) var(--space-3);
     border-block-end: 1px solid var(--hairline);
     color: var(--text-2);
     text-align: start;
     vertical-align: baseline;
-  }
-
-  .head:first-child,
-  .cell:first-child {
-    padding-inline-start: 0;
-  }
-
-  .head:last-child,
-  .cell:last-child {
-    padding-inline-end: 0;
   }
 
   /* Right-aligned columns are the numeric ones, and digits only line up if they

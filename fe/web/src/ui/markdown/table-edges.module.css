@@ -1,0 +1,16 @@
+@layer ui {
+  /* Keep the cell gutters between columns, with no gutter outside the table. */
+  .flushEdges > :is(thead, tbody, tfoot) > tr {
+    > :is(th, td) {
+      padding-inline: var(--space-2) var(--table-cell-padding-end, var(--space-3));
+    }
+
+    &:not(.insetRow) > :is(th, td):first-child {
+      padding-inline-start: 0;
+    }
+
+    &:not(.insetRow) > :is(th, td):last-child {
+      padding-inline-end: 0;
+    }
+  }
+}

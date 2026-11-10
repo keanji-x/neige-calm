@@ -75,17 +75,6 @@ describe('a source citation in a table cell, as the engine lays it out', () => {
     render(<Page />);
 
     const cell = document.querySelector<HTMLElement>('tbody tr:nth-child(1) td:nth-child(3)')!;
-    const firstHead = document.querySelector<HTMLElement>('thead th:first-child')!;
-    const middleHead = document.querySelector<HTMLElement>('thead th:nth-child(2)')!;
-    const lastHead = document.querySelector<HTMLElement>('thead th:last-child')!;
-    const firstCell = document.querySelector<HTMLElement>('tbody tr:nth-child(1) td:first-child')!;
-    const middleCell = document.querySelector<HTMLElement>('tbody tr:nth-child(1) td:nth-child(2)')!;
-    expect(getComputedStyle(firstHead).paddingInlineStart).toBe('0px');
-    expect(getComputedStyle(firstCell).paddingInlineStart).toBe('0px');
-    expect(parseFloat(getComputedStyle(middleHead).paddingInlineStart)).toBeGreaterThan(0);
-    expect(parseFloat(getComputedStyle(middleCell).paddingInlineEnd)).toBeGreaterThan(0);
-    expect(getComputedStyle(lastHead).paddingInlineEnd).toBe('0px');
-    expect(getComputedStyle(cell).paddingInlineEnd).toBe('0px');
     const citation = cell.querySelector<HTMLElement>('button[data-nc-report-source-link]')!;
     expect(citation.textContent).toBe('AP');
     const box = citation.getBoundingClientRect();

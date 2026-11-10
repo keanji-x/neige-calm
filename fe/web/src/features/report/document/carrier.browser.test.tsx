@@ -113,19 +113,18 @@ it('shows a mobile empty state for outline-only prose and restores the report wh
   await browserPage.viewport(1280, 800);
 });
 
-it('aligns prose Markdown table and native table block outer columns flush with prose edges', async () => {
+it('aligns report table text with prose and keeps highlighted rows inset', async () => {
   await browserPage.viewport(1200, 800);
-  const markdown = [
-    'Leading prose paragraph.',
-    '',
-    '| Metric | Delta | Value |',
-    '| :--- | :---: | ---: |',
-    '| Revenue | +4% | 128.4 |',
-  ].join('\n');
   render(
     <Page
       blocks={[
-        prose('b_prose', markdown),
+        prose('b_prose', [
+          'Leading prose paragraph.',
+          '',
+          '| Metric | Delta | Value |',
+          '| :--- | :---: | ---: |',
+          '| Revenue | +4% | 128.4 |',
+        ].join('\n')),
         {
           id: 'b_table',
           kind: 'table',
@@ -135,42 +134,38 @@ it('aligns prose Markdown table and native table block outer columns flush with 
               { key: 'delta', label: 'Delta' },
               { key: 'value', label: 'Value', align: 'right' },
             ],
-            rows: [{ metric: 'Margin', delta: '+1%', value: '42.0' }],
+            rows: [
+              { metric: 'Margin', delta: '+1%', value: '42.0' },
+              { metric: 'Costs', delta: '-2%', value: '18.0' },
+            ],
+            highlight: 'Costs',
           },
         },
       ]}
     />,
   );
 
-  const paragraphBox = document.querySelector('#b_prose p')!.getBoundingClientRect();
-  const textBox = (element: Element): DOMRect => {
+  const proseBox = document.querySelector('#b_prose p')!.getBoundingClientRect();
+  const textBox = (cell: HTMLTableCellElement): DOMRect => {
     const range = document.createRange();
-    range.selectNodeContents(element);
+    range.selectNodeContents(cell);
     return range.getBoundingClientRect();
   };
+  const markdownTable = document.querySelector<HTMLTableElement>('#b_prose table')!;
+  const nativeTable = document.querySelector<HTMLTableElement>('#b_table table')!;
+  const highlightedRow = nativeTable.rows[2];
 
-  for (const table of [
-    document.querySelector<HTMLElement>('#b_prose table')!,
-    document.querySelector<HTMLElement>('#b_table table')!,
-  ]) {
-    const firstCells = table.querySelectorAll<HTMLElement>('tr > :first-child');
-    const middleCells = table.querySelectorAll<HTMLElement>('tr > :nth-child(2)');
-    const lastCells = table.querySelectorAll<HTMLElement>('tr > :last-child');
-    expect(firstCells.length).toBeGreaterThanOrEqual(2);
-    for (const cell of firstCells) {
-      expect(getComputedStyle(cell).paddingInlineStart).toBe('0px');
-      expect(parseFloat(getComputedStyle(cell).paddingInlineEnd)).toBeGreaterThan(0);
-      expect(Math.abs(textBox(cell).left - paragraphBox.left)).toBeLessThanOrEqual(1);
-    }
-    for (const cell of middleCells) {
-      expect(parseFloat(getComputedStyle(cell).paddingInlineStart)).toBeGreaterThan(0);
-      expect(parseFloat(getComputedStyle(cell).paddingInlineEnd)).toBeGreaterThan(0);
-    }
-    for (const cell of lastCells) {
-      expect(parseFloat(getComputedStyle(cell).paddingInlineStart)).toBeGreaterThan(0);
-      expect(getComputedStyle(cell).paddingInlineEnd).toBe('0px');
-    }
-    const rightAlignedValue = table.querySelector<HTMLElement>('tbody tr > :last-child')!;
-    expect(Math.abs(textBox(rightAlignedValue).right - paragraphBox.right)).toBeLessThanOrEqual(1);
+  for (const row of [markdownTable.rows[0], markdownTable.rows[1], nativeTable.rows[0], nativeTable.rows[1]]) {
+    const first = row.cells[0];
+    const last = row.cells[row.cells.length - 1];
+    const firstText = textBox(first);
+    const lastText = textBox(last);
+    expect(Math.abs(firstText.left - proseBox.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(lastText.right - proseBox.right)).toBeLessThanOrEqual(1);
+    expect(parseFloat(getComputedStyle(first).paddingInlineEnd)).toBeGreaterThan(0);
+    expect(parseFloat(getComputedStyle(last).paddingInlineStart)).toBeGreaterThan(0);
   }
+
+  expect(textBox(highlightedRow.cells[0]).left - proseBox.left).toBeGreaterThan(1);
+  expect(proseBox.right - textBox(highlightedRow.cells[2]).right).toBeGreaterThan(1);
 });
