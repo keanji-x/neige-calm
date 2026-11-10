@@ -22,7 +22,10 @@
   @media (width < 60rem) {
     .rail { display: none; }
   }
-  @container (inline-size < 68rem) {
+  /* 40rem reading ceiling + 2 × (28px control + 4px gap) = 40rem + 64px: hide
+     before `--document-start` drops below the rail's 32px footprint and clamps
+     the dots onto the report prose. */
+  @container (inline-size < calc(40rem + 64px)) {
     .rail { display: none; }
   }
 }

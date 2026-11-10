@@ -7,7 +7,7 @@ import type { ReportOutlineItem } from '../../../../../core/domain/report.ts';
 import documentStyles from '../document/document.module.css';
 import { ReportOutline } from './public.tsx';
 
-afterEach(() => { cleanup(); document.body.replaceChildren(); delete document.documentElement.dataset.theme; });
+afterEach(() => { cleanup(); document.body.replaceChildren(); delete document.documentElement.dataset.theme; document.documentElement.style.removeProperty('font-size'); });
 
 const ITEMS: ReportOutlineItem[] = [
   { blockId: 'one', label: 'First section', excerpt: 'First section body.', number: 1, children: [{ blockId: 'child', label: 'Child block' }] },
@@ -160,4 +160,68 @@ it('keeps section numbers when the desktop outline is hidden on a compact viewpo
   const heading = document.querySelector<HTMLElement>('h2')!;
   expect(getComputedStyle(rail).display).toBe('none');
   expect(getComputedStyle(heading, '::before').opacity).toBe('1');
+});
+
+it('stays left of the report prose when the document column fits the rail, and hides when narrowed below 40rem + 64px', async () => {
+  await page.viewport(1280, 800);
+  const view = render(
+    <div style={{ containerType: 'inline-size', inlineSize: 720 }}>
+      <div className={documentStyles.doc} style={{
+        position: 'relative', inlineSize: 720, blockSize: 600,
+        ['--document-start' as string]: '40px',
+        ['--document-measure' as string]: '640px',
+        ['--header-band' as string]: '0px', ['--header-h' as string]: '0px',
+      }}>
+        <ReportOutline items={ITEMS} />
+        <div className={documentStyles.row}>
+          <div className={documentStyles.block} data-testid="report-prose">
+            <h2 className={documentStyles.h1}>First section</h2>
+          </div>
+        </div>
+      </div>
+    </div>,
+  );
+  const rail = document.querySelector<HTMLElement>('nav[aria-label="Outline"]')!;
+  const prose = document.querySelector<HTMLElement>('[data-testid="report-prose"]')!;
+  expect(getComputedStyle(rail).display).not.toBe('none');
+  expect(rail.getBoundingClientRect().right).toBeLessThanOrEqual(prose.getBoundingClientRect().left);
+
+  view.rerender(
+    <div style={{ containerType: 'inline-size', inlineSize: 640 }}>
+      <div className={documentStyles.doc} style={{
+        position: 'relative', inlineSize: 640, blockSize: 600,
+        ['--document-start' as string]: '0px',
+        ['--document-measure' as string]: '640px',
+        ['--header-band' as string]: '0px', ['--header-h' as string]: '0px',
+      }}>
+        <ReportOutline items={ITEMS} />
+        <div className={documentStyles.row}>
+          <div className={documentStyles.block} data-testid="report-prose">
+            <h2 className={documentStyles.h1}>First section</h2>
+          </div>
+        </div>
+      </div>
+    </div>,
+  );
+  expect(getComputedStyle(rail).display).toBe('none');
+
+  document.documentElement.style.fontSize = '12px';
+  view.rerender(
+    <div style={{ containerType: 'inline-size', inlineSize: 528 }}>
+      <div className={documentStyles.doc} style={{
+        position: 'relative', inlineSize: 528, blockSize: 600,
+        ['--document-start' as string]: '24px',
+        ['--document-measure' as string]: '480px',
+        ['--header-band' as string]: '0px', ['--header-h' as string]: '0px',
+      }}>
+        <ReportOutline items={ITEMS} />
+        <div className={documentStyles.row}>
+          <div className={documentStyles.block} data-testid="report-prose">
+            <h2 className={documentStyles.h1}>First section</h2>
+          </div>
+        </div>
+      </div>
+    </div>,
+  );
+  expect(getComputedStyle(rail).display).toBe('none');
 });

@@ -121,11 +121,24 @@ const OUTLINE_ITEMS: ReportOutlineItem[] = [
   { blockId: 'section', label: 'Section', excerpt: '', number: 1, children: [] },
 ];
 
-function TrackGeometryPage({ open = true, withOutline = true }: { open?: boolean; withOutline?: boolean }) {
+const STATIC_RESIZE = { onPreview: () => undefined, onCommit: () => undefined };
+
+function TrackGeometryPage({
+  open = true,
+  withOutline = true,
+  drawerWidthRem,
+}: {
+  open?: boolean;
+  withOutline?: boolean;
+  drawerWidthRem?: number;
+}) {
   return (
     <div className={shell.shell}>
       <div aria-hidden="true" />
-      <main className={shell.main}>
+      <main
+        className={shell.main}
+        style={drawerWidthRem === undefined ? undefined : { ['--nc-drawer-width' as string]: `${drawerWidthRem}rem` }}
+      >
         <section className={trackPage.page}>
           <PageHeader title={<PageTitle>Track</PageTitle>} />
           <div className={trackPage.workspace}>
@@ -150,7 +163,12 @@ function TrackGeometryPage({ open = true, withOutline = true }: { open?: boolean
             </div>
           </div>
         </section>
-        <Drawer open={open} title="Chat" onClose={() => undefined}>
+        <Drawer
+          open={open}
+          title="Chat"
+          onClose={() => undefined}
+          resize={drawerWidthRem === undefined ? undefined : STATIC_RESIZE}
+        >
           <p>the transcript</p>
         </Drawer>
       </main>
@@ -224,6 +242,31 @@ describe('the drawer against a real rendering engine', () => {
     const heading = document.querySelector<HTMLElement>('[data-testid="section-heading"]')!;
     expect(document.querySelector('nav[aria-label="Outline"]')).toBeNull();
     expect(getComputedStyle(heading, '::before').opacity).toBe('1');
+  });
+
+  it('hides the report outline before it overlaps the prose when a conversation is widened on desktop viewports', async () => {
+    await page.viewport(1280, 800);
+    const view = render(<TrackGeometryPage open={false} />);
+    const report = document.querySelector<HTMLElement>('[data-testid="report-measure"]')!;
+    const outline = document.querySelector<HTMLElement>('nav[aria-label="Outline"]')!;
+    const heading = document.querySelector<HTMLElement>('[data-testid="section-heading"]')!;
+    expect(getComputedStyle(outline).display).not.toBe('none');
+    expect(outline.getBoundingClientRect().right).toBeLessThanOrEqual(report.getBoundingClientRect().left);
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
+
+    view.rerender(<TrackGeometryPage open drawerWidthRem={36} />);
+    expect(getComputedStyle(outline).display).toBe('none');
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
+
+    await page.viewport(1600, 900);
+    view.rerender(<TrackGeometryPage open />);
+    expect(getComputedStyle(outline).display).not.toBe('none');
+    expect(outline.getBoundingClientRect().right).toBeLessThanOrEqual(report.getBoundingClientRect().left);
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
+
+    view.rerender(<TrackGeometryPage open drawerWidthRem={50} />);
+    expect(getComputedStyle(outline).display).toBe('none');
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
   });
 
   /* The premise every claim below rests on. */
