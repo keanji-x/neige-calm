@@ -205,8 +205,12 @@ type ConstraintInventory = (
 );
 
 async fn constraint_inventory(db: &mut sqlx::SqliteConnection) -> ConstraintInventory {
-    let columns = sqlx::query_as("SELECT name,type,\"notnull\",pk FROM pragma_table_info('acp_submissions') ORDER BY cid")
-        .fetch_all(&mut *db).await.unwrap();
+    let columns = sqlx::query_as(
+        "SELECT name,type,\"notnull\",pk FROM pragma_table_info('acp_submissions') ORDER BY cid",
+    )
+    .fetch_all(&mut *db)
+    .await
+    .unwrap();
     let foreign_keys = sqlx::query_as("SELECT \"table\",\"from\",\"to\",on_delete FROM pragma_foreign_key_list('acp_submissions') ORDER BY id,seq")
         .fetch_all(&mut *db).await.unwrap();
     let indexes = sqlx::query_as(concat!(
