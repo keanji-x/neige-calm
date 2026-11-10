@@ -92,7 +92,7 @@ async fn report(fx: &Fixture) {
     }
 }
 
-fn base(token: &str, track: &str) -> String {
+pub(super) fn base(token: &str, track: &str) -> String {
     format!("/api/share/{token}/tracks/{track}")
 }
 
@@ -395,138 +395,6 @@ async fn report_publication_rechecks_revocation_after_assembly() {
     );
     release.notify_one();
     assert_eq!(read.await.unwrap().0, StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn shared_canonical_conversation_hides_private_pending_draft() {
-    let fx = Fixture::new().await;
-    let response = fx
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/tracks/{}/conversations", fx.track))
-                .header("cookie", &fx.cookie)
-                .header("content-type", "application/json")
-                .header("Idempotency-Key", "share-private-draft")
-                .body(Body::from(
-                    json!({"provider":"codex","text":"Private pending draft"}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let created: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let card = created["id"].as_str().unwrap();
-    let link = fx.create(true).await;
-    let root = base(link["token"].as_str().unwrap(), &fx.track);
-    let (status, owner_page) = fx
-        .request(
-            "GET",
-            &format!("/api/cards/{card}/harness/items?contract=conversation_v1"),
-            Some(&fx.cookie),
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{owner_page}");
-    assert!(owner_page.to_string().contains("Private pending draft"));
-    for suffix in [
-        "conversations".to_string(),
-        format!("conversations/{card}/items?contract=conversation_v1"),
-        format!("conversations/{card}/live?contract=conversation_v1"),
-        format!("conversations/{card}/run"),
-    ] {
-        let (status, shared) = fx
-            .request("GET", &format!("{root}/{suffix}"), None, json!(null))
-            .await;
-        assert_eq!(status, StatusCode::OK, "{suffix}: {shared}");
-        let text = shared.to_string();
-        for secret in [
-            "Private pending draft",
-            "permission_mode",
-            "cwd",
-            "pending_inputs",
-        ] {
-            assert!(!text.contains(secret), "{suffix}: {shared}");
-        }
-    }
-    let other = track(&fx, &fx.area).await;
-    let area_link = fx.create(false).await;
-    for suffix in [
-        "items?contract=conversation_v1",
-        "live?contract=conversation_v1",
-        "run",
-    ] {
-        assert_eq!(
-            fx.request(
-                "GET",
-                &format!(
-                    "{}/conversations/{card}/{suffix}",
-                    base(area_link["token"].as_str().unwrap(), &other)
-                ),
-                None,
-                json!(null)
-            )
-            .await
-            .0,
-            StatusCode::NOT_FOUND
-        );
-    }
-}
-
-#[tokio::test]
-#[allow(deprecated)]
-async fn shared_historical_items_redact_local_images() {
-    let fx = Fixture::new().await;
-    let card = fx.state.raw_repo().card_create(NewCard { track_id: fx.track.clone().into(),kind:"codex".into(),sort:None,title:Some("Public conversation".into()),payload:json!({"harness_profile":"assistant","assistant_provider":"codex","cwd":"/private/cwd","permission_mode":"full"}) }).await.unwrap();
-    let db = fx.state.raw_repo().sqlite_db().unwrap();
-    db.writer()
-        .execute(
-            sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1").bind(card.id.as_str()),
-        )
-        .await
-        .unwrap();
-    fx.state.write().role_cache().insert(
-        card.id.clone(),
-        calm_server::model::CardRole::Assistant,
-        fx.track.clone().into(),
-    );
-    db.writer().execute(sqlx::query(concat!(
-        "INSERT INTO harness_items(worker_session_id,card_id,track_id,thread_id,",
-        "item_uuid,item_type,method,params,created_at_ms) ",
-        "VALUES('historical',?1,?2,'thread','item','userMessage','item/completed',?3,1)"
-    ))
-        .bind(card.id.as_str()).bind(&fx.track).bind(json!({"item":{"type":"userMessage","content":[{"type":"localImage","path":"/private/image.png"}]}}).to_string())).await.unwrap();
-    let link = fx.create(true).await;
-    let root = base(link["token"].as_str().unwrap(), &fx.track);
-    let (status, items) = fx
-        .request(
-            "GET",
-            &format!("{root}/conversations/{}/items", card.id),
-            None,
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{items}");
-    assert_eq!(items.as_array().unwrap().len(), 1);
-    assert!(!items.to_string().contains("/private/image.png"));
-    let (status, run) = fx
-        .request(
-            "GET",
-            &format!("{root}/conversations/{}/run", card.id),
-            None,
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{run}");
-    assert_eq!(
-        run,
-        json!({"card_id":card.id,"phase":null,"runtime_state":null})
-    );
 }
 
 #[tokio::test]

@@ -160,9 +160,26 @@ The public router, outside `require_session`, declares `security(())` for:
 - `GET /api/share/{token}/events`: WebSocket invalidation only.
 
 Conversation items/live reuse the canonical/historical readers, cursor rules
-and local-image redaction. Shared presentation reads require an effective
-claim for the current Human revision or System observation, so private pending
-drafts cannot enter a page. Shared lists expose explicit card titles and do not
+and audience projection. Owner transcript reads retain their existing behavior,
+including local-image redaction. ShareLink transcript `params` use a fail-closed
+allowlist for Native, ImportedItem and HistoricalRaw sources, in both versioned
+pages and historical arrays. Agent text and user content remain speech, with
+`localImage.path` redacted. MCP calls publish only tool identity and activity
+metadata, except `neige_user_ask` questions (title/options) and
+`neige_mail_send` summary. Command text, `cwd`, command output, file paths/diffs,
+MCP results/non-speech arguments, dynamic tool arguments/results and reasoning
+summary/content are withheld. File changes retain only their count; activities
+retain status, duration and exit code, with tool errors reduced to a failure
+signal. Turn outcomes retain status, duration and their explicit outcome fields.
+Unknown fields and future activity payloads are withheld by default.
+
+Shared presentation reads require an effective claim for the current Human
+revision or System observation, so private pending drafts cannot enter a page.
+A System claim must both be effective and resolve to an immutable render-plan
+segment. Human-resolution retry retirement keeps original provenance visible to
+Owner, but hides both retired Human and System inputs from ShareLink while the
+explicit successor is only queued; effective successor claims publish them again
+at their original presentation positions. Shared lists expose explicit card titles and do not
 use the owner's pending-queue naming fallback. Shared run status explicitly projects card id,
 phase and runtime state; it never serializes owner run configuration, pending
 inputs, recovery capabilities, `cwd` or `permission_mode`. Card containment is
@@ -182,6 +199,12 @@ Every wake rechecks active access; revocation or target deletion emits
 `{"type":"closed"}` and closes the socket. Revocation wakes access readers
 after commit on `state.events`; existing Track/Area deletion events already
 wake event subscribers. No second Event kind inventory is introduced.
+
+The public transcript vocabulary belongs to the conversation route projection,
+matching the frontend conversation renderer rather than provider payload shapes.
+A new speech/activity field requires an intentional projection update and HTTP
+contract coverage; an ordinary provider payload field does not. These tests join
+the existing `share_links` selection and add no CI invocation or test census.
 
 Permanence cost: the resource audience/fence is shared across existing readers,
 not a parallel report implementation. The published presentation query extends

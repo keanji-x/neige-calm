@@ -750,3 +750,9 @@ mod reads;
 
 #[path = "share_links/events.rs"]
 mod events;
+
+#[path = "share_links/conversations.rs"]
+mod conversations;
+
+#[path = "share_links/retry.rs"]
+mod retry;

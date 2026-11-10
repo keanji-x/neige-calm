@@ -284,7 +284,7 @@ async fn read_page_on_connection(
                JOIN conversation_input_submissions published_submission ON published_submission.id=published_input.submission_id
                WHERE published_submission.card_id=p.card_id AND published_input.message_id=m.id
                  AND published_input.revision=m.current_revision AND published_input.effective=1))
-             AND (p.source_kind!='system_observation' OR system_claim.value IS NOT NULL)))
+             AND (p.source_kind!='system_observation' OR (system_input.effective=1 AND system_claim.value IS NOT NULL))))
            AND (p.source_kind!='imported_item' OR p.erased_by_operation_id IS NOT NULL OR NOT EXISTS (
              SELECT 1 FROM conversation_presentations native WHERE native.card_id=p.card_id
              AND native.source_kind='native_item' AND native.source_identity=p.imported_native_identity))

@@ -14,6 +14,8 @@ use calm_types::conversation_display::*;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+mod share_projection;
+
 #[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationItemsDirection {
@@ -124,7 +126,7 @@ pub(crate) async fn read(
             }
         };
         for entry in &mut page.items {
-            redact(&mut entry.source);
+            redact(&mut entry.source, audience);
         }
         Json(ConversationItemsReadResponse::Conversation(page)).into_response()
     } else {
@@ -133,7 +135,7 @@ pub(crate) async fn read(
             .harness_item_list_transcript_by_card(&id, after, limit, descending)
             .await?;
         for item in &mut rows {
-            item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
+            project_item(item, audience);
         }
         if q.contract.is_none() {
             Json(ConversationItemsReadResponse::Historical(rows)).into_response()
@@ -168,11 +170,18 @@ pub(crate) async fn read(
     Ok(response)
 }
 
-fn redact(source: &mut ConversationDisplaySource) {
+fn redact(source: &mut ConversationDisplaySource, audience: Audience<'_>) {
     if let ConversationDisplaySource::Native { item }
     | ConversationDisplaySource::ImportedItem { item, .. }
     | ConversationDisplaySource::HistoricalRaw { item } = source
     {
-        item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
+        project_item(item, audience);
     }
+}
+
+fn project_item(item: &mut TranscriptRow, audience: Audience<'_>) {
+    item.params = match audience {
+        Audience::Owner(_) => crate::planner_attachments::redact_local_image_paths(&item.params),
+        Audience::ShareLink { .. } => share_projection::params(item),
+    };
 }
