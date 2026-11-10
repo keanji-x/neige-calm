@@ -3,6 +3,7 @@ import katex from 'katex';
 import type { MarkdownDepth, SafeBlock, SafeInline } from '../../../../core/markdown/public.ts';
 import { ReadOnlyCode } from '../code/public.tsx';
 import styles from './markdown.module.css';
+import { flushTableEdgesClassName } from './table-edges.ts';
 
 type Classes = Readonly<Partial<Record<'paragraph' | 'list' | 'item' | 'check' | 'quote' | 'inlineCode' | 'strong' | 'tableWrap' | 'table' | 'cell' | 'rule', string>>>;
 export type MarkdownPresentation = Readonly<{
@@ -95,7 +96,7 @@ function Block({ block, presentation }: { block: SafeBlock; presentation: Markdo
     }
     case 'table': {
       const minWidths = tableColumnMinWidths(block);
-      return <div className={classes?.tableWrap}><table className={`${styles.table} ${classes?.table ?? ''}`}><tbody>
+      return <div className={classes?.tableWrap}><table className={`${styles.table} ${flushTableEdgesClassName} ${classes?.table ?? ''}`}><tbody>
         {block.children.map((row, rowIndex) => <tr key={rowIndex}>{row.children.map((cell, cellIndex) => {
           const Cell = rowIndex === 0 ? 'th' : 'td';
           return <Cell key={cellIndex} className={classes?.cell} style={{ textAlign: block.align[cellIndex] ?? undefined, minWidth: minWidths[cellIndex] }}>
