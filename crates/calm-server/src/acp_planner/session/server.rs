@@ -66,6 +66,7 @@ pub(super) struct Turn {
     pub client: provider::acp::Client,
     pub capabilities: protocol::AgentCapabilities,
     commands: process::Commands,
+    pub restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
     cleanup: CleanupWitness,
     snapshot: Option<super::super::context_snapshot::Selection>,
 }
@@ -121,6 +122,7 @@ pub(super) async fn issue(
         client,
         capabilities: server.process.capabilities.clone(),
         commands: server.process.commands.clone(),
+        restart_owner: server.process.restart_owner.clone(),
         cleanup,
         snapshot: super::super::context_snapshot::Selection::freeze(
             registration,

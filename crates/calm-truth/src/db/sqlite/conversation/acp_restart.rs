@@ -8,20 +8,19 @@ use calm_types::harness::{HARNESS_INTERRUPT_TIMEOUT_REASON, HarnessPhaseTag};
 
 /// Candidate inventory only. The release transaction rechecks the exact
 /// carrier, original Initial, process provenance and native identity.
+/// Closed and archived cards can reopen later. Retiring an old claim grants
+/// no authority to wake or send on those cards.
 pub async fn shared_acp_restart_candidates_tx(
     tx: &mut Transaction<'_, Sqlite>,
     provider: &calm_types::runtime::AgentProvider,
 ) -> Result<Vec<(String, String)>> {
     Ok(sqlx::query_as(
-        "SELECT c.id,ws.id FROM acp_managed_sessions owned
-         JOIN worker_sessions ws ON ws.id=owned.worker_session_id
+        "SELECT c.id,ws.id FROM worker_sessions ws
          JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id AND c.track_id=ws.track_id
-         JOIN tracks t ON t.id=c.track_id
-         WHERE ws.provider=?1 AND ws.mode='resumable' AND t.closed_at IS NULL
+         WHERE ws.provider=?1 AND ws.mode='resumable'
            AND (ws.completed_at_ms IS NULL OR ws.state='failed')
            AND ws.queue_harvested_at_ms IS NULL
-           AND NOT EXISTS(SELECT 1 FROM assistant_conversation_archives a WHERE a.card_id=c.id)
-           AND ws.agent_session_id IS NOT NULL AND ws.handle_state_json IS NOT NULL
+           AND ws.handle_state_json IS NOT NULL
            AND json_type(ws.handle_state_json,'$.canonical_inputs.active')='object'",
     )
     .bind(provider.wire_name())
@@ -35,7 +34,7 @@ pub async fn release_shared_acp_restart_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card: &str,
     worker: &str,
-    thread: &str,
+    thread: Option<&str>,
     expected_client: Option<&str>,
 ) -> Result<()> {
     let mut carrier = current_input_fact_carrier_tx(tx, card, worker).await?;
@@ -49,7 +48,7 @@ pub async fn release_shared_acp_restart_tx(
         .active
         .as_ref()
         .is_none_or(|active| active.submission_ids.as_slice() != std::slice::from_ref(&initial))
-        || header.last_thread_id.as_deref() != Some(thread)
+        || header.last_thread_id.as_deref() != thread
         || header.pending_rewind.is_some()
         || super::super::provider_execution::retained(tx, worker).await?
     {
@@ -79,7 +78,7 @@ pub async fn release_shared_acp_restart_tx(
         return Ok(());
     }
     if let Some(receipt) = receipt {
-        if receipt.thread_id != thread
+        if Some(receipt.thread_id.as_str()) != thread
             || matches!(receipt.state, AcpSubmissionState::Completed)
             || (header.phase != HarnessPhaseTag::IssuingTurn
                 && header.last_turn_id.as_deref() != Some(receipt.turn_id.as_str()))
@@ -87,7 +86,7 @@ pub async fn release_shared_acp_restart_tx(
                 && !super::runtime_frame::interruption_matches_tx(
                     tx,
                     &carrier,
-                    thread,
+                    &receipt.thread_id,
                     &receipt.turn_id,
                 )
                 .await?)
@@ -99,7 +98,7 @@ pub async fn release_shared_acp_restart_tx(
         let released = sqlx::query(
             "UPDATE acp_submissions SET state='unknown',restart_released_at_ms=?3
              WHERE worker_session_id=?1 AND client_id=?2 AND state IN ('sending','unknown')
-               AND shared_restart_managed=1 AND restart_released_at_ms IS NULL AND kept_cleanup_json IS NULL",
+               AND shared_restart_owner_json IS NOT NULL AND restart_released_at_ms IS NULL AND kept_cleanup_json IS NULL",
         )
         .bind(worker)
         .bind(&receipt.client_id)
@@ -127,7 +126,7 @@ pub async fn release_shared_acp_restart_tx(
             tx,
             &worker.to_owned(),
             calm_types::worker::WorkerSessionState::Idle,
-            Some(thread),
+            thread,
             None,
         )
         .await

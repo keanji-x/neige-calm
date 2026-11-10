@@ -104,10 +104,9 @@ pub(super) async fn send(
         )
         .await;
     }
-    use crate::db::sqlite::AcpReceiptOwner;
     let owner = match &carrier {
-        Carrier::Managed(_) => AcpReceiptOwner::Managed,
-        Carrier::Resident(_) => AcpReceiptOwner::BootSweptShared,
+        Carrier::Managed(_) => None,
+        Carrier::Resident(turn) => turn.restart_owner.as_ref(),
     };
     match acp_submission_prepare(&pool, &receipt, crate::model::now_ms(), owner).await {
         Ok(()) => *presence = ReceiptPresence::Present(attempt()),

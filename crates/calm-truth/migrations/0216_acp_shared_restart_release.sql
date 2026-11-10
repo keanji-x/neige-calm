@@ -1,9 +1,9 @@
 -- Only receipts written by a boot-sweep-owned shared process qualify.
-ALTER TABLE acp_submissions ADD COLUMN shared_restart_managed INTEGER NOT NULL DEFAULT 0
-  CHECK(shared_restart_managed IN (0,1));
+ALTER TABLE acp_submissions ADD COLUMN shared_restart_owner_json TEXT
+  CHECK(shared_restart_owner_json IS NULL OR json_valid(shared_restart_owner_json));
 ALTER TABLE acp_submissions ADD COLUMN restart_released_at_ms INTEGER
   CHECK(restart_released_at_ms IS NULL OR
-    (shared_restart_managed=1 AND state='unknown' AND kept_cleanup_json IS NULL
+    (shared_restart_owner_json IS NOT NULL AND state='unknown' AND kept_cleanup_json IS NULL
      AND json_extract(input_json,'$.version') IS 'canonical_v1'));
 
 DROP INDEX acp_one_unresolved_submission;
@@ -11,7 +11,7 @@ CREATE UNIQUE INDEX acp_one_unresolved_submission ON acp_submissions(worker_sess
   WHERE state = 'sending' OR (state = 'unknown' AND kept_cleanup_json IS NULL AND restart_released_at_ms IS NULL);
 
 CREATE TRIGGER acp_restart_release_update BEFORE UPDATE ON acp_submissions
-WHEN NEW.shared_restart_managed IS NOT OLD.shared_restart_managed
+WHEN NEW.shared_restart_owner_json IS NOT OLD.shared_restart_owner_json
   OR OLD.restart_released_at_ms IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'ACP restart provenance and released receipts are immutable');

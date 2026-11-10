@@ -10,6 +10,7 @@ use super::start::StartFailure;
 
 pub(super) struct Process {
     child: GroupChild,
+    pub(super) restart_owner: Option<crate::db::sqlite::AcpSharedProcessIdentity>,
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
     pub commands: Commands,
@@ -79,6 +80,11 @@ impl Process {
             StartFailure::Failed(CalmError::Conflict("ACP process spawn timed out".into()))
         })?
         .map_err(|error| StartFailure::Failed(error.into()))?;
+        let restart_owner = if boot_swept {
+            shared_restart_identity(&child)
+        } else {
+            None
+        };
         keep_stderr(child.stderr(), stderr_log(host, worker));
         let connect = if profile.shared_server {
             Connection::new_shared
@@ -96,6 +102,7 @@ impl Process {
         match negotiate(&connection.client, registration, false).await {
             Ok(negotiated) => Ok(Self {
                 child,
+                restart_owner,
                 connection,
                 capabilities: negotiated.capabilities,
                 version: negotiated.version,
@@ -118,6 +125,17 @@ impl Process {
         crate::test_seams::operation_fault("acp-control-reap", &self.stop_scope)?;
         reap(&mut self.child).await
     }
+}
+
+fn shared_restart_identity(
+    child: &GroupChild,
+) -> Option<crate::db::sqlite::AcpSharedProcessIdentity> {
+    let pid = i32::try_from(child.id()?).ok()?;
+    Some(crate::db::sqlite::AcpSharedProcessIdentity {
+        pid,
+        start_time: crate::proc_identity::read_proc_start_time(pid)?,
+        boot_id: crate::proc_identity::read_boot_id()?,
+    })
 }
 
 /// The most of one agent process's stderr that is kept; the rest is read and dropped, so the agent
