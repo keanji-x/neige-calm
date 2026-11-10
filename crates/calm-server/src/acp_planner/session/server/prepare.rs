@@ -25,13 +25,9 @@ pub(super) async fn prepare(
         retire(&params.host, owned).await?;
     }
     if owned.is_none() {
-        let process = process::Process::spawn_control(
-            &params.host,
-            registration,
-            registration.config.provider.wire_name(),
-            &std::env::temp_dir(),
-        )
-        .await?;
+        let process =
+            process::Process::spawn_shared(&params.host, registration, &std::env::temp_dir())
+                .await?;
         if process.capabilities.session_capabilities.close.is_none() {
             return Err(refused("Shared ACP requires session close"));
         }

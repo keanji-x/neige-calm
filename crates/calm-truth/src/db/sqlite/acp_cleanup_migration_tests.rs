@@ -110,7 +110,9 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
             write_session.autocommit(|db| Box::pin(async move {
             let after: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
             assert_eq!(before, after);
-            assert_eq!(constraints_before, constraint_inventory(db).await);
+            let (mut prior_columns, foreign_keys, indexes) = constraint_inventory(db).await;
+            prior_columns.retain(|column| constraints_before.0.iter().any(|prior| prior.0 == column.0));
+            assert_eq!(constraints_before, (prior_columns, foreign_keys, indexes));
             let schema: String =
                 sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name='acp_submissions'")
                     .fetch_one(&mut **db)
@@ -139,7 +141,8 @@ async fn acp_cleanup_migration_preserves_0186_receipts_and_historical_fences() {
             let after_constraints: Vec<Row> = sqlx::query_as(select).fetch_all(&mut **db).await.unwrap();
             assert_eq!(before, after_constraints);
             let count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM acp_submissions WHERE kept_cleanup_json IS NOT NULL",
+                "SELECT count(*) FROM acp_submissions WHERE kept_cleanup_json IS NOT NULL
+                   OR shared_restart_owner_json IS NOT NULL OR restart_released_at_ms IS NOT NULL",
             )
             .fetch_one(&mut **db)
             .await
@@ -202,8 +205,12 @@ type ConstraintInventory = (
 );
 
 async fn constraint_inventory(db: &mut sqlx::SqliteConnection) -> ConstraintInventory {
-    let columns = sqlx::query_as("SELECT name,type,\"notnull\",pk FROM pragma_table_info('acp_submissions') WHERE name!='kept_cleanup_json' ORDER BY cid")
-        .fetch_all(&mut *db).await.unwrap();
+    let columns = sqlx::query_as(
+        "SELECT name,type,\"notnull\",pk FROM pragma_table_info('acp_submissions') ORDER BY cid",
+    )
+    .fetch_all(&mut *db)
+    .await
+    .unwrap();
     let foreign_keys = sqlx::query_as("SELECT \"table\",\"from\",\"to\",on_delete FROM pragma_foreign_key_list('acp_submissions') ORDER BY id,seq")
         .fetch_all(&mut *db).await.unwrap();
     let indexes = sqlx::query_as(concat!(

@@ -39,16 +39,7 @@ impl AcpPlannerSession {
         if !matches!(receipt.state, AcpSubmissionState::Completed) {
             return Ok(());
         }
-        let mut outcome: Value =
-            serde_json::from_str(receipt.outcome_json.as_deref().ok_or_else(|| {
-                CalmError::Conflict("ACP completed receipt has no outcome".into())
-            })?)?;
-        if outcome.get("id").and_then(Value::as_str) != Some(receipt.turn_id.as_str()) {
-            return Err(CalmError::Conflict(
-                "ACP receipt terminal names another turn".into(),
-            ));
-        }
-        crate::harness::turn_outcome::canonical_diagnostic(&mut outcome);
+        let outcome = completed_outcome(&receipt)?;
         crate::harness::turn_outcome::record(
             params.repo.as_ref(),
             &params.worker_session_id,
@@ -63,6 +54,22 @@ impl AcpPlannerSession {
         execution_end::install(shared, DriverSlot::recovered(receipt, association));
         Ok(())
     }
+}
+
+fn completed_outcome(receipt: &AcpSubmission) -> Result<Value> {
+    let mut outcome: Value = serde_json::from_str(
+        receipt
+            .outcome_json
+            .as_deref()
+            .ok_or_else(|| CalmError::Conflict("ACP completed receipt has no outcome".into()))?,
+    )?;
+    if outcome.get("id").and_then(Value::as_str) != Some(receipt.turn_id.as_str()) {
+        return Err(CalmError::Conflict(
+            "ACP receipt terminal names another turn".into(),
+        ));
+    }
+    crate::harness::turn_outcome::canonical_diagnostic(&mut outcome);
+    Ok(outcome)
 }
 
 fn slot_exists(shared: &Shared) -> bool {
@@ -191,4 +198,154 @@ pub(super) async fn canonical_receipt_tx(
         }
     }
     Ok(Some((receipt, association)))
+}
+/// Retire pre-restart claims before serving ingress. A receipt-backed release
+/// needs both the boot sweep and proof that the exact ACP owner exited.
+pub(in crate::acp_planner) async fn recover_shared_after_boot(
+    repo: &dyn Repo,
+    provider: AgentProvider,
+    sweep_confirmed: bool,
+) -> Result<()> {
+    let inventory = provider.clone();
+    let candidates = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            shared_acp_restart_candidates_tx(tx, &inventory)
+                .await
+                .map_err(CalmError::from)
+        })
+    })
+    .await?;
+    for (card, worker) in candidates {
+        if let Err(error) =
+            recover_shared_claim(repo, &card, &worker, &provider, sweep_confirmed).await
+        {
+            tracing::warn!(%worker, %error, "Shared ACP restart release retained its fence");
+        }
+    }
+    Ok(())
+}
+
+async fn recover_shared_claim(
+    repo: &dyn Repo,
+    card: &str,
+    worker: &str,
+    provider: &AgentProvider,
+    sweep_confirmed: bool,
+) -> Result<()> {
+    let completed = write_in_tx_typed(repo, {
+        let (card, worker, provider) = (card.to_owned(), worker.to_owned(), provider.clone());
+        move |tx| {
+            Box::pin(async move {
+                let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
+                let (binding, row) =
+                    crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+                if binding.provider != provider
+                    || row.mcp_token_hash.is_some()
+                    || calm_truth::db::sqlite::provider_execution::retained(tx, &worker).await?
+                {
+                    return Ok(None);
+                }
+                let found = canonical_receipt_tx(tx, &card, &worker, &provider).await?;
+                let mut client = None;
+                if let Some((receipt, association)) = &found {
+                    if matches!(receipt.state, AcpSubmissionState::Completed) {
+                        let header = serde_json::from_value::<
+                            calm_types::harness::snapshot::CanonicalHarnessSnapshot,
+                        >(carrier.snapshot().clone())?
+                        .header;
+                        return Ok(header.interruption_intent.is_some().then(|| {
+                            (
+                                receipt.clone(),
+                                association.clone(),
+                                row.track_id.to_string(),
+                            )
+                        }));
+                    }
+                    let owner = crate::db::sqlite::acp_shared_receipt_process_tx(
+                        tx,
+                        &worker,
+                        &receipt.client_id,
+                    )
+                    .await?;
+                    if !sweep_confirmed
+                        || !owner.is_some_and(|owner| {
+                            crate::proc_identity::observe_owned_pid(
+                                owner.pid,
+                                owner.start_time,
+                                &owner.boot_id,
+                            )
+                            .leader_exited()
+                        })
+                    {
+                        return Ok(None);
+                    }
+                    client = Some(receipt.client_id.as_str());
+                }
+                release_shared_acp_restart_tx(tx, &card, &worker, row.thread_id.as_deref(), client)
+                    .await?;
+                Ok(None)
+            })
+        }
+    })
+    .await?;
+    if let Some((receipt, association, track)) = completed {
+        recover_completed_stop(repo, card, worker, &track, receipt, association).await?;
+    }
+    Ok(())
+}
+
+async fn recover_completed_stop(
+    repo: &dyn Repo,
+    card: &str,
+    worker: &str,
+    track: &str,
+    receipt: AcpSubmission,
+    association: AcpCanonicalInput,
+) -> Result<()> {
+    let outcome = completed_outcome(&receipt)?;
+    if let Some(items) = outcome.get("items").and_then(Value::as_array) {
+        crate::harness::transcript_receipt::settle_canonical(
+            repo,
+            worker,
+            card,
+            &receipt.thread_id,
+            &receipt.turn_id,
+            items,
+        )
+        .await?;
+    }
+    crate::harness::turn_outcome::record(
+        repo,
+        worker,
+        card,
+        track,
+        &receipt.thread_id,
+        &receipt.turn_id,
+        &outcome,
+        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
+    )
+    .await?;
+    let (card, worker) = (card.to_owned(), worker.to_owned());
+    write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
+            let Some(original) = original_input_execution_tx(tx, &carrier).await? else {
+                return Ok(());
+            };
+            if original.proof == association.proof
+                && original.turn_id() == Some(receipt.turn_id.as_str())
+            {
+                complete_input_execution_tx(
+                    tx,
+                    &card,
+                    &worker,
+                    &RuntimeExecutionFence::from_carrier(&carrier),
+                    &original,
+                )
+                .await?;
+            }
+            Ok(())
+        })
+    })
+    .await
 }

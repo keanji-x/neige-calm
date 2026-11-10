@@ -113,7 +113,7 @@ pub async fn boot_planner_upgrade_for_test(
 ) -> crate::error::Result<()> {
     let route: crate::state::RouteState = axum::extract::FromRef::from_ref(state);
     crate::claude_planner::lifecycle::boot(route.repo.as_ref(), &route.claude_planner).await?;
-    crate::acp_planner::config::boot(route.repo.as_ref(), &route.acp_planner).await
+    crate::acp_planner::config::boot(state.raw_repo(), &route.acp_planner).await
 }
 
 /// Install a failed boot sweep's retained evidence without relying on /proc faults.

@@ -421,6 +421,11 @@ impl PlannerHarness {
 }
 
 impl PlannerHarness {
+    /// Current provider target for display. Dispatch still rechecks ownership.
+    pub(crate) fn active_turn_id_for_thread(&self, thread: &str) -> Option<String> {
+        self.inner.backend.active_turn_id_for_thread(thread)
+    }
+
     /// Display-only provider knowledge; lifecycle and native gates remain authoritative.
     pub(crate) fn identity_known_in_host(&self) -> bool {
         self.inner.backend.identity_known_in_host()

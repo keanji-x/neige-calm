@@ -104,7 +104,11 @@ pub(super) async fn send(
         )
         .await;
     }
-    match acp_submission_prepare(&pool, &receipt, crate::model::now_ms()).await {
+    let owner = match &carrier {
+        Carrier::Managed(_) => None,
+        Carrier::Resident(turn) => turn.restart_owner.as_ref(),
+    };
+    match acp_submission_prepare(&pool, &receipt, crate::model::now_ms(), owner).await {
         Ok(()) => *presence = ReceiptPresence::Present(attempt()),
         Err(crate::db::sqlite::AcpPrepareError::BeforeReceipt(error)) => {
             return Err(CalmError::from(error).into());

@@ -8,6 +8,7 @@ mod input;
 mod issuance;
 mod normal_join;
 mod recovery;
+pub(super) use recovery::recover_shared_after_boot;
 mod server;
 mod setup;
 use cancellation::IssueGuard;

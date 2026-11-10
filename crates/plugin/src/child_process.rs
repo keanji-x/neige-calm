@@ -166,6 +166,10 @@ impl GroupChild {
         Self { child, pgid }
     }
 
+    pub fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     pub fn stdout(&mut self) -> Option<tokio::process::ChildStdout> {
         self.child.stdout.take()
     }

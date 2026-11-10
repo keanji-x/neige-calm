@@ -329,7 +329,7 @@ impl AcpPlannerHost {
 
 /// Revoke owned credentials before listening, even without a current registration. A failed
 /// pre-C4 marker sweep warns and retains an unproven-session fence; runtime Stop is durable.
-pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -> Result<()> {
+pub async fn boot(repo: &dyn crate::db::Repo, host: &AcpPlannerHost) -> Result<()> {
     boot_with_sweep(repo, host, |ids| async move {
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         crate::planner_process::sweep_pre_c4(&host.instance, &ids).await
@@ -337,8 +337,16 @@ pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -
     .await
 }
 
+#[cfg(all(test, feature = "fixtures"))]
+pub(crate) async fn boot_with_empty_marker_scan_for_test(
+    repo: &dyn crate::db::Repo,
+    host: &AcpPlannerHost,
+) -> Result<()> {
+    boot_with_sweep(repo, host, |_| async { Ok(()) }).await
+}
+
 pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>(
-    repo: &dyn crate::db::RepoEventWrite,
+    repo: &dyn crate::db::Repo,
     host: &AcpPlannerHost,
     sweep: impl FnOnce(Vec<String>) -> F,
 ) -> Result<()> {
@@ -356,12 +364,32 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     let mut markers = ids.clone();
     markers.push(super::catalog::WORKER.into());
     markers.push("readiness".into());
-    let unproven = match sweep(markers).await {
-        Ok(()) => Default::default(),
+    let shared: Vec<_> = calm_types::runtime::AgentProtocol::Acp
+        .providers()
+        .filter(|provider| {
+            super::profile::AcpAgentProfile::of(provider)
+                .is_some_and(|profile| profile.shared_server)
+        })
+        .collect();
+    markers.extend(
+        shared
+            .iter()
+            .map(|provider| provider.wire_name().to_owned()),
+    );
+    let sweep_confirmed = match sweep(markers).await {
+        Ok(()) => true,
         Err(error) => {
             tracing::warn!(%error, "ACP boot pre-C4 sweep did not confirm; old MCP credentials revoked; boot continues");
-            ids.into_iter().collect()
+            false
         }
+    };
+    for provider in shared {
+        super::session::recover_shared_after_boot(repo, provider, sweep_confirmed).await?;
+    }
+    let unproven = if sweep_confirmed {
+        Default::default()
+    } else {
+        ids.into_iter().collect()
     };
     host.pre_c4
         .set(crate::provider_execution::PreC4Sweep { unproven })

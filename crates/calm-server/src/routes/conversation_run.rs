@@ -199,7 +199,8 @@ pub(super) async fn read(
             });
         Json(PlannerRunReadResponse::Conversation(Box::new(
             ConversationRunResponse {
-                native_turn_id: (header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
+                native_turn_id: (recovery.is_none()
+                    && header.phase == crate::harness::HarnessPhaseTag::TurnRunning)
                     .then(|| header.last_turn_id.clone())
                     .flatten(),
                 run: GetPlannerRunResponse {

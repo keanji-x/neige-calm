@@ -194,8 +194,7 @@ async fn acp_submission_unresolved_on(
 }
 /// The journal's authoritative blocking predicate, also used by recovery.
 /// The unique index is its durable SQL counterpart.
-pub const ACP_BLOCKING_RECEIPT_SQL: &str =
-    "state = 'sending' OR (state = 'unknown' AND kept_cleanup_json IS NULL)";
+pub const ACP_BLOCKING_RECEIPT_SQL: &str = "state = 'sending' OR (state = 'unknown' AND kept_cleanup_json IS NULL AND restart_released_at_ms IS NULL)";
 pub async fn acp_submission_other_blocking_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     worker: &str,
@@ -227,10 +226,29 @@ pub enum AcpPrepareError {
     #[error("ACP receipt commit is uncertain: {0}")]
     CommitUncertain(crate::error::TruthError),
 }
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct AcpSharedProcessIdentity {
+    pub pid: i32,
+    pub start_time: u64,
+    pub boot_id: String,
+}
+
+pub async fn acp_shared_receipt_process_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker: &str,
+    client: &str,
+) -> Result<Option<AcpSharedProcessIdentity>> {
+    let identity: Option<sqlx::types::Json<AcpSharedProcessIdentity>> =
+        sqlx::query_scalar("SELECT shared_restart_owner_json FROM acp_submissions WHERE worker_session_id=?1 AND client_id=?2")
+            .bind(worker).bind(client).fetch_one(&mut **tx).await?;
+    Ok(identity.map(|identity| identity.0))
+}
+
 pub async fn acp_submission_prepare(
     pool: &crate::db::sqlite::SqliteDb,
     receipt: &AcpSubmission,
     at_ms: i64,
+    owner: Option<&AcpSharedProcessIdentity>,
 ) -> std::result::Result<(), AcpPrepareError> {
     let write_db = (pool).clone();
     write_db
@@ -241,7 +259,7 @@ pub async fn acp_submission_prepare(
                     .begin_immediate()
                     .await
                     .map_err(AcpPrepareError::BeforeReceipt)?;
-                prepare_tx(&mut tx, receipt, at_ms)
+                prepare_tx(&mut tx, receipt, at_ms, owner)
                     .await
                     .map_err(AcpPrepareError::BeforeReceipt)?;
                 tx.commit()
@@ -256,6 +274,7 @@ async fn prepare_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     receipt: &AcpSubmission,
     at_ms: i64,
+    owner: Option<&AcpSharedProcessIdentity>,
 ) -> Result<()> {
     let input = super::AcpSubmissionInput::decode(&receipt.input_json)?;
     match &input {
@@ -279,8 +298,8 @@ async fn prepare_tx(
     if acp_submission_unresolved_tx(tx, &receipt.worker_session_id).await? {
         return Err(CalmError::Conflict("ACP receipt remains blocking"));
     }
-    let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
-        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).execute(&mut **tx).await?;
+    let inserted = sqlx::query(concat!("INSERT INTO ","acp_submissions(worker_session_id,client_id,turn_id,thread_id,native_session_id,input_json",",state,created_at_ms,shared_restart_owner_json) SELECT ?1,?2,?3,?4,?5,?6,'sending',?7,?9 WHERE EXISTS(SELECT 1 FROM ","worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.id=ws.card_id WHERE ws.id=?1 ","AND ws.provider IN (SELECT value FROM json_each(?8)) AND ws.mode='resumable' AND c.track_id=ws.track_id ","AND ((ws.contract='planner' AND c.role='planner' AND json_extract(c.payload,'$.planner_provider')=ws.provider) ","OR (ws.contract='assistant' AND c.role='assistant' AND c.kind='codex' ","AND json_extract(c.payload,'$.harness_profile')='assistant' ","AND json_extract(c.payload,'$.assistant_provider')=ws.provider)) ","AND ws.thread_id=?4 AND ws.agent_session_id=?5 AND ws.state IN ","('starting','running','idle','turn_pending'))"))
+        .bind(&receipt.worker_session_id).bind(&receipt.client_id).bind(&receipt.turn_id).bind(&receipt.thread_id).bind(&receipt.native_session_id).bind(&receipt.input_json).bind(at_ms).bind(acp_provider_db_strings()).bind(owner.map(sqlx::types::Json)).execute(&mut **tx).await?;
     if inserted.rows_affected() != 1 {
         return Err(CalmError::Conflict(
             "ACP submission owner changed before dispatch",
@@ -321,7 +340,7 @@ async fn finish_tx(
     };
     let result = sqlx::query(concat!(
         "UPDATE acp_submissions SET state=?3,outcome_json=?4 WHERE worker_session_id=?1 AND ",
-        "client_id=?2 AND (state IN ('sending','unknown') OR ",
+        "client_id=?2 AND restart_released_at_ms IS NULL AND (state IN ('sending','unknown') OR ",
         "(state='completed' AND ?3='completed' AND outcome_json=?4 COLLATE BINARY))"
     ))
     .bind(worker)
