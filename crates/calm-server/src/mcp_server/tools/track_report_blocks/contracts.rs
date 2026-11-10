@@ -591,7 +591,8 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
                         "required": ["op"],
                         "additionalProperties": false,
                         "properties": {
-                            "op": { "type": "string", "enum": ["replace", "upsert", "move", "delete"] },
+                            "op": { "type": "string", "enum": ["replace", "upsert", "move", "delete"],
+                                "description": "replace uses section. upsert uses block id (omit id to create)." },
                             "section": { "type": "string" },
                             "id": { "type": "string" },
                             "kind": { "type": "string", "enum": block_kind_enum() },

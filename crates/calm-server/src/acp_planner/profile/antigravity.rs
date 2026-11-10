@@ -8,6 +8,7 @@ use super::{
 pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     context_snapshot: true,
     shared_server: true,
+    mcp_tool_name_budget: Some(tool_name_budget),
     usage: provider::acp::usage::UsageSource::SessionUsage,
     compaction: ContractCompaction {
         planner: Some(CompactionWire::CommandPrompt),
@@ -38,3 +39,9 @@ pub(super) const PROFILE: AcpAgentProfile = AcpAgentProfile {
     decline_ends_turn: true,
     refused_env: &[],
 };
+
+// AGY 1.5.3 drops business parameters above 64 bytes in its documented
+// mcp_<serverName>_<toolName> function name.
+fn tool_name_budget(server: &str) -> usize {
+    64usize.saturating_sub("mcp__".len() + server.len())
+}

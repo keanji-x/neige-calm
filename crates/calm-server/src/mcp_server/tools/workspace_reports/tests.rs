@@ -129,6 +129,39 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
     .into_structured();
     assert_eq!(result["track_id"], track.id.as_str());
     assert!(result["body"].as_str().unwrap().contains("概要"));
+    let index = read(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({"track_id":track.id,"detail":"index"}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert_eq!(index["doc_rev"], result["doc_rev"]);
+    assert!(index.get("body").is_none());
+    let indexed = index["blocks"].as_array().unwrap();
+    assert!(!indexed.is_empty());
+    assert!(indexed.iter().all(|block| block.get("payload").is_none()));
+    let section = read(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({"track_id":track.id,"sections":["概要"]}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert!(section["body"].as_str().unwrap().contains("# 概要"));
+    let block_id = &section["blocks"][0]["id"];
+    let block = read(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({"track_id":track.id,"blocks":[block_id]}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert_eq!(block["blocks"][0]["id"], *block_id);
+    assert_eq!(block["blocks"].as_array().unwrap().len(), 1);
     let list = registry.lookup("neige_workspace_ls").unwrap();
     assert_eq!(
         list(route.mcp_context.clone(), id.clone(), json!({}))

@@ -277,9 +277,13 @@ pub(crate) const COMMANDS: &[Command] = &[
     Command {
         tool: TOOL_MAIL_LS,
         positionals: &[],
-        options: &[opt("--cursor", "cursor", OptValue::Text, false)],
+        options: &[
+            opt("--cursor", "cursor", OptValue::Text, false),
+            opt("--track-id", "track_id", OptValue::Text, false),
+            opt("--state", "state", OptValue::Text, false),
+        ],
         confirm: None,
-        render: Render::MailLs,
+        render: Render::MailLs { filtered: false },
     },
     Command {
         tool: TOOL_MAIL_CAT,
@@ -532,6 +536,9 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
                         Some(Ok(AreaPath::Reports))
                     )
                 }),
+        },
+        Render::MailLs { .. } => Render::MailLs {
+            filtered: args.contains_key("track_id") || args.contains_key("state"),
         },
         other => other,
     };

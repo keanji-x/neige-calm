@@ -71,7 +71,11 @@ fn ls_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "properties": { "cursor": { "type": "string" } },
+            "properties": {
+                "cursor": { "type": "string" },
+                "track_id": { "type": "string", "description": "Only mail to or from this other Track." },
+                "state": { "type": "string", "enum": ["unread", "read"] }
+            },
             "additionalProperties": false
         }),
         annotations: Some(read_only_annotations()),
@@ -182,7 +186,27 @@ async fn ls(
 ) -> Result<Value, RpcError> {
     let object = arguments(TOOL_MAIL_LS, &args)?;
     let cursor = text_argument(TOOL_MAIL_LS, object, "cursor")?;
-    mail::ls(&ctx, &identity, cursor.as_deref()).await
+    let track_id = text_argument(TOOL_MAIL_LS, object, "track_id")?;
+    let unread = match text_argument(TOOL_MAIL_LS, object, "state")?.as_deref() {
+        None => None,
+        Some("unread") => Some(true),
+        Some("read") => Some(false),
+        Some(_) => {
+            return Err(invalid(
+                TOOL_MAIL_LS,
+                "state",
+                "state must be unread or read",
+            ));
+        }
+    };
+    mail::ls(
+        &ctx,
+        &identity,
+        cursor.as_deref(),
+        track_id.as_deref(),
+        unread,
+    )
+    .await
 }
 
 async fn cat(

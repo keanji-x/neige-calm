@@ -32,6 +32,8 @@ pub(crate) struct ContractCompaction {
 pub(crate) struct AcpAgentProfile {
     pub(crate) context_snapshot: bool,
     pub(crate) shared_server: bool,
+    /// Model-visible name budget for the stdio shim, based on the provider's actual server key.
+    pub(crate) mcp_tool_name_budget: Option<fn(&str) -> usize>,
     pub(crate) usage: provider::acp::usage::UsageSource,
     /// Native maintenance support declared independently for each worker contract.
     pub(crate) compaction: ContractCompaction,
@@ -110,6 +112,14 @@ const NOTHING: ModeLaunch = ModeLaunch {
 };
 
 impl AcpAgentProfile {
+    pub(crate) fn mcp_shim_args(&self, server: &str) -> Vec<String> {
+        let mut args = vec!["--structured-content-as-text".into()];
+        if let Some(budget) = self.mcp_tool_name_budget {
+            args.extend(["--max-tool-name-bytes".into(), budget(server).to_string()]);
+        }
+        args
+    }
+
     pub(crate) fn reported_version(
         &self,
         response: &InitializeResponse,
@@ -331,6 +341,28 @@ mod tests {
                 assert!(!profile.canonical_inputs(WorkerContract::Executor));
                 assert!(!profile.canonical_inputs(WorkerContract::Validator));
             }
+        }
+    }
+
+    #[test]
+    fn antigravity_shim_budget_includes_the_actual_shared_server_key() {
+        let server = "neige-0123456789ab";
+        let antigravity = AcpAgentProfile::of(&AgentProvider::Antigravity).unwrap();
+        assert_eq!(
+            antigravity.mcp_shim_args(server),
+            [
+                "--structured-content-as-text",
+                "--max-tool-name-bytes",
+                "41"
+            ],
+        );
+        for provider in [AgentProvider::OpenCode, AgentProvider::Grok] {
+            assert_eq!(
+                AcpAgentProfile::of(&provider)
+                    .unwrap()
+                    .mcp_shim_args(server),
+                ["--structured-content-as-text"],
+            );
         }
     }
 

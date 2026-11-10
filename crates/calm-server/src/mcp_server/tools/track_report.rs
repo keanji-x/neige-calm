@@ -303,7 +303,7 @@ fn snake_case(key: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ReadSelect {
+pub(super) enum ReadSelect {
     /// The `text` and index of every block but the task blocks (#2617).
     Full,
     /// The index and the document metadata; no `text`.
@@ -314,7 +314,7 @@ enum ReadSelect {
 
 /// Top-level `blocks` / `sections` (the names `neige_track_cat` uses) choose the parts, and
 /// `detail` how much: `full` (the default) returns text, `index` only the anchors and no text.
-fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
+pub(super) fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
     let Some(map) = args.as_object() else {
         return Err(RpcError::invalid_params(format!(
             "{tool}: arguments must be an object"

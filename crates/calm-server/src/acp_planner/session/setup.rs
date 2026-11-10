@@ -140,11 +140,14 @@ impl Shared {
 
 impl SessionParams {
     pub(super) fn mcp_server(&self, name: String, token: &str) -> protocol::McpServer {
+        // Native MCP consumers may build model output from content alone.
+        let args = super::super::profile::AcpAgentProfile::of(&self.provider)
+            .expect("ACP session uses an ACP profile")
+            .mcp_shim_args(&name);
         protocol::McpServer::Stdio {
             name,
             command: self.host.mcp_shim.to_string_lossy().into_owned(),
-            // Native MCP consumers may build model output from content alone.
-            args: vec!["--structured-content-as-text".into()],
+            args,
             env: crate::mcp_server::wiring::card_mcp_env(&self.host.mcp_socket, token)
                 .into_iter()
                 .map(|(name, value)| protocol::EnvVariable {

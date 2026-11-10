@@ -167,7 +167,7 @@ fn parse_batch_op(raw: &Value, index: usize, tool: &str) -> Result<BlockIntent, 
     match op {
         "upsert" => {
             let id = optional_string(obj, "id", &at)?;
-            let (kind, content) = resolve_upsert_content(obj, &at)?;
+            let (kind, content) = resolve_upsert_content(obj, id.as_deref(), &at)?;
             let position = optional_index(obj, "position", &at)?;
             if id.is_some() && position.is_some() {
                 return Err(RpcError::invalid_params(format!(
@@ -193,7 +193,7 @@ fn parse_batch_op(raw: &Value, index: usize, tool: &str) -> Result<BlockIntent, 
             Ok(BlockIntent::Delete { id })
         }
         "replace" => Err(RpcError::invalid_params(format!(
-            "{at}: `replace` needs `section` (the H1 heading text) and `markdown`"
+            "{at}: `replace` needs `section` (the H1 heading text) and `markdown`; use `upsert` with `id` to replace one block"
         ))),
         other => Err(RpcError::invalid_params(format!(
             "{at}: unknown op `{other}` (one of \"replace\", \"upsert\", \"move\", \"delete\")"
@@ -204,6 +204,7 @@ fn parse_batch_op(raw: &Value, index: usize, tool: &str) -> Result<BlockIntent, 
 /// The content of one `upsert` op of `neige_report_commit`.
 fn resolve_upsert_content(
     obj: &serde_json::Map<String, Value>,
+    id: Option<&str>,
     tool: &str,
 ) -> Result<(String, String), RpcError> {
     let kind = obj
@@ -213,9 +214,9 @@ fn resolve_upsert_content(
         .to_string();
     let content = if kind == report_blocks::KIND_PROSE {
         let markdown = match obj.get("markdown") {
-            Some(Value::String(s)) => s.clone(),
+            Some(Value::String(s)) => s.as_str(),
             None | Some(Value::Null) => match obj.get("payload").and_then(|p| p.get("markdown")) {
-                Some(Value::String(s)) => s.clone(),
+                Some(Value::String(s)) => s.as_str(),
                 _ => {
                     return Err(RpcError::invalid_params(format!(
                         "{tool}: kind=prose requires `markdown` (string), either \
@@ -229,10 +230,18 @@ fn resolve_upsert_content(
                 )));
             }
         };
+        let markdown = id
+            .and_then(|id| {
+                let marker = report_blocks::marker_line(id);
+                let (line, rest) = markdown.split_once('\n')?;
+                (line.strip_suffix('\r').unwrap_or(line) == marker.trim_end_matches('\n'))
+                    .then_some(rest)
+            })
+            .unwrap_or(markdown);
         // A prose block may not smuggle data blocks: an embedded ```neige-block fence would splinter into its own block on the next wholesale write.
-        report_blocks::check_prose_markdown(&markdown)
+        report_blocks::check_prose_markdown(markdown)
             .map_err(|why| RpcError::invalid_params(format!("{tool}: {why}")))?;
-        markdown
+        markdown.to_owned()
     } else if report_blocks::is_data_kind(&kind) {
         // Data kinds take a schema-validated `payload` object; the stored content is its canonical fence.
         if !matches!(obj.get("markdown"), None | Some(Value::Null)) {
