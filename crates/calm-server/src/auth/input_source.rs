@@ -26,6 +26,22 @@ impl std::fmt::Debug for HumanInputSource {
 }
 
 impl HumanInputSource {
+    /// Only the actual deployment issuer may delegate installation resources.
+    /// A paired device's owner attribution does not issue management authority.
+    pub(crate) fn current_deployment_issuer(&self) -> Result<Principal> {
+        match self.0.as_ref() {
+            Issuer::Session {
+                authority: SessionAuthority::PasswordLogin,
+                ..
+            }
+            | Issuer::ConfiguredDev { .. } => self.current_principal(),
+            Issuer::Session {
+                authority: SessionAuthority::PairedDevice,
+                ..
+            } => Err(CalmError::Forbidden("deployment issuer required".into())),
+        }
+    }
+
     /// Ask the actual issuer again at the protected decision. A recorded author,
     /// cached Principal or the dev session sentinel cannot manufacture a source.
     pub(crate) fn current_principal(&self) -> Result<Principal> {

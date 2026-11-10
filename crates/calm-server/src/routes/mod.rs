@@ -48,6 +48,7 @@ pub mod planner_switch;
 pub mod plugins;
 pub mod read_receipts;
 pub mod settings;
+pub mod share_links;
 pub mod task_recovery;
 pub mod terminal;
 pub mod terminal_cards;
@@ -86,6 +87,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(conversation_recovery::router())
         .merge(activity_dismissals::router())
         .merge(read_receipts::router())
+        .merge(share_links::router())
         .merge(track_asks::router())
         .merge(track_conversations::router())
         .merge(conversation_archive::router())

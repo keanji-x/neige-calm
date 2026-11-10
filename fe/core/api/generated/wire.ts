@@ -223,6 +223,11 @@ export type ConversationTerminalOutcome = { worker_session_id: string, card_id: 
 
 export type ConversationTerminalStatus = "completed" | "interrupted" | "failed";
 
+/**
+ * Approval is server issued. Reject request-controlled authority or policy.
+ */
+export type CreateShareLink = Record<symbol, never>;
+
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 
 /**
@@ -727,6 +732,24 @@ export type SetPlannerPermissionModeResponse = { card_id: CardId,
  * The stored mode, echoed rather than assumed.
  */
 permission_mode: PlannerPermissionMode, };
+
+export type ShareDelegation = { id: string, scope: ShareScope, approverUserId: string, purpose: SharePurpose, resourcePolicy: ShareResourcePolicy, createdAt: number, };
+
+/**
+ * Management projection deliberately contains no token or token hash.
+ */
+export type ShareLink = { delegation: ShareDelegation, revokedAt: number | null, };
+
+/**
+ * Secret returned only by creation. No endpoint can recover it later.
+ */
+export type ShareLinkCreated = { link: ShareLink, token: string, };
+
+export type SharePurpose = "conversation";
+
+export type ShareResourcePolicy = "current_deployment";
+
+export type ShareScope = { "kind": "track", "id": string } | { "kind": "area", "id": string };
 
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.

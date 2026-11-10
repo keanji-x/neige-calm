@@ -118,16 +118,6 @@ async fn require_legacy_deployment_area_tx(
             "legacy deployment execution cannot run SharedHistory".into(),
         ));
     }
-    let extra_users: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM application_users WHERE id<>?1)")
-            .bind(owner)
-            .fetch_one(&mut **tx)
-            .await?;
-    if extra_users {
-        return Err(CalmError::Forbidden(
-            "legacy deployment execution requires the sole registered deployment identity".into(),
-        ));
-    }
     let members: Vec<(String, String)> =
         sqlx::query_as("SELECT user_id,role FROM area_members WHERE area_id=?1 ORDER BY user_id")
             .bind(area_id)
@@ -157,4 +147,32 @@ pub(crate) async fn require_legacy_event_execution_tx(
     require_legacy_deployment_area_tx(tx, area_id, &owner).await?;
     declaration.current_owner()?;
     Ok(owner)
+}
+
+pub(crate) fn require_deployment_source(
+    source: &crate::auth::HumanInputSource,
+) -> Result<Principal> {
+    let principal = source.current_deployment_issuer()?;
+    require_deployment_owner(&principal)?;
+    Ok(principal)
+}
+
+/// Current deployment conversation delegation is consent by the actual owner of
+/// this User Area. It does not mint a frozen environment or runtime admission.
+pub(crate) async fn require_share_owner_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    area_id: &str,
+    source: &crate::auth::HumanInputSource,
+) -> Result<Principal> {
+    let principal = require_deployment_source(source)?;
+    // Truth's User Area owner policy rejects System targets and missing registry
+    // or membership facts. Do not use the System-capable organization wrapper.
+    crate::db::sqlite::area_membership::area_require_access(
+        tx,
+        area_id,
+        &principal.user_id,
+        AreaAccess::Delete,
+    )
+    .await?;
+    Ok(principal)
 }

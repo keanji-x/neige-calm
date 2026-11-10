@@ -30,6 +30,7 @@ pub mod backend_registry;
 mod backend_registry_tests;
 mod card;
 mod child_track_binding;
+pub mod share_links;
 pub use child_track_binding::{child_track_handback_targets_sql, task_bind_child_track_tx};
 mod card_composite;
 pub mod conversation;

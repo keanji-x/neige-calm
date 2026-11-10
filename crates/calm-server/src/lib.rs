@@ -26,6 +26,7 @@ mod planner_switch;
 pub mod provider_execution;
 pub mod provider_registry;
 pub mod reaper;
+mod share_access;
 pub(crate) mod shell_command;
 mod state_clients;
 mod time_format;
