@@ -542,6 +542,7 @@ dependencies = [
  "hyper 1.9.0",
  "hyper-util",
  "libc",
+ "libsqlite3-sys",
  "nix 0.29.0",
  "nucleo-matcher",
  "objective",
