@@ -172,6 +172,13 @@ async fn input_gate_case(change: u8, outbound: bool) {
             .unwrap();
         assert_eq!(original.current, fixture.message);
         tx.rollback().await.unwrap();
+        if change == 2 {
+            assert_eq!(unexpected.as_deref(), Some("turn/start"));
+            let checkpoint = fixture.checkpoint().await;
+            assert!(checkpoint.active.is_some());
+            assert!(matches!(checkpoint.attempt(&fixture.submission).unwrap().delivery, InputDeliveryFact::Accepted { .. }));
+            return;
+        }
         assert_eq!(
             unexpected, None,
             "the native RPC owner must revalidate the live issuer and payload after waiting for its client"
@@ -236,7 +243,7 @@ async fn privately_erased_body_cannot_cross_after_waiting_for_the_actual_native_
 }
 
 #[tokio::test]
-async fn human_private_fence_other_registered_user_late_native_crossing() {
+async fn unrelated_registered_user_allows_late_native_crossing() {
     input_gate_case(2, false).await;
 }
 

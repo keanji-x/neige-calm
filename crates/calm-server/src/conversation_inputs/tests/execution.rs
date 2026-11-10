@@ -296,3 +296,103 @@ async fn operator_source_cannot_claim_another_humans_input_even_in_owned_private
         .await
         .expect("independent write operation")
 }
+
+#[tokio::test]
+async fn unrelated_registered_user_does_not_block_owner_private_execution() {
+    let fx = Fixture::new(false).await;
+    fx.register("unrelated").await;
+    let (_, source) = accept_owner(&fx).await;
+    assert!(claim(&fx, &source).await.is_ok());
+}
+
+#[tokio::test]
+async fn owner_source_still_cannot_claim_a_multi_member_area() {
+    let fx = Fixture::new(false).await;
+    let (_, source) = accept_owner(&fx).await;
+    fx.register("alice").await;
+    let db = fx.input.repo.db().clone();
+    let card = fx.input.card.clone();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let area = conversation::conversation_area_tx(&mut tx, &card)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
+                    .bind(area.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        claim(&fx, &source).await,
+        Err(CalmError::Forbidden(_))
+    ));
+}
+
+#[tokio::test]
+async fn owner_source_still_cannot_claim_shared_history() {
+    let fx = Fixture::new(false).await;
+    let (_, source) = accept_owner(&fx).await;
+    let db = fx.input.repo.db().clone();
+    db.writer()
+        .execute(
+            sqlx::query(concat!(
+                "UPDATE areas SET conversation_history_contract='shared_history' ",
+                "WHERE id=(SELECT area_id FROM tracks ",
+                "WHERE id=(SELECT track_id FROM cards WHERE id=?1))",
+            ))
+            .bind(&fx.input.card),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        claim(&fx, &source).await,
+        Err(CalmError::Forbidden(_))
+    ));
+}
+
+#[tokio::test]
+async fn exclusive_owner_still_cannot_claim_another_humans_accepted_message() {
+    let fx = Fixture::new(false).await;
+    fx.register("alice").await;
+    let db = fx.input.repo.db().clone();
+    let card = fx.input.card.clone();
+    let area = db
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                let area = conversation::conversation_area_tx(&mut tx, &card)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO area_members VALUES(?1,'alice','member',0)")
+                    .bind(area.id.as_str())
+                    .execute(&mut **tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                area.id.to_string()
+            })
+        })
+        .await
+        .unwrap();
+    let alice = fx.session("alice", "owner");
+    assert_eq!(fx.send(Some(&alice)).await.status(), StatusCode::OK);
+    db.writer()
+        .execute(
+            sqlx::query("DELETE FROM area_members WHERE area_id=?1 AND user_id='alice'").bind(area),
+        )
+        .await
+        .unwrap();
+    let owner = fx.session(LEGACY_OWNER_USER_ID, "owner");
+    assert!(matches!(
+        claim(&fx, &source(&fx.auth, &owner).await).await,
+        Err(CalmError::Forbidden(_))
+    ));
+}

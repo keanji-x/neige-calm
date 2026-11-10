@@ -123,3 +123,6 @@ mod track_list_access;
 
 #[path = "cases/shared_support_tests.rs"]
 mod shared_support_tests;
+
+#[path = "cases/share_links.rs"]
+mod share_links;

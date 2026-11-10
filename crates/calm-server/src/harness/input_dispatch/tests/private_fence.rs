@@ -46,31 +46,38 @@ async fn fence_case(case: u8, crossing: bool) {
             let claim =
                 crate::conversation_inputs::claim_initial_tx(&mut tx, &fx.source, &mut carrier, plan)
                     .await;
-            assert!(
-                matches!(claim, Err(CalmError::Forbidden(_))),
-                "claim case {case}: {claim:?}"
-            );
+            if case == 0 {
+                claim.unwrap();
+            } else {
+                assert!(matches!(claim, Err(CalmError::Forbidden(_))), "claim case {case}: {claim:?}");
+            }
         }
         tx.commit().await.unwrap();
         if crossing {
-            assert!(
-                matches!(fx.dispatch().await, Err(CalmError::Forbidden(_))),
-                "crossing case {case}"
-            );
+            if case == 0 {
+                fx.dispatch().await.unwrap();
+            } else {
+                assert!(matches!(fx.dispatch().await, Err(CalmError::Forbidden(_))), "crossing case {case}");
+            }
         }
-        assert_eq!(fx.checkpoint().await, before);
-        assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+        if case == 0 {
+            assert!(fx.checkpoint().await.active.is_some());
+            assert_eq!(fx.daemon.turn_start_count_for_test(), u64::from(crossing));
+        } else {
+            assert_eq!(fx.checkpoint().await, before);
+            assert_eq!(fx.daemon.turn_start_count_for_test(), 0);
+        }
 
     })).await.expect("independent write operation")
 }
 
 #[tokio::test]
-async fn human_private_fence_other_registered_user_claim() {
+async fn unrelated_registered_user_allows_claim() {
     fence_case(0, false).await;
 }
 
 #[tokio::test]
-async fn human_private_fence_other_registered_user_crossing() {
+async fn unrelated_registered_user_allows_crossing() {
     fence_case(0, true).await;
 }
 

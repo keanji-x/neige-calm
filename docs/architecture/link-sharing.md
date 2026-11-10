@@ -1,9 +1,8 @@
 # Link sharing and execution approval
 
-Status: proposed L2 design for #3633; implementation is blocked on the resource
-authorization owner described below. This document does not introduce a usable
-share capability or claim execution support. Source inspection used baseline
-`f2d204ca594aa1817adf538c9d1b74d276683fa1`.
+Status: PR1 L2 design for #3633, using the current deployment resource policy.
+PR1 supplies protected management and durable delegation, not visitor execution.
+This decision supersedes the earlier frozen environment binding prerequisite.
 
 ## Outcome and delivery boundaries
 
@@ -14,9 +13,9 @@ There is no invitation, guest fork, manual Report edit or `allows_input` switch.
 
 | Slice | Closed outcome | Boundary and evidence required |
 | --- | --- | --- |
-| PR1 | Protected management and persistent approval foundation | Authenticated deployment issuer, owned User Area, typed scope and immutable execution approval bound to real resources; independent hash-only access token and monotonic revocation; real HTTP transactions and reopen tests. No anonymous routes or execution cutover. |
+| PR1 | Protected management and persistent approval foundation | Authenticated deployment issuer, owned User Area, typed scope and immutable consent to the current deployment resource policy; independent hash-only access token and monotonic revocation; real HTTP transactions and reopen tests. No anonymous routes or execution cutover. |
 | PR2 | Shared reads and invalidation | Narrow audience-aware Report/history/data projection, resource-owner decisions and scope-only live invalidation, including deletion and subscribe/snapshot races. No guest send endpoint yet. |
-| PR3 | Original-conversation guest work | Explicit link-guest author and ShareDelegation provenance; acceptance binds exact original message/revision to approval. Reuse canonical receipt, pending order, source qualification, claim, dispatch and cold recovery. Revalidate current resource approval; loss holds the original work. |
+| PR3 | Original-conversation guest work | Explicit link-guest author and ShareDelegation provenance; acceptance binds exact original message/revision to approval. Reuse canonical receipt, pending order, source qualification, claim, dispatch and cold recovery. Revalidate current issuer, ownership and source at execution; loss holds the original work. |
 | PR4 | Complete browser experience | SessionGate-independent composition, existing Report/conversation UI and narrow ports, copy/reopen/multiple-link cookies/origin/revocation and Area navigation; real preview and browser/Tier 1 coverage. |
 
 Every slice is L2 because it changes authority or persistence boundaries. PR1
@@ -25,133 +24,76 @@ It must not register a visitor as a user or member. Sharing is not advertised as
 executable until PR3 consumes the real resource approval through the existing
 execution owners.
 
-## Existing owners and the missing prerequisite
+## Current deployment delegation
 
-The real call paths establish some, but not all, of PR1's prerequisites:
+The actual deployment owner approves conversation use of this installation's
+currently configured resources in a specified Track or Area. Configuration
+changes apply as they do to ordinary owner work. This product does not freeze
+credentials, an environment version, or a Workspace binding. It needs no
+AreaEnvironmentBinding, new resource UUID, environment registry or fake version.
+Existing Planner tools and resource permissions remain unchanged; an HTTP share
+scope does not establish a new sandbox isolation boundary or complete #2671 C4.
 
-- [Live request source](../../crates/calm-server/src/auth/input_source.rs)
-  resolves session/dev authentication and rechecks the issuer in
-  `HumanInputSource::current_principal`. A supplied Principal, role or Actor is
-  not a substitute. [Session](../../crates/calm-server/src/auth/session.rs)
-  separately records credential provenance; deployment management policy must
-  use the actual issuer rather than infer provenance from the display role.
-- [Validated deployment auth](../../crates/calm-server/src/auth/deployment.rs)
-  provides only `LegacyPrivateExecution`, backed by a weak reference to current
-  AuthConfig. [Boot](../../crates/calm-server/src/application_boot.rs) activates
-  that declaration for dispatcher and maintenance execution. It has no durable
-  deployment resource binding or approval identity/version.
-- [Organization access](../../crates/calm-server/src/organization_access.rs)
-  owns the registered-owner/Private execution decision. Its Human and automation
-  wrappers converge on `require_legacy_deployment_area_tx`. The
-  [Truth membership owner](../../crates/calm-truth/src/db/sqlite/area_membership.rs)
-  supplies registration and current membership facts, expressly not permission
-  to execute using another authority. System Areas have no membership.
-- [Workspace selection](../../crates/calm-truth/src/db/sqlite/workspace_resource.rs)
-  exposes `WorkspaceObservation`, selection version and Pending/Observed directory
-  facts. [Migration 0166](../../crates/calm-truth/migrations/0166_workspace_resources.sql)
-  expressly states that these do not authorize launch, admission or destruction.
-  A selection ID, observed inode, pathname or database identity cannot become an
-  environment grant.
-- A real execution engine exists. Its
-  [ExecutionAuthority](../../crates/workspace/src/execution/mod.rs) contains grant,
-  authorization binding and version. However, the
-  [provider launch owner](../../crates/calm-server/src/provider_execution/launch.rs)
-  and [terminal owner](../../crates/calm-server/src/operation/terminal_execution_create.rs)
-  currently mint fresh grant/binding IDs with version 1 inside each launch's
-  `PrivateSource`. Those identify individual execution intents, not a persistent
-  organization resource approval that link management can issue and revalidate.
-- The [canonical execution owner](../../crates/calm-server/src/conversation_inputs/source.rs)
-  validates the actual source and records only LegacySingleUserDeployment. It
-  cannot manufacture a Share approval by relabeling that result.
+The real [HumanInputSource](../../crates/calm-server/src/auth/input_source.rs)
+proves current session/dev authentication. Raw Principal, role and Actor fields
+cannot mint approval. The organization owner checks current deployment identity,
+registration and actual User Area ownership. The share owner resolves Track
+containment through owning Truth reads in the same transaction, rejects System
+Areas, and consumes the same approval decision for create, reload/list and revoke.
+The live source is rechecked immediately before commit. Existing provider and
+Workspace admission remains responsible for actual execution in PR3.
 
-The missing owner contract is a current deployment resource authorization
-decision, issued by auth/organization access and durably represented by Truth:
-it must identify the actual resource set and authorization binding/version,
-the approving deployment identity, the approval identity/version, the owned
-target and the execution purpose. It must resolve and validate the same binding
-after reopen, and define
-what real resource/configuration changes invalidate it. Workspace/execution
-owners must identify the resource they actually consume; share management must
-not create a parallel resource registry or infer that identity from a path.
+`ShareScope` is a typed Track or Area target, stored with mutually exclusive
+foreign keys. An Area includes present and future Tracks without enumeration.
+`ShareDelegation` has immutable id, scope, approver user, conversation purpose,
+current_deployment policy and creation time. The record's id is the stable
+approval identity. Management consumes reloaded typed facts and validates target,
+purpose, policy, current approver and current ownership. There is no extra
+approval state machine, queue or bootstrap execution capability.
 
-The existing
-[Workspace launch proposal](workspace-launch-admission.md#authority-consume-c1-do-not-invent-identity)
-places AreaEnvironmentBinding with collaboration authorization and explicitly
-does not deliver it. Its future Ready/PreparedLaunch APIs are not present-day
-approval issuers. PR1 must not construct them to fill this gap.
+A single `share_links` aggregate holds those immutable facts plus independent
+access facts: a hash of a strong random one-time token and monotonic `revoked_at`.
+SQL fences prevent delegation edits, access resurrection and physical link
+removal while the target exists. Revocation never changes delegation, pending
+input, messages or receipts.
+Future PR3 accepted work refers to immutable delegation facts and does not check
+token revocation; reads and new acceptance require active access. Target deletion
+uses existing lifecycle/FK cascades: Track links disappear with their Track, Area
+links with their Area. Revoking a link never invokes target deletion. PR3 must
+keep accepted work references within that same target lifecycle.
 
-Deciding whether the resource is an explicit deployment credential/environment
-binding or another already-owned resource requires its owning contract and
-invalidation semantics. Creating a UUID in share storage, pinning version 1,
-or serializing the current owner does not establish those facts. This is the
-specific prerequisite to resolve before implementing PR1's approval migration
-and successful create transaction. No schema-only approval with no real issuer
-or current-resource validator should be shipped as the promised foundation.
+Protected POST/GET `/api/tracks/{id}/share-links`, POST/GET
+`/api/areas/{id}/share-links` and DELETE `/api/share-links/{id}` are the entire PR1
+HTTP surface. Creating a link approves chat by default, without `allows_input`.
+Create returns the token exactly once; storage holds only its hash and listing
+exposes neither. DELETE idempotently marks access revoked. No anonymous endpoint,
+visitor registration, Private history change, historical JSON rewrite, provider
+change or execution dispatch is included.
 
-## Proposed PR1 contract after that prerequisite
-
-`ShareScope` is a required typed Track or Area target. It has one authoritative
-stored representation; access tokens and approvals reference it instead of
-storing independently mutable copies. Track containment is resolved from Truth
-in the management transaction; an Area scope includes future children without
-enumerating them. System targets and cross-Area targets are rejected.
-
-`ShareExecutionApproval` is immutable and has a stable identity and required
-approval version, approving deployment user, scope,
-resource authorization binding/version and typed execution purpose. These are
-server-issued facts, not request-controlled owner/resource/version assertions.
-The approval represents the creator's explicit delegation for chat. It is not a
-Ready state, execution queue or promise of provider availability.
-
-`share_access` owns scope resolution, management policy and access revocation;
-`organization_access` owns the sole current deployment resource decision used
-by share management and future Human/Dispatcher/Share adapters. Truth stores and
-loads facts and enforces persistence invariants. Routes consume these decisions
-without duplicating authorization SQL. Revalidation checks the stored approval
-against the current issuer identity, owner, target, resource, purpose and
-version. Missing or mismatched approval fails closed without Legacy fallback.
-
-Protected routes are POST/GET `/api/tracks/{id}/share-links`, POST/GET
-`/api/areas/{id}/share-links` and DELETE `/api/share-links/{id}`. Creation uses
-live issuer proof and registered ownership of the actual User Area. Listing and
-revocation require the current authenticated approving deployment owner and
-current target authorization. Merely owning an Area or presenting Actor headers
-cannot mint deployment approval. Mutation checks run inside the committing
-Truth transaction and recheck the actual source at that boundary.
-
-Access tokens use cryptographically strong random bytes, with only their hash
-persisted. Create returns the secret once; listing exposes neither secret nor
-hash. No API promises retrieval of a previously issued full link. Revocation is
-an idempotent one-way access fact and preserves approval, attribution and
-history. PR1 has no public token exchange/read/send endpoint.
-
-The approval and token may use separate tables within one aggregate, but token
-revocation cannot update the approval or pending/message/receipt facts. Future
-accepted input references the immutable approval, never reconstructs it from a
-currently active token. Resource invalidation holds accepted work through its
-original owner; access revocation only prevents future access and acceptance.
-Target deletion uses existing lifecycle behavior and retains history needed by
-still-existing work. Reopen or target recreation cannot revive a revoked token
-or rebind an old approval to a new resource.
-
-Add the next migration only at implementation time; the inspected head is
-0214. Released SQL bytes remain frozen. Existing rows are not backfilled as
-Share or rewritten as a different Legacy source. Real generators update every
-API/wire artifact and current migration/head-schema fixtures.
+Add the next migration after 0214; released migrations are byte-frozen. Run the
+real API/wire generator and update migration fixtures. PR2 notification work
+reuses EventScope and establishes a unified Report resource owner; PR4 copying
+preserves fragments. No new permissions panel or warning workflow is introduced.
 
 ## Architecture checks and permanence cost
 
 | Check | Required ownership and maintenance consequence |
 | --- | --- |
-| Abstraction boundaries | Auth proves the live issuer; organization access decides resource authority; share access decides scope/access; Truth persists; routes and future UI consume declared results. Workspace and execution owners retain actual resource identity and lifecycle. |
+| Abstraction boundaries | Auth proves the live issuer; organization access decides current deployment/Area ownership; share access decides scope/access; Truth persists; routes consume those contracts. Execution owners retain runtime admission. |
 | Duplicate logic | Extend the existing organization resource decision; do not copy its checks into a second share-only no-users branch. Reuse one canonical conversation, pending queue and source registry in PR3. |
-| Hardcoded application assumptions | No local-owner special case, per-event sharing list, new file/test/route census, or fake Ready. Closed scope/purpose variants are declared once in their owning typed contracts. Area descendants are resolved dynamically. |
+| Hardcoded application assumptions | No new local-owner special case, per-event sharing list, new file/test/route census, or fake Ready. Closed scope/purpose variants are declared once in their owning typed contracts. Area descendants are resolved dynamically. |
 | External contract facts | Use issuer/session facts and real Workspace/executor contracts. Never infer environment authority from filesystem paths, database IDs, provider private layouts or generated launch IDs. |
 | Cost of permanence | Persist scope to give token and accepted work one stable target; persist immutable approval for exact provenance/reload/history; persist token hash and monotonic revocation to enforce access across restarts. These facts require one additive migration and owning codecs/fixtures, not a new execution ledger, cleanup worker or synchronization state machine. Ordinary new tests/routes use existing registration mechanisms and do not edit a second census. |
 
-The current global `extra_users` guard is not a product invariant. This PR1
-leaves the old execution chain unchanged as scoped. Removing that SQL check is
-an independent narrow change that can preserve deployment identity,
+The new tests join the existing API/lib test registrations and run once in their
+assigned CI shard (apart from retries); no new workflow invocation is added.
+The task gate replays the share management and execution modules once. Ordinary tests need no
+new census; a migration adds the existing head-fixture entry. A new scope variant
+would change its typed vocabulary and owning codec plus an additive migration,
+rather than a per-caller authorization list.
+
+The current global `extra_users` guard is not a product invariant. PR1 removes
+only that SQL check, preserving deployment identity,
 Area/Private/membership and exact-source checks; it does not require completing
 link sharing first. New delegation must not copy the population heuristic into
 a parallel authorization branch. Full Share source integration is a separate
@@ -162,7 +104,7 @@ PR3 obligation.
 Real HTTP cases belong to `domain_api_suite::share_links` in the existing
 `api_suite` target. They must prove protected-session enforcement, forged Actor
 rejection, unregistered/non-deployment/foreign owner refusal, System refusal,
-scope/target/resource/purpose/version mismatch, unrelated second-user behavior,
+scope/target/purpose/policy mismatch, unrelated second-user behavior,
 one-time token secrecy, management replay and monotonic revocation, deletion,
 reopen and migration of existing data. Approval reload and current validation
 must be consumed by actual management transactions, not a test-only constructor.
@@ -177,11 +119,11 @@ OpenAPI statuses and frontend lint/build/full tests. CI owns broad suites.
 No real Codex E2E or workspace-wide nextest runs are permitted here.
 
 Two independent L2 review channels remain Planner-owned. Critical scope,
-issuer/resource binding and monotonic revocation assertions require the
+issuer/current ownership and monotonic revocation assertions require the
 repository's single-factor mutation verification in an exclusive recoverable
 worktree, with the full predicted/actual red set compared before safe restore.
 
-At this design checkpoint no management routes, new migration, generated API
-changes or share tests have been implemented. Resource authorization issuance
-and current validation remain unresolved; there is no PR1 execution-readiness
-claim or L2 review/gate-pass claim.
+Verification plan: the worker runs focused execution and share HTTP tests,
+formatter and real API generation; the kernel gate runs text, full L2 contracts,
+quick Rust, focused replay, OpenAPI statuses and frontend validation. Planner owns
+the two independent L2 reviews. PR1 makes no visitor execution readiness claim.
