@@ -1,10 +1,11 @@
 import { historicalConversationRun, historicalConversationPage, conversationCardId, humanPresentation, nativePresentation, presentationPage } from './conversation-read-data.ts';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
-import { cleanup } from '@testing-library/react';
+import { act, cleanup, fireEvent } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
-import { renderDailyFixture } from './daily-planner-fixture.tsx';
+import { transcript } from '../../../../core/events/query-keys.ts';
+import { renderDailyFixture, renderWorkingDailySideFixture } from './daily-planner-fixture.tsx';
 
 afterEach(async () => { cleanup(); await page.viewport(1280, 800); });
 
@@ -559,4 +560,141 @@ it('honors inventory and New conversation focus when leaving a Today subview', a
   await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   await expect.element(field).toHaveFocus();
   await expect.element(field).toHaveTextContent('Planner draft');
+});
+
+
+it.each([['Report changes', 'transcript'], ['Report changes', 'composer'], ['Daily Supervisor', 'transcript'], ['Daily Supervisor', 'composer']])('keeps an adopted working Today side interactive in %s from %s', async (view, input) => {
+  await page.viewport(1440, 900);
+  const { requests, rows } = renderWorkingDailySideFixture();
+  const main = page.getByRole('region', { name: 'Today Assistant', exact: true });
+  const mainField = main.getByRole('combobox', { name: 'Message', exact: true });
+  await expect.element(main.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  await expect.element(main.getByRole('link', { name: 'Side evidence', exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: 'Month', exact: true }).click();
+  await mainField.fill('/side Explore independently');
+  await userEvent.keyboard('{Enter}');
+  const side = page.getByRole('region', { name: 'Side conversation · Codex', exact: true });
+  await expect.element(side.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  const sideId = rows[0].id;
+  expect(requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))?.body)
+    .toMatchObject({ text: 'Explore independently', side: { source_card_id: 'daily-planner' } });
+  const sideField = side.getByRole('combobox', { name: 'Message', exact: true });
+  await sideField.fill('Side draft survives');
+  await mainField.fill('Main draft survives');
+  const mainElement = main.element();
+  await page.getByRole('button', { name: view, exact: true }).click();
+  await expect.element(mainElement).not.toBeVisible();
+  await expect.element(side).toBeVisible();
+  const evidence = await side.getByRole('link', { name: 'Side evidence', exact: true }).findElement();
+  if (input === 'transcript') evidence.focus();
+  else await sideField.click();
+  await expect.element(input === 'transcript' ? evidence : sideField).toHaveFocus();
+  if (input === 'transcript') await page.screenshot({ path: `../../../../test-results/today-side-${view === 'Report changes' ? 'changes' : 'supervisor'}.png` });
+  await userEvent.keyboard('{Escape}');
+  // One side request, no main request: the two working controllers must stay isolated.
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/planner/interrupt')).map(request => request.path))
+    .toEqual([`/api/cards/${sideId}/planner/interrupt`]);
+  await expect.element(side).toBeVisible();
+  await expect.element(side.getByRole('button', { name: 'Stop', exact: true })).not.toBeInTheDocument();
+  await page.getByRole('button', { name: 'Back to Today Assistant', exact: true }).click();
+  await expect.element(mainField).toHaveTextContent('Main draft survives');
+  await expect.element(sideField).toHaveTextContent('Side draft survives');
+  await side.getByRole('button', { name: 'Close side conversation', exact: true }).click();
+  await expect.element(page.getByRole('radio', { name: 'Month', exact: true })).toBeChecked();
+});
+
+
+it.each(['terminal', 'compact'])('isolates Today side visible effects while hidden by %s and restores its reading and drafts', async hiddenBy => {
+  await page.viewport(1440, 900);
+  const fixture = renderWorkingDailySideFixture({ paginated: true });
+  const main = page.getByRole('region', { name: 'Today Assistant', exact: true });
+  const mainField = main.getByRole('combobox', { name: 'Message', exact: true });
+  await expect.element(main.getByText('Paragraph 34.', { exact: false })).toBeVisible();
+  await page.getByRole('radio', { name: 'Month', exact: true }).click();
+  // Explicit selection preserves the parent identity while compact owns the main Sheet.
+  await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await mainField.fill('/side Explore independently');
+  await userEvent.keyboard('{Enter}');
+  const side = page.getByRole('region', { name: 'Side conversation · Codex', exact: true });
+  await expect.element(side.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  const sideId = fixture.rows[0].id;
+  const sideField = side.getByRole('combobox', { name: 'Message', exact: true });
+  await mainField.fill('Main draft survives');
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+
+  const receiptWrites = () => fixture.receipts.requests.filter(request => request.method === 'POST' && request.path.includes('/conversation/'));
+  const receiptStart = receiptWrites().length;
+  act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => receiptWrites().slice(receiptStart).map(request => request.path))
+    .toEqual([`/api/read-receipts/conversation/${sideId}/read`]);
+  // Editing the real queue asks this side controller to focus its existing portalled editor.
+  await sideField.fill('');
+  await side.getByRole('button', { name: 'Edit queued message', exact: true }).click();
+  await expect.element(sideField).toHaveFocus();
+  await expect.element(sideField).toHaveTextContent('Explore independently');
+  await side.getByRole('button', { name: 'Cancel edit', exact: true }).click();
+  await sideField.fill('Side draft survives');
+  const editor = sideField.element();
+  const evidence = side.getByRole('link', { name: 'Side evidence', exact: true }).element();
+  evidence.focus();
+  await userEvent.keyboard('{Home}');
+  const earlierReads = () => fixture.requests.filter(request => request.path.includes('/harness/items') && request.path.includes('&cursor='));
+  await expect.poll(() => earlierReads().map(request => conversationCardId(request.path))).toEqual([sideId]);
+
+  // A fresh server window gives the hidden branch an unspent cursor to reject.
+  fixture.advanceHistory();
+  await act(async () => { await fixture.client.invalidateQueries({ queryKey: transcript(sideId) }); });
+  const sideElement = side.element();
+  const scroller = sideElement.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  fireEvent.wheel(scroller, { deltaY: 40 });
+  scroller.scrollTop = 350;
+  fireEvent.scroll(scroller);
+  await expect.poll(() => scroller.scrollTop).toBe(350);
+  const place = scroller.scrollTop;
+  const beforeHidden = receiptWrites().length;
+  const readsBeforeHidden = earlierReads().length;
+  if (hiddenBy === 'terminal') {
+    await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+    await expect.element(page.getByRole('button', { name: 'Hide terminal', exact: true })).toBeVisible();
+    await expect.element(sideElement).not.toBeVisible();
+    expect(sideElement.closest('[inert]')).not.toBeNull();
+  } else {
+    await page.viewport(390, 844);
+    const companion = document.querySelector<HTMLElement>('[aria-label="Track workbench"]')!;
+    expect(companion.hidden).toBe(true);
+    expect(companion.inert).toBe(true);
+  }
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    fireEvent.wheel(scroller, { deltaY: -40 });
+  });
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  expect(receiptWrites().slice(beforeHidden).filter(request => request.path.includes(sideId))).toEqual([]);
+  expect(earlierReads()).toHaveLength(readsBeforeHidden);
+  expect(fixture.requests.filter(request => request.path.endsWith('/planner/interrupt'))).toEqual([]);
+
+  if (hiddenBy === 'terminal') await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  else await page.viewport(1440, 900);
+  await expect.element(side).toBeVisible();
+  await expect.element(sideField).toHaveTextContent('Side draft survives');
+  await expect.poll(() => side.element().querySelector<HTMLElement>('[data-nc-drawer-scroll]')!.scrollTop).toBe(place);
+  const resumedReceipts = receiptWrites().length;
+  act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => receiptWrites().slice(resumedReceipts).some(request => request.path.includes(sideId))).toBe(true);
+  // Request older history from the first loaded link, at the top of the reader.
+  side.getByRole('link', { name: 'Side evidence', exact: true }).first().element().focus();
+  await userEvent.keyboard('{Home}');
+  await expect.poll(() => earlierReads().length).toBe(readsBeforeHidden + 1);
+  expect(conversationCardId(earlierReads().at(-1)!.path)).toBe(sideId);
+  await sideField.click();
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => fixture.requests.filter(request => request.path.endsWith('/planner/interrupt')).map(request => request.path))
+    .toEqual([`/api/cards/${sideId}/planner/interrupt`]);
+  await page.getByRole('button', { name: 'Back to Today Assistant', exact: true }).click();
+  await expect.element(mainField).toHaveTextContent('Main draft survives');
+  await side.getByRole('button', { name: 'Close side conversation', exact: true }).click();
+  await expect.element(page.getByRole('region', { name: 'Calendar tasks', exact: true })).toBeVisible();
+  if (hiddenBy === 'terminal') await expect.element(page.getByRole('radio', { name: 'Month', exact: true })).toBeChecked();
+  await page.screenshot({ path: `../../../../test-results/today-side-${hiddenBy}-restored.png` });
 });

@@ -2,6 +2,9 @@ import type { SessionIdentity } from '../../../../core/api/auth.ts';
 import { SessionGate } from '../auth/session-gate.tsx';
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { prepareReportDocument, type ReportPreparationPort } from '../../features/report/document/preparation.ts';
+import { trackConversationCardId, type Conversation } from '../../../../core/domain/conversation.ts';
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
+import { initialReceiptFor } from './initial-input-fixture.ts';
 import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import { Profiler, StrictMode, type ReactNode } from 'react';
 // Test-only transport for the complete daily homepage composition; no model or live API.
@@ -15,7 +18,7 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
-import { withReadReceipts, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
+import { createReadReceiptsKernel, withReadReceipts, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
 export function renderDailyFixture({ history, identity, routeProbe, withTransport, strict = false, initial = '/', plannerProvider = 'codex', failChanges = false, emptyWorkspace = false, extraPlanner = false, projectTitle = 'Project evidence', reportBody, reply, onCommit, uiPreferences, receipts, prepareReport = prepareReportDocument }: Readonly<{ history?: RouterHistory; identity?: SessionIdentity; routeProbe?: ReactNode; withTransport?: (transport: ApiTransportPort) => ApiTransportPort; strict?: boolean; prepareReport?: ReportPreparationPort; plannerProvider?: AgentProvider; uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; extraPlanner?: boolean; projectTitle?: string; reportBody?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
   const requests: ApiRequest[] = [];
@@ -74,4 +77,56 @@ export function renderDailyFixture({ history, identity, routeProbe, withTranspor
   const tree = <Profiler id="daily-fixture" onRender={onCommit ?? (() => undefined)}><QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>{authenticated}</ThemeProvider></QueryClientProvider></Profiler>;
   render(strict ? <StrictMode>{tree}</StrictMode> : tree, { container });
   return { router, requests, client };
+}
+
+/** Real router with a negotiated create/adoption/working-side transport boundary. */
+export function renderWorkingDailySideFixture({ paginated = false } = {}) {
+  const rows: Conversation[] = [];
+  const stopped = new Set<string>();
+  const receipts = createReadReceiptsKernel({ baselineMs: 0 });
+  let generation = 0;
+  const fixture = renderDailyFixture({
+    receipts,
+    identity: { userId: 'local-owner', displayName: 'Owner', role: 'owner', sessionId: 'side-lifecycle' },
+    reply: request => {
+      const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
+      if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationSide: true,
+        webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 26, dbInstanceId: 'daily-side' });
+      if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
+        availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+        accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+      }]);
+      if (request.path === '/api/tracks/daily/conversations') {
+        if (request.method !== 'POST') return ok([...rows]);
+        const id = trackConversationCardId('daily', request.headers?.['Idempotency-Key'] ?? '');
+        const row: Conversation = { id, trackId: 'daily', title: 'Adopted side', kind: 'track-assistant', provider: 'codex', state: 'running',
+          sourceCardId: 'daily-planner', updatedAt: 3, archivedAt: null, lastTurnCompletedAt: 3 };
+        rows.push(row);
+        return { status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'side-first', 0) } } };
+      }
+      if (request.path.includes('/planner/run?contract=conversation_v1')) {
+        const id = conversationCardId(request.path);
+        return ok(historicalConversationRun({ card_id: id, worker_session_id: 'runtime', phase: stopped.has(id) ? 'idle' : 'turn_running', model: null,
+          reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending: id === 'daily-planner' ? [] : [{ entry_id: 'side-first', rev: 0, text: 'Explore independently', queued_at_ms: 100 }], pending_overflow: 0, manual_compact_supported: true, recovery: null,
+          compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, stopped.has(id) ? 'idle' : 'running', true));
+      }
+      if (request.path.includes('/harness/items')) {
+        const id = conversationCardId(request.path);
+        if (request.path.includes('&cursor=')) return ok(historicalConversationPage(id, [], null));
+        const position = paginated ? 101 + generation * 10 : 1;
+        return ok(historicalConversationPage(id, [{ id: position, worker_session_id: 'runtime', card_id: id, track_id: 'daily', thread_id: 'thread',
+          turn_id: null, turn_error_text: null, item_uuid: 'reply', item_type: 'agentMessage', method: 'item/completed', created_at_ms: position,
+          params: JSON.stringify({ item: { type: 'agentMessage', text: 'Working on [Side evidence](mailto:side@example.test).' + (paginated ? '\n\n' + Array.from({ length: 35 }, (_, n) => `Paragraph ${n}. ${'Independent conversation reading. '.repeat(8)}`).join('\n\n') : '') } }) }], paginated ? { contract: 'conversation_v1', source: 'historical_raw', card_id: id, position: position - 1 } : null));
+      }
+      if (request.path.endsWith('/planner/interrupt')) {
+        const id = conversationCardId(request.path); stopped.add(id);
+        return ok({ card_id: id, worker_session_id: 'runtime', stopped: true });
+      }
+      if (request.path === '/api/tracks/daily/terminal-cards' && request.method === 'POST') return { status: 400, statusText: 'Bad Request', body: { code: 'bad_request', error: 'Fixture has no terminal runtime' } };
+      if (request.path === '/api/today/supervisor') return ok({ observed_at_ms: 1, kernel_version: '1.2.3', build_sha: null,
+        settled_worker_cleanup_candidates: 0, write_bucket_ms: 300000, write_bucket_count: 12, database_writes: [], scheduler_boot_sweep_completed: true, retired_workspaces: null });
+      return undefined;
+    },
+  });
+  return { ...fixture, rows, stopped, receipts, advanceHistory: () => { generation += 1; } };
 }

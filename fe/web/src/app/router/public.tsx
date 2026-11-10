@@ -362,13 +362,18 @@ function useConversationPanel(
     ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
   const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
     .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
+  // The companion is a sibling of the main surface. Its presentation follows
+  // its own desktop/parent/terminal host, independently of the main subview.
+  const companionVisible = !compact;
+  const terminalVisible = companionVisible && options?.terminal?.workbench.open === true;
+  const sidePresented = belongsToParent && !terminalVisible;
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.presented !== false && options?.terminal?.workbench.open !== true });
+    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: sidePresented });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
     { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
-      companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
+      companionVisible: terminalVisible || (sidePresented && side.isOpen),
       companion: options?.terminal !== undefined
-        ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
+        ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={companionVisible}
             sideOpen={belongsToParent && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
         : belongsToParent && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
