@@ -81,7 +81,10 @@ async fn main() -> ExitCode {
 fn usage() -> ExitCode {
     let _ = writeln!(
         io::stderr(),
-        "usage: neige-mcp-stdio-shim [--structured-content-as-text | --deduplicate-equivalent-content] [--max-tool-name-bytes N] | --version"
+        concat!(
+            "usage: neige-mcp-stdio-shim [--structured-content-as-text | --deduplicate-equivalent-content]",
+            " [--max-tool-name-bytes N] | --version"
+        )
     );
     ExitCode::from(2)
 }
