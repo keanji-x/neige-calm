@@ -1,6 +1,9 @@
 import { MarkdownBlocks, markdownInlineText } from '../../../ui/markdown/public.tsx';
 import { parse, sanitizeAstPolicy } from '../../../../../core/markdown/public.ts';
 import { createElement, memo, useMemo, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { useTranslator } from '@astryxdesign/core/i18n';
+import { useLightbox } from '@astryxdesign/core/Lightbox';
 import { GitHubPreviewLink, useGitHubPreviewsEnabled } from '../../../systems/github-links/public.tsx';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
@@ -16,21 +19,43 @@ export type ReplyImageFiles = Readonly<{
   files: Pick<WorkspaceFilePort, 'rawUrl'>;
 }>;
 
-function ReplyImage({ src, alt, imageFiles }: {
-  src: string; alt: string; imageFiles: ReplyImageFiles | null;
+function ReplyImage({ src, alt, inLink, imageFiles }: {
+  src: string; alt: string; inLink: boolean; imageFiles: ReplyImageFiles | null;
 }) {
+  const t = useTranslator();
   const [failed, setFailed] = useState(false);
+  const [mounted, setMounted] = useState(false);
   // Preserve network images; local destinations must go through the Track-scoped port.
   const remote = /^(https?:\/\/|\/\/)/i.test(src);
   const target = remote ? null : parseReportFileLink(src);
   const relative = target === null || imageFiles === null ? null
     : reportFilePathRelativeToRoot(imageFiles.root, target);
   const url = remote ? src : relative === null ? null : imageFiles?.files.rawUrl(relative) ?? null;
+  const media = useMemo(() => (url === null || failed || inLink ? [] : [{ src: url, alt }]), [alt, failed, inLink, url]);
+  const lightbox = useLightbox({ media, hasZoom: true });
   if (url === null || failed) {
     return <span className={styles.unavailable}>Image unavailable: {alt || src}</span>;
   }
-  return <img className={styles.image} src={url} alt={alt} loading="lazy"
-    onError={() => { setFailed(true); }} />;
+  const image = <img className={styles.image} src={url} alt={alt} loading="lazy"
+    onError={() => { setFailed(true); lightbox.close(); }} />;
+  if (inLink) return image;
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.imageButton}
+        aria-haspopup="dialog"
+        aria-label={alt === '' ? t('@astryx.thumbnail.open', { accessibleName: t('@astryx.thumbnail.fallbackName') }) : undefined}
+        onClick={() => {
+          setMounted(true);
+          lightbox.open();
+        }}
+      >
+        {image}
+      </button>
+      {mounted && createPortal(lightbox.element, document.body)}
+    </>
+  );
 }
 
 /** Stored and streamed replies share one renderer and Track-scoped capabilities. */
@@ -63,6 +88,6 @@ export const Reply = memo(function Reply({ text, imageFiles, renderLink }: { tex
       const external = normalized.startsWith('https://') || normalized.startsWith('http://');
       return <a className={styles.link} href={normalized} {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{children}</a>;
     },
-    image: (src, alt) => <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />,
+    image: (src, alt, inLink) => <ReplyImage key={src} src={src} alt={alt} inLink={inLink} imageFiles={imageFiles} />,
   }} />;
 });

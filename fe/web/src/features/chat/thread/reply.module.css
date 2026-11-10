@@ -1,4 +1,11 @@
 @layer features {
+  .imageButton {
+    display: block;
+    max-inline-size: 100%;
+    border-radius: var(--radius-sm);
+    cursor: zoom-in;
+  }
+
   .image {
     display: block;
     max-inline-size: 100%;

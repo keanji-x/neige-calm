@@ -1,10 +1,11 @@
 import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import { Drawer } from '../../../ui/drawer/public.tsx';
 import { Reply } from './reply.tsx';
 import { ChatThread } from './public.tsx';
 
@@ -143,4 +144,110 @@ it('aligns Markdown tables with surrounding reply prose on both inline edges whi
   expect(Math.abs(firstCellBox.left - paragraphBox.left)).toBeLessThanOrEqual(1);
   expect(Math.abs(lastHeaderBox.right - paragraphBox.right)).toBeLessThanOrEqual(1);
   expect(Math.abs(lastCellBox.right - paragraphBox.right)).toBeLessThanOrEqual(1);
+});
+
+it('opens a reply image in the Lightbox on click, dismisses only the Lightbox on Escape inside a Drawer, and leaves linked images as links', async () => {
+  const screenshot = URL.createObjectURL(new Blob([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">'
+    + '<rect width="1200" height="800" fill="#eef2f6"/>'
+    + '<text x="60" y="160" font-size="40">Architecture diagram</text></svg>',
+  ], { type: 'image/svg+xml' }));
+  const onCloseDrawer = vi.fn();
+  try {
+    const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
+    render(
+      <Drawer open title="Planner" onClose={onCloseDrawer}>
+        <Reply
+          text={'![Architecture diagram](/work/track/diagram.svg)\n\n![](/work/track/unnamed.svg)\n\n[![Linked badge](/work/track/diagram.svg)](https://example.com/docs)'}
+          imageFiles={imageFiles}
+        />
+      </Drawer>,
+    );
+
+    const linked = screen.getByRole('link', { name: 'Linked badge' });
+    expect(linked.getAttribute('href')).toBe('https://example.com/docs');
+    expect(linked.querySelector('button')).toBeNull();
+    expect(document.querySelector('dialog')).toBeNull();
+
+    const unnamedTrigger = screen.getByRole('button', { name: 'Open Thumbnail' });
+    expect(unnamedTrigger.getAttribute('aria-haspopup')).toBe('dialog');
+
+    const trigger = screen.getByRole('button', { name: 'Architecture diagram' });
+    expect(trigger.getAttribute('aria-label')).toBeNull();
+    expect(trigger.getAttribute('role')).toBeNull();
+    expect(trigger.getAttribute('tabindex')).toBeNull();
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Architecture diagram' });
+    expect(within(dialog).getByRole('img', { name: 'Architecture diagram' }).getAttribute('src')).toBe(screenshot);
+    expect(within(dialog).getByRole('button', { name: 'Zoom' }).getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.keyDown(document, { key: 'Escape', bubbles: true, cancelable: true });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Architecture diagram' })).toBeNull());
+    expect(onCloseDrawer).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    URL.revokeObjectURL(screenshot);
+  }
+});
+
+it('opens user message attachments in the Lightbox gallery, preserves unclipped button focus geometry, and navigates across images', async () => {
+  const firstUrl = URL.createObjectURL(new Blob([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#dbeafe"/></svg>',
+  ], { type: 'image/svg+xml' }));
+  const secondUrl = URL.createObjectURL(new Blob([
+    '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="600"><rect width="900" height="600" fill="#dcfce7"/></svg>',
+  ], { type: 'image/svg+xml' }));
+  try {
+    const conversation: Conversation = {
+      provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Planner', kind: 'codex', state: 'idle', updatedAt: 0,
+    };
+    render(
+      <ChatThread
+        hasPendingMessages={false}
+        canContinue={false}
+        cards={{}}
+        stalled={false}
+        conversation={conversation}
+        turns={[{
+          id: 'u1',
+          author: 'you',
+          text: 'Compare these two captures',
+          atMs: 1,
+          attachments: [
+            { id: 'att-1', url: firstUrl, contentType: 'image/svg+xml', size: 100 },
+            { id: 'att-2', url: secondUrl, contentType: 'image/svg+xml', size: 100 },
+          ],
+        }]}
+      />,
+    );
+
+    expect(document.querySelector('dialog')).toBeNull();
+    const secondTrigger = screen.getByRole('button', { name: 'Image 2 of 2' });
+    expect(getComputedStyle(secondTrigger.parentElement!).overflow).toBe('visible');
+    expect(getComputedStyle(secondTrigger).overflow).toBe('hidden');
+    expect(getComputedStyle(secondTrigger).borderRadius).toBe('6px');
+    secondTrigger.focus();
+    fireEvent.click(secondTrigger);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Media viewer' });
+    expect(within(dialog).getByText('2 / 2')).toBeTruthy();
+    expect(dialog.querySelector('img')?.getAttribute('src')).toBe(secondUrl);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Previous' }));
+    expect(within(dialog).getByText('1 / 2')).toBeTruthy();
+    expect(dialog.querySelector('img')?.getAttribute('src')).toBe(firstUrl);
+
+    fireEvent.keyDown(dialog, { key: 'ArrowRight' });
+    expect(within(dialog).getByText('2 / 2')).toBeTruthy();
+    expect(dialog.querySelector('img')?.getAttribute('src')).toBe(secondUrl);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Media viewer' })).toBeNull());
+    expect(document.activeElement).toBe(secondTrigger);
+  } finally {
+    URL.revokeObjectURL(firstUrl);
+    URL.revokeObjectURL(secondUrl);
+  }
 });
