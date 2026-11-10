@@ -32,14 +32,15 @@ async function frames() {
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await commands.emulateReducedMotion(false); });
 
 it.each([
-  ['earlier history', false], ['last exchange', false], ['last exchange', true],
-] as const)('reveals a fresh local send after reading %s (reduced motion: %s)', async (reading, reducedMotion) => {
+  ['/track/daily', 'earlier history', false], ['/track/daily', 'last exchange', false], ['/track/daily', 'last exchange', true],
+  ['/', 'earlier history', false], ['/', 'last exchange', false], ['/', 'last exchange', true],
+] as const)('reveals a fresh local send on %s after reading %s (reduced motion: %s)', async (initial, reading, reducedMotion) => {
   await page.viewport(1400, 900);
   await commands.emulateReducedMotion(reducedMotion);
   let finish: (response: ApiTransportResponse) => void = () => {};
   const held = new Promise<ApiTransportResponse>((resolve) => { finish = resolve; });
   let rows = history;
-  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
+  const { client, requests } = renderDailyFixture({ initial, identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
@@ -52,7 +53,7 @@ it.each([
     if (request.path.endsWith('/planner/input')) return held;
     return undefined;
   } });
-  await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  if (initial !== '/') await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   await expect.poll(() => document.querySelectorAll('[data-nc-turn="you"]').length).toBe(8);
   await frames();
   expect(remaining()).toBeLessThanOrEqual(1);

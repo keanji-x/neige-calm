@@ -1,3 +1,4 @@
+import { useMemo, useRef } from 'react';
 import { conversationCommands } from './composer-command.ts';
 import { ChatComposer as SdkComposer, ChatComposerInput as SdkComposerInput } from '@astryxdesign/core/Chat';
 import { withFontRoleProbe } from '../../../../../tools/styles/font-role-fixture.ts';
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /* The whole cascade before the component: `thread.module.css` declares `@layer features` of its own, and whichever registers first wins. */
 import '../../../styles/entry.css';
+import { useReadingHostRef } from '../../../ui/drawer/reading-host.tsx';
 import { CardFrame } from '../../../ui/card-frame/public.tsx';
 
 import { ChatComposer, ChatThread } from './public.tsx';
@@ -505,6 +507,10 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   paneHeight?: number;
   conversationSpan?: number;
 }) {
+  const navigation = useRef<HTMLDivElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
+  const ports = useMemo(() => ({ key: 'drawer', navigation, overlay }), []);
+  const hostRef = useReadingHostRef<HTMLElement>(ports);
   return (
     <><button type="button" style={{ position: 'fixed', insetBlockStart: 0, insetInlineEnd: 0 }}>Outside navigation</button><div
       data-nc-rail-host=""
@@ -517,7 +523,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
       }}
     >
       <div className={drawerStyles.positioner} data-nc-drawer-frame="">
-        <CardFrame className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+        <CardFrame ref={hostRef} className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
           <div
             className={drawerStyles.scroll}
             data-nc-drawer-scroll=""
@@ -530,7 +536,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
         </CardFrame>
       </div>
       <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
-        <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+        <div ref={navigation} className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
       </div>
     </div></>
   );

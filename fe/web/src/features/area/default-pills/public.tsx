@@ -191,7 +191,9 @@ export function FolderPill({
   onBrowse: () => void;
   onClear: () => void;
 }>) {
-  const accessibleName = value === '' ? `${controlLabel}: ${emptyLabel}` : `${controlLabel}: ${value}`;
+  const visibleLabel = `${showLabel ? `${controlLabel}: ` : ''}${value === '' ? emptyLabel : basenameOf(value)}`;
+  const accessibleName = value === '' ? `${controlLabel}: ${emptyLabel}`
+    : showLabel ? `${visibleLabel} (${value})` : `${controlLabel}: ${value}`;
   return (
     <>
       <Button
@@ -204,7 +206,7 @@ export function FolderPill({
         aria-haspopup="dialog"
         aria-label={accessibleName}
         icon={<Icon name="folder" size="sm" />}
-        label={`${showLabel ? 'Repo: ' : ''}${value === '' ? emptyLabel : basenameOf(value)}`}
+        label={visibleLabel}
         onClick={onBrowse}
         {...{ title: accessibleName }}
       />
@@ -295,7 +297,7 @@ export function IsolationPill({ hasFolder, value, onChange, isDisabled, showLabe
   return <>
     <DropdownMenu placement="above" button={{
       label: `${WORKSPACE_ISOLATION_LABEL}: ${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
-      children: `${showLabel ? 'Isolation: ' : ''}${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
+      children: `${showLabel ? `${WORKSPACE_ISOLATION_LABEL}: ` : ''}${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
       variant: 'secondary', size: 'sm', className: styles.trigger, isDisabled,
     }}>
       <DropdownMenuItem label={WORKTREE_LABEL} isDisabled={!hasFolder}

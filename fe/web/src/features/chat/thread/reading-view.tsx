@@ -1,3 +1,4 @@
+import type { ReadingHostPorts } from '../../../ui/drawer/reading-host.tsx';
 import { useCallback, useMemo, type RefObject } from 'react';
 import { useState } from '../../../ui/state/public.ts';
 import { noTranscriptGroupKeys, type TranscriptGroupKeys } from '../../../../../core/domain/conversation-groups.ts';
@@ -6,6 +7,7 @@ import { untouchedToolCallGroup, type ToolCallGroupUi } from './activity-groups.
 /** Reading affordances belong to the thread, independently of its desktop/mobile surface. */
 export type ThreadReadingView = Readonly<{
   groupKeys: RefObject<TranscriptGroupKeys>;
+  positions: Map<ReadingHostPorts['key'], Map<number, Readonly<{ top: number; atEnd: boolean }>>>;
   groups: ReadonlyMap<string, ToolCallGroupUi>;
   expanded: ReadonlyMap<string, boolean>;
   updateGroup: (key: string, update: (previous: ToolCallGroupUi) => ToolCallGroupUi) => void;
@@ -13,12 +15,14 @@ export type ThreadReadingView = Readonly<{
 }>;
 
 function initialView(id: string | null) {
-  return { id, groupKeys: { current: noTranscriptGroupKeys() }, groups: new Map<string, ToolCallGroupUi>(), expanded: new Map<string, boolean>() };
+  return { id, positions: new Map<ReadingHostPorts['key'], Map<number, Readonly<{ top: number; atEnd: boolean }>>>(), groupKeys: { current: noTranscriptGroupKeys() }, groups: new Map<string, ToolCallGroupUi>(), expanded: new Map<string, boolean>() };
 }
 
 export function useThreadReadingView(id: string | null): ThreadReadingView {
   const [state, setState] = useState(() => initialView(id));
-  const current = state.id === id ? state : initialView(id);
+  // A presentation gap has no reader, but does not replace the conversation.
+  // Selecting another concrete conversation replaces its reading ownership.
+  const current = id === null || state.id === id ? state : initialView(id);
   if (current !== state) setState(current);
   const owner = current.groupKeys;
   const updateGroup = useCallback<ThreadReadingView['updateGroup']>((key, update) => {
@@ -33,6 +37,6 @@ export function useThreadReadingView(id: string | null): ThreadReadingView {
     setState(previous => previous.groupKeys !== owner || (previous.expanded.get(key) ?? false) === expanded ? previous : { ...previous,
       expanded: new Map(previous.expanded).set(key, expanded) });
   }, [owner, setState]);
-  return useMemo(() => ({ groupKeys: current.groupKeys, groups: current.groups, expanded: current.expanded,
+  return useMemo(() => ({ positions: current.positions, groupKeys: current.groupKeys, groups: current.groups, expanded: current.expanded,
     updateGroup, setExpanded }), [current, updateGroup, setExpanded]);
 }

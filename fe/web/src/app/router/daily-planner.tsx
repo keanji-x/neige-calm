@@ -65,7 +65,9 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
 
 /** View state is visit-local; keep the live conversation mounted so its draft and history survive. */
 function TodayCenter({ assistant, changes, supervisor, guideHost, view, onView }: Readonly<{ view: DailyCenterView; onView: (view: DailyCenterView) => void; guideHost: HTMLDivElement | null; assistant: ReactNode; changes: ReactNode; supervisor?: ReactNode }>) {
+  const compact = useCompactViewport();
   const previous = useRef(view);
+  const restoreGuide = useRef(false);
   const back = useRef<HTMLButtonElement>(null);
   const changesGuide = useRef<HTMLButtonElement>(null);
   const supervisorGuide = useRef<HTMLButtonElement>(null);
@@ -73,7 +75,9 @@ function TodayCenter({ assistant, changes, supervisor, guideHost, view, onView }
     if (previous.current === view) return;
     const from = previous.current;
     previous.current = view;
-    (view !== 'assistant' ? back.current : from === 'changes' ? changesGuide.current : supervisorGuide.current)?.focus();
+    if (view !== 'assistant') back.current?.focus();
+    else if (restoreGuide.current) (from === 'changes' ? changesGuide.current : supervisorGuide.current)?.focus();
+    restoreGuide.current = false;
   }, [view]);
   const guide = <nav className={styles.guide} aria-label="Today views">
       <button ref={changesGuide} type="button" onClick={() => onView('changes')}>Report changes</button>
@@ -82,8 +86,8 @@ function TodayCenter({ assistant, changes, supervisor, guideHost, view, onView }
   return <div className={styles.center}>
     <div className={styles.assistant} hidden={view !== 'assistant'}>{assistant}</div>
     {guideHost !== null && createPortal(guide, guideHost)}
-    {view !== 'assistant' && <section className={styles.subview} aria-label={view === 'changes' ? 'Report changes' : 'Daily Supervisor view'}>
-      <button ref={back} type="button" className={styles.backToToday} onClick={() => onView('assistant')}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
+    {!compact && view !== 'assistant' && <section className={styles.subview} aria-label={view === 'changes' ? 'Report changes' : 'Daily Supervisor view'}>
+      <button ref={back} type="button" className={styles.backToToday} onClick={() => { restoreGuide.current = true; onView('assistant'); }}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
       {view === 'changes' ? changes : supervisor}
     </section>}
   </div>;

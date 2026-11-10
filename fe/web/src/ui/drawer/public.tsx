@@ -1,3 +1,4 @@
+import { useReadingHostRef } from './reading-host.tsx';
 import { LayerDismissal } from '../dialog/public.tsx';
 import { CardFrame } from '../card-frame/public.tsx';
 // The conversation drawer. It overlays the panel column rather than squeezing the main column, and is deliberately not modal: no focus trap, no inert background. Escape closes it.
@@ -66,6 +67,9 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const seamRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const readingPorts = useMemo(() => ({ key: 'drawer', navigation: seamRef, overlay: overlayRef }), []);
+  const captureReadingHost = useReadingHostRef(readingPorts, panelRef);
   const parentResizeGroup = suppliedResizeGroup;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [panes] = useState(() => new Set<HTMLElement>());
@@ -179,7 +183,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
       hidden={!open && !closing}
       inert={!open}
       aria-hidden={!open || undefined}
-      ref={panelRef}
+      ref={captureReadingHost}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role={inline ? "region" : "complementary"}
       data-nc-drawer={open || closing ? '' : undefined}

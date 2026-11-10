@@ -34,7 +34,7 @@ function memoryStorage() {
 const TASK_LABEL = 'What this track should do';
 
 const FOLDER_PLACEHOLDER = 'Neige workspace';
-const FOLDER_CHIP_NAME = `Folder: ${FOLDER_PLACEHOLDER}`;
+const FOLDER_CHIP_NAME = `Repo: ${FOLDER_PLACEHOLDER}`;
 
 /* The template chip always names the current choice, "No template" until one is picked. */
 const TEMPLATE_CHIP = /^Template: /;
@@ -699,14 +699,14 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     await findComposer();
     expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Folder: /srv/work-a' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Repo: work-a (/srv/work-a)' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for A');
 
     await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/area/c2/new`));
     expect(composerText()).toBe('');
     expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Folder: /srv/work-b' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Repo: work-b (/srv/work-b)' })).toBeTruthy();
 
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Draft for B');
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
@@ -807,8 +807,8 @@ describe('the new-track page is a route reached from Area groups', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New track in Work' }));
     expect(await findComposer()).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
-    const folder = screen.getByRole('button', { name: 'Folder: /srv/ area' });
-    expect(folder.getAttribute('aria-label')).toBe('Folder: /srv/ area ');
+    const folder = screen.getByRole('button', { name: 'Repo: area (/srv/ area )' });
+    expect(folder.getAttribute('aria-label')).toBe('Repo:  area  (/srv/ area )');
     await userEvent.type(screen.getByLabelText(TASK_LABEL), message);
     await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));

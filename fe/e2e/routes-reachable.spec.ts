@@ -28,7 +28,7 @@ test('the application routes are reachable through the real kernel', async ({ pa
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id);
   const routes = [
-    /* The daily homepage uses the same report title as a Track page. */
+    /* The daily homepage keeps its dated Track title beside the Assistant. */
     { path: '/next/', anchor: page.locator('[data-nc-page-title]').filter({ hasText: /\d{4}-\d{2}-\d{2}/ }) },
     /* Anchored on the composer because the new-track page has no `data-nc-page-title`. */
     { path: `/next/area/${area.id}/new`, anchor: page.getByLabel('What this track should do') },
@@ -45,10 +45,12 @@ test('the application routes are reachable through the real kernel', async ({ pa
     if (route.path === '/next/') {
       const calendar = page.locator('[data-nc-desktop-panel]').getByRole('region', { name: 'Calendar tasks' });
       await expect(calendar).toBeVisible();
-      await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
-      await expect(page.locator('[data-nc-drawer]')).toBeVisible();
-      await expect(page.locator('[aria-label="Calendar tasks"]')).toBeHidden();
-      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+      const assistant = page.getByRole('region', { name: 'Today Assistant', exact: true });
+      await expect(assistant.getByRole('combobox', { name: 'Message', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+      await expect(calendar).toBeVisible();
+      await page.getByRole('button', { name: 'Back to Today Assistant', exact: true }).click();
+      await expect(assistant.getByRole('combobox', { name: 'Message', exact: true })).toBeVisible();
       await expect(calendar).toBeVisible();
     }
   }

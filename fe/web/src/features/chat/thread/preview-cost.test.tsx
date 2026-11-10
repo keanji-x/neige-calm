@@ -1,3 +1,4 @@
+import { registerReadingHost } from '../../../ui/drawer/reading-host.tsx';
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -32,6 +33,8 @@ function mount(turns: readonly ConversationTurn[]) {
   host.append(panelFrame, seamFrame);
   panelFrame.append(card); card.append(pane); seamFrame.append(seam);
   document.body.append(host);
+  const ports = { key: 'drawer', navigation: { current: seam }, overlay: { current: null } };
+  registerReadingHost(card, ports);
   const view = (rows: readonly ConversationTurn[]) => <ChatThread hasPendingMessages={false} conversation={conversation} turns={rows}
     cards={{}} stalled={false} canContinue={false} />;
   const rendered = render(view(turns), { container: pane });

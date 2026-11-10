@@ -365,7 +365,7 @@ function useConversationPanel(
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
     { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.presented !== false && options?.terminal?.workbench.open !== true });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact && !options?.embedded?.active, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
       companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
       companion: options?.terminal !== undefined
         ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
@@ -486,6 +486,10 @@ function useConversationPane(
   }), [heldAttachments, editComposer, editUpload, uploadState]);
   const attachments = usePlannerAttachments(store.uploadAttachment, composerId ?? '', attachmentStore);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const requestComposerFocus = useCallback((id: string) => {
+    setComposerFocusFor(id);
+    setComposerFocusRequest(count => count + 1);
+  }, [setComposerFocusFor, setComposerFocusRequest]);
   const shownComposer = useRef(composerId);
   shownComposer.current = composerId;
   const focusComposer = useCommittedCallback(sourceScopeId, (conversationId: string) => {
@@ -571,13 +575,13 @@ function useConversationPane(
     recheckManagedProviders: managed.recheck,
     supportsAssistantProviders: managed.supportsAssistantProviders,
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
-    openDraft: () => { options?.onPresent?.(); setOpenTarget({ kind: 'draft' }); }, closeView: () => setOpenTarget(null),
+    openDraft: () => { options?.onPresent?.(); setComposerFocusRequest(count => count + 1); setOpenTarget({ kind: 'draft' }); }, closeView: () => setOpenTarget(null),
     onGone: () => go({ name: 'today' }),
     onAdopt: onAdoptDraft,
   });
   const startAnother = start;
 
-  useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline: options?.inline });
+  useRequestedConversationOpen({ registry, rows, setOpenTarget, requestComposerFocus, inline: options?.inline });
 
   useConversationEscape({ open: panePresented ? open : null, store });
 
@@ -812,7 +816,7 @@ function useConversationPane(
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
             <ConversationComposer commands={conversationCommands({ terminal: onTerminal, compactViewport: compactComposer, newConversation: options?.inline === true ? undefined : startAnother })} target={{ kind: 'scope', id: sourceScopeId }} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }}
-              focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
+              focusOnMount={panePresented} focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               changeText={setNewConversationText}
               /* Menu membership and readiness come from the managed backend declarations. */
@@ -958,6 +962,7 @@ function useConversationPane(
 
   const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
     options?.onPresent?.();
+    requestComposerFocus(conversation.id);
     setOpenTarget({ kind: 'row', id: conversation.id });
   });
   const receipts = useReadReceipts();
@@ -976,7 +981,7 @@ function useConversationPane(
   const dockViewId = JSON.stringify([sourceScopeId, dockRowId]);
   const openDockHistory = useCommittedCallback(dockViewId, () => {
     if (dockRowId !== null) {
-      setComposerFocusFor(dockRowId);
+      requestComposerFocus(dockRowId);
       setOpenTarget({ kind: 'row', id: dockRowId });
     } else start();
   });

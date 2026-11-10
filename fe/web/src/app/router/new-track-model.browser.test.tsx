@@ -96,7 +96,7 @@ it('gives the phone composer a compact input and one aligned preference row with
         expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();
       } else {
         await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
-        for (const name of ['Template: No template', 'Folder: Neige workspace', 'Model: Default']) expectFullLabel(name);
+        for (const name of ['Template: No template', 'Repo: Neige workspace', 'Model: Default']) expectFullLabel(name);
       }
       expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
       expect(model.right).toBeLessThanOrEqual(send.left);
@@ -152,14 +152,14 @@ it('keeps long custom preferences readable inside overflow and preserves the fol
     const options = await screen.findByRole('dialog', { name: 'Track options' });
     for (const width of [320, 390]) {
       await page.viewport(width, 740);
-      const folder = within(options).getByRole('button', { name: `Folder: ${cwd}` }).getBoundingClientRect();
+      const folder = within(options).getByRole('button', { name: `Repo: a-long-custom-folder-for-the-mobile-layout (${cwd})` }).getBoundingClientRect();
       const clear = within(options).getByRole('button', { name: 'Use a Neige workspace instead' }).getBoundingClientRect();
       expect(folder.right).toBeLessThanOrEqual(clear.left);
       expect(clear.right).toBeLessThanOrEqual(width);
       expect(document.documentElement.scrollWidth).toBe(width);
     }
     await userEvent.click(within(options).getByRole('button', { name: 'Use a Neige workspace instead' }));
-    expect(screen.getByRole('button', { name: 'Folder: Neige workspace' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Use a Neige workspace instead' })).toBeNull();
   } finally {
     view.unmount();
@@ -178,11 +178,11 @@ it('keeps Model beside Create and moves preferences into overflow before they st
     await page.viewport(320, 740);
     expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Folder: Neige workspace' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Repo: Neige workspace' })).toBeNull();
     await page.viewport(600, 740);
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
     expectFullLabel('Template: No template');
-    expectFullLabel('Folder: Neige workspace');
+    expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
     await page.viewport(1280, 720);
@@ -214,21 +214,21 @@ it('dismisses the nested template picker before overflow and leaves directory se
     expect(await screen.findByRole('button', { name: 'Template: Small change' })).toBeTruthy();
     await user.click(within(options).getByRole('button', { name: 'Template: Small change' }));
     await user.click(await screen.findByRole('menuitem', { name: 'No template' }));
-    await user.click(within(options).getByRole('button', { name: 'Folder: Neige workspace' }));
+    await user.click(within(options).getByRole('button', { name: 'Repo: Neige workspace' }));
     const cancelledDirectory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(within(cancelledDirectory).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
     expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
     await waitFor(() => { expect(document.activeElement).toBe(more); });
     await user.click(more);
-    await user.click(screen.getByRole('button', { name: 'Folder: Neige workspace' }));
+    await user.click(screen.getByRole('button', { name: 'Repo: Neige workspace' }));
     const directory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(await within(directory).findByRole('button', { name: 'Select this directory' }));
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
     expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
     await waitFor(() => { expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Track options' })); });
     await user.click(screen.getByRole('button', { name: 'Track options' }));
-    expect(await screen.findByRole('button', { name: `Folder: ${cwd}` })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: `Repo: a-long-directory-selected-through-the-real-browser (${cwd})` })).toBeTruthy();
     await user.keyboard('{Escape}');
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull(); });
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Track options' }));
@@ -236,9 +236,9 @@ it('dismisses the nested template picker before overflow and leaves directory se
     await user.click(screen.getByRole('button', { name: 'Track options' }));
     await user.click(await screen.findByRole('button', { name: 'Use a Neige workspace instead' }));
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
-    expect(screen.getByRole('button', { name: 'Folder: Neige workspace' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
     expectFullLabel('Template: No template');
-    expectFullLabel('Folder: Neige workspace');
+    expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
     await page.viewport(1280, 720);
@@ -250,7 +250,7 @@ it('restores the visible options trigger after a trusted pointer cancels directo
   const view = render(<ModelForm />);
   try {
     await page.getByRole('button', { name: 'Track options', exact: true }).click();
-    await page.getByRole('button', { name: 'Folder: Neige workspace', exact: true }).click();
+    await page.getByRole('button', { name: 'Repo: Neige workspace', exact: true }).click();
     await page.getByRole('dialog', { name: 'Choose a directory', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Choose a directory' })).toBeNull(); });
     expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
@@ -285,7 +285,7 @@ it('restores a focused overflow trigger into inline preferences without moving u
     more.focus();
     expect(document.activeElement).toBe(more);
     await page.viewport(844, 740);
-    const folder = await screen.findByRole('button', { name: 'Folder: Neige workspace' });
+    const folder = await screen.findByRole('button', { name: 'Repo: Neige workspace' });
     await waitFor(() => { expect(document.activeElement).toBe(folder); });
 
     const editor = screen.getByRole('textbox', { name: 'What this track should do' });
@@ -297,7 +297,7 @@ it('restores a focused overflow trigger into inline preferences without moving u
     const model = screen.getByRole('button', { name: 'Model: Default' });
     model.focus();
     await page.viewport(844, 740);
-    expect(await screen.findByRole('button', { name: 'Folder: Neige workspace' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
     expect(document.activeElement).toBe(model);
   } finally {
     view.unmount();
@@ -325,7 +325,7 @@ it('uses the card radius for the composer while retaining full pill and send con
       expect(getComputedStyle(await screen.findByRole('button', { name })).borderRadius).toBe('999px');
     }
     await page.getByRole('button', { name: 'Track options', exact: true }).click();
-    for (const name of ['Template: No template', 'Folder: Neige workspace']) {
+    for (const name of ['Template: No template', 'Repo: Neige workspace']) {
       expect(getComputedStyle(await screen.findByRole('button', { name })).borderRadius).toBe('999px');
     }
 
@@ -411,7 +411,7 @@ it('remeasures changed template metadata while its overflow popup is closed', as
     view.rerender(<ModelForm templates={[{ ...template, title: 'A' }]} initialTemplateId={template.id} />);
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
     expectFullLabel('Template: A');
-    expectFullLabel('Folder: Neige workspace');
+    expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
     await page.viewport(1280, 720);

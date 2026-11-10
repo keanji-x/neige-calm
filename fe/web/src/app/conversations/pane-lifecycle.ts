@@ -37,11 +37,11 @@ export function useConversationPaneTarget(sourceScopeId: string, rows: readonly 
     ? { kind: 'row' as const, id: adoptedRow.id } : target, setOpenTarget] as const;
 }
 
-export function useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline }: Readonly<{
+export function useRequestedConversationOpen({ registry, rows, setOpenTarget, requestComposerFocus, inline }: Readonly<{
   registry: Pick<ConversationRegistry, 'clearOpenRequest'>;
   rows: readonly Conversation[];
   setOpenTarget: SetOpenTarget;
-  setComposerFocusFor: (id: string | null) => void;
+  requestComposerFocus: (id: string) => void;
   inline: boolean | undefined;
 }>) {
   const request = useConversationOpenRequest();
@@ -56,9 +56,9 @@ export function useRequestedConversationOpen({ registry, rows, setOpenTarget, se
     const focusComposer = request?.focusComposer === true;
     if (!rows.some((row) => row.id === requestedOpenId)) return;
     setOpenTarget({ kind: 'row', id: requestedOpenId });
-    if (focusComposer) setComposerFocusFor(requestedOpenId);
+    if (focusComposer) requestComposerFocus(requestedOpenId);
     registry.clearOpenRequest();
-  }, [registry, request, rows, setOpenTarget, setComposerFocusFor, inline]);
+  }, [registry, request, rows, setOpenTarget, requestComposerFocus, inline]);
 }
 
 export function useConversationEscape({ open, store }: Readonly<{

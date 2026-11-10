@@ -1,4 +1,4 @@
-import { historicalConversationRun, historicalConversationPage, conversationCardId } from './conversation-read-data.ts';
+import { historicalConversationRun, historicalConversationPage, conversationCardId, humanPresentation, nativePresentation, presentationPage } from './conversation-read-data.ts';
 import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import '../../styles/entry.css';
 import { cleanup } from '@testing-library/react';
@@ -213,18 +213,18 @@ it.each([1000, 768, 600])('keeps the composer inside its conversation card with 
 });
 
 
-it.each([1000, 768, 600])('keeps both conversation composers reachable with a side draft at height %s', async (height) => {
+it.each([['/?day=2026-10-04', 1000], ['/?day=2026-10-04', 768], ['/?day=2026-10-04', 600], ['/', 600]] as const)('keeps both conversation composers reachable with a side draft on %s at height %s', async (initial, height) => {
   await page.viewport(1440, height);
-  const fixture = renderDailyFixture({ initial: '/?day=2026-10-04', reply: (request) => request.path === '/api/version' ? { status: 200, statusText: 'OK', body: {
+  const fixture = renderDailyFixture({ initial, reply: (request) => request.path === '/api/version' ? { status: 200, statusText: 'OK', body: {
     areaCreateIdempotency: true, conversationCreateModel: true, conversationSide: true, kernelVersion: '0.1.0',
     apiVersion: '23', syncEventVersion: 26, mcpProtocolVersion: '2024-11-05', pluginMcpProtocolVersion: '2025-11-25',
     webCompatVersion: 44, minWebCompatVersion: 44, supervisorControlVersion: 1, buildSha: 'fixture',
     dbInstanceId: 'fixture-instance', databaseId: 'fixture-database',
   } } : undefined });
-  await page.getByText('Prioritize the release.', { exact: false }).findElement();
+  if (initial !== '/') await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
-  const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
+  if (initial !== '/') await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
+  const main = initial === '/' ? page.getByRole('region', { name: 'Today Assistant', exact: true }) : page.getByRole('complementary', { name: 'Daily Planner conversation' });
   await expect.element(main.getByText('聊聊你想做什么', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
@@ -234,7 +234,7 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   expect(fixture.requests.filter(request => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method))).toHaveLength(0);
   await userEvent.keyboard('{Enter}');
   await expect.element(side).toBeVisible();
-  const stack = main.element().closest('[data-nc-drawer-stack]')!;
+  const stack = side.element().closest('[data-nc-drawer-stack]')!;
   const clip = stack.closest('main')!;
   for (const pane of [main, side]) {
     const field = pane.getByRole('combobox', { name: 'Message', exact: true });
@@ -246,6 +246,8 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   }
   await side.getByRole('combobox', { name: 'Message', exact: true }).fill('A reachable side draft.');
   await expect.element(side.getByRole('combobox', { name: 'Message', exact: true })).toHaveTextContent('A reachable side draft.');
+  await side.getByRole('button', { name: 'Close side conversation', exact: true }).click();
+  await expect.element(main.getByRole('combobox', { name: 'Message', exact: true })).toBeVisible();
 });
 
 
@@ -453,4 +455,108 @@ it('scrolls real Planner history above the fixed Today composer and retains cale
   await expect.element(calendar.getByRole('heading', { name: 'September 2026' })).toBeVisible();
   expect(assistant.getByRole('button', { name: 'Send', exact: true }).element().getBoundingClientRect().bottom).toBeLessThanOrEqual(600);
   await page.screenshot({ path: '../../../../test-results/v10-today-history.png' });
+});
+
+
+it.each([false, true])('navigates loaded Today exchanges and restores the parked reading position (selected: %s)', async selected => {
+  await page.viewport(1440, 700);
+  const items = Array.from({ length: 8 }, (_, index) => [
+    humanPresentation('daily-planner', index * 2 + 1, `question-${index}`, { user_id: 'reader', display_name: 'Reader' }, `Today question ${index + 1}`, index * 2 + 1),
+    nativePresentation('daily-planner', { id: index * 2 + 2, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',
+      turn_id: `turn-${index}`, turn_error_text: null, item_uuid: `reply-${index}`, item_type: 'agentMessage', method: 'item/completed',
+      params: JSON.stringify({ item: { type: 'agentMessage', text: `Today reply ${index + 1}. ${'Read the release evidence carefully. '.repeat(30)}` } }), created_at_ms: index * 2 + 2 }),
+  ]).flat();
+  renderDailyFixture({ reply: request => request.path.includes('/harness/items') ? { status: 200, statusText: 'OK', body: presentationPage(items) } : undefined });
+  const assistant = page.getByRole('region', { name: 'Today Assistant', exact: true });
+  const field = assistant.getByRole('combobox', { name: 'Message', exact: true });
+  await field.fill('Keep my draft');
+  const editor = field.element();
+  await page.getByRole('button', { name: 'Jump to exchange 2: Today question 2', exact: true }).click();
+  const scroll = assistant.element().querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
+  const marker = assistant.getByText('Today question 2', { exact: true }).element();
+  await expect.poll(() => Math.abs(marker.getBoundingClientRect().top - scroll.getBoundingClientRect().top)).toBeLessThan(10);
+  const overlay = assistant.element().querySelector<HTMLElement>('[data-nc-chat-scroll-overlay]')!;
+  await expect.poll(() => overlay.querySelector('[data-nc-chat-scroll-dock]') !== null).toBe(true);
+  const parked = scroll.scrollTop;
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to Today Assistant', exact: true }).click();
+  await expect.poll(() => scroll.scrollTop).toBe(parked);
+  await expect.element(field).toHaveTextContent('Keep my draft');
+  expect(field.element()).toBe(editor);
+  await expect.element(page.getByRole('button', { name: 'Report changes', exact: true })).toHaveFocus();
+  expect(document.querySelectorAll('[role="combobox"][aria-label="Message"]')).toHaveLength(1);
+  await page.screenshot({ path: '../../../../test-results/v10-fixed-today-exchanges.png' });
+  if (selected) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await page.viewport(390, 844);
+  if (selected) await expect.element(page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true })).toBeVisible();
+  await page.viewport(1440, 700);
+  await expect.element(field).toBeVisible();
+  await expect.poll(() => scroll.scrollTop).toBe(parked);
+  await expect.element(field).toHaveTextContent('Keep my draft');
+  if (selected) expect(field.element()).toBe(editor);
+});
+
+it.each([false, true])('focuses every explicit Today Reply without replacing the editor (from subview: %s)', async subview => {
+  await page.viewport(1440, 800);
+  renderDailyFixture({ reply: request => request.path === '/api/tracks/daily' ? { status: 200, statusText: 'OK', body: {
+    track: { id: 'daily', area_id: 'daily-area', title: 'Daily', sort: 0, cwd: '/tmp', workspace: { isolation: 'managed', kind: 'managed', path: '/tmp', frozen_at: null }, pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 },
+    planner_revision: 0, can_reopen: false, can_admin: false, can_close: false,
+    cards: [{ id: 'daily-planner', track_id: 'daily', kind: 'codex', title: 'Daily Planner conversation', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 }],
+    overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'daily', kind: 'activity', updated_at: 5,
+      payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, cards: [], items: [{ source: 'ask', key: 'ask:7', text: 'Choose the release branch', at_ms: 5, ask_id: 7, questions: [{ title: 'Release branch?', options: ['main'] }], delivery: 'wake' }] } }],
+  } } : undefined });
+  const field = page.getByRole('combobox', { name: 'Message', exact: true });
+  await field.fill('An unfinished sentence');
+  await userEvent.keyboard('{Home}{ArrowRight}{ArrowRight}');
+  const caret = window.getSelection()?.anchorOffset;
+  const editor = field.element();
+  for (let index = 0; index < 2; index++) {
+    if (subview) await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Answer the Planner: Choose the release branch', exact: true }).click();
+    await expect.element(field).toHaveFocus();
+    expect(field.element()).toBe(editor);
+    expect(window.getSelection()?.anchorOffset).toBe(caret);
+    await expect.element(field).toHaveTextContent('An unfinished sentence');
+  }
+});
+
+
+it('interrupts the working Today conversation from the transcript with Escape', async () => {
+  await page.viewport(1440, 800);
+  const { requests } = renderDailyFixture({ reply: request => {
+    if (request.path.includes('/planner/run?contract=conversation_v1')) return { status: 200, statusText: 'OK', body: historicalConversationRun({ card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, recovery: null, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, 'running', true) };
+    if (request.path.includes('/harness/items')) return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [{ id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: 'reply', item_type: 'agentMessage', method: 'item/completed', params: JSON.stringify({ item: { type: 'agentMessage', text: 'Working on the [Release evidence](mailto:release@example.test).' } }), created_at_ms: 1 }], null) };
+    if (request.path.endsWith('/planner/interrupt')) return { status: 200, statusText: 'OK', body: { card_id: 'daily-planner', worker_session_id: 'runtime', stopped: true } };
+    return undefined;
+  } });
+  const assistant = page.getByRole('region', { name: 'Today Assistant', exact: true });
+  await expect.element(assistant.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+  // The transcript, rather than its portalled footer, must own interruption too.
+  const evidence = await assistant.getByRole('link', { name: 'Release evidence', exact: true }).findElement();
+  evidence.focus();
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/planner/interrupt')).length).toBe(1);
+  await expect.element(assistant).toBeVisible();
+});
+
+it('honors inventory and New conversation focus when leaving a Today subview', async () => {
+  await page.viewport(1440, 800);
+  renderDailyFixture({ extraPlanner: true });
+  const field = page.getByRole('combobox', { name: 'Message', exact: true });
+  await field.fill('Planner draft');
+  const editor = field.element();
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+  await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await expect.element(field).toHaveFocus();
+  expect(field.element()).toBe(editor);
+  await expect.element(field).toHaveTextContent('Planner draft');
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+  await page.getByRole('button', { name: 'New conversation', exact: true }).click();
+  await expect.element(field).toHaveFocus();
+  await expect.element(field).toHaveTextContent('');
+  await field.fill('New conversation draft');
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+  await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await expect.element(field).toHaveFocus();
+  await expect.element(field).toHaveTextContent('Planner draft');
 });

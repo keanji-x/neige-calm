@@ -25,7 +25,7 @@ const TASK_LABEL = 'What this track should do';
 const TASK_PLACEHOLDER = 'What should this track do?';
 
 const FOLDER_PLACEHOLDER = 'Neige workspace';
-const FOLDER_CHIP_NAME = `Folder: ${FOLDER_PLACEHOLDER}`;
+const FOLDER_CHIP_NAME = `Repo: ${FOLDER_PLACEHOLDER}`;
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 
 /* The template chip always names the current choice; the assertions vary the tail. */
@@ -404,7 +404,7 @@ describe('Area creation defaults', () => {
       initialCwd: '/srv/area-default',
     });
     expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Folder: /srv/area-default' }).textContent)
+    expect(screen.getByRole('button', { name: 'Repo: area-default (/srv/area-default)' }).textContent)
       .toContain('area-default');
     await fillMessage();
     expect(submitButton().disabled).toBe(false);

@@ -120,7 +120,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
 
   const preferences = <div ref={itemsRef} className={styles.items}>
     <span ref={startingRef} className={styles.startingPoint}><StartingPointPill {...startingPoint} showLabel /></span>
-    <span ref={folderRef} className={styles.folder}><FolderPill {...folder} showLabel onBrowse={() => {
+    <span ref={folderRef} className={styles.folder}><FolderPill {...folder} controlLabel="Repo" showLabel onBrowse={() => {
       // A native top-layer popup must relinquish hits and its focus trap before
       // the body-portal modal opens. Public controlled close also restores More.
       // Its Folder source becomes unavailable here: Motion's declared first-unavailable

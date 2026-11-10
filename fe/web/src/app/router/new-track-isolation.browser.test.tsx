@@ -98,7 +98,7 @@ it.each([
     await page.viewport(width, 844);
     mount();
     const more = page.getByRole('button', { name: 'Track options', exact: true });
-    const folder = page.getByRole('button', { name: /^Folder:/ });
+    const folder = page.getByRole('button', { name: /^Repo:/ });
     const dialog = page.getByRole('dialog', { name: 'Choose a directory' });
     const field = page.getByRole('combobox', { name: 'Directory path' });
     await page.getByRole('combobox', { name: 'What this track should do' }).fill('Keep my draft');
@@ -191,7 +191,7 @@ it.each([1440, 390].flatMap(width => ['Cancel', 'Select this directory'].flatMap
   const more = page.getByRole('button', { name: 'Track options', exact: true });
   await expect.element(editor).toHaveFocus();
   if (width === 390) await more.click();
-  await page.getByRole('button', { name: /^Folder:/ }).click();
+  await page.getByRole('button', { name: /^Repo:/ }).click();
   await expect.element(page.getByRole('combobox', { name: 'Directory path' })).toHaveValue('/repo/');
   await expect.element(page.getByRole('combobox', { name: 'Directory path' })).toHaveFocus();
   await new Promise(requestAnimationFrame);
@@ -220,7 +220,7 @@ it.each([1440, 390].flatMap(width => ['refold', 'reopen', 'route', 'modal', 'unm
     await page.viewport(width, 844);
     const { router } = mount();
     const more = page.getByRole('button', { name: 'Track options', exact: true });
-    const folder = page.getByRole('button', { name: /^Folder:/ });
+    const folder = page.getByRole('button', { name: /^Repo:/ });
     const field = page.getByRole('combobox', { name: 'Directory path' });
     if (width === 390) await more.click();
     await folder.click();

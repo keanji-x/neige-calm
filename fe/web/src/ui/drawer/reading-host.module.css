@@ -1,0 +1,11 @@
+@layer ui {
+  .host { position: relative; display: flex; flex-direction: column; flex: 1; min-block-size: 0; min-inline-size: 0; padding-inline-end: var(--space-5); }
+  .host[hidden] { display: none; }
+  .title { font: var(--type-metadata); color: var(--text-3); margin-block-end: var(--space-3); }
+  .viewport { position: relative; flex: 1; min-block-size: 0; }
+  .scroll { display: flex; flex-direction: column; block-size: 100%; overflow: auto; overscroll-behavior: contain; }
+  .overlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
+  .footer { flex: none; min-inline-size: 0; }
+  .navigation { position: absolute; inset-inline-end: 0; inset-block: 0; inline-size: var(--space-5); pointer-events: none; }
+  .navigation > * { pointer-events: auto; }
+}

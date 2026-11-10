@@ -63,7 +63,7 @@ test('creates a track from an Area group with no title, and persists it', async 
   await expect(page.getByText(TASK_PLACEHOLDER)).toBeVisible();
   // The default path must stay byte-identical: the kernel keys its managed-workspace branch on the
   // absence of `cwd`, so a control defaulting to `$HOME` or `""` would silently attach every track.
-  await expect(page.getByRole('button', { name: 'Folder: Neige workspace' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Repo: Neige workspace' })).toBeVisible();
   // The picker is collapsed, so "what is selected" is read off the trigger's accessible name.
   await expect(page.getByRole('button', { name: 'Template: No template' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create track' })).toBeDisabled();
