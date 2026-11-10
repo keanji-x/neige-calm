@@ -152,12 +152,19 @@ it('keeps long custom preferences readable inside overflow and preserves the fol
     const options = await screen.findByRole('dialog', { name: 'Track options' });
     for (const width of [320, 390]) {
       await page.viewport(width, 740);
+      const template = within(options).getByRole('button', { name: `Template: ${templateTitle}` }).getBoundingClientRect();
+      const clearTemplate = within(options).getByRole('button', { name: 'Clear template' }).getBoundingClientRect();
+      expect(template.right).toBeLessThanOrEqual(clearTemplate.left);
+      expect(clearTemplate.right).toBeLessThanOrEqual(width);
       const folder = within(options).getByRole('button', { name: `Folder: ${cwd}` }).getBoundingClientRect();
       const clear = within(options).getByRole('button', { name: 'Use a Neige workspace instead' }).getBoundingClientRect();
       expect(folder.right).toBeLessThanOrEqual(clear.left);
       expect(clear.right).toBeLessThanOrEqual(width);
       expect(document.documentElement.scrollWidth).toBe(width);
     }
+    await userEvent.click(within(options).getByRole('button', { name: 'Clear template' }));
+    expect(within(options).getByRole('button', { name: 'Template: No template' })).toBeTruthy();
+    expect(within(options).queryByRole('button', { name: 'Clear template' })).toBeNull();
     await userEvent.click(within(options).getByRole('button', { name: 'Use a Neige workspace instead' }));
     expect(screen.getByRole('button', { name: 'Folder: Neige workspace' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Use a Neige workspace instead' })).toBeNull();

@@ -302,12 +302,9 @@ export function NewTrackForm({
             isDisabled={submitting}
             onSubmit={submit}
             status={status}
-            input={<div className={styles.editor}>
-              {chosen !== undefined && templatePluginGuides?.(chosen.id)}
-              <ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked}
-                /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
-                {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />
-            </div>}
+            input={<ChatComposerInput className={styles.input} label={TASK_LABEL} placeholder={TASK_PLACEHOLDER} isDisabled={submitting || locked}
+              /* The `@` source delays its own requests; Astryx's delay would let its per-keystroke probe search fire. */
+              {...(triggers === undefined ? {} : { triggers, debounceMs: 0 })} />}
             footerActions={<ComposerPreferences browsing={browsing !== null}
               isolation={{ hasFolder: cwd !== '', value: isolation, onChange: setIsolation, isDisabled: submitting || locked }}
               startingPoint={{ templates, templatesLoaded, recipes, value: effectiveSelection,
@@ -383,6 +380,7 @@ export function NewTrackForm({
           <TemplatePreview key={`${effectiveSelection.kind}:${preview.id}`}
             id={preview.id} title={preview.title}
             recipeBody={chosenRecipe?.body} loadTemplate={loadTemplate}
+            pluginGuides={chosen !== undefined ? templatePluginGuides?.(chosen.id) : undefined}
             onDetail={receiveTemplateDetails}>
             {compiledInputs?.form != null ? <TemplateInputs
               form={compiledInputs.form} values={fieldValues} errors={compiledInputs.errors}

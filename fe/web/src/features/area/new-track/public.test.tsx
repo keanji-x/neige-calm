@@ -365,6 +365,7 @@ describe('Start from — no template is the default and stays free', () => {
     /* The collapsed trigger is the answer to "what is selected"; a `<label htmlFor>`
            would replace the choice with the label. */
     expect(screen.getByRole('button', { name: 'Template: No template' })).toBe(templateTrigger());
+    expect(screen.queryByRole('button', { name: 'Clear template' })).toBeNull();
     await fillMessage();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
@@ -372,6 +373,42 @@ describe('Start from — no template is the default and stays free', () => {
     // Not `null`, not `''`: the kernel 400s a whitespace-only id and the body is
     // `deny_unknown_fields`. Absence is the only spelling of "no template".
     expect(Object.hasOwn(draft, 'template_id')).toBe(false);
+  });
+
+  it('clears a selected template in one click without opening the menu while preserving the draft and cached inputs', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    await chooseTemplate('Development');
+    const issueInput = await screen.findByLabelText('Issue URL');
+    await userEvent.type(issueInput, 'https://github.com/keanji-x/neige-calm/issues/1209');
+
+    const clearButton = screen.getByRole('button', { name: 'Clear template' });
+    await userEvent.click(clearButton);
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBe(templateTrigger());
+    expect(screen.queryByRole('button', { name: 'Clear template' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Selected template' })).toBeNull();
+    expect(screen.getByLabelText(TASK_LABEL).textContent).toBe('Ship the thing');
+
+    // Re-selecting the template restores its in-memory input values; clearing again omits them on submit.
+    await chooseTemplate('Development');
+    expect((await screen.findByLabelText<HTMLInputElement>('Issue URL')).value)
+      .toBe('https://github.com/keanji-x/neige-calm/issues/1209');
+    await userEvent.click(screen.getByRole('button', { name: 'Clear template' }));
+
+    await userEvent.click(submitButton());
+    const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+    expect(draft).toEqual({ message: 'Ship the thing' });
+    expect(Object.hasOwn(draft, 'template_id')).toBe(false);
+    expect(Object.hasOwn(draft, 'template_input')).toBe(false);
+  });
+
+  it('disables the template clear action while submitting or locked', () => {
+    const view = renderForm({ initialTemplateId: 'small-change', submitting: true });
+    expect(screen.getByRole('button', { name: 'Clear template' })).toHaveProperty('disabled', true);
+    view.rerender(<NewTrackForm {...view.props} submitting={false} locked />);
+    expect(screen.getByRole('button', { name: 'Clear template' })).toHaveProperty('disabled', true);
   });
 
   /* An empty list is what a pending or failed template read looks like from here. */

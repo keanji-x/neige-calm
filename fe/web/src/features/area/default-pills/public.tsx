@@ -38,7 +38,7 @@ function basenameOf(path: string): string {
 }
 
 export function TemplatePill({
-  templates, templatesLoaded, value, onChange, placement, controlLabel = 'Template', triggerId,
+  templates, templatesLoaded, value, onChange, placement, controlLabel = 'Template', clearLabel, triggerId,
   isDisabled = false,
 }: Readonly<{
   templates: readonly TrackTemplate[];
@@ -47,6 +47,7 @@ export function TemplatePill({
   onChange: (value: string) => void;
   placement: 'above' | 'below';
   controlLabel?: string;
+  clearLabel?: string;
   triggerId?: string;
   isDisabled?: boolean;
 }>) {
@@ -64,6 +65,7 @@ export function TemplatePill({
       }}
       placement={placement}
       controlLabel={controlLabel}
+      clearLabel={clearLabel}
       triggerId={triggerId}
       isDisabled={isDisabled}
     />
@@ -73,7 +75,8 @@ export function TemplatePill({
 /** The shared compact starting-point control; New Track supplies recipes and its manage action. */
 export function StartingPointPill({
   templates, templatesLoaded, recipes = [], value, onChange, placement,
-  onManageRecipes, controlLabel = 'Template', triggerId, isDisabled = false,
+  onManageRecipes, controlLabel = 'Template', clearLabel = `Clear ${controlLabel.toLowerCase()}`,
+  triggerId, isDisabled = false,
 }: Readonly<{
   templates: readonly TrackTemplate[];
   templatesLoaded: boolean;
@@ -83,6 +86,7 @@ export function StartingPointPill({
   placement: 'above' | 'below';
   onManageRecipes?: () => void;
   controlLabel?: string;
+  clearLabel?: string;
   triggerId?: string;
   isDisabled?: boolean;
 }>) {
@@ -112,67 +116,76 @@ export function StartingPointPill({
     requestAnimationFrame(() => hostRef.current?.querySelector('button')?.focus());
   };
   return (
-    <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape}>
-      <DropdownMenu
-        placement={placement}
-        isMenuOpen={open}
-        onOpenChange={setOpen}
-        button={{
-          id: triggerId,
-          label: controlName,
-          children: selectedLabel,
-          variant: 'secondary',
-          size: 'sm',
-          isDisabled,
-          className: styles.trigger,
-        }}
-      >
-        <TemplateChoice
-          label={NO_TEMPLATE_LABEL}
-          isSelected={value.kind === 'none'}
-          onSelect={() => onChange(NO_STARTING_POINT)}
-        />
-        {unresolved && (
+    <>
+      <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape}>
+        <DropdownMenu
+          placement={placement}
+          isMenuOpen={open}
+          onOpenChange={setOpen}
+          button={{
+            id: triggerId,
+            label: controlName,
+            children: selectedLabel,
+            variant: 'secondary',
+            size: 'sm',
+            isDisabled,
+            className: styles.trigger,
+          }}
+        >
           <TemplateChoice
-            label={selectedLabel}
-            isSelected
-            isDisabled
-            onSelect={() => undefined}
+            label={NO_TEMPLATE_LABEL}
+            isSelected={value.kind === 'none'}
+            onSelect={() => onChange(NO_STARTING_POINT)}
           />
-        )}
-        <MenuGroup heading={showGroupHeadings ? 'My recipes' : null}>
-          {recipes.map((recipe) => (
+          {unresolved && (
             <TemplateChoice
-              key={`recipe:${recipe.id}`}
-              label={recipe.title}
-              isSelected={value.kind === 'recipe' && value.id === recipe.id}
-              onSelect={() => onChange({ kind: 'recipe', id: recipe.id })}
+              label={selectedLabel}
+              isSelected
+              isDisabled
+              onSelect={() => undefined}
             />
-          ))}
-        </MenuGroup>
-        <MenuGroup heading={showGroupHeadings ? 'Built in' : null}>
-          {templates.map((template) => (
-            <TemplateChoice
-              key={`template:${template.id}`}
-              label={template.title}
-              description={<>
-                {template.description !== null && <span className={styles.choiceLine}>{template.description}</span>}
-                {template.availability.status === 'requires_plugin' && <span className={styles.choiceLine}>Requires {template.availability.plugin_name}</span>}
-              </>}
-              tasks={template.tasks}
-              isSelected={value.kind === 'template' && value.id === template.id}
-              onSelect={() => onChange({ kind: 'template', id: template.id })}
-            />
-          ))}
-        </MenuGroup>
-        {onManageRecipes !== undefined && (
-          <>
-            <Divider />
-            <DropdownMenuItem label="Manage recipes…" onClick={onManageRecipes} />
-          </>
-        )}
-      </DropdownMenu>
-    </span>
+          )}
+          <MenuGroup heading={showGroupHeadings ? 'My recipes' : null}>
+            {recipes.map((recipe) => (
+              <TemplateChoice
+                key={`recipe:${recipe.id}`}
+                label={recipe.title}
+                isSelected={value.kind === 'recipe' && value.id === recipe.id}
+                onSelect={() => onChange({ kind: 'recipe', id: recipe.id })}
+              />
+            ))}
+          </MenuGroup>
+          <MenuGroup heading={showGroupHeadings ? 'Built in' : null}>
+            {templates.map((template) => (
+              <TemplateChoice
+                key={`template:${template.id}`}
+                label={template.title}
+                description={<>
+                  {template.description !== null && <span className={styles.choiceLine}>{template.description}</span>}
+                  {template.availability.status === 'requires_plugin' && <span className={styles.choiceLine}>Requires {template.availability.plugin_name}</span>}
+                </>}
+                tasks={template.tasks}
+                isSelected={value.kind === 'template' && value.id === template.id}
+                onSelect={() => onChange({ kind: 'template', id: template.id })}
+              />
+            ))}
+          </MenuGroup>
+          {onManageRecipes !== undefined && (
+            <>
+              <Divider />
+              <DropdownMenuItem label="Manage recipes…" onClick={onManageRecipes} />
+            </>
+          )}
+        </DropdownMenu>
+      </span>
+      {value.kind !== 'none' && (
+        <ClearPillButton
+          label={clearLabel}
+          isDisabled={isDisabled}
+          onClick={() => onChange(NO_STARTING_POINT)}
+        />
+      )}
+    </>
   );
 }
 
@@ -207,18 +220,34 @@ export function FolderPill({
         {...{ title: accessibleName }}
       />
       {value !== '' && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          isIconOnly
-          icon={<AstryxIcon icon="close" size="sm" />}
+        <ClearPillButton
           label={clearLabel}
           isDisabled={isDisabled}
           onClick={onClear}
         />
       )}
     </>
+  );
+}
+
+function ClearPillButton({
+  label, isDisabled, onClick,
+}: Readonly<{
+  label: string;
+  isDisabled: boolean;
+  onClick: () => void;
+}>) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      isIconOnly
+      icon={<AstryxIcon icon="close" size="sm" />}
+      label={label}
+      isDisabled={isDisabled}
+      onClick={onClick}
+    />
   );
 }
 

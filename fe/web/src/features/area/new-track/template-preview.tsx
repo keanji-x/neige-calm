@@ -14,11 +14,12 @@ type PreviewState =
   | Readonly<{ id: string; source: LoadTemplate; status: 'ready'; detail: TemplateDetail }>;
 
 /** Text-only preview: source comments and markup never execute in this surface. */
-export function TemplatePreview({ id, title, recipeBody, loadTemplate, children, onDetail }: Readonly<{
+export function TemplatePreview({ id, title, recipeBody, loadTemplate, pluginGuides, children, onDetail }: Readonly<{
   id: string;
   title: string;
   recipeBody?: string;
   loadTemplate: LoadTemplate;
+  pluginGuides?: ReactNode;
   children?: ReactNode;
   onDetail?: (detail: TemplateDetail | null) => void;
 }>) {
@@ -46,6 +47,7 @@ export function TemplatePreview({ id, title, recipeBody, loadTemplate, children,
     <h2 className={styles.title}>{title}</h2>
     <div className={styles.body}>
     <div className={styles.overview}>
+    {pluginGuides}
     {detail === null ? <div className={styles.status} aria-live="polite">
       {current.status === 'error' ? <>
         <span>{readFailureText(current.failure, 'Could not load the template preview. Your selection is still available.')}</span>

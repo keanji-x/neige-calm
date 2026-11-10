@@ -12,6 +12,7 @@ export function TemplatePluginGuides({ guides, error, onRetry }: Readonly<{
   if (error !== null) return <span role="alert">{error} <Button label="Retry" variant="ghost" size="sm" onClick={onRetry} /></span>;
   if (guides === undefined || guides.length === 0) return null;
   return <div className={styles.guides} role="group" aria-label="Template plugin guides">
+    <span className={styles.label}>Included plugin guides</span>
     {guides.map(guide => <Badge key={guide.id} variant="neutral" label={guide.name}
       aria-label={`${guide.name}, included by template`}
       icon={<svg className={styles.lock} viewBox="0 0 16 16" aria-hidden="true">

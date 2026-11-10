@@ -5,6 +5,7 @@
 
   .host,
   .items,
+  .startingPoint,
   .folder {
     display: flex;
     align-items: center;
@@ -27,10 +28,6 @@
     flex-wrap: wrap;
   }
 
-  .startingPoint {
-    display: contents;
-  }
-
   .panel {
     max-inline-size: min(22rem, calc(100dvw - var(--space-6)));
   }
@@ -40,6 +37,7 @@
     align-items: flex-start;
   }
 
+  .panel .startingPoint,
   .panel .folder {
     min-inline-size: 0;
     max-inline-size: 100%;
@@ -50,6 +48,7 @@
     max-inline-size: 100%;
   }
 
+  .panel .startingPoint > button:last-child:not(:first-child),
   .panel .folder > button:last-child:not(:first-child) {
     flex: none;
   }
@@ -57,6 +56,7 @@
   @media (width < 60rem) {
     .host,
     .items,
+    .startingPoint,
     .folder {
       gap: var(--space-1);
     }

@@ -38,7 +38,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
   const isolationRef = useRef<HTMLDivElement>(null);
   const requiredWidth = useRef(0);
   const measuredLabels = useRef('');
-  const restoreFocus = useRef(false);
+  const restoreFocus = useRef<'starting' | 'folder' | null>(null);
   const wasBrowsing = useRef(browsing);
 
   useEffect(() => {
@@ -79,9 +79,9 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     const actions = row?.lastElementChild;
     if (host === null || !(row instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
     const measure = () => {
-      const template = startingRef.current?.querySelector('button');
+      const templates = [...(startingRef.current?.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button') ?? [])];
       const folders = [...(folderRef.current?.querySelectorAll<HTMLButtonElement>(':scope > button') ?? [])];
-      const buttons = template === null || template === undefined ? folders : [template, ...folders];
+      const buttons = [...templates, ...folders];
       const labels = buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent).join('\n');
       if (items !== null && items.getBoundingClientRect().width > 0) {
         const gap = parseFloat(getComputedStyle(host).columnGap) || 0;
@@ -100,14 +100,21 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
       const available = row.clientWidth - actions.getBoundingClientRect().width - isolationWidth - gap * 2;
       const next = compact && requiredWidth.current > available + 0.5;
       if (next !== collapsed) {
-        restoreFocus.current = (items?.contains(document.activeElement) ?? false) || moreRef.current === document.activeElement;
+        restoreFocus.current = (startingRef.current?.contains(document.activeElement) ?? false)
+          ? 'starting'
+          : (items?.contains(document.activeElement) ?? false) || moreRef.current === document.activeElement
+            ? 'folder'
+            : null;
         setOpen(false);
         setCollapsed(next);
       }
     };
-    if (restoreFocus.current) {
-      restoreFocus.current = false;
-      (collapsed ? moreRef.current : folderRef.current?.querySelector('button'))?.focus();
+    if (restoreFocus.current !== null) {
+      const target = restoreFocus.current;
+      restoreFocus.current = null;
+      (collapsed
+        ? moreRef.current
+        : (target === 'starting' ? startingRef.current : folderRef.current)?.querySelector('button'))?.focus();
     }
     measure();
     const observer = new ResizeObserver(measure);

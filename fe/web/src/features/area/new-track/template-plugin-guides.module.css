@@ -2,7 +2,16 @@
   .guides {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-half);
+    align-items: center;
+    gap: var(--space-1);
+    margin-block-end: var(--space-3);
+    font-size: var(--font-step-2-size);
+    line-height: var(--font-step-2-line);
+    color: var(--text-2);
+  }
+
+  .label {
+    color: var(--text-3);
   }
 
   .lock {

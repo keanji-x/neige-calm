@@ -131,7 +131,7 @@ describe('two id spaces, never crossed', () => {
 
   /* Choosing the recipe must produce `recipe_id` and never `template_id`, which a
    * `templates.find` over a bare string would have got wrong. */
-  it('creates from the recipe when a recipe and a template share an id', async () => {
+  it('creates from the recipe when a recipe and a template share an id, and can clear the recipe in one click', async () => {
     const { onSubmit } = renderForm({ recipes: [COLLIDING_RECIPE] });
     await fillMessage();
     await openTemplates();
@@ -140,6 +140,13 @@ describe('two id spaces, never crossed', () => {
     expect(screen.getByRole('button', { name: 'Template: My small change' })).toBeTruthy();
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', recipe_id: 'small-change' });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Clear template' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Clear template' })).toBeNull();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenLastCalledWith({ message: 'Ship the thing' });
   });
 
   /* A recipe deleted in another window must not resolve against the template

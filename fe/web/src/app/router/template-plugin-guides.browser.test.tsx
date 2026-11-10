@@ -40,19 +40,22 @@ function mount(issueGuides?: Promise<ApiTransportResponse>) {
   return requests;
 }
 
-it('shows the locked template guide in the composer and removes it when the template changes', async () => {
+it('shows the locked template guide in the selected template preview and removes it when the template is cleared', async () => {
   await page.viewport(1440, 900);
   const requests = mount();
   const field = page.getByRole('combobox', { name: 'What this track should do' });
   await field.fill('Keep this sentence');
   await page.getByRole('button', { name: /^Template:/ }).click();
   await page.getByRole('menuitem', { name: /^Development/ }).click();
-  await expect.element(page.getByLabelText('development, included by template')).toBeVisible();
+  const preview = page.getByRole('region', { name: 'Selected template' });
+  await expect.element(preview.getByLabelText('development, included by template')).toBeVisible();
+  await expect.element(preview.getByText('Included plugin guides')).toBeVisible();
   expect(document.querySelector('[aria-label="development, included by template"] svg')).not.toBeNull();
+  expect(document.querySelector('[data-nc-new-track-message] [aria-label="development, included by template"]')).toBeNull();
   await expect.poll(() => {
     const guide = page.getByLabelText('development, included by template').element().getBoundingClientRect();
     const input = field.element().getBoundingClientRect();
-    return guide.right <= input.left && guide.bottom > input.top && input.bottom > guide.top;
+    return guide.top >= input.bottom;
   }).toBe(true);
   await expect.element(field).toHaveTextContent('Keep this sentence');
   for (const width of [390, 320]) {
@@ -61,8 +64,8 @@ it('shows the locked template guide in the composer and removes it when the temp
     expect(document.documentElement.scrollWidth).toBe(window.innerWidth);
   }
   await page.viewport(1440, 900);
-  await page.getByRole('button', { name: /^Template:/ }).click();
-  await page.getByRole('menuitem', { name: /^No template/ }).click();
+  await page.getByRole('button', { name: 'Clear template' }).click();
+  await expect.element(page.getByRole('button', { name: /^Template: No template/ })).toBeVisible();
   await expect.element(page.getByLabelText('development, included by template')).not.toBeInTheDocument();
   await expect.element(field).toHaveTextContent('Keep this sentence');
   expect(requests.every(request => request.method === 'GET')).toBe(true);

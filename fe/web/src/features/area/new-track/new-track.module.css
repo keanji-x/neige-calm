@@ -3,18 +3,6 @@
    Shared default-pills own Template/Folder widths and pill contours; no general
    button recipe is restated here. */
 @layer features {
-  .editor {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-1);
-    min-inline-size: 0;
-  }
-
-  .editor > .input {
-    flex: 1;
-    min-inline-size: 0;
-  }
-
   .send {
     border-radius: var(--radius-pill);
   }

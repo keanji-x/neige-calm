@@ -52,14 +52,21 @@ describe('AreaEditorForm', () => {
     expect(screen.getByRole('button', { name: 'Default folder: /srv/work' }).textContent).toContain('work');
     expect(screen.queryByRole('combobox')).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Default template: Small change' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /^No template/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Clear default template' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Default template: No template' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Clear default template' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Use a new Neige workspace' }));
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     expect(onSubmit).toHaveBeenCalledWith({
       name: 'Work', defaultTemplateId: null, defaultCwd: null,
     });
+  });
+
+  it('disables the default template clear action while submitting or locked', () => {
+    renderForm({ submitting: true });
+    expect(screen.getByRole('button', { name: 'Clear default template' })).toHaveProperty('disabled', true);
   });
 
   it('keeps an unavailable stored template visible instead of silently clearing it', () => {
