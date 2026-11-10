@@ -1,5 +1,6 @@
 //! Share delegation persistence. Decoding rejects facts outside the closed policy;
 //! authorization belongs to organization/share access in the application layer.
+use crate::db::{ShareReadFacts, ShareTrackFacts};
 use crate::error::{CalmError, Result};
 use calm_types::share_links::{
     ShareDelegation, ShareLink, SharePurpose, ShareResourcePolicy, ShareScope,
@@ -111,4 +112,72 @@ pub async fn revoke_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64) -> 
     .execute(&mut **tx)
     .await?;
     get_tx(tx, id).await
+}
+
+/// One autocommit statement snapshots access, registry, membership and containment.
+/// No deferred transaction or private Workspace/provider field is needed.
+#[derive(FromRow)]
+struct ReadRow {
+    #[sqlx(flatten)]
+    link: LinkRow,
+    target_area: String,
+    #[sqlx(try_from = "String")]
+    target_kind: crate::model::AreaKind,
+    registered: bool,
+    member_role: Option<String>,
+    requested_id: Option<String>,
+    requested_area: Option<String>,
+    requested_purpose: Option<String>,
+}
+
+pub(super) async fn read_facts(
+    pool: &sqlx::SqlitePool,
+    hash: &str,
+    owner: &str,
+    requested: Option<&str>,
+) -> Result<ShareReadFacts> {
+    let columns = COLUMNS
+        .split(',')
+        .map(|column| format!("sl.{column}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let row = sqlx::query_as::<_, ReadRow>(&format!(
+        "SELECT {columns}, a.id AS target_area, a.kind AS target_kind,
+                EXISTS(SELECT 1 FROM application_users WHERE id=?2) AS registered,
+                m.role AS member_role, requested.id AS requested_id,
+                requested.area_id AS requested_area, requested.purpose AS requested_purpose
+         FROM share_links sl
+         LEFT JOIN tracks target ON target.id=sl.track_id
+         JOIN areas a ON a.id=COALESCE(sl.area_id,target.area_id)
+         LEFT JOIN area_members m ON m.area_id=a.id AND m.user_id=?2
+         LEFT JOIN tracks requested ON requested.id=?3
+         WHERE sl.token_hash=?1 AND sl.revoked_at IS NULL"
+    ))
+    .bind(hash)
+    .bind(owner)
+    .bind(requested)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| CalmError::NotFound("share link"))?;
+    let link = row.link.decode()?;
+    super::area_membership::require_registered(row.registered)?;
+    super::area_membership::require_user_area_access(
+        row.target_kind,
+        super::area_membership::decode_member_role(row.member_role)?,
+        calm_types::organization::AreaAccess::Delete,
+    )?;
+    let requested_track = match (requested, row.requested_id, row.requested_area) {
+        (Some(_), Some(_), Some(area)) => Some(ShareTrackFacts {
+            area_id: area.into(),
+            purpose: row.requested_purpose,
+        }),
+        (None, None, None) => None,
+        (Some(id), None, None) => return Err(CalmError::NotFound(format!("track {id}"))),
+        _ => return Err(CalmError::Internal("Track parent Area is missing".into())),
+    };
+    Ok(ShareReadFacts {
+        link,
+        area: row.target_area.into(),
+        requested_track,
+    })
 }

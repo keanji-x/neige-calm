@@ -3,25 +3,16 @@
 //! A read never calls a plugin and never writes; a missing or stale row is an in-memory
 //! `enqueue`. Every read is one autocommit statement on the pool — no transaction.
 
-use crate::extract::{Json, Path, Query};
-use axum::{
-    Router,
-    extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::get,
-};
+use crate::extract::{Path, Query};
+use axum::{Router, extract::State, response::Response, routing::get};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::Principal;
-use crate::error::{CalmError, ErrorBody, Result};
+use crate::error::{ErrorBody, Result};
 use crate::report_series::Detail;
-use crate::report_series::hydrate::hydrate_chart_series;
 use crate::state::{AppState, RouteState};
-use crate::track_report::report_blocks_snapshot;
-use calm_types::report_blocks::KIND_CHART_SERIES;
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
@@ -151,6 +142,7 @@ pub struct ReportSeriesResolved {
         (status = 200, description = "The block's resolved data, as stored", body = ReportSeriesResolved),
         (status = 400, description = "`rev` missing or malformed", body = ErrorBody),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Current Area access refused", body = ErrorBody),
         (status = 404, description = "Track, block, or a block that is not `chart.series`", body = ErrorBody),
         (status = 409, description = "`rev` is not the block's current rev", body = ReportSeriesRevConflict),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -158,44 +150,16 @@ pub struct ReportSeriesResolved {
 )]
 pub(crate) async fn get_report_series(
     State(state): State<RouteState>,
-    _principal: Principal,
+    principal: Principal,
     Path((id, block_id)): Path<(String, String)>,
     Query(query): Query<ReportSeriesQuery>,
 ) -> Result<Response> {
-    state
-        .repo
-        .track_get(&id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
-    // A server without a sqlite pool cannot boot, so this is an invariant, not a mode.
-    let pool = state.mcp_context.series_resolver.pool().ok_or_else(|| {
-        CalmError::Internal("report_series: route requires a sqlite-backed repo".into())
-    })?;
-    let (_, blocks) = report_blocks_snapshot(pool, &id).await?;
-    let block = blocks
-        .iter()
-        .find(|block| block.id == block_id && block.kind == KIND_CHART_SERIES)
-        .ok_or_else(|| {
-            CalmError::NotFound(format!(
-                "track {id} has no {KIND_CHART_SERIES} block {block_id}"
-            ))
-        })?;
-    let current_rev = u64::from(block.rev);
-    if query.rev != current_rev {
-        return Ok((
-            StatusCode::CONFLICT,
-            Json(ReportSeriesRevConflict { current_rev }),
-        )
-            .into_response());
-    }
-    let resolved = hydrate_chart_series(
-        &state.mcp_context,
-        id.as_str(),
-        block,
-        query.detail.into(),
-        None,
-        crate::report_series::rest_resolved_at,
+    crate::report_resource::get_report_series(
+        &state,
+        crate::read_access::Audience::Owner(&principal),
+        id,
+        block_id,
+        query,
     )
-    .await;
-    Ok((StatusCode::OK, Json(resolved)).into_response())
+    .await
 }

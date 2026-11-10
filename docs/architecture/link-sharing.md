@@ -1,7 +1,7 @@
 # Link sharing and execution approval
 
-Status: PR1 L2 design for #3633, using the current deployment resource policy.
-PR1 supplies protected management and durable delegation, not visitor execution.
+Status: PR2 L2 design for #3633, extending merged PR1 (#3639).
+PR2 supplies anonymous shared reads and live invalidation, not visitor execution.
 This decision supersedes the earlier frozen environment binding prerequisite.
 
 ## Outcome and delivery boundaries
@@ -87,7 +87,7 @@ preserves fragments. No new permissions panel or warning workflow is introduced.
 
 The new tests join the existing API/lib test registrations and run once in their
 assigned CI shard (apart from retries); no new workflow invocation is added.
-The task gate replays the share management and execution modules once. Ordinary tests need no
+The task gate replays `share_links` and `openapi_statuses` once. Ordinary tests need no
 new census; a migration adds the existing head-fixture entry. A new scope variant
 would change its typed vocabulary and owning codec plus an additive migration,
 rather than a per-caller authorization list.
@@ -114,8 +114,8 @@ Before claiming coverage, use `cargo nextest list` on the actual registered
 module and record the nonempty names. Focused runs and gate replay use
 `--no-tests fail`; absent modules are not passes. Worker verification owns only
 focused tests, real generation and formatting/necessary lint fixes. The kernel
-gate owns text checks, full L2 contracts, Rust quick, one focused replay,
-OpenAPI statuses and frontend lint/build/full tests. CI owns broad suites.
+gate owns text checks, full L2 contracts, Rust quick, one focused replay and
+OpenAPI statuses. No frontend implementation changes are included. CI owns broad suites.
 No real Codex E2E or workspace-wide nextest runs are permitted here.
 
 Two independent L2 review channels remain Planner-owned. Critical scope,
@@ -123,7 +123,75 @@ issuer/current ownership and monotonic revocation assertions require the
 repository's single-factor mutation verification in an exclusive recoverable
 worktree, with the full predicted/actual red set compared before safe restore.
 
-Verification plan: the worker runs focused execution and share HTTP tests,
+Verification plan: the worker runs focused owner/share HTTP tests,
 formatter and real API generation; the kernel gate runs text, full L2 contracts,
-quick Rust, focused replay, OpenAPI statuses and frontend validation. Planner owns
-the two independent L2 reviews. PR1 makes no visitor execution readiness claim.
+quick Rust, focused replay and OpenAPI statuses. Planner owns
+the two independent L2 reviews. PR2 supplies no visitor execution endpoint.
+
+## PR2 shared read boundary
+
+`report_resource` owns Report, series and captured-source reads for both
+`Owner` and `ShareLink` audiences. Owner reads call `require_detail_access`
+before assembly and `require_detail_publication` afterwards. A share read
+resolves the token and rechecks publication through `share_access`, including
+its original Area. Share Reports use `track_report_read::listed_blocks` for
+both `blocks` and reconstructed `body`; task blocks and task diagnostics are
+never published. Prose, charts, tables, views and sources retain their existing
+read contracts. Series hydration stays in the existing series owner.
+
+The presented token is hashed as `hex(Sha256(token))`. One autocommit statement
+snapshots active access, target containment, registry and membership facts.
+The owner validates Conversation/CurrentDeployment,
+the current deployment issuer identity, registration and `AreaAccess::Delete`
+on the target User Area. Containment facts are read without decoding private
+Workspace or provider configuration. Track scope requires the exact Track. Area scope
+resolves current containment dynamically and excludes `purpose = area-chat`.
+A finite response repeats this decision after assembly; it is not a stream
+lease and cannot retract bytes already published.
+
+The public router, outside `require_session`, declares `security(())` for:
+
+- `GET /api/share/{token}`: scope and narrow Track id/title entries.
+- `GET /api/share/{token}/tracks/{track_id}/report`.
+- `GET /api/share/{token}/tracks/{track_id}/report/series?block_id=…&rev=…`.
+- `GET /api/share/{token}/tracks/{track_id}/sources` and `sources/{source_id}`.
+- `GET /api/share/{token}/tracks/{track_id}/conversations` and
+  `conversations/{card_id}/items`, `live`, `run`.
+- `GET /api/share/{token}/events`: WebSocket invalidation only.
+
+Conversation items/live reuse the canonical/historical readers, cursor rules
+and local-image redaction. Shared presentation reads require an effective
+claim for the current Human revision or System observation, so private pending
+drafts cannot enter a page. Shared lists expose explicit card titles and do not
+use the owner's pending-queue naming fallback. Shared run status explicitly projects card id,
+phase and runtime state; it never serializes owner run configuration, pending
+inputs, recovery capabilities, `cwd` or `permission_mode`. Card containment is
+rechecked before publication. Shared reads cannot send or mutate work.
+
+The WebSocket subscribes to events and authority wakes before its first
+access check. Its initial frame is `{"type":"snapshot","scope":ShareScope}`;
+subsequent frames are `{"type":"invalidate","scope":ShareScope}`. These
+frames invalidate the whole authorized scope and carry no Event payload,
+card details or global cursor. Clients restart the current conversation page
+on invalidation as private drafts can become published at an existing
+presentation position. `EventScope` selects relevant events; Area
+Track descendants are checked dynamically. Existing hidden Tracks do not
+invalidate an Area; deleted descendants still invalidate its list. Lag forces
+a scoped re-fetch.
+Every wake rechecks active access; revocation or target deletion emits
+`{"type":"closed"}` and closes the socket. Revocation wakes access readers
+after commit on `state.events`; existing Track/Area deletion events already
+wake event subscribers. No second Event kind inventory is introduced.
+
+Permanence cost: the resource audience/fence is shared across existing readers,
+not a parallel report implementation. The published presentation query extends
+the owning Truth reader. The EventBus authority wake has no stored payload,
+new migration or replay contract. Ordinary new events require no share-specific
+registration. Public endpoints use the existing OpenAPI generator and test
+registration; no new workflow invocation or test census is added. Planner owns
+two independent L2 reviews of these boundaries.
+
+The existing `db/mod.rs` interface registry exceeds 800 lines. PR2 keeps its
+small factual read declarations with the owning `RepoRead` interface; splitting
+that registry is separate from this authority change. New implementation and
+test modules stay below the repository's practical file size limit.

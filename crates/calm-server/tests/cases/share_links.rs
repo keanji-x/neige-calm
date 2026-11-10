@@ -582,6 +582,12 @@ async fn upgrade_then_reopen_consumes_durable_delegation_and_revocation() {
     let fx = Fixture::with_state(with_repo(&seed, repo.clone())).await;
     let created = fx.create(true).await;
     let area = fx.create(false).await;
+    let shared_track = format!("/api/share/{}", created["token"].as_str().unwrap());
+    let shared_area = format!("/api/share/{}", area["token"].as_str().unwrap());
+    assert_eq!(
+        fx.request("GET", &shared_track, None, Value::Null).await.0,
+        StatusCode::OK
+    );
     let id = created["link"]["delegation"]["id"]
         .as_str()
         .unwrap()
@@ -627,6 +633,18 @@ async fn upgrade_then_reopen_consumes_durable_delegation_and_revocation() {
         .unwrap();
     assert_eq!(serde_json::to_value(reload).unwrap(), revoked);
     let app = app(with_repo(&seed, reopened), auth);
+    assert_eq!(
+        request(&app, "GET", &shared_track, None, Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "GET", &shared_area, None, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
     assert_eq!(
         request(&app, "GET", &track_path, Some(&cookie), Value::Null).await,
         (StatusCode::OK, json!([revoked.clone()]))
@@ -726,3 +744,9 @@ async fn management_resolves_current_track_parent_and_keeps_sibling_scopes_separ
         StatusCode::OK
     );
 }
+
+#[path = "share_links/reads.rs"]
+mod reads;
+
+#[path = "share_links/events.rs"]
+mod events;

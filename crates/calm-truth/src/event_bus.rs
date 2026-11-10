@@ -37,12 +37,14 @@ pub struct BroadcastEnvelope {
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<BroadcastEnvelope>,
+    access_wake: tokio::sync::watch::Sender<()>,
 }
 
 impl EventBus {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(BUS_CAPACITY);
-        Self { tx }
+        let (access_wake, _) = tokio::sync::watch::channel(());
+        Self { tx, access_wake }
     }
 
     /// Broadcast an already-persisted event with its assigned id. Handlers should
@@ -70,6 +72,16 @@ impl EventBus {
     #[doc(hidden)]
     pub fn emit_envelope_for_test(&self, env: BroadcastEnvelope) {
         let _ = self.tx.send(env);
+    }
+
+    /// Wake access-sensitive subscribers after a committed authority change.
+    /// Carries no domain payload and is never replayed as an Event.
+    pub fn wake_access_readers(&self) {
+        self.access_wake.send_replace(());
+    }
+
+    pub fn subscribe_access_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.access_wake.subscribe()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<BroadcastEnvelope> {

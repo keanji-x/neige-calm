@@ -408,10 +408,26 @@ pub(crate) async fn create_track_conversation_inner(
 /// profile marker: widening to "a codex card" would list the track's workers. `cards`
 /// drives and the session is LEFT JOINed, so a card with no live session row is still
 /// listed (`state` is nullable for that reason).
-async fn load_track_conversation_summaries(
+pub(crate) async fn load_track_conversation_summaries(
     w: &WorkerState,
     track_id: &str,
     card_id: Option<&str>,
+) -> Result<Vec<TrackConversationSummary>> {
+    load_summaries(w, track_id, card_id, false).await
+}
+
+pub(crate) async fn load_published_summaries(
+    w: &WorkerState,
+    track_id: &str,
+) -> Result<Vec<TrackConversationSummary>> {
+    load_summaries(w, track_id, None, true).await
+}
+
+async fn load_summaries(
+    w: &WorkerState,
+    track_id: &str,
+    card_id: Option<&str>,
+    published: bool,
 ) -> Result<Vec<TrackConversationSummary>> {
     let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("track conversations require a sqlite-backed repo".into())
@@ -458,7 +474,13 @@ async fn load_track_conversation_summaries(
         .filter(|row| row.title.is_none())
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
-    let mut titles = crate::conversation_metadata::titles(w.repo.as_ref(), &ids).await?;
+    // Pending queue text is private. Shared list titles only come from
+    // explicitly named cards; do not run the owner's pending-title fallback.
+    let mut titles = if published {
+        std::collections::HashMap::new()
+    } else {
+        crate::conversation_metadata::titles(w.repo.as_ref(), &ids).await?
+    };
     rows.into_iter()
         .map(|mut row| {
             if row.title.is_none() {

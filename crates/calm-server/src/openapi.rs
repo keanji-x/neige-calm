@@ -15,7 +15,7 @@ use crate::planner_model::catalog::{
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
-use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ViaToolCall};
+use crate::routes::cards::{ConversationItemsQuery, CreateCardBody, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::fs::{
@@ -71,6 +71,16 @@ use utoipa::{Modify, OpenApi, ToSchema};
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
+        crate::routes::share_reads::resolve,
+        crate::routes::share_reads::report,
+        crate::routes::share_reads::series,
+        crate::routes::share_reads::sources,
+        crate::routes::share_reads::source,
+        crate::routes::share_reads::conversations,
+        crate::routes::share_reads::items,
+        crate::routes::share_reads::live,
+        crate::routes::share_reads::run,
+        crate::ws::share_events::upgrade,
         crate::routes::share_links::create_track_share_link,
         crate::routes::share_links::list_track_share_links,
         crate::routes::share_links::create_area_share_link,
@@ -329,7 +339,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         calm_types::harness::HarnessTimeoutEvidence,
         calm_types::harness::HarnessInterruptionReason,
         HarnessItem,
-        HarnessItemsQuery,
+        ConversationItemsQuery,
         calm_types::harness::HarnessLiveReplies,
         calm_types::harness::HarnessLiveReply,
         SendPlannerInputRequest,

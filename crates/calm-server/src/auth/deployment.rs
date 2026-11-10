@@ -9,13 +9,18 @@ pub(crate) struct LegacyPrivateExecution {
 impl LegacyPrivateExecution {
     pub(crate) fn current_owner(&self) -> Result<String> {
         let issuer = self.issuer.upgrade().ok_or(CalmError::Unauthorized)?;
-        if !issuer.dev_autologin && (issuer.username.is_none() || issuer.password.is_none()) {
-            return Err(CalmError::Unauthorized);
-        }
-        // The actual current password/device/dev issuers all issue this one identity.
-        // A future named issuer needs a different explicit execution declaration.
-        Ok(SessionIdentity::owner(&issuer).user_id)
+        current_deployment_owner(&issuer)
     }
+}
+
+/// Identity issued by this installation, independently of any visitor session.
+pub(crate) fn current_deployment_owner(issuer: &AuthConfig) -> Result<String> {
+    if !issuer.dev_autologin && (issuer.username.is_none() || issuer.password.is_none()) {
+        return Err(CalmError::Unauthorized);
+    }
+    // The actual current password/device/dev issuers all issue this one identity.
+    // A future named issuer needs a different explicit execution declaration.
+    Ok(SessionIdentity::owner(issuer).user_id)
 }
 
 pub(crate) struct ValidatedApplicationAuth {

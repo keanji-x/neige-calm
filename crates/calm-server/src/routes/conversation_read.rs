@@ -10,33 +10,56 @@ pub(crate) struct ReadScope {
     card: String,
     pub track: String,
     pub area: AreaId,
+    fence: crate::read_access::ReadFence,
 }
 impl ReadScope {
     pub async fn check(repo: &dyn RouteRepo, card: &str, principal: &Principal) -> Result<Self> {
-        repo.application_user_require_registered(&principal.user_id)
-            .await?;
+        Self::check_audience(repo, card, crate::read_access::Audience::Owner(principal)).await
+    }
+    pub async fn publish(&self, repo: &dyn RouteRepo, principal: &Principal) -> Result<()> {
+        self.publish_audience(repo, crate::read_access::Audience::Owner(principal))
+            .await
+    }
+    /// No principal is synthesized from a delegation. Share authorization stays
+    /// with share_access, while this owner pins exact card containment.
+    pub async fn check_audience(
+        repo: &dyn RouteRepo,
+        card: &str,
+        audience: crate::read_access::Audience<'_>,
+    ) -> Result<Self> {
+        if let crate::read_access::Audience::Owner(principal) = audience {
+            repo.application_user_require_registered(&principal.user_id)
+                .await?;
+        }
         let track = repo
             .card_track_id(card)
             .await?
-            .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
-        let area = crate::track_access::require_detail_access(repo, &track, principal).await?;
+            .ok_or_else(|| CalmError::NotFound("conversation".into()))?;
+        let fence = audience.check(repo, &track).await?;
+        let area = match &fence {
+            crate::read_access::ReadFence::Owner(area) => area.clone(),
+            crate::read_access::ReadFence::ShareLink(access) => access.area.clone(),
+        };
         Ok(Self {
             card: card.into(),
             track,
             area,
+            fence,
         })
     }
-    pub async fn publish(&self, repo: &dyn RouteRepo, principal: &Principal) -> Result<()> {
+    pub async fn publish_audience(
+        &self,
+        repo: &dyn RouteRepo,
+        audience: crate::read_access::Audience<'_>,
+    ) -> Result<()> {
         let track = repo
             .card_track_id(&self.card)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {}", self.card)))?;
         if track != self.track {
-            return Err(CalmError::Forbidden(
-                "conversation Track changed while reading".into(),
-            ));
+            return Err(CalmError::Forbidden("conversation moved".into()));
         }
-        crate::track_access::require_detail_publication(repo, &track, &self.area, principal).await
+        audience.publish(repo, &track, &self.fence).await
     }
 }
 

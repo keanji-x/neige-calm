@@ -4,6 +4,7 @@ use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path, Query};
 use crate::model::HarnessItem as TranscriptRow;
+use crate::read_access::Audience;
 use crate::state::RouteState;
 use axum::{
     extract::State,
@@ -15,14 +16,14 @@ use utoipa::{IntoParams, ToSchema};
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum HarnessItemsDirection {
+pub enum ConversationItemsDirection {
     #[default]
     Asc,
     Desc,
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
-pub struct HarnessItemsQuery {
+pub struct ConversationItemsQuery {
     pub contract: Option<ConversationReadContract>,
     /// URL-encoded strict ConversationCursor JSON; exclusive with after_id.
     pub cursor: Option<String>,
@@ -30,7 +31,7 @@ pub struct HarnessItemsQuery {
     pub after_id: Option<i64>,
     pub limit: Option<i64>,
     #[serde(default)]
-    pub direction: HarnessItemsDirection,
+    pub direction: ConversationItemsDirection,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -41,7 +42,7 @@ pub enum ConversationItemsReadResponse {
 }
 
 #[utoipa::path(get, path="/api/cards/{id}/harness/items", tag="cards",
-    params(("id"=String,Path,description="Planner card id"),HarnessItemsQuery),
+    params(("id"=String,Path,description="Planner card id"),ConversationItemsQuery),
     responses(
         (status=200,description="Negotiated conversation page, or historical-only original raw array",body=ConversationItemsReadResponse),
         (status=400,description="Invalid or mixed cursor",body=ErrorBody),
@@ -54,10 +55,19 @@ pub(crate) async fn get_harness_items(
     State(s): State<RouteState>,
     principal: Principal,
     Path(id): Path<String>,
-    Query(q): Query<HarnessItemsQuery>,
+    Query(q): Query<ConversationItemsQuery>,
 ) -> Result<Response> {
-    let scope = ReadScope::check(s.repo.as_ref(), &id, &principal).await?;
-    let card = super::cards::harness_card(&s, &id).await?;
+    read(&s, Audience::Owner(&principal), id, q).await
+}
+
+pub(crate) async fn read(
+    s: &RouteState,
+    audience: Audience<'_>,
+    id: String,
+    q: ConversationItemsQuery,
+) -> Result<Response> {
+    let scope = ReadScope::check_audience(s.repo.as_ref(), &id, audience).await?;
+    let card = super::cards::harness_card(s, &id).await?;
     if card.track_id.as_str() != scope.track {
         return Err(CalmError::Forbidden("conversation moved".into()));
     }
@@ -68,7 +78,7 @@ pub(crate) async fn get_harness_items(
         ConversationCursorSource::HistoricalRaw
     };
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
-    let descending = q.direction == HarnessItemsDirection::Desc;
+    let descending = q.direction == ConversationItemsDirection::Desc;
     let after = match (&q.contract, &q.cursor, q.after_id) {
         (None, None, after) if mode == ConversationCursorSource::HistoricalRaw => {
             after.unwrap_or(0).max(0)
@@ -101,10 +111,18 @@ pub(crate) async fn get_harness_items(
         }
     };
     let response = if mode == ConversationCursorSource::Presentation {
-        let mut page = s
-            .repo
-            .conversation_presentation_page(&id, after, limit, descending)
-            .await?;
+        let mut page = match audience {
+            Audience::Owner(_) => {
+                s.repo
+                    .conversation_presentation_page(&id, after, limit, descending)
+                    .await?
+            }
+            Audience::ShareLink { .. } => {
+                s.repo
+                    .conversation_published_page(&id, after, limit, descending)
+                    .await?
+            }
+        };
         for entry in &mut page.items {
             redact(&mut entry.source);
         }
@@ -146,7 +164,7 @@ pub(crate) async fn get_harness_items(
             .into_response()
         }
     };
-    scope.publish(s.repo.as_ref(), &principal).await?;
+    scope.publish_audience(s.repo.as_ref(), audience).await?;
     Ok(response)
 }
 

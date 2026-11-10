@@ -49,7 +49,8 @@ fn shared_router(state: AppState, auth_state: AuthState) -> Router {
     ));
 
     // Public REST — version + openapi.json. No session gate, no actor gate.
-    let public_rest = routes::public_router();
+    let public_rest =
+        routes::public_router().merge(routes::share_reads::router(auth_state.clone()));
 
     // Auth routes are a separate router because they consume `AuthState`, not `AppState`.
     let pairing_router = crate::mobile_access::routes::public_router().with_state(auth_state);
