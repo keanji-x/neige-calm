@@ -85,6 +85,36 @@ readable without filling missing facts; version 4 is normalized to version 5 on
 open. Registered wire envelope 12 requires a matching peer. Legacy terminal
 negotiation remains separate.
 
+## Shared Codex daemon recovery
+
+The shared owner has a separate recovery protocol from registered execution.
+An acknowledged reservation creates a new scope before connecting to a peer or
+spawning a child. The unentered reservation can be canceled only by that same
+attempt. Entering either operation consumes that permission synchronously;
+connection and spawn errors leave a durable Pending obligation. Reconstructing
+an owner from Pending never reconstructs cancellation permission. Actual process
+facts are retained before their first database publication, including ordinary
+publication failures. Settlement requires the same Recorded scope and a native
+empty-group observation; it grants no permission over a later listener.
+
+Endpoint cleanup holds the verified parent directory descriptor, rejects
+symlinks and non-socket leaves, and uses public `unlinkat(AT_NODELETEBUSY)`.
+Automatic cleanup requires that capability on the host filesystem. Unsupported
+operations refuse cleanup without ordinary-unlink fallback; an ordinary error
+before process entry cancels the current reservation. Cancellation errors,
+uncertain commit responses and aborted attempts retain the conservative fence.
+Healthy takeover and socket-free spawn do not require conditional deletion.
+No minimum macOS release or filesystem whitelist is implied. Leaf checks plus
+conditional deletion do not establish an arbitrary-object atomic CAS against a
+malicious same-UID replacement with a non-socket object.
+
+For an unresolved obligation, identify the backend, phase and scope in the
+error, investigate that scope's producers and stop them safely before explicitly
+repairing the same backend's obligation and endpoint. Clearing identity columns
+alone is insufficient for Pending and invalid for Recorded. Do not clear another
+backend or assume an absent leader proves the original group empty. Recovery
+cannot certify descendants that deliberately leave their original group.
+
 ## Limits and macOS permissions
 
 Registered strong Worktree isolation and registered PTY are unsupported on macOS.

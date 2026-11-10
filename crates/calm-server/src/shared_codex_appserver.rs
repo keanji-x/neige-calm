@@ -13,6 +13,12 @@ mod linux_listener;
 use linux_listener::reap_listener_if_alive;
 #[cfg(target_os = "macos")]
 mod macos_process;
+#[cfg(all(test, target_os = "macos"))]
+mod native_macos_recovery_tests;
+#[cfg(target_os = "macos")]
+mod recovery;
+#[cfg(target_os = "macos")]
+mod socket_recovery;
 
 pub(crate) mod exact_thread;
 use crate::harness::profile::HarnessProfileExt;
@@ -32,6 +38,13 @@ pub(crate) use thread_mint::ThreadMintFailure;
 pub(crate) mod native_owner_tests;
 pub(crate) use prompt_attempt::{CodexPromptDelivery, CodexPromptReport};
 mod connection_recovery;
+mod crash_recovery;
+#[cfg(not(target_os = "macos"))]
+mod recovery_admission;
+#[cfg(not(target_os = "macos"))]
+use recovery_admission::StartTransition;
+#[cfg(target_os = "macos")]
+type StartTransition = tokio::sync::OwnedMutexGuard<()>;
 mod resume_replay;
 use resume_replay::{ConnectionReplay, ReplayPlan};
 #[cfg(test)]
@@ -74,10 +87,13 @@ use crate::error::{CalmError, Result};
 use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
+#[cfg(any(not(target_os = "macos"), test))]
+use crate::proc_identity::read_proc_start_time;
 use crate::proc_identity::{
     OwnedProcessObservation, ProcessObservation, observe_owned_pid, observe_process, read_boot_id,
-    read_proc_start_time, sigkill_verified_group_members, signal_process_group,
 };
+#[cfg(not(target_os = "macos"))]
+use crate::proc_identity::{sigkill_verified_group_members, signal_process_group};
 use crate::routes::settings::load_settings;
 use crate::session_projection_lookup::{
     merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
@@ -95,9 +111,7 @@ pub use daemon_state::{
     DaemonReadiness, ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonStatus,
 };
 use daemon_state::{LaunchedSharedDaemon, SupervisorCore, SupervisorState, SupervisorWatcher};
-use heal_retry::{
-    BackoffState, FailureClass, HEAL_SLOW_RETRY_CEILING, classify_spawn_failure, heal_jitter,
-};
+use heal_retry::{BackoffState, FailureClass, FailureReport, HEAL_SLOW_RETRY_CEILING, heal_jitter};
 use provider::codex::shared::liveness_facts_from_read;
 
 pub type TurnId = String;
@@ -124,8 +138,7 @@ enum ShapeResolution {
     /// proof-of-absence transition) and the spawn path reopened.
     ProvenAbsent,
     /// A possible survivor we could not prove gone. `needs_operator` marks
-    /// the pid-NULL shape that names no process at all — the only shape that
-    /// cannot self-resolve on process death.
+    /// a shape that cannot recover its original scope from process death alone.
     Unreconciled { needs_operator: bool },
 }
 
@@ -133,6 +146,7 @@ enum ShapeResolution {
 /// retained exactly as read while unreconciled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FailedIdentity {
+    recovery: calm_truth::db::DaemonRecovery,
     pid: Option<i32>,
     pgid: Option<i32>,
     process_start_time: Option<u64>,
@@ -149,6 +163,7 @@ impl FailedIdentity {
     /// no signature (there is no process for it to describe).
     fn proven_absent(sock: &Path, codex_home: &Path) -> Self {
         Self {
+            recovery: calm_truth::db::DaemonRecovery::LegacyUntracked,
             pid: None,
             pgid: None,
             process_start_time: None,
@@ -165,6 +180,7 @@ impl FailedIdentity {
     /// unreconciled marker.
     fn retained(record: &crate::db::SharedCodexDaemonRecord) -> Self {
         Self {
+            recovery: record.recovery,
             pid: record.pid,
             pgid: record.pgid,
             process_start_time: record.process_start_time,
@@ -175,6 +191,37 @@ impl FailedIdentity {
             codex_home_path: record.codex_home_path.clone(),
             daemon_env_signature: record.daemon_env_signature.clone(),
         }
+    }
+}
+
+/// Facts captured from an owned Child before readiness; missing native metadata is not
+/// a verified runtime. The Child guard and durable group survive conversion failure.
+struct StartingIdentity {
+    pid: i32,
+    pgid: i32,
+    process_start_time: Option<u64>,
+    boot_id: Option<String>,
+    started_at: i64,
+}
+
+impl StartingIdentity {
+    fn verified_runtime(&self) -> Result<SharedDaemonRuntime> {
+        let process_start_time = self
+            .process_start_time
+            .filter(|start| *start != 0)
+            .ok_or_else(|| CalmError::CodexAppServer("spawned process birth unavailable".into()))?;
+        let boot_id = self
+            .boot_id
+            .as_ref()
+            .filter(|boot| uuid::Uuid::parse_str(boot).is_ok())
+            .ok_or_else(|| CalmError::CodexAppServer("spawned boot identity unavailable".into()))?;
+        Ok(SharedDaemonRuntime {
+            pid: self.pid,
+            pgid: self.pgid,
+            process_start_time,
+            boot_id: boot_id.clone(),
+            started_at: self.started_at,
+        })
     }
 }
 
@@ -233,6 +280,7 @@ fn detached_spawn_result_lost(err: &CalmError) -> bool {
 
 /// Native zombie observation shared with identity verification. A zombie proves leader exit
 /// only after an authorized group reap; before it, descendants may still be alive.
+#[cfg(any(not(target_os = "macos"), test))]
 fn proc_pid_is_zombie(pid: i32) -> bool {
     matches!(
         observe_process(pid),
@@ -277,15 +325,42 @@ mod macos_zombie_tests {
 }
 
 /// Process-only classification, before consulting mutable runtime path evidence.
-/// Zombies and observation failures cannot discharge a possible surviving group.
+/// Native leader absence alone cannot clear a record whose group may have live descendants.
 pub(crate) fn persisted_process_proven_absent(record: &crate::db::SharedCodexDaemonRecord) -> bool {
-    persisted_process_proven_absent_from(
-        record,
-        record.pid.map(observe_process),
-        read_boot_id().as_deref(),
-    )
+    if matches!(
+        record.recovery,
+        calm_truth::db::DaemonRecovery::Pending { .. }
+    ) {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match record.pid {
+            Some(pid) => macos_process::persisted_absent(
+                pid,
+                record.pgid,
+                record.process_start_time,
+                record.boot_id.as_deref(),
+            ),
+            None => {
+                record.pgid.is_none()
+                    && record.process_start_time.is_none()
+                    && record.boot_id.is_none()
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        persisted_process_proven_absent_from(
+            record,
+            record.pid.map(observe_process),
+            read_boot_id().as_deref(),
+        )
+    }
 }
 
+/// Linux physical-PID evidence; macOS production uses the original-group proof above.
+#[cfg(any(not(target_os = "macos"), test))]
 fn persisted_process_proven_absent_from(
     record: &crate::db::SharedCodexDaemonRecord,
     observation: Option<ProcessObservation>,
@@ -309,8 +384,7 @@ fn persisted_process_proven_absent_from(
     }
 }
 
-/// After an authorized group reap, a matching zombie is exited. An unreadable
-/// identity remains unresolved and cannot reopen the spawn path.
+#[cfg(not(target_os = "macos"))]
 fn survivor_unresolved_after_group_reap(pid: i32, start_time: u64, boot_id: &str) -> bool {
     !observe_owned_pid(pid, start_time, boot_id).leader_exited()
 }
@@ -327,6 +401,7 @@ fn unreconciled_prefix(needs_operator: bool) -> &'static str {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn strip_unreconciled_prefix(last_error: &str) -> &str {
     last_error
         .strip_prefix(UNRECONCILED_NEEDS_OPERATOR_PREFIX)
@@ -336,6 +411,7 @@ fn strip_unreconciled_prefix(last_error: &str) -> &str {
 
 /// Any identity column can name a possible survivor. Non-adoptable records
 /// require per-shape reconciliation before spawn, regardless of their state.
+#[cfg(any(not(target_os = "macos"), test))]
 fn persisted_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
     record.pid.is_some()
         || record.pgid.is_some()
@@ -346,23 +422,26 @@ fn persisted_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bo
 /// A pure function of the record's identity shape — NOT of its previous `last_error` — so
 /// identical consecutive rounds dedup to a single DB write.
 fn unreconciled_message(
+    backend: &str,
     record: &crate::db::SharedCodexDaemonRecord,
     needs_operator: bool,
 ) -> String {
+    let prefix = unreconciled_prefix(needs_operator);
     if needs_operator {
         format!(
-            "{UNRECONCILED_NEEDS_OPERATOR_PREFIX}persisted daemon record names no pid \
-             (pgid={:?}, process_start_time={:?}, boot_id_present={}); \
-             clear its identity columns to re-enable respawn",
+            "{prefix}persisted daemon record has unknown recovery scope \
+             (backend={backend}, phase/scope={:?}, pgid={:?}, process_start_time={:?}, boot_id_present={}); \
+             establish this scope's producer state and stop it safely before explicitly repairing this backend's obligation and endpoint",
+            record.recovery,
             record.pgid,
             record.process_start_time,
             record.boot_id.is_some()
         )
     } else {
         format!(
-            "{UNRECONCILED_PREFIX}possible surviving daemon (pid {:?}, pgid {:?}) \
+            "{prefix}possible surviving daemon (backend={backend}, phase/scope={:?}, pid {:?}, pgid {:?}) \
              not proven gone; refusing to spawn until absence is proven",
-            record.pid, record.pgid
+            record.recovery, record.pid, record.pgid
         )
     }
 }
@@ -446,6 +525,15 @@ const MODEL_LIST_MAX_PAGES: usize = 20;
 
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
+#[cfg(all(test, target_os = "macos"))]
+type IdentityCaptureHook = Box<dyn FnOnce(i32) + Send>;
+
+#[cfg(feature = "fixtures")]
+type DetachedAdmissionPause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
 #[cfg(feature = "fixtures")]
 pub struct ConnectionReadGuard<'a> {
     _guard: tokio::sync::MutexGuard<'a, SupervisorCore>,
@@ -508,6 +596,19 @@ pub struct SharedCodexAppServer {
     heal_nudge: Arc<tokio::sync::Notify>,
     /// Post-Ok dedup of Failed DB writes.
     failed_persist_dedup: FailedPersistDedup,
+    #[cfg(all(test, target_os = "macos"))]
+    recovery_hooks: recovery::RecoveryHooks,
+    #[cfg(all(test, target_os = "macos"))]
+    before_identity_capture: std::sync::Mutex<Option<IdentityCaptureHook>>,
+    #[cfg(all(test, target_os = "macos"))]
+    identity_capture_fault: std::sync::Mutex<macos_process::CaptureFault>,
+    #[cfg(all(any(test, feature = "fixtures"), target_os = "macos"))]
+    before_failure_finalize: std::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     /// Readiness channel: stamped on every installed Running and terminal Failed, and
     /// INVALIDATED on transition ENTRY, so a transitional daemon is never mistaken for Running.
     readiness: tokio::sync::watch::Sender<DaemonReadiness>,
@@ -519,6 +620,9 @@ pub struct SharedCodexAppServer {
     /// transition ENTRY and before the reap/start body.
     #[cfg(feature = "fixtures")]
     transition_entry_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Fixtures-only arrival/release handshake before the detached admission read.
+    #[cfg(feature = "fixtures")]
+    before_detached_admission: std::sync::Mutex<Option<DetachedAdmissionPause>>,
     /// Test seam: abort handle of the most recent detached spawn transition task.
     #[cfg(feature = "fixtures")]
     detached_spawn_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
@@ -667,6 +771,7 @@ impl FakeSharedCodexAppServer {
 }
 
 pub(crate) struct RunningProcessParts {
+    recovery: calm_truth::db::DaemonRecovery,
     child: Option<Child>,
     runtime: SharedDaemonRuntime,
     watcher: SupervisorWatcher,
@@ -749,6 +854,14 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            #[cfg(all(test, target_os = "macos"))]
+            recovery_hooks: recovery::RecoveryHooks::new(),
+            #[cfg(all(test, target_os = "macos"))]
+            before_identity_capture: std::sync::Mutex::new(None),
+            #[cfg(all(test, target_os = "macos"))]
+            identity_capture_fault: std::sync::Mutex::new(macos_process::CaptureFault::None),
+            #[cfg(all(any(test, feature = "fixtures"), target_os = "macos"))]
+            before_failure_finalize: std::sync::Mutex::new(None),
             readiness: tokio::sync::watch::Sender::new(DaemonReadiness {
                 generation: 0,
                 running: false,
@@ -757,6 +870,8 @@ impl SharedCodexAppServer {
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(feature = "fixtures")]
             transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            before_detached_admission: std::sync::Mutex::new(None),
             #[cfg(feature = "fixtures")]
             detached_spawn_task: std::sync::Mutex::new(None),
             ingest_url: "http://127.0.0.1:0".into(),
@@ -903,6 +1018,14 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            #[cfg(all(test, target_os = "macos"))]
+            recovery_hooks: recovery::RecoveryHooks::new(),
+            #[cfg(all(test, target_os = "macos"))]
+            before_identity_capture: std::sync::Mutex::new(None),
+            #[cfg(all(test, target_os = "macos"))]
+            identity_capture_fault: std::sync::Mutex::new(macos_process::CaptureFault::None),
+            #[cfg(all(any(test, feature = "fixtures"), target_os = "macos"))]
+            before_failure_finalize: std::sync::Mutex::new(None),
             readiness: tokio::sync::watch::Sender::new(DaemonReadiness {
                 generation: 0,
                 running: false,
@@ -911,6 +1034,8 @@ impl SharedCodexAppServer {
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(feature = "fixtures")]
             transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            before_detached_admission: std::sync::Mutex::new(None),
             #[cfg(feature = "fixtures")]
             detached_spawn_task: std::sync::Mutex::new(None),
             ingest_url: cfg.codex_ingest_url_resolved(),
@@ -947,6 +1072,8 @@ impl SharedCodexAppServer {
         let paths = self.verify_backend_isolation().await?;
         self.start_authentication_monitor();
         self.rebuild_thread_cache_from_db().await?;
+        #[cfg(not(target_os = "macos"))]
+        let serial = StartTransition::at_entry(self, serial).await;
         let _via = self.start_body_locked(serial, paths, false, None).await?;
         self.resume_cached_threads().await;
         Ok(())
@@ -1867,6 +1994,8 @@ impl SharedCodexAppServer {
             return Ok(false);
         }
         match observe_owned_pid(pid, start_time, &boot_id) {
+            #[cfg(target_os = "macos")]
+            OwnedProcessObservation::Matching { is_zombie: true } => return Ok(false),
             OwnedProcessObservation::Matching { .. } => {}
             OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
                 return Ok(false);
@@ -1932,6 +2061,8 @@ impl SharedCodexAppServer {
             AdoptProbe::IdentityUnknown => Err(self.retain_unreconciled(record).await),
             AdoptProbe::Connected((client, notifications)) => {
                 match observe_owned_pid(pid, start_time, &boot_id) {
+                    #[cfg(target_os = "macos")]
+                    OwnedProcessObservation::Matching { is_zombie: true } => return Ok(false),
                     OwnedProcessObservation::Matching { .. } => {}
                     OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
                         return Ok(false);
@@ -1957,6 +2088,7 @@ impl SharedCodexAppServer {
                 let adopted = runtime.clone();
                 self.start_new_process_typestate(|_| async move {
                     Ok(LaunchedSharedDaemon {
+                        recovery: record.recovery,
                         child: None,
                         client,
                         runtime,
@@ -1977,6 +2109,9 @@ impl SharedCodexAppServer {
                     .shared_daemon_runtime_set(
                         self.backend_id.as_str(),
                         SharedCodexDaemonUpdate {
+                            recovery: calm_truth::db::RecoveryWrite::Preserve {
+                                expected: record.recovery,
+                            },
                             state: SharedDaemonState::Running,
                             pid: Some(adopted.pid),
                             pgid: Some(adopted.pgid),
@@ -2016,7 +2151,8 @@ impl SharedCodexAppServer {
                     error = %e,
                     "takeover handshake failed against verified daemon; reaping pgid before relaunch"
                 );
-                let outcome = reap_verified_process_group(
+                #[cfg(not(target_os = "macos"))]
+                let settled = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2025,9 +2161,8 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
-                if outcome == LeaderExit::Unknown
-                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
-                {
+                #[cfg(not(target_os = "macos"))]
+                if !settled {
                     return Err(self.retain_unreconciled(record).await);
                 }
                 Ok(false)
@@ -2044,7 +2179,8 @@ impl SharedCodexAppServer {
                 );
                 // The same wall-clock deadline the child's own supervisor would have enforced, just by a
                 // successor process — graceful, never an instant SIGKILL.
-                let outcome = reap_verified_process_group(
+                #[cfg(not(target_os = "macos"))]
+                let settled = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2053,9 +2189,8 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
-                if outcome == LeaderExit::Unknown
-                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
-                {
+                #[cfg(not(target_os = "macos"))]
+                if !settled {
                     return Err(self.retain_unreconciled(record).await);
                 }
                 Ok(false)
@@ -2075,48 +2210,25 @@ impl SharedCodexAppServer {
     ) -> Result<ReplaceOutcome> {
         let _via = {
             let serial = Arc::clone(&self.transition_serial).lock_owned().await;
-            let paths = match self.verify_backend_isolation().await {
-                Ok(paths) => paths,
-                Err(error) => {
-                    // Only the crash watcher proves death. Hold the transition serial
-                    // while checking its generation and revoking the dead incarnation.
-                    // Preserve the trustworthy DB row; isolation refusal permits no
-                    // process effects, including reaping its recorded group.
-                    let dead_incarnation = {
-                        let core = self.core.lock().await;
-                        matches!(pre, ReplacePrecondition::GenerationIs(generation)
-                        if core.generation == generation
-                            && matches!(core.state, SupervisorState::Running { .. }))
-                    };
-                    if dead_incarnation {
-                        self.fail_in_memory_and_arm_heal(
-                            error.to_string(),
-                            FailureClass::Persistent,
-                        )
-                        .await;
-                    }
-                    return Err(error);
+            let paths = self.verify_backend_isolation().await?;
+            #[cfg(not(target_os = "macos"))]
+            let serial = {
+                let core = self.core.lock().await;
+                if !pre.allows(&core) {
+                    return Ok(ReplaceOutcome::PreconditionFailed);
                 }
+                drop(core);
+                StartTransition::at_entry(self, serial).await
+            };
+            #[cfg(not(target_os = "macos"))]
+            let record = {
+                let record = self.read_admitted_daemon_record(&paths).await;
+                serial.terminalize_error(self, record).await?
             };
             let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
-                match pre {
-                    ReplacePrecondition::Always => {}
-                    ReplacePrecondition::GenerationIs(generation) => {
-                        // Generation equality alone is not staleness proof: it bumps only when a Running
-                        // incarnation is INSTALLED, so a failed intervening transition leaves it unchanged.
-                        // Anything but Running-with-this-generation means another transition consumed it.
-                        if core.generation != generation
-                            || !matches!(core.state, SupervisorState::Running { .. })
-                        {
-                            return Ok(ReplaceOutcome::PreconditionFailed);
-                        }
-                    }
-                    ReplacePrecondition::NotRunning => {
-                        if matches!(core.state, SupervisorState::Running { .. }) {
-                            return Ok(ReplaceOutcome::PreconditionFailed);
-                        }
-                    }
+                if !pre.allows(&core) {
+                    return Ok(ReplaceOutcome::PreconditionFailed);
                 }
                 core.attempts = core.attempts.saturating_add(1);
                 self.native_turns.invalidate();
@@ -2131,8 +2243,10 @@ impl SharedCodexAppServer {
                         child,
                         runtime,
                         watcher,
+                        recovery,
                         ..
                     } => Some(RunningProcessParts {
+                        recovery,
                         child,
                         runtime,
                         watcher,
@@ -2141,6 +2255,8 @@ impl SharedCodexAppServer {
                 };
                 (parts, core.generation)
             };
+            #[cfg(not(target_os = "macos"))]
+            let serial = serial.after_source_consumed();
             // Transition ENTRY: invalidate readiness NOW with the outgoing generation, else
             // claim-boundary consumers would accept a transitional daemon. Every arm re-publishes the
             // terminal value before the serial is released.
@@ -2152,7 +2268,17 @@ impl SharedCodexAppServer {
             // observe the entry-time window deterministically.
             #[cfg(feature = "fixtures")]
             drop(self.transition_entry_gate.lock().await);
-            self.reap_current_child_or_runtime(&paths, running).await?;
+            #[cfg(target_os = "macos")]
+            if let Err(report) = self.reap_current_child_or_runtime(&paths, running).await {
+                return Err(self.record_guard_refusal(report).await);
+            }
+            #[cfg(not(target_os = "macos"))]
+            if !self.reap_current_child_or_runtime(&paths, running).await {
+                // Preserve this attempt's failed observation. Re-resolving here could
+                // authorize another signal after Unknown; the admitted snapshot is
+                // the only durable scope this transition may retain.
+                return Err(self.retain_unreconciled(&record).await);
+            }
             self.start_body_locked(serial, paths, increment_restart_count, last_error)
                 .await?
         };
@@ -2176,133 +2302,17 @@ impl SharedCodexAppServer {
         ))
     }
 
-    /// The ONE shared start body: guard verify → persisted-record reconciliation → takeover
-    /// probe → spawn. The by-value `serial` token is dropped only after the terminal write; the
-    /// spawn path moves it into the detached transition task.
-    async fn start_body_locked(
-        self: &Arc<Self>,
-        serial: tokio::sync::OwnedMutexGuard<()>,
-        paths: VerifiedRuntimePaths,
-        increment_restart_count: bool,
-        last_error: Option<String>,
-    ) -> Result<StartedVia> {
-        // Boot guard: refuse before touching the process, and never strand a previously-live
-        // polluted daemon running unsupervised.
-        if let Err(guard_err) = SharedCodexHome::new(paths.paths().home.clone())
-            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
-        {
-            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
-            self.record_guard_refusal(&paths, &msg).await;
-            return Err(CalmError::CodexAppServer(msg));
-        }
-        // A `failed` row with ANY identity column present is an unreconciled possible survivor;
-        // the spawn path is unreachable until the per-shape resolution proves absence.
-        let record = match self
-            .repo
-            .shared_daemon_runtime_get(self.backend_id.as_str())
-            .await
-        {
-            Ok(record) => record,
-            Err(e) => {
-                // Nothing trustworthy to write (the read itself failed):
-                // keep class Unreconciled in memory only; the next heal
-                // round re-reads.
-                let msg = format!("unreconciled: failed reading persisted daemon record: {e}");
-                self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
-                    .await;
-                return Err(CalmError::CodexAppServer(msg));
-            }
-        };
-        let takeover_eligible = !matches!(
-            record.state,
-            SharedDaemonState::Idle | SharedDaemonState::Failed
-        ) && record.pid.is_some()
-            && record.pgid == record.pid
-            && record.process_start_time.is_some()
-            && record.boot_id.is_some()
-            && record.started_at.is_some()
-            && record.sock_path.is_some();
-        if persisted_identity_present(&record) && !takeover_eligible {
-            match self.resolve_persisted_shape(&paths, &record).await {
-                ShapeResolution::ProvenAbsent => {
-                    // Durable proof-of-absence transition: NULL the identity
-                    // columns so the row classifies SafeToRetry even if the
-                    // spawn below never completes.
-                    let proven_error = record
-                        .last_error
-                        .as_deref()
-                        .map(strip_unreconciled_prefix)
-                        .unwrap_or("unreconciled survivor proven absent")
-                        .to_string();
-                    self.persist_failed_deduped(
-                        &proven_error,
-                        FailureClass::Persistent,
-                        FailedIdentity::proven_absent(&paths.paths().socket, &paths.paths().home),
-                    )
-                    .await;
-                }
-                ShapeResolution::Unreconciled { needs_operator } => {
-                    let msg = unreconciled_message(&record, needs_operator);
-                    self.persist_failed_deduped(
-                        &msg,
-                        FailureClass::Unreconciled,
-                        FailedIdentity::retained(&record),
-                    )
-                    .await;
-                    self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
-                        .await;
-                    return Err(CalmError::CodexAppServer(msg));
-                }
-            }
-        }
-        // `try_takeover_live` skips Idle/Failed rows itself — a refused
-        // survivor is never adopted.
-        if self.try_takeover_live(&paths, &record).await? {
-            return Ok(StartedVia::Takeover);
-        }
-        self.spawn_process_transition(serial, paths, increment_restart_count, last_error)
-            .await?;
-        Ok(StartedVia::Spawn)
-    }
-
     /// Boot-guard refusal arm (home pollution): a verified owned survivor is reaped; anything
     /// unprovable stays unreconciled with the identity tuple RETAINED as the durable marker.
+    #[cfg(not(target_os = "macos"))]
     async fn record_guard_refusal(
         self: &Arc<Self>,
         paths: &VerifiedRuntimePaths,
+        record: &crate::db::SharedCodexDaemonRecord,
         guard_error: &str,
     ) {
-        let record = match self
-            .repo
-            .shared_daemon_runtime_get(self.backend_id.as_str())
-            .await
-        {
-            Ok(record) => record,
-            Err(e) => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::stop",
-                    error = %e,
-                    "guard refusal: failed reading persisted daemon runtime; skipping reconciliation"
-                );
-                self.fail_in_memory_and_arm_heal(
-                    format!("unreconciled: {guard_error} (persisted record read failed: {e})"),
-                    FailureClass::Unreconciled,
-                )
-                .await;
-                return;
-            }
-        };
-        if !persisted_process_proven_absent(&record)
-            && let Err(error) = paths.check_record(&record)
-        {
-            self.fail_in_memory_and_arm_heal(
-                format!("backend isolation refused: {error}"),
-                FailureClass::Unreconciled,
-            )
-            .await;
-            return;
-        }
-        match self.resolve_persisted_shape(paths, &record).await {
+        // Consume the admitted snapshot, never re-read a different row to authorize cleanup.
+        match self.resolve_persisted_shape(paths, record).await {
             ShapeResolution::ProvenAbsent => {
                 // No owned process (or the verified reap completed): persist
                 // the refusal with identity NULLed so DB truth reflects it.
@@ -2320,7 +2330,7 @@ impl SharedCodexAppServer {
                 self.persist_failed_deduped(
                     &msg,
                     FailureClass::Unreconciled,
-                    FailedIdentity::retained(&record),
+                    FailedIdentity::retained(record),
                 )
                 .await;
                 self.fail_in_memory_and_arm_heal(msg, FailureClass::Unreconciled)
@@ -2337,6 +2347,14 @@ impl SharedCodexAppServer {
         paths: &VerifiedRuntimePaths,
         record: &crate::db::SharedCodexDaemonRecord,
     ) -> ShapeResolution {
+        if matches!(
+            record.recovery,
+            calm_truth::db::DaemonRecovery::Pending { .. }
+        ) {
+            return ShapeResolution::Unreconciled {
+                needs_operator: true,
+            };
+        }
         if persisted_process_proven_absent(record) {
             return ShapeResolution::ProvenAbsent;
         }
@@ -2358,19 +2376,26 @@ impl SharedCodexAppServer {
             // remediation only.
             tracing::warn!(
                 target: "shared_codex_daemon::stop",
+                backend = %self.backend_id.as_str(),
+                recovery = ?record.recovery,
+                diagnostic = %unreconciled_message(self.backend_id.as_str(), record, true),
                 pgid = ?record.pgid,
                 process_start_time = ?record.process_start_time,
                 boot_id = ?record.boot_id,
-                "persisted daemon record has identity fragments but no pid; operator must clear the identity columns"
+                "persisted daemon record has identity fragments but no pid; establish the backend scope and producer state before explicit repair"
             );
             return ShapeResolution::Unreconciled {
                 needs_operator: true,
             };
         };
+        #[cfg(target_os = "macos")]
+        if record.pgid.is_none() {
+            return ShapeResolution::Unreconciled {
+                needs_operator: true,
+            };
+        }
         let (Some(start_time), Some(boot_id)) = (record.process_start_time, record.boot_id.clone())
         else {
-            // An incomplete verification pair grants no signal authority. Absence was
-            // checked above; a present or unreadable PID must remain fenced.
             return ShapeResolution::Unreconciled {
                 needs_operator: false,
             };
@@ -2378,7 +2403,12 @@ impl SharedCodexAppServer {
         match observe_owned_pid(pid, start_time, &boot_id) {
             OwnedProcessObservation::Matching { .. } => {}
             OwnedProcessObservation::Mismatch | OwnedProcessObservation::Absent => {
+                #[cfg(not(target_os = "macos"))]
                 return ShapeResolution::ProvenAbsent;
+                #[cfg(target_os = "macos")]
+                return ShapeResolution::Unreconciled {
+                    needs_operator: false,
+                };
             }
             OwnedProcessObservation::Unknown => {
                 return ShapeResolution::Unreconciled {
@@ -2397,7 +2427,7 @@ impl SharedCodexAppServer {
                     pgid,
                     "reaping verified persisted daemon survivor"
                 );
-                let outcome = reap_verified_process_group(
+                let settled = reap_verified_process_group(
                     paths,
                     pid,
                     pgid,
@@ -2406,9 +2436,7 @@ impl SharedCodexAppServer {
                     self.stop_grace,
                 )
                 .await;
-                if outcome == LeaderExit::Unknown
-                    || survivor_unresolved_after_group_reap(pid, start_time, &boot_id)
-                {
+                if !settled {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
                         pid,
@@ -2455,15 +2483,18 @@ impl SharedCodexAppServer {
         self: &Arc<Self>,
         record: &crate::db::SharedCodexDaemonRecord,
     ) -> CalmError {
-        let msg = unreconciled_message(record, false);
-        self.persist_failed_deduped(
-            &msg,
-            FailureClass::Unreconciled,
-            FailedIdentity::retained(record),
-        )
-        .await;
-        self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+        let msg = unreconciled_message(self.backend_id.as_str(), record, false);
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.persist_failed_deduped(
+                &msg,
+                FailureClass::Unreconciled,
+                FailedIdentity::retained(record),
+            )
             .await;
+            self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+                .await;
+        }
         CalmError::CodexAppServer(msg)
     }
 
@@ -2474,6 +2505,11 @@ impl SharedCodexAppServer {
         last_error: String,
         class: FailureClass,
     ) {
+        self.install_failure(last_error, class).await;
+        self.schedule_heal();
+    }
+
+    async fn install_failure(&self, last_error: String, class: FailureClass) {
         let generation = {
             let mut core = self.core.lock().await;
             self.native_turns.invalidate();
@@ -2485,7 +2521,6 @@ impl SharedCodexAppServer {
             generation,
             running: false,
         });
-        self.schedule_heal();
     }
 
     /// The single Failed DB writer, with post-Ok dedup. Persist errors are logged, never
@@ -2518,6 +2553,17 @@ impl SharedCodexAppServer {
             .shared_daemon_runtime_set(
                 self.backend_id.as_str(),
                 SharedCodexDaemonUpdate {
+                    recovery: if cfg!(not(target_os = "macos"))
+                        && matches!(
+                            identity.recovery,
+                            calm_truth::db::DaemonRecovery::LegacyUntracked
+                        ) {
+                        calm_truth::db::RecoveryWrite::Legacy
+                    } else {
+                        calm_truth::db::RecoveryWrite::Preserve {
+                            expected: identity.recovery,
+                        }
+                    },
                     state: SharedDaemonState::Failed,
                     pid: identity.pid,
                     pgid: identity.pgid,
@@ -2555,23 +2601,59 @@ impl SharedCodexAppServer {
     /// half-done transition. `tokio::spawn` is synchronous, so the task exists before the first await.
     async fn spawn_process_transition(
         self: &Arc<Self>,
-        serial: tokio::sync::OwnedMutexGuard<()>,
+        serial: StartTransition,
         paths: VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
+        #[cfg(target_os = "macos")] mut attempt: recovery::RecoveryAttempt,
     ) -> Result<()> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
         let task = tokio::spawn(async move {
-            let launch_this = Arc::clone(&this);
-            let result = this
-                .start_new_process_typestate(move |_| async move {
-                    launch_this
-                        .launch_spawned_process(&paths, increment_restart_count, last_error)
-                        .await
+            let result = async {
+                #[cfg(feature = "fixtures")]
+                {
+                    let pause = this.before_detached_admission.lock().unwrap().take();
+                    if let Some((arrived, release)) = pause {
+                        let _ = arrived.send(());
+                        let _ = release.await;
+                    }
+                }
+                // Keep admission inside the detached task, before typestate/failure handling.
+                // Unsupported or unreadable rows must never enter the proven-absent writer.
+                #[cfg(not(target_os = "macos"))]
+                this.read_admitted_daemon_record(&paths).await?;
+                let launch_this = Arc::clone(&this);
+                this.start_new_process_reported(move |_| async move {
+                    let result = launch_this
+                        .launch_spawned_process(
+                            &paths,
+                            increment_restart_count,
+                            last_error,
+                            #[cfg(target_os = "macos")]
+                            &mut attempt,
+                        )
+                        .await;
+                    #[cfg(target_os = "macos")]
+                    let result = match result {
+                        Ok(launched) => Ok(launched),
+                        Err(error) => {
+                            Err(launch_this.finalize_recovery_failure(error, attempt).await)
+                        }
+                    };
+                    #[cfg(not(target_os = "macos"))]
+                    let result = result.map_err(FailureReport::from_error);
+                    result
                 })
-                .await;
+                .await
+            }
+            .await;
+            #[cfg(not(target_os = "macos"))]
+            let result = serial.terminalize_error(&this, result).await;
             // Release the serial BEFORE publishing the result so an observer never races a still-held serial.
+            #[cfg(not(target_os = "macos"))]
+            serial.release();
+            #[cfg(target_os = "macos")]
             drop(serial);
             // Send failure = the caller was cancelled after detachment;
             // deliberately ignored — the transition is already terminal.
@@ -2602,6 +2684,7 @@ impl SharedCodexAppServer {
         paths: &VerifiedRuntimePaths,
         increment_restart_count: bool,
         last_error: Option<String>,
+        #[cfg(target_os = "macos")] attempt: &mut recovery::RecoveryAttempt,
     ) -> Result<LaunchedSharedDaemon> {
         // Boot guard on EVERY spawn: pollution written while running is caught at the next launch.
         // The ConfigLock is released between this verification and the exec; accepted residual.
@@ -2614,9 +2697,22 @@ impl SharedCodexAppServer {
             })?;
         // ONE settings read per spawn: the child env and the persisted signature both derive from it.
         let spawn_env_snapshot = self.load_spawn_env_snapshot().await?;
+        #[cfg(target_os = "macos")]
+        if std::fs::symlink_metadata(&paths.paths().socket)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            // Read-only rejection before Begin is allowed only for an absent
+            // endpoint observed in this attempt. Existing paths still need the
+            // reservation/listener protocol even when the command is missing.
+            recovery::preflight_command(&self.codex_bin, &spawn_env_snapshot.kernel_path.path)?;
+        }
         std::fs::create_dir_all(&paths.paths().run)?;
         std::fs::create_dir_all(&paths.paths().logs)?;
+        #[cfg(not(target_os = "macos"))]
         self.remove_stale_socket_before_spawn(paths).await?;
+        #[cfg(target_os = "macos")]
+        self.prepare_endpoint(paths, attempt, self.stop_grace)
+            .await?;
 
         let listen = format!("unix://{}", paths.paths().socket.display());
         let stdout = std::fs::OpenOptions::new()
@@ -2640,6 +2736,11 @@ impl SharedCodexAppServer {
             .stderr(Stdio::from(stderr))
             .process_group(0);
         self.apply_spawn_env(paths, &mut cmd, &spawn_env_snapshot);
+        #[cfg(target_os = "macos")]
+        {
+            recovery::preflight_command(&self.codex_bin, &spawn_env_snapshot.kernel_path.path)?;
+            attempt.enter()?;
+        }
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
         })?;
@@ -2650,29 +2751,50 @@ impl SharedCodexAppServer {
                 CalmError::CodexAppServer("shared app-server spawned without pid".into())
             })?;
         let pgid = pid;
-        let process_start_time = read_proc_start_time(pid).unwrap_or(0);
-        let boot_id = read_boot_id().unwrap_or_default();
+        let mut spawn_guard = SpawnedChildGuard::new(child, pgid, paths);
+        #[cfg(all(test, target_os = "macos"))]
+        if let Some(hook) = self.before_identity_capture.lock().unwrap().take() {
+            hook(pid);
+        }
+        #[cfg(all(test, target_os = "macos"))]
+        self.recovery_hooks.pause_after_acquire(pid).await;
+        #[cfg(target_os = "macos")]
+        let (process_start_time, boot_id) = {
+            let (process, boot) = macos_process::observe_identity(
+                pid,
+                #[cfg(test)]
+                *self.identity_capture_fault.lock().unwrap(),
+            );
+            (process.filter(|p| !p.is_zombie).map(|p| p.start_time), boot)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (process_start_time, boot_id) = (read_proc_start_time(pid), read_boot_id());
         let started_at = now_ms();
         let daemon_env_signature = self.env_signature_for_snapshot(&spawn_env_snapshot);
-        let runtime = SharedDaemonRuntime {
+        let observed = StartingIdentity {
             pid,
             pgid,
-            boot_id: boot_id.clone(),
+            boot_id,
             process_start_time,
             started_at,
         };
-        let mut spawn_guard = SpawnedChildGuard::new(child, pgid, paths);
+
+        #[cfg(target_os = "macos")]
+        self.observe_starting(attempt, paths, &observed, daemon_env_signature.clone())?;
 
         // The fallible tail: every ordinary error path awaits a GRACEFUL reap of the guarded child
         // (full stop grace, even for the cold-start-deadline miss) while still holding the serial.
         let launch = async {
             self.persist_runtime_starting(
                 paths,
-                &runtime,
+                &observed,
                 last_error.clone(),
                 daemon_env_signature.clone(),
+                #[cfg(target_os = "macos")]
+                attempt.entered_id()?,
             )
             .await?;
+            let runtime = observed.verified_runtime()?;
             let pair = self
                 .poll_connect_initialized(paths, &mut spawn_guard)
                 .await?;
@@ -2680,14 +2802,26 @@ impl SharedCodexAppServer {
                 .shared_daemon_runtime_set(
                     self.backend_id.as_str(),
                     SharedCodexDaemonUpdate {
+                        recovery: {
+                            #[cfg(target_os = "macos")]
+                            {
+                                calm_truth::db::RecoveryWrite::Publish {
+                                    id: attempt.entered_id()?,
+                                }
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                self.recovery_write()
+                            }
+                        },
                         state: SharedDaemonState::Running,
                         pid: Some(pid),
                         pgid: Some(pgid),
                         paths_are_legacy_display: false,
                         sock_path: Some(paths.paths().socket.as_os_str().as_bytes().to_vec()),
                         codex_home_path: Some(paths.paths().home.as_os_str().as_bytes().to_vec()),
-                        process_start_time: Some(process_start_time),
-                        boot_id: Some(boot_id.clone()),
+                        process_start_time: Some(runtime.process_start_time),
+                        boot_id: Some(runtime.boot_id.clone()),
                         started_at: Some(started_at),
                         last_error: last_error.clone(),
                         increment_restart_count,
@@ -2695,9 +2829,9 @@ impl SharedCodexAppServer {
                     },
                 )
                 .await?;
-            Ok(pair)
+            Ok((pair, runtime))
         };
-        let (client, notifications) = match launch.await {
+        let ((client, notifications), runtime) = match launch.await {
             Ok(pair) => pair,
             Err(err) => {
                 spawn_guard.reap_graceful(self.stop_grace).await;
@@ -2733,13 +2867,25 @@ impl SharedCodexAppServer {
         }
         tracing::info!(
             target = "shared_codex_daemon::start",
-            boot_id = %boot_id,
+            boot_id = %runtime.boot_id,
             pgid,
             sock = %paths.paths().socket.display(),
             home = %paths.paths().home.display(),
             "shared codex app-server running"
         );
         Ok(LaunchedSharedDaemon {
+            recovery: {
+                #[cfg(target_os = "macos")]
+                {
+                    calm_truth::db::DaemonRecovery::Recorded {
+                        id: attempt.entered_id()?,
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    self.running_recovery()
+                }
+            },
             child: Some(child),
             client,
             runtime,
@@ -2780,19 +2926,32 @@ impl SharedCodexAppServer {
 
     /// Both arms go through `terminate_group_with_grace`: SIGTERM → exit-driven wait up to the
     /// stop grace → straggler cleanup.
+    #[cfg(not(target_os = "macos"))]
     async fn reap_current_child_or_runtime(
         self: &Arc<Self>,
         paths: &VerifiedRuntimePaths,
         running: Option<RunningProcessParts>,
-    ) -> Result<()> {
+    ) -> bool {
         let Some(RunningProcessParts {
             runtime,
             child,
             watcher,
+            recovery,
         }) = running
         else {
-            return Ok(());
+            return true;
         };
+        #[cfg(target_os = "macos")]
+        if !self
+            .repo
+            .shared_daemon_runtime_get(self.backend_id.as_str())
+            .await
+            .is_ok_and(|record| record.recovery == recovery)
+        {
+            return false;
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = recovery;
         watcher.handle.abort();
         if let Some(mut child) = child {
             terminate_group_with_grace(
@@ -2802,10 +2961,13 @@ impl SharedCodexAppServer {
                 self.stop_grace,
             )
             .await;
-            return Ok(());
+            #[cfg(target_os = "macos")]
+            return macos_process::group_empty(runtime.pgid);
+            #[cfg(not(target_os = "macos"))]
+            return true;
         }
 
-        let outcome = reap_verified_process_group(
+        let settled = reap_verified_process_group(
             paths,
             runtime.pid,
             runtime.pgid,
@@ -2814,32 +2976,25 @@ impl SharedCodexAppServer {
             self.stop_grace,
         )
         .await;
-        if outcome == LeaderExit::Unknown
-            || survivor_unresolved_after_group_reap(
-                runtime.pid,
-                runtime.process_start_time,
-                &runtime.boot_id,
-            )
+        #[cfg(target_os = "macos")]
+        return settled;
+        #[cfg(not(target_os = "macos"))]
         {
-            let record = match self
-                .repo
-                .shared_daemon_runtime_get(self.backend_id.as_str())
-                .await
-            {
-                Ok(record) => record,
-                Err(error) => {
-                    let msg =
-                        format!("unreconciled: failed reading runtime after termination: {error}");
-                    self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
-                        .await;
-                    return Err(CalmError::CodexAppServer(msg));
-                }
-            };
-            return Err(self.retain_unreconciled(&record).await);
+            settled
         }
-        Ok(())
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn running_recovery(&self) -> calm_truth::db::DaemonRecovery {
+        calm_truth::db::DaemonRecovery::LegacyUntracked
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn recovery_write(&self) -> calm_truth::db::RecoveryWrite {
+        calm_truth::db::RecoveryWrite::Legacy
+    }
+
+    #[cfg(not(target_os = "macos"))]
     async fn remove_stale_socket_before_spawn(&self, paths: &VerifiedRuntimePaths) -> Result<()> {
         if paths.paths().socket.exists() {
             reap_listener_if_alive(paths, self.stop_grace).await?;
@@ -2851,22 +3006,27 @@ impl SharedCodexAppServer {
     async fn persist_runtime_starting(
         &self,
         paths: &VerifiedRuntimePaths,
-        runtime: &SharedDaemonRuntime,
+        runtime: &StartingIdentity,
         last_error: Option<String>,
         daemon_env_signature: String,
+        #[cfg(target_os = "macos")] id: calm_truth::db::RecoveryId,
     ) -> Result<()> {
         self.repo
             .shared_daemon_runtime_set(
                 self.backend_id.as_str(),
                 SharedCodexDaemonUpdate {
+                    #[cfg(target_os = "macos")]
+                    recovery: calm_truth::db::RecoveryWrite::Publish { id },
+                    #[cfg(not(target_os = "macos"))]
+                    recovery: self.recovery_write(),
                     state: SharedDaemonState::Starting,
                     pid: Some(runtime.pid),
                     pgid: Some(runtime.pgid),
                     paths_are_legacy_display: false,
                     sock_path: Some(paths.paths().socket.as_os_str().as_bytes().to_vec()),
                     codex_home_path: Some(paths.paths().home.as_os_str().as_bytes().to_vec()),
-                    process_start_time: Some(runtime.process_start_time),
-                    boot_id: Some(runtime.boot_id.clone()),
+                    process_start_time: runtime.process_start_time,
+                    boot_id: runtime.boot_id.clone(),
                     started_at: Some(runtime.started_at),
                     last_error,
                     increment_restart_count: false,
@@ -3053,9 +3213,7 @@ impl SharedCodexAppServer {
     async fn watch_taken_over_pid(this: std::sync::Weak<Self>, runtime: SharedDaemonRuntime) {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if observe_owned_pid(runtime.pid, runtime.process_start_time, &runtime.boot_id)
-                .leader_exited()
-            {
+            if crash_recovery::observed_pid_exited(runtime.pid, runtime.process_start_time) {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
@@ -3143,6 +3301,7 @@ impl SharedCodexAppServer {
                     );
                 }
                 Err(e) => {
+                    self.fail_current_crashed_incarnation(generation, &e).await;
                     tracing::warn!(
                         target = "shared_codex_daemon::restart",
                         error = %e,
@@ -3153,9 +3312,7 @@ impl SharedCodexAppServer {
         })
     }
 
-    /// Typestate transition: begin/finish a fresh process spawn. Caller MUST hold
-    /// `transition_serial`. THE Failed-persistence choke point: any spawn failure persists a
-    /// `failed` row with identity NULLed (absence is proven for both pre- and post-spawn cases).
+    /// Typestate transition: caller holds `transition_serial` through the terminal write.
     pub(crate) async fn start_new_process_typestate<F, Fut>(
         self: &Arc<Self>,
         spawn: F,
@@ -3163,6 +3320,18 @@ impl SharedCodexAppServer {
     where
         F: FnOnce(PathBuf) -> Fut + Send,
         Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
+    {
+        self.start_new_process_reported(|path| async move {
+            spawn(path).await.map_err(FailureReport::from_error)
+        })
+        .await
+    }
+
+    async fn start_new_process_reported<F, Fut>(self: &Arc<Self>, spawn: F) -> Result<()>
+    where
+        F: FnOnce(PathBuf) -> Fut + Send,
+        Fut: std::future::Future<Output = std::result::Result<LaunchedSharedDaemon, FailureReport>>
+            + Send,
     {
         let socket_path = self.paths.socket.clone();
         {
@@ -3179,6 +3348,7 @@ impl SharedCodexAppServer {
                     core.generation = core.generation.wrapping_add(1);
                     self.native_turns.publish(&launched.client);
                     core.state = SupervisorState::Running {
+                        recovery: launched.recovery,
                         child: launched.child,
                         client: launched.client,
                         runtime: launched.runtime,
@@ -3194,33 +3364,20 @@ impl SharedCodexAppServer {
                 });
                 Ok(())
             }
-            Err(err) => {
-                let class = classify_spawn_failure(&err);
-                let generation = {
-                    let mut core = self.core.lock().await;
-                    self.native_turns.invalidate();
-                    core.state = SupervisorState::Failed {
-                        last_error: err.to_string(),
-                        class,
-                    };
-                    core.generation
-                };
-                // Readiness stamped on every terminal Failed.
-                self.readiness.send_replace(DaemonReadiness {
-                    generation,
-                    running: false,
-                });
-                // No DB I/O under the core mutex; the transition serial is
-                // still held by the caller, so this write is ordered with
-                // every other daemon-row write.
+            Err(report) => {
+                self.install_failure(report.message.clone(), report.class)
+                    .await;
+                // Linux retains its proven-absent failure persist. macOS has
+                // already finalized using only this attempt's carried scope.
+                #[cfg(not(target_os = "macos"))]
                 self.persist_failed_deduped(
-                    &err.to_string(),
-                    class,
+                    &report.message,
+                    report.class,
                     FailedIdentity::proven_absent(&self.paths.socket, self.home.path()),
                 )
                 .await;
                 self.schedule_heal();
-                Err(err)
+                Err(report.error)
             }
         }
     }
@@ -4001,6 +4158,20 @@ impl SharedCodexAppServer {
         Arc::clone(&self.transition_entry_gate)
     }
 
+    /// Pause the next real detached admission, without changing its read or result.
+    #[cfg(feature = "fixtures")]
+    pub fn pause_detached_admission_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (arrived, arrival) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *self.before_detached_admission.lock().unwrap() = Some((arrived, resume));
+        (arrival, release)
+    }
+
     /// Current Running-incarnation generation.
     pub async fn generation_for_test(&self) -> u64 {
         self.core.lock().await.generation
@@ -4023,6 +4194,19 @@ impl SharedCodexAppServer {
         }
     }
 
+    #[cfg(all(feature = "fixtures", target_os = "macos"))]
+    pub fn pause_failure_finalize_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered, paused) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *self.before_failure_finalize.lock().unwrap() = Some((entered, resume));
+        (paused, release)
+    }
+
     /// Acquire the transition serial as the owned by-value token the `_locked` chain threads.
     #[cfg(feature = "fixtures")]
     pub async fn lock_transition_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
@@ -4039,8 +4223,17 @@ impl SharedCodexAppServer {
         let this = Arc::clone(self);
         async move {
             let paths = this.verify_backend_isolation().await?;
-            this.spawn_process_transition(serial, paths, false, None)
-                .await
+            #[cfg(not(target_os = "macos"))]
+            let serial = StartTransition::at_entry(&this, serial).await;
+            this.spawn_process_transition(
+                serial,
+                paths,
+                false,
+                None,
+                #[cfg(target_os = "macos")]
+                recovery::RecoveryAttempt::new(),
+            )
+            .await
         }
     }
 
@@ -4071,6 +4264,7 @@ impl SharedCodexAppServer {
 }
 
 /// Where the termination signals go.
+#[cfg(not(target_os = "macos"))]
 enum SignalScope {
     /// Signal the whole process group (the normal spawn-invariant target).
     Group { pgid: i32 },
@@ -4080,6 +4274,7 @@ enum SignalScope {
     Pid { pid: i32 },
 }
 
+#[cfg(not(target_os = "macos"))]
 impl SignalScope {
     fn send(&self, _paths: &VerifiedRuntimePaths, signal: i32) {
         match *self {
@@ -4106,11 +4301,13 @@ impl SignalScope {
 }
 
 /// How the helper observes the LEADER's exit.
+#[cfg(not(target_os = "macos"))]
 enum ExitWait<'a> {
     /// We own the `Child` handle: exit-driven `child.wait()`.
     Child(&'a mut Child),
     /// Expected external identity: revalidate before signaling, then poll native identity
     /// (a post-signal zombie counts as exited). This value alone grants no signal authority.
+    #[cfg(any(not(target_os = "macos"), test))]
     VerifiedIdentity {
         pid: i32,
         start_time: u64,
@@ -4125,6 +4322,7 @@ enum ExitWait<'a> {
 /// How the leader's exit was observed, which decides what straggler cleanup is safe: once
 /// a group's last member is reaped the kernel may recycle the numeric pgid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_os = "macos"))]
 enum LeaderExit {
     /// Exit observed with the leader still an UNREAPED zombie. Only an owned `Child` guarantees
     /// the pin (WE defer `wait()`); a non-owned zombie can be reaped by its parent at any moment,
@@ -4144,6 +4342,7 @@ enum LeaderExit {
 /// THE shared exit-driven termination helper: SIGTERM → wait for the LEADER's exit up to
 /// `grace` (a ceiling, not a sleep) → straggler cleanup: group SIGKILL only when the group is
 /// provably pinned (live leader or owned unreaped child), else a per-member verify-then-signal sweep.
+#[cfg(not(target_os = "macos"))]
 async fn terminate_group_with_grace(
     _paths: &VerifiedRuntimePaths,
     scope: SignalScope,
@@ -4153,6 +4352,7 @@ async fn terminate_group_with_grace(
     terminate_group_with_grace_observing(_paths, scope, wait, grace, observe_owned_pid).await
 }
 
+#[cfg(not(target_os = "macos"))]
 async fn terminate_group_with_grace_observing(
     _paths: &VerifiedRuntimePaths,
     scope: SignalScope,
@@ -4163,6 +4363,7 @@ async fn terminate_group_with_grace_observing(
     let (scope_kind, scope_id) = scope.describe();
     // A persisted identity may have stopped matching since takeover or the last watcher probe.
     // Reject the entire operation: a member scan of the old numeric PGID cannot restore authority.
+    #[cfg(any(not(target_os = "macos"), test))]
     if let ExitWait::VerifiedIdentity {
         pid,
         start_time,
@@ -4179,9 +4380,7 @@ async fn terminate_group_with_grace_observing(
     }
     // An owned child ALREADY reaped before this helper ran means the numeric pgid may be
     // recycled: nothing here is safely signalable anymore, not even the initial SIGTERM.
-    if let ExitWait::Child(child) = &wait
-        && child.id().is_none()
-    {
+    if matches!(&wait, ExitWait::Child(child) if child.id().is_none()) {
         tracing::debug!(
             target: "shared_codex_daemon::stop",
             scope_kind,
@@ -4216,6 +4415,7 @@ async fn terminate_group_with_grace_observing(
             };
             (outcome, Some(child))
         }
+        #[cfg(any(not(target_os = "macos"), test))]
         ExitWait::VerifiedIdentity {
             pid,
             start_time,
@@ -4342,6 +4542,7 @@ async fn terminate_group_with_grace_observing(
 }
 
 /// ≤100ms observation poll against the grace deadline; `AliveAtDeadline` when the ceiling elapses.
+#[cfg(not(target_os = "macos"))]
 async fn poll_leader_exit(
     deadline: tokio::time::Instant,
     mut observe: impl FnMut() -> Option<LeaderExit>,
@@ -4367,34 +4568,29 @@ async fn reap_verified_process_group(
     start_time: u64,
     boot_id: &str,
     grace: Duration,
-) -> LeaderExit {
-    let outcome = terminate_group_with_grace(
-        _paths,
-        SignalScope::Group { pgid },
-        ExitWait::VerifiedIdentity {
-            pid,
-            start_time,
-            boot_id,
-        },
-        grace,
-    )
-    .await;
-
-    // A failed post-signal read must survive to the recovery caller, even if a
-    // later read succeeds. A zombie is exited only after this authorized reap.
-    let post_reap = observe_owned_pid(pid, start_time, boot_id);
-    if post_reap == OwnedProcessObservation::Unknown {
-        return LeaderExit::Unknown;
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos_process::terminate_identity(pid, Some(pgid), start_time, boot_id, grace)
+            .await
+            .is_ok()
     }
-    if !post_reap.leader_exited() {
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            pid,
-            pgid,
-            "after group reap, original launcher identity remains unresolved"
-        );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let outcome = terminate_group_with_grace(
+            _paths,
+            SignalScope::Group { pgid },
+            ExitWait::VerifiedIdentity {
+                pid,
+                start_time,
+                boot_id,
+            },
+            grace,
+        )
+        .await;
+        outcome != LeaderExit::Unknown
+            && !survivor_unresolved_after_group_reap(pid, start_time, boot_id)
     }
-    outcome
 }
 
 fn thread_started_id(notification: &Notification) -> Option<&str> {
@@ -4489,53 +4685,13 @@ async fn handle_thread_started_notification(
     }
 }
 
-#[cfg(target_os = "macos")]
-async fn reap_listener_if_alive(paths: &VerifiedRuntimePaths, grace: Duration) -> Result<()> {
-    let sock_path = &paths.paths().socket;
-    let Ok(stream) = UnixStream::connect(sock_path).await else {
-        return Ok(());
-    };
-    let peer_pid = stream
-        .peer_cred()
-        .map_err(|error| CalmError::CodexAppServer(format!("read listener credentials: {error}")))?
-        .pid()
-        .filter(|pid| *pid > 0)
-        .ok_or_else(|| CalmError::CodexAppServer("listener peer PID is unavailable".into()))?;
-    let observed_pgid = unsafe { libc::getpgid(peer_pid) };
-    let pgid = if observed_pgid > 1 && observed_pgid == peer_pid {
-        Some(observed_pgid)
-    } else {
-        if observed_pgid < 0 {
-            let error = std::io::Error::last_os_error();
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                peer_pid,
-                %error,
-                sock = %sock_path.display(),
-                "getpgid failed; falling back to pid-only reap of stale socket listener"
-            );
-        } else {
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                peer_pid,
-                observed_pgid,
-                sock = %sock_path.display(),
-                "listener process group does not match its pid; falling back to pid-only reap"
-            );
-        }
-        None
-    };
-    // Register the exit observation right after the peer connection identified the listener:
-    // an open connection does not pin the peer pid, so registering here narrows the recycle window.
-    let watcher = macos_process::ExitWatcher::new(peer_pid).map_err(|error| {
-        CalmError::CodexAppServer(format!("watch listener process {peer_pid}: {error}"))
-    })?;
-    drop(stream);
-    macos_process::terminate_listener(watcher, pgid, grace)
-        .await
-        .map_err(|error| {
-            CalmError::CodexAppServer(format!("reap listener process {peer_pid}: {error}"))
-        })
+#[cfg(all(test, target_os = "macos"))]
+async fn reap_listener_if_alive(
+    owner: &SharedCodexAppServer,
+    paths: &VerifiedRuntimePaths,
+    grace: Duration,
+) -> Result<()> {
+    owner.recover_socket(paths, grace).await
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -4584,6 +4740,11 @@ impl<'a> SpawnedChildGuard<'a> {
             pgid = self.pgid,
             "spawn failed; reaping child gracefully"
         );
+        #[cfg(target_os = "macos")]
+        if let Err(error) = macos_process::terminate_owned(&mut child, self.pgid, grace).await {
+            tracing::warn!(pgid = self.pgid, %error, "spawn cleanup left an unresolved group");
+        }
+        #[cfg(not(target_os = "macos"))]
         terminate_group_with_grace(
             self._paths,
             SignalScope::Group { pgid: self.pgid },
@@ -4599,15 +4760,23 @@ impl Drop for SpawnedChildGuard<'_> {
     /// detached transition task. No SIGKILL here: an instant SIGKILL arms codex's backfill lease.
     /// It does NOT terminalize the supervisor; the durable row still names the child.
     fn drop(&mut self) {
-        if self.spawned_child.is_none() {
+        let Some(child) = self.spawned_child.as_mut() else {
             return;
-        }
+        };
         tracing::warn!(
             target: "shared_codex_daemon::stop",
             pgid = self.pgid,
             "spawn transition dropped mid-flight (panic/teardown); belt SIGTERM only"
         );
-        SignalScope::Group { pgid: self.pgid }.send(self._paths, libc::SIGTERM);
+        #[cfg(target_os = "macos")]
+        if let Err(error) = macos_process::term_owned(child, self.pgid) {
+            tracing::warn!(pgid = self.pgid, %error, "spawn TERM belt could not verify its targets");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = child;
+            SignalScope::Group { pgid: self.pgid }.send(self._paths, libc::SIGTERM);
+        }
     }
 }
 
@@ -4763,6 +4932,7 @@ mod tests {
         assert!(!dedup.should_skip("other", FailureClass::Persistent, &identity));
         assert!(!dedup.should_skip("boom", FailureClass::Transient, &identity));
         let retained = FailedIdentity {
+            recovery: calm_truth::db::DaemonRecovery::LegacyUntracked,
             pid: Some(42),
             ..identity.clone()
         };
@@ -4776,6 +4946,7 @@ mod tests {
     #[test]
     fn persisted_identity_presence_classifies_unreconciled() {
         let mut record = crate::db::SharedCodexDaemonRecord {
+            recovery: calm_truth::db::DaemonRecovery::LegacyUntracked,
             state: SharedDaemonState::Failed,
             pid: None,
             pgid: None,
@@ -4830,6 +5001,7 @@ mod tests {
         repo.shared_daemon_runtime_set(
             "default",
             SharedCodexDaemonUpdate {
+                recovery: calm_truth::db::RecoveryWrite::Legacy,
                 state: SharedDaemonState::Running,
                 pid: Some(self_pid),
                 pgid: Some(self_pid),

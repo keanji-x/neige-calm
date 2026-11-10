@@ -277,5 +277,7 @@ async fn agent_backend_legacy_other_directory_different_current_daemon_adopts_re
 
 #[tokio::test]
 async fn agent_backend_legacy_multi_matching_lossless_socket_takes_over() {
+    let _env = ENV_LOCK.lock().await;
+    let _cwd = FixtureWorkingDirectory::new();
     legacy_scope_upgrade(false, false, false, true, Some("run/codex-appserver.sock")).await;
 }

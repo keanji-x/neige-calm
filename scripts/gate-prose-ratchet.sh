@@ -1,4 +1,39 @@
 #!/usr/bin/env bash
+# #3446 v53 upstream integration tightens long_literal 221 -> 220.
+# The real generator retains the twelve branch additions over upstream's 208.
+# #3569 removes the old partial-identity warning (base 209 -> upstream 208);
+# the integrated tri-state early return likewise removes the branch replacement
+# warning. All existing SQL/diagnostic exceptions below remain unchanged.
+# Ordinary fixture changes edit their owning source and regenerate this same
+# baseline; no scan rule, exclusion, inventory or CI invocation is added.
+# #3446 Linux entry regression exception: long_literal 220 -> 221.
+# shared_linux_recovery_phase.rs adds one test-only observation diagnostic for
+# exec, listener and durable-row effects. Its fixture edits regenerate the
+# existing baseline; ordinary tests need no inventory. The scanner, rules,
+# exclusions and once-per-lint scan plus separate selftest are unchanged.
+# #3446 nested-scope SQL fixture exception: long_literal 218 -> 219.
+# finalization_tests.rs reuses the real listener-specific publication trigger
+# at the finalizer and replacement-guard boundaries. It is test SQL, not
+# agent-facing prose. Fixture changes edit that source and regenerate the
+# baseline; ordinary tests need no inventory entry. The existing once-per-lint
+# scan and separate selftest are unchanged; no rule or exclusion is added.
+# #3446 bounded SQL fixture exception: long_literal/crates/**/*.rs 209 -> 218.
+# Nine new matches exercise real-schema recovery faults, not agent-facing prose:
+# 1-5. calm-server shared_codex_appserver/native_macos_recovery_tests/obligation_tests.rs
+#      (0 -> 5): legacy idle identity UPDATE; listener-specific first publication,
+#      repeated publication, Begin and Settle refusal triggers.
+# 6-7. calm-server shared_codex_appserver/native_macos_recovery_tests/spawn_obligation_tests.rs
+#      (0 -> 2): owned-spawn Begin and Starting publication refusal triggers.
+# 8-9. calm-truth tests/shared_daemon_recovery.rs (0 -> 2): Recorded publication
+#      and Settle refusal triggers across real database reopening.
+# The shared_codex_appserver.rs diagnostics (1 -> 2) add the operator refusal
+# alongside the existing recovery diagnostic, bringing long_literal to 220.
+# The calm-truth db/sqlite/backend_registry.rs runtime INSERT (2 -> 2)
+# replaces its prior matches.
+# Query/fixture changes edit their owning source and regenerate this existing
+# baseline; ordinary new tests need no inventory entry. The existing normal scan
+# runs once per CI lint workflow plus its separate selftest; no rule, exclusion,
+# check or invocation is added.
 # F-released bounded declaration exception: long_literal 207 -> 209.
 # The two new matches are released.rs's flattened canonical/header field list
 # and its optional-field list. They describe the persisted owner contract,

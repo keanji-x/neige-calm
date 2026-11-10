@@ -85,13 +85,20 @@ impl Drop for ProtectedChild {
 async fn reject_identity(child: &mut ProtectedChild, pid: i32, start: u64, boot: &str) {
     let pgid = unsafe { libc::getpgid(child.pid) };
     assert!(pgid > 1);
+    let paths = VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+        Path::new("/fixture"),
+        &crate::agent_backend_pool::identity::default_id(),
+        Path::new("/fixture/home"),
+        Path::new("/fixture/logs"),
+    )));
+    #[cfg(target_os = "macos")]
+    assert!(
+        !reap_verified_process_group(&paths, pid, pgid, start, boot, Duration::from_millis(100))
+            .await
+    );
+    #[cfg(not(target_os = "macos"))]
     let outcome = terminate_group_with_grace(
-        &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
-            Path::new("/fixture"),
-            &crate::agent_backend_pool::identity::default_id(),
-            Path::new("/fixture/home"),
-            Path::new("/fixture/logs"),
-        ))),
+        &paths,
         SignalScope::Group { pgid },
         ExitWait::VerifiedIdentity {
             pid,
@@ -102,6 +109,7 @@ async fn reject_identity(child: &mut ProtectedChild, pid: i32, start: u64, boot:
     )
     .await;
     child.assert_alive().await;
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         outcome,
         if boot.is_empty() {
@@ -172,22 +180,22 @@ async fn termination_identity_valid_external_identity_reaps_group() {
     let mut child = ProtectedChild::spawn(0, false).await;
     let start = read_proc_start_time(child.pid).expect("native start");
     assert!(verify_owned_pid(child.pid, start, &boot));
-    terminate_group_with_grace(
-        &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
-            Path::new("/fixture"),
-            &crate::agent_backend_pool::identity::default_id(),
-            Path::new("/fixture/home"),
-            Path::new("/fixture/logs"),
-        ))),
-        SignalScope::Group { pgid: child.pid },
-        ExitWait::VerifiedIdentity {
-            pid: child.pid,
-            start_time: start,
-            boot_id: &boot,
-        },
-        Duration::from_millis(100),
-    )
-    .await;
+    assert!(
+        reap_verified_process_group(
+            &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
+                Path::new("/fixture"),
+                &crate::agent_backend_pool::identity::default_id(),
+                Path::new("/fixture/home"),
+                Path::new("/fixture/logs"),
+            ))),
+            child.pid,
+            child.pid,
+            start,
+            &boot,
+            Duration::from_millis(100),
+        )
+        .await
+    );
     assert!(
         child
             .child
@@ -200,6 +208,11 @@ async fn termination_identity_valid_external_identity_reaps_group() {
 #[tokio::test]
 async fn termination_identity_owned_child_reaps_without_boot_identity() {
     let mut child = ProtectedChild::spawn(0, true).await;
+    #[cfg(target_os = "macos")]
+    macos_process::terminate_owned(&mut child.child, child.pid, Duration::from_millis(100))
+        .await
+        .unwrap();
+    #[cfg(not(target_os = "macos"))]
     terminate_group_with_grace(
         &VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
             Path::new("/fixture"),
@@ -219,20 +232,68 @@ async fn termination_identity_owned_child_reaps_without_boot_identity() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn termination_identity_owned_terminal_pin_reaps_captured_members() {
+    let mut leader = ProtectedChild::spawn(0, false).await;
+    let mut member = ProtectedChild::spawn(leader.pid, true).await;
+    leader.child.start_kill().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let native = plugin::proc_identity::read_macos_process(leader.pid).unwrap();
+            if native.is_some_and(|process| process.is_zombie) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Do not call wait/try_wait before cleanup: this terminal Child still pins
+    // the leader while the authoritative set is captured.
+    macos_process::terminate_owned(&mut leader.child, leader.pid, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        leader.child.id().is_none(),
+        "cleanup must reap the terminal direct child"
+    );
+    assert!(member.child.try_wait().unwrap().is_some());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn termination_identity_reaped_owned_child_preserves_original_members() {
+    let mut leader = ProtectedChild::spawn(0, false).await;
+    let mut member = ProtectedChild::spawn(leader.pid, false).await;
+    leader.child.kill().await.unwrap();
+    assert!(leader.child.id().is_none());
+    assert!(
+        macos_process::terminate_owned(&mut leader.child, leader.pid, Duration::from_secs(5))
+            .await
+            .is_err()
+    );
+    member.assert_alive().await;
+}
+
 // Inject the complete identity observation; signals and polling still use the production boundary.
 async fn unknown_during_termination(unknown_at: usize) {
-    // This observer owns the boot/start classification, so its valid identity token
-    // need not come from the host's boot sysctl (which may be denied by a sandbox).
+    #[cfg(not(target_os = "macos"))]
     let boot = uuid::Uuid::new_v4().to_string();
+    #[cfg(target_os = "macos")]
+    let boot = read_boot_id().expect("native boot UUID required; no substitute identity");
     let mut child = ProtectedChild::spawn(0, unknown_at != 1).await;
     let start = read_proc_start_time(child.pid).expect("native start");
+    #[cfg(not(target_os = "macos"))]
     let paths = VerifiedRuntimePaths::for_fixture(Arc::new(BackendPaths::new(
         Path::new("/fixture"),
         &crate::agent_backend_pool::identity::default_id(),
         Path::new("/fixture/home"),
         Path::new("/fixture/logs"),
     )));
+    #[cfg(not(target_os = "macos"))]
     let mut observations = 0;
+    #[cfg(not(target_os = "macos"))]
     let outcome = terminate_group_with_grace_observing(
         &paths,
         SignalScope::Group { pgid: child.pid },
@@ -252,7 +313,27 @@ async fn unknown_during_termination(unknown_at: usize) {
         },
     )
     .await;
+    #[cfg(target_os = "macos")]
+    let outcome = {
+        // Native reads: initial identity, capture recheck, TERM recheck, post-TERM
+        // poll, escalation recheck. Inject the same three observation boundaries.
+        let read = match unknown_at {
+            1 => 1,
+            2 => 4,
+            3 => 5,
+            _ => unreachable!(),
+        };
+        let _fault = macos_process::ProcessObservationError::inject(child.pid, read);
+        macos_process::terminate_identity(child.pid, Some(child.pid), start, &boot, Duration::ZERO)
+            .await
+    };
     child.assert_alive().await;
+    #[cfg(target_os = "macos")]
+    assert!(
+        outcome.is_err(),
+        "unreadable identity cannot prove termination"
+    );
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         outcome,
         LeaderExit::Unknown,

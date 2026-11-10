@@ -144,27 +144,20 @@ fail closed; they never fall back to less restrictive filesystem access. This
 build does not change Codex sandbox permissions or grant access to the user's
 home directory.
 
-Shared Codex daemon supervision on macOS reads native process start time through
-`proc_pidinfo` and the boot UUID through `kern.bootsessionuuid`. A complete
-persisted identity that verifies against the live process can enter
-`try_takeover_live`: an eligible daemon with a successful handshake is adopted;
-a verified daemon whose handshake fails is reaped before relaunch. Unreadable
-or mismatched identity is not proof of ownership. Stale-socket listener reaping
-remains a separate recovery path, observing exit through a kqueue `NOTE_EXIT`
-watch.
+Shared Codex daemon supervision on macOS verifies native process birth, boot
+UUID and original process-group membership. Healthy Running/Starting daemons
+can be adopted without changing their lifecycle on preparation errors. Recovery
+signals only the captured, verified original members and retains a durable
+scope until that same group is proven empty and settlement commits.
 
-Stops of a child this process spawned (a settings-triggered replacement or
-failed-launch cleanup) observe exit through `proc_pidinfo` zombie state without
-waiting the full stop grace. An owned, unreaped child pins its process group
-for final cleanup. For an adopted daemon or stale-socket listener, once the
-leader exits there is no per-member straggler sweep: macOS has no `/proc`
-process-group enumeration. A member that ignores SIGTERM and outlives that
-leader can remain running; if it inherited the listening socket, the next
-daemon start can fail closed until that process and the socket are removed by
-hand. Registered foreground execution uses a separate, continuously owned child
-handle and observes its original process group. This weaker macOS fact does not
-provide Linux's full descendant-drain proof. An already running installation does
-not gain these changes until it starts the newly built binaries.
+Socket cleanup uses the public macOS `unlinkat(AT_NODELETEBUSY)` capability
+under a fresh reservation. Live, replaced or inaccessible listeners do not gain
+cleanup permission from an older scope's settlement. Systems without this
+capability refuse automatic residual-socket cleanup; healthy takeover and new
+starts with no socket remain available. Unknown process entry remains fenced
+across restarts. See [native macOS recovery boundaries](docs/macos-execution.md#shared-codex-daemon-recovery)
+for scoped repair and compatibility limits. This does not provide Linux's full
+descendant-drain proof or update an already running installation.
 
 `cargo test -p calm-server --lib` as a whole is not expected to pass on macOS:
 some Linux-only fixtures are not `cfg`-gated. Only filtered subsets were run

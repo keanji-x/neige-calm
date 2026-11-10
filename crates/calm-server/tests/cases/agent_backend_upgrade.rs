@@ -12,6 +12,31 @@ impl Drop for DaemonGroup {
     }
 }
 
+struct FixtureWorkingDirectory {
+    previous: std::path::PathBuf,
+    _root: tempfile::TempDir,
+}
+
+impl FixtureWorkingDirectory {
+    fn new() -> Self {
+        // Nextest isolates each test in a process. Relative-path fixtures need
+        // an owned cwd, independent of the checkout's ancestor ownership.
+        let root = tempfile::tempdir().unwrap();
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(root.path()).unwrap();
+        Self {
+            previous,
+            _root: root,
+        }
+    }
+}
+
+impl Drop for FixtureWorkingDirectory {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.previous).expect("restore fixture working directory");
+    }
+}
+
 #[tokio::test]
 async fn agent_backend_upgrade_0755_takes_over_the_original_default_daemon() {
     use std::os::unix::fs::PermissionsExt;
@@ -290,6 +315,38 @@ async fn crash_refusal_heals(adopted: bool) {
         "refusal must not reap the recorded process group"
     );
     std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let error = daemon
+            .ensure_running()
+            .await
+            .expect_err("repair cannot authorize new signals after the leader exited");
+        assert!(error.to_string().contains("unreconciled"), "{error}");
+        let fenced = repo.shared_daemon_runtime_get("default").await.unwrap();
+        assert_daemon_identity_retained(&before, &fenced);
+        assert!(
+            std::fs::symlink_metadata(daemon.sock_path()).is_ok(),
+            "fenced socket must remain"
+        );
+        assert_ne!(daemon.status_snapshot().state, SharedDaemonState::Running);
+        assert!(!daemon.readiness_receiver().borrow().running);
+        assert_eq!(daemon.status_snapshot().restart_count, 0);
+        assert!(
+            survivor.try_wait().unwrap().is_none(),
+            "reconciliation must not signal the survivor"
+        );
+        eprintln!(
+            "crash repair remains fenced: {}",
+            group_diagnostics(pid, survivor.id().unwrap() as i32)
+        );
+        // The fixture owns this survivor; recovery gained no new signal authority.
+        survivor
+            .kill()
+            .await
+            .expect("kill owned survivor and await its exit");
+        survivor.wait().await.expect("reap owned survivor");
+        eprintln!("owned survivor reaped: {}", group_diagnostics(pid, pid));
+    }
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             let status = daemon.status_snapshot();
@@ -322,6 +379,8 @@ async fn agent_backend_adopted_crash_refusal_repair_heals() {
 #[tokio::test]
 async fn agent_backend_missing_relative_default_logs_resolve_from_cwd() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let _env = ENV_LOCK.lock().await;
+    let _cwd = FixtureWorkingDirectory::new();
     let root = tempfile::Builder::new()
         .prefix("backend-logs-")
         .tempdir_in(".")
@@ -603,50 +662,9 @@ async fn agent_backend_stale_socket_recovers_after_boot_or_start_time_expiry() {
     for old_boot in [true, false] {
         let root = tempfile::tempdir().unwrap();
         let repo = repo().await;
-        // Use a LIVE unrelated pid, so only boot/start identity proves absence.
-        let pid = i32::try_from(std::process::id()).unwrap();
-        repo.shared_daemon_runtime_set(
-            "default",
-            SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Running,
-                pid: Some(pid),
-                pgid: Some(pid),
-                paths_are_legacy_display: false,
-                sock_path: Some(root.path().join("old.sock").as_os_str().as_bytes().to_vec()),
-                codex_home_path: Some(
-                    root.path()
-                        .join("codex-home")
-                        .as_os_str()
-                        .as_bytes()
-                        .to_vec(),
-                ),
-                process_start_time: Some(read_proc_start_time(pid).unwrap() + u64::from(!old_boot)),
-                boot_id: Some(if old_boot {
-                    "previous-boot".into()
-                } else {
-                    read_boot_id().unwrap()
-                }),
-                started_at: Some(1),
-                last_error: None,
-                increment_restart_count: false,
-                daemon_env_signature: None,
-            },
-        )
-        .await
-        .unwrap();
-        let daemon = isolated_server(&cfg(&root), repo.clone()).await;
-        daemon.start_or_takeover().await.unwrap();
-        let running = daemon.status_snapshot().runtime.unwrap();
-        let _cleanup = DaemonGroup(running.pid);
-        assert_ne!(running.pid, pid);
-        assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
-        assert_eq!(
-            repo.shared_daemon_runtime_get("default")
-                .await
-                .unwrap()
-                .sock_path,
-            Some(daemon.sock_path().as_os_str().as_bytes().to_vec())
-        );
+        let child = persist_stale_owned_daemon(&repo, &root, old_boot).await;
+        let daemon = isolated_server(&quiet_heal_cfg(&root), repo.clone()).await;
+        assert_stale_owned_daemon_recovers(&daemon, &repo, child, old_boot).await;
     }
 }
 
