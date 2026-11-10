@@ -253,6 +253,7 @@ pub(super) async fn recovered_status(past_deadline: bool) {
     })
     .await
     .unwrap();
+    engine.wait_settled(&id(&v.op)).await.unwrap();
     let task_id = v.op.tx_output.as_ref().unwrap().data["task_id"]
         .as_str()
         .unwrap();
