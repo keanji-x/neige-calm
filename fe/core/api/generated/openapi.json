@@ -21986,7 +21986,8 @@
               }
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "SharedTarget": {
         "type": "object",
@@ -22004,7 +22005,8 @@
               "$ref": "#/components/schemas/SharedTrack"
             }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "SharedTrack": {
         "type": "object",
@@ -22019,7 +22021,8 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "SideConversation": {
         "type": "object",

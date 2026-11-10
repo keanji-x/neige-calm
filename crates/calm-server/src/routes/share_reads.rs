@@ -17,9 +17,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use calm_types::share_links::ShareScope;
-use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
+use calm_types::share_links::{ShareScope, SharedRun, SharedTarget, SharedTrack};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 pub fn router(auth: AuthState) -> Router<AppState> {
     Router::new()
@@ -54,16 +54,6 @@ pub fn router(auth: AuthState) -> Router<AppState> {
         .layer(Extension(auth))
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct SharedTrack {
-    pub id: String,
-    pub title: String,
-}
-#[derive(Serialize, ToSchema)]
-pub struct SharedTarget {
-    pub scope: ShareScope,
-    pub tracks: Vec<SharedTrack>,
-}
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct SharedSeriesQuery {
@@ -72,14 +62,6 @@ pub struct SharedSeriesQuery {
     #[serde(default)]
     #[param(required = false)]
     pub detail: ReportSeriesDetail,
-}
-#[derive(Serialize, ToSchema)]
-pub struct SharedRun {
-    pub card_id: String,
-    #[schema(required = true, nullable = true)]
-    pub phase: Option<calm_types::harness::HarnessPhaseTag>,
-    #[schema(required = true, nullable = true)]
-    pub runtime_state: Option<calm_types::worker::WorkerSessionState>,
 }
 
 fn audience<'a>(token: &'a str, auth: &'a AuthState) -> Audience<'a> {
