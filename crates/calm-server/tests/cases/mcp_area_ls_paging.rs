@@ -21,6 +21,23 @@ async fn area_ls_pages_end_at_the_byte_budget_and_lose_no_track() {
         write_body(&boot, side, &long_body(index)).await;
     }
     let reader = &boot.sides[0];
+    for status in ["dispatched", "running", "verifying", "done", "pending"] {
+        boot.sqlx
+            .db()
+            .writer()
+            .execute(
+                sqlx::query(
+                    "INSERT INTO tasks (id,track_id,key,kind,goal,context_json,depends_on_json, \
+                     status,created_at_ms,updated_at_ms) VALUES (?,?,?,'codex','test','null','[]',?,1,1)",
+                )
+                .bind(format!("{}:{status}", reader.track_id))
+                .bind(reader.track_id.as_str())
+                .bind(status)
+                .bind(status),
+            )
+            .await
+            .unwrap();
+    }
 
     let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
     loop {
@@ -45,11 +62,15 @@ async fn area_ls_pages_end_at_the_byte_budget_and_lose_no_track() {
         );
         sizes.push(tracks.len());
         for row in tracks {
+            assert!(row["doc_rev"].is_u64(), "{row}");
+            assert!(row["updated_at"].is_string(), "{row}");
             let blocks = row["blocks"].as_array().expect("blocks").len();
             let clipped = row["blocks_truncated"].as_u64().expect("blocks_truncated");
             if row["track_id"] == reader.track_id.as_str() {
                 assert_eq!(clipped, 0, "{row}");
+                assert_eq!(row["active_tasks_count"], 3, "{row}");
             } else {
+                assert_eq!(row["active_tasks_count"], 0, "{row}");
                 assert_eq!(
                     (blocks, clipped),
                     (40, 5),

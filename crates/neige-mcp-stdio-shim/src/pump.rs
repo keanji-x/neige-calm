@@ -73,7 +73,13 @@ enum WriteKind {
 
 struct Request {
     id: serde_json::Value,
-    tool_call: bool,
+    kind: RequestKind,
+}
+
+enum RequestKind {
+    ToolsCall,
+    ToolsList,
+    Other,
 }
 
 impl PendingWrite {
@@ -103,6 +109,7 @@ struct Pump {
     socket_path: String,
     token: String,
     content: ResultContent,
+    tool_names: Option<crate::tool_names::ToolNames>,
     stdin: BufReader<Stdin>,
     /// Partial line carried across cancelled `next_line` steps.
     stdin_acc: Vec<u8>,
@@ -125,11 +132,17 @@ struct Pump {
 }
 
 /// Run the shim against `socket_path` until one of the [`Exit`] shapes.
-pub(crate) async fn run(socket_path: String, token: String, content: ResultContent) -> Exit {
+pub(crate) async fn run(
+    socket_path: String,
+    token: String,
+    content: ResultContent,
+    tool_names: Option<crate::tool_names::ToolNames>,
+) -> Exit {
     let mut pump = Pump {
         socket_path,
         token,
         content,
+        tool_names,
         stdin: BufReader::new(tokio::io::stdin()),
         stdin_acc: Vec::new(),
         stdin_eof: false,
@@ -444,8 +457,14 @@ impl Pump {
                 }
             } else if let Some(pos) = self.outstanding.iter().position(|o| o.id == id) {
                 let request = self.outstanding.remove(pos);
-                if request.tool_call {
-                    line = self.content.tool_reply(line);
+                match request.kind {
+                    RequestKind::ToolsCall => line = self.content.tool_reply(line),
+                    RequestKind::ToolsList => {
+                        if let Some(names) = &mut self.tool_names {
+                            line = names.list_reply(line);
+                        }
+                    }
+                    RequestKind::Other => {}
                 }
             }
         }
@@ -468,13 +487,20 @@ impl Pump {
                 });
                 (WriteKind::Initialize, injected.into_bytes())
             }
-            Frame::Request { id, method } => (
-                WriteKind::Request(Request {
-                    id,
-                    tool_call: method == "tools/call",
-                }),
-                line,
-            ),
+            Frame::Request { id, method } => {
+                let (kind, line) = match method.as_str() {
+                    "tools/call" => {
+                        let line = match &self.tool_names {
+                            Some(names) => names.call(line),
+                            None => line,
+                        };
+                        (RequestKind::ToolsCall, line)
+                    }
+                    "tools/list" => (RequestKind::ToolsList, line),
+                    _ => (RequestKind::Other, line),
+                };
+                (WriteKind::Request(Request { id, kind }), line)
+            }
             // Notifications are dropped by the kernel and anything
             // unclassifiable has no id to answer: neither is re-sent.
             Frame::Notification | Frame::Response { .. } | Frame::Other => {
@@ -495,7 +521,7 @@ impl Pump {
     /// Synthesized tool errors use the same model-visible projection as kernel replies.
     async fn fail_request(&mut self, request: Request) {
         let mut line = lost_error_frame(&request.id).into_bytes();
-        if request.tool_call {
+        if matches!(request.kind, RequestKind::ToolsCall) {
             line = self.content.tool_reply(line);
         }
         self.write_stdout(&line).await;

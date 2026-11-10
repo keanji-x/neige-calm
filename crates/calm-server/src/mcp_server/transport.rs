@@ -1323,6 +1323,32 @@ mod connector_tool_routing_tests {
     }
 
     #[test]
+    fn connector_tool_discovery_preserves_business_schema() {
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "id": { "type": "string" },
+                "category": { "type": "string", "enum": ["report", "article"] },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        });
+        let upstream = [json!({ "name": OTHER_TOOL, "inputSchema": schema })];
+        let manifest = materialized_connector_from_upstream(CONNECTOR_ID, &[OTHER_TOOL], &upstream);
+        let descriptors = plugin_tool_descriptors_from(
+            vec![manifest],
+            &running(&[CONNECTOR_ID]),
+            &ToolDiscoveryScope::Track(&TrackPluginScope::All),
+        );
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(
+            descriptors.into_iter().next().unwrap().into_mcp_value()["inputSchema"],
+            schema
+        );
+    }
+
+    #[test]
     fn stopped_connector_tools_are_invisible() {
         let registry = registry_after_materialization(&[(
             CONNECTOR_ID,

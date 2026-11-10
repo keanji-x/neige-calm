@@ -246,7 +246,8 @@ mod tests {
         // Keep the measured aggregate bound and the existing per-description cap.
         // Listing `neige_mail_ls` and `neige_mail_cat` for the Planner adds 849 bytes of
         // description/schema to the existing surface; the measured aggregate cap is 42,097.
-        const SURFACE_MAX_BYTES: usize = 42_097;
+        // The report selectors, Area status, mail filters and commit guidance add 650 bytes.
+        const SURFACE_MAX_BYTES: usize = 42_747;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

@@ -29,7 +29,12 @@ fn header(tool: &str, mail: &Value) -> Result<String, RenderError> {
     ))
 }
 
-pub(super) fn ls(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
+pub(super) fn ls(
+    tool: &str,
+    json: bool,
+    filtered: bool,
+    value: &Value,
+) -> Result<String, RenderError> {
     let mails = required_array(value, "mails", tool)?;
     if json {
         return Ok(compact(value));
@@ -45,6 +50,10 @@ pub(super) fn ls(tool: &str, json: bool, value: &Value) -> Result<String, Render
     }
     match value.get("next_cursor") {
         Some(Value::Null) => {}
+        Some(Value::String(cursor)) if filtered => out.push_str(&format!(
+            "more: pass --cursor {} with the same filters\n",
+            escape_control(cursor)
+        )),
         Some(Value::String(cursor)) => out.push_str(&format!(
             "more: neige mail ls --cursor {}\n",
             escape_control(cursor)

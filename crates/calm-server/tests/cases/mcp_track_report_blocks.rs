@@ -689,7 +689,7 @@ async fn upsert_replace_bumps_rev() {
     let out = upsert_block(
         &boot,
         planner_identity(&boot),
-        json!({ "id": id, "kind": "prose", "markdown": "# 概要\n\nrewritten\n"}),
+        json!({ "id": id, "kind": "prose", "markdown": format!("<!-- neige:{id} -->\n# 概要\n\nrewritten\n")}),
     )
     .await
     .expect("replace of a block this session read succeeds");

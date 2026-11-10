@@ -79,7 +79,7 @@
   },
   {
     "name": "neige_area_ls",
-    "description_sha256": "4bf1be131935e9474c08d44a66adc458dfa3c649951f299d0744edb6f7325a27",
+    "description_sha256": "9cb513a2429b66abf58b0ae740b5823b995e591ea858fdbeadbea759d6ab02f1",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -223,11 +223,22 @@
   },
   {
     "name": "neige_mail_ls",
-    "description_sha256": "c21ce9865ac31cd2b01e9da42be9ce2c9290a83670dbc33546aeb3192d2da658",
+    "description_sha256": "3a7627a51029fa0b96a143c75a321f85025358dc7b802aefb65627941aff4065",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "cursor": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "unread",
+            "read"
+          ],
+          "type": "string"
+        },
+        "track_id": {
+          "description": "Only mail to or from this other Track.",
           "type": "string"
         }
       },
@@ -546,7 +557,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "10441616c04289ef9db6964a8d39787597d0328d574ac88c9a020faf2cf34c8f",
+    "description_sha256": "3edfd94a523ce1cfe05ecaf9634882dfbb27725da681a9b0d65c54e0d84811c8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -582,6 +593,7 @@
                 "type": "string"
               },
               "op": {
+                "description": "replace uses section. upsert uses block id (omit id to create).",
                 "enum": [
                   "replace",
                   "upsert",
@@ -2109,10 +2121,31 @@
   },
   {
     "name": "neige_workspace_cat",
-    "description_sha256": "3b804d3bb0c0073f5d433a421c7ca717786fa2db8f7f3e3d547ecb6666cd6ee4",
+    "description_sha256": "3d7b664ba670bc41792c9db6af79b6ae786730f36dac44fc269a9b116b1b6530",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "blocks": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "detail": {
+          "enum": [
+            "full",
+            "index"
+          ],
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "track_id": {
           "type": "string"
         }

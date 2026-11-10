@@ -5,10 +5,14 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolRegistry, read_only_annotations,
 };
 use crate::mcp_server::result::ToolResult;
+use crate::track_report_read::{load_report_doc_snapshot, selected_blocks_text};
 use crate::workspace_reports::{self, ReportChangesQuery, ReportEditsQuery};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+use super::report_links::{block_heading, unknown_block};
+use super::track_report::{ReadSelect, parse_select_arg};
 
 pub const TOOL_WORKSPACE_LS: &str = "neige_workspace_ls";
 pub const TOOL_WORKSPACE_CAT: &str = "neige_workspace_cat";
@@ -25,7 +29,17 @@ pub fn register_into(registry: &mut ToolRegistry) {
         (
             TOOL_WORKSPACE_CAT,
             include_str!("../../../prompts/tools/neige_workspace_cat.md"),
-            json!({"type":"object","required":["track_id"],"properties":{"track_id":{"type":"string"}},"additionalProperties":false}),
+            json!({
+                "type": "object",
+                "required": ["track_id"],
+                "properties": {
+                    "track_id": {"type": "string"},
+                    "blocks": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "sections": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "detail": {"type": "string", "enum": ["full", "index"]}
+                },
+                "additionalProperties": false
+            }),
         ),
         (
             TOOL_WORKSPACE_DIFF,
@@ -65,7 +79,6 @@ struct ListArgs {
     cursor: Option<String>,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReadArgs {
     track_id: String,
 }
@@ -98,6 +111,7 @@ async fn dispatch(
             )
         }
         TOOL_WORKSPACE_CAT => {
+            let selection = parse_select_arg(&args, TOOL_WORKSPACE_CAT)?;
             let args: ReadArgs = serde_json::from_value(args).map_err(invalid)?;
             let track = ctx
                 .repo
@@ -115,15 +129,50 @@ async fn dispatch(
                 return Err(RpcError::forbidden("report is outside user-visible Areas"));
             }
             let (card, _) = super::track_report::load_report_for_track(&ctx, &track).await?;
-            let snapshot = crate::track_report_read::load_report_read_snapshot(
-                ctx.repo.as_ref(),
-                card.id.as_str(),
-            )
-            .await
-            .map_err(|e| RpcError::internal(e.to_string()))?;
-            Ok(
-                json!({"track_id":track.id,"title":track.title,"area_id":track.area_id,"summary":snapshot.summary,"body":snapshot.body,"doc_rev":snapshot.doc_rev,"blocks":snapshot.blocks}),
-            )
+            let snapshot = load_report_doc_snapshot(ctx.repo.as_ref(), card.id.as_str())
+                .await
+                .map_err(|e| RpcError::internal(e.to_string()))?;
+            let mut result = json!({
+                "track_id": track.id,
+                "title": track.title,
+                "area_id": track.area_id,
+                "summary": snapshot.summary,
+                "doc_rev": snapshot.doc_rev,
+            });
+            match selection {
+                ReadSelect::Full => {
+                    result["body"] = json!(snapshot.body);
+                    result["blocks"] = json!(snapshot.blocks);
+                }
+                ReadSelect::Index => {
+                    let index: Vec<_> = snapshot
+                        .blocks
+                        .iter()
+                        .map(|block| {
+                            json!({
+                                "id": block.id,
+                                "kind": block.kind,
+                                "rev": block.rev,
+                                "heading": block_heading(block),
+                            })
+                        })
+                        .collect();
+                    result["blocks"] = json!(index);
+                }
+                ReadSelect::Part(selection) => {
+                    let ids = selection.block_ids(&snapshot.blocks)?;
+                    let body = selected_blocks_text(&snapshot.blocks, &ids)
+                        .map_err(|id| unknown_block(&snapshot.blocks, id))?;
+                    let blocks: Vec<_> = snapshot
+                        .blocks
+                        .into_iter()
+                        .filter(|block| ids.contains(&block.id))
+                        .collect();
+                    result["body"] = json!(body);
+                    result["blocks"] = json!(blocks);
+                }
+            }
+            Ok(result)
         }
         TOOL_WORKSPACE_DIFF => {
             let query: ReportChangesQuery = serde_json::from_value(args).map_err(invalid)?;

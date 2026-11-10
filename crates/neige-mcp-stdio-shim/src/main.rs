@@ -8,6 +8,7 @@ mod budget;
 mod content;
 mod frames;
 mod pump;
+mod tool_names;
 
 use std::env;
 use std::io::{self, Write};
@@ -25,19 +26,22 @@ async fn main() -> ExitCode {
     }
 
     let args: Vec<_> = env::args().skip(1).collect();
-    let content = match args.as_slice() {
+    let (args, tool_names) = match args.as_slice() {
+        [args @ .., flag, limit] if flag == "--max-tool-name-bytes" => {
+            let Some(names) = limit.parse().ok().and_then(tool_names::ToolNames::new) else {
+                return usage();
+            };
+            (args, Some(names))
+        }
+        args => (args, None),
+    };
+    let content = match args {
         [] => content::ResultContent::AsReceived,
         [flag] if flag == "--structured-content-as-text" => content::ResultContent::StructuredText,
         [flag] if flag == "--deduplicate-equivalent-content" => {
             content::ResultContent::DeduplicateEquivalentContent
         }
-        _ => {
-            let _ = writeln!(
-                io::stderr(),
-                "usage: neige-mcp-stdio-shim [--structured-content-as-text | --deduplicate-equivalent-content | --version]"
-            );
-            return ExitCode::from(2);
-        }
+        _ => return usage(),
     };
 
     let socket = match env::var(ENV_SOCKET) {
@@ -63,7 +67,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let code = match pump::run(socket, token, content).await {
+    let code = match pump::run(socket, token, content, tool_names).await {
         pump::Exit::Clean => 0,
         pump::Exit::InitialConnectFailed => 3,
         pump::Exit::InitializeRejected => 4,
@@ -72,6 +76,17 @@ async fn main() -> ExitCode {
     // A blocking stdin read may be parked on a runtime worker thread and dropping
     // the runtime would wait for it, so leave without unwinding.
     std::process::exit(code)
+}
+
+fn usage() -> ExitCode {
+    let _ = writeln!(
+        io::stderr(),
+        concat!(
+            "usage: neige-mcp-stdio-shim [--structured-content-as-text | --deduplicate-equivalent-content]",
+            " [--max-tool-name-bytes N] | --version"
+        )
+    );
+    ExitCode::from(2)
 }
 
 fn resolve_token() -> Result<String, env::VarError> {

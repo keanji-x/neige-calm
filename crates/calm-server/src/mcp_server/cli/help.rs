@@ -243,7 +243,7 @@ const HELP: &[CommandHelp] = &[
     command_help!(
         TOOL_MAIL_LS,
         "List this track's mail, newest first (Planner)",
-        "Usage: neige mail ls [--cursor <cursor>] [--json]",
+        "Usage: neige mail ls [--track-id <track_id>] [--state unread|read] [--cursor <cursor>] [--json]",
         "",
         "Prints one mail per line: `<mail_id>  in|out  unread|read  hop <n>  <title>: <summary>`,",
         "where the title names the other track; 50 per page, then a `more:` line with the next",
@@ -251,6 +251,8 @@ const HELP: &[CommandHelp] = &[
         "nothing.",
         "",
         "Options:",
+        "      --track-id <id>    Only mail to or from this other Track",
+        "      --state <state>    Only unread or read mail",
         "      --cursor <cursor>  Continue after the page whose next_cursor this is",
         "      --json             Emit {mails: [...], next_cursor}",
         "  -h, --help             Print help",

@@ -801,3 +801,53 @@ async fn mail_ls_pages_newest_first_and_stamps_nothing() {
         "listing stamps nothing"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mail_ls_filters_by_counterparty_and_read_state() {
+    let w = World::new(&["R", "N", "Other"]).await;
+    let (r, n, other) = (w.p(0), w.p(1), w.p(2));
+    let unread = w.seed_mail(&r.track_id, &n.track_id, 1).await;
+    let incoming = w.seed_mail(&n.track_id, &r.track_id, 1).await;
+    w.call(r, "neige_mail_cat", json!({"mail_id": incoming}))
+        .await;
+    for _ in 0..51 {
+        w.seed_mail(&other.track_id, &r.track_id, 1).await;
+    }
+    let response = w
+        .call(
+            r,
+            "neige_mail_ls",
+            json!({"track_id": n.track_id, "state": "unread"}),
+        )
+        .await;
+    let page = super::track_mail_fixture::structured(&response);
+    let mails = page["mails"].as_array().unwrap();
+    assert_eq!(mails.len(), 1);
+    assert_eq!(mails[0]["mail_id"], unread);
+    assert_eq!(mails[0]["direction"], "out");
+    assert_eq!(page["next_cursor"], Value::Null);
+
+    let (stdout, stderr, exit) = w
+        .neige(
+            r,
+            &[
+                "mail",
+                "ls",
+                "--track-id",
+                other.track_id.as_str(),
+                "--state",
+                "unread",
+            ],
+        )
+        .await;
+    assert_eq!(exit, 0, "{stderr}");
+    assert_eq!(stdout.lines().count(), 51);
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .unwrap()
+            .ends_with("with the same filters"),
+        "{stdout}"
+    );
+}

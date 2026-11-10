@@ -453,6 +453,8 @@ pub async fn ls(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
     cursor: Option<&str>,
+    counterparty: Option<&str>,
+    unread: Option<bool>,
 ) -> Result<Value, RpcError> {
     const TOOL: &str = TOOL_MAIL_LS;
     let caller = caller_track(identity, TOOL)?;
@@ -479,11 +481,15 @@ pub async fn ls(
         "SELECT {MAIL_COLUMNS} FROM mails m {OTHER_TRACK_JOIN} \
          WHERE (m.to_track_id = ?1 OR m.from_track_id = ?1) \
            AND (?2 IS NULL OR m.sent_at < ?2 OR (m.sent_at = ?2 AND m.id < ?3)) \
-         ORDER BY m.sent_at DESC, m.id DESC LIMIT ?4"
+           AND (?4 IS NULL OR t.id = ?4) \
+           AND (?5 IS NULL OR (m.read_at IS NULL) = ?5) \
+         ORDER BY m.sent_at DESC, m.id DESC LIMIT ?6"
     ))
     .bind(&caller)
     .bind(after_at)
     .bind(after_id)
+    .bind(counterparty)
+    .bind(unread)
     .bind(PAGE + 1)
     .fetch_all(pool.read_pool())
     .await

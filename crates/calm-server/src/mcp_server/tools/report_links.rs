@@ -11,7 +11,7 @@ use crate::mcp_server::registry::{
 };
 use crate::mcp_server::tools::paging::{self, Page};
 use crate::model::CardRole;
-use crate::track_report_read::load_report_read_snapshot;
+use crate::track_report_read::load_report_doc_snapshot;
 
 pub const TOOL_AREA_LS: &str = "neige_area_ls";
 pub const TOOL_LINK_LS: &str = "neige_link_ls";
@@ -81,6 +81,14 @@ async fn area_outline(
     args: Value,
 ) -> Result<Value, RpcError> {
     let cursor = paging::cursor_arg(&args, TOOL_AREA_LS)?;
+    let pool = ctx
+        .sqlite_db
+        .as_ref()
+        .ok_or_else(|| RpcError::internal("neige_area_ls requires sqlite"))?;
+    let count_sql = format!(
+        "SELECT count(*) FROM current_tasks WHERE track_id=?1 AND status IN {}",
+        crate::db::sqlite::RUNNING_WORK_STATUSES_SQL
+    );
     let mut cards = ctx
         .repo
         .track_report_cards_by_area(identity.area_id.as_str())
@@ -105,7 +113,12 @@ async fn area_outline(
             .await
             .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?
             .ok_or_else(|| RpcError::internal("neige_area_ls: track vanished mid-read"))?;
-        let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
+        let snapshot = load_report_doc_snapshot(ctx.repo.as_ref(), card.id.as_str())
+            .await
+            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
+        let active_tasks_count: i64 = sqlx::query_scalar(&count_sql)
+            .bind(track.id.as_str())
+            .fetch_one(pool.read_pool())
             .await
             .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
         let blocks: Vec<Value> = snapshot
@@ -125,6 +138,9 @@ async fn area_outline(
             "title": track.title,
             "creator_track_id": track.creator_track_id,
             "closed_at": crate::time_format::at_opt(track.closed_at),
+            "doc_rev": snapshot.doc_rev,
+            "updated_at": crate::time_format::at(snapshot.updated_at),
+            "active_tasks_count": active_tasks_count,
             "blocks": blocks,
             "blocks_truncated": snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK),
         });
