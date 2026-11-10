@@ -376,8 +376,11 @@ function useConversationPanel(
   const child = source.rows.find((row) => row.id === childId);
   const sideOwnerMatches = parentId !== null && (sideTarget[0]?.kind === 'draft'
     ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
-  const ownedCardIds = useMemo(() => [parentId, sideOwnerMatches ? childId : null]
-    .filter((id): id is string => id !== null), [parentId, sideOwnerMatches, childId]);
+  // Selection defines the side parent, but the compact dock can still read a
+  // different resource (including with no main selection or a main draft).
+  // Every pane's list writes must yield to all of these resource owners.
+  const ownedCardIds = useMemo(() => [parentId, dockOwnerId, sideOwnerMatches ? childId : null]
+    .filter((id): id is string => id !== null), [parentId, dockOwnerId, sideOwnerMatches, childId]);
   // The companion is a sibling of the main surface. Its presentation follows
   // its own desktop/parent/terminal host, independently of the main subview.
   const companionVisible = !compact;
