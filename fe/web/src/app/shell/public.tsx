@@ -188,6 +188,7 @@ export function AppShell({
   const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
+  const areaEditorOpen = areaEditorTarget !== null;
   const [historyOpen, setHistoryOpen] = useState(false);
   const conversationScope = useMobileConversationScope();
   const scopeOwner = conversationScope?.owner ?? null;
@@ -221,11 +222,12 @@ export function AppShell({
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
   const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, mobileNavigationFrameRef, finishMobileClose, narrowRail && mobileNavOpen);
+  const mobileDialogActive = workspaceInteractive && !areaEditorOpen;
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
   const dismissalLayer = <LayerDismissal {...{
-    isActive: workspaceInteractive,
+    isActive: mobileDialogActive,
     onDismiss: closeMobileSection,
     getContainer: () => mobileNavigationRef.current,
   }} />;
@@ -297,7 +299,8 @@ export function AppShell({
   /* A navigation, and nothing else; it closes any open mobile sheet, which is an
        overlay on the surface being left. */
   const requestNewTrack = (areaId: string) => {
-    closeMobileSection();
+    if (areaEditorOpen) setMobileSection(null);
+    else closeMobileSection();
     go({ name: 'new-track', areaId });
   };
 
@@ -368,9 +371,10 @@ export function AppShell({
         ...(patch?.defaultCwd === undefined ? {} : { default_cwd: patch.defaultCwd }),
       });
     }
-    void write.then(() => {
+    void write.then((saved) => {
       if (creation !== null) areaIntent.release(creation);
       setAreaEditorTarget(null);
+      if (target.kind === 'create') requestNewTrack(saved.id);
     }).catch((failure: unknown) => {
       if (target.kind === 'edit') { setAreaEditorError(writeFailureText(AREA_PATCH_FAILURES, AREA_PATCH_TEXT)(failure)); return; }
       const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, AREA_CREATE_FAILURES);
@@ -440,13 +444,13 @@ export function AppShell({
       <div
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
-        className={`${styles.navigation} ${mobileNavOpen ? styles.navigationOpen : ''}`}
-        role={workspaceInteractive ? 'dialog' : undefined}
-        aria-modal={workspaceInteractive ? true : undefined}
+        className={`${styles.navigation} ${mobileNavOpen && !areaEditorOpen ? styles.navigationOpen : ''}`}
+        role={mobileDialogActive ? 'dialog' : undefined}
+        aria-modal={mobileDialogActive ? true : undefined}
         aria-label={narrowRail ? mobileNavigationLabel : undefined}
-        inert={narrowRail && !workspaceInteractive}
-        aria-hidden={narrowRail && !workspaceInteractive ? true : undefined}
-        data-nc-escape-layer={workspaceInteractive ? '' : undefined}
+        inert={narrowRail && !mobileDialogActive}
+        aria-hidden={narrowRail && !mobileDialogActive ? true : undefined}
+        data-nc-escape-layer={mobileDialogActive ? '' : undefined}
         tabIndex={narrowRail ? -1 : undefined}
       >
         <div className={styles.navigationPanel}>
@@ -541,7 +545,7 @@ export function AppShell({
         </div>
       </div>
       </div>
-      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={workspaceInteractive} aria-hidden={workspaceInteractive ? true : undefined}>
+      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={mobileDialogActive} aria-hidden={mobileDialogActive ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>

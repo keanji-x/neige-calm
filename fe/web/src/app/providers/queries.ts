@@ -793,9 +793,10 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
           existing === undefined ? created : newestArea(existing, created),
         ]);
       });
+      void cancelThenInvalidate(client, queryKeys.areas());
     },
     // A lost response can follow a committed creation; the retained creation key makes the next POST safe.
-    onSettled: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
+    onError: () => client.invalidateQueries({ queryKey: queryKeys.areas() }),
   });
   const update = useRecoveryMutation(transport, {
     mutationFn: ({ areaId, body }: { areaId: string; body: AreaPatchBody }, transport: ApiTransportPort) =>
