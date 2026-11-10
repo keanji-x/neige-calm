@@ -320,6 +320,7 @@ nix = { version = "0.29", features = ["dir", "fs", "signal"] }
 libc = "0.2"
 
 [dev-dependencies]
+libsqlite3-sys = "0.30.1"
 workspace-runtime = { path = "../workspace-runtime", features = ["test-support"] }
 plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }

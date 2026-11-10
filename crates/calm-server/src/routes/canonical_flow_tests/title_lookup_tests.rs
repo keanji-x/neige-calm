@@ -5,19 +5,20 @@ use crate::db::sqlite::conversation::{
 };
 use calm_types::conversation::{HumanPayload, MessageAuthor};
 use calm_types::organization::LEGACY_OWNER_USER_ID;
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod sql_work;
+use sql_work::Meter;
 
 async fn read_titles(
     app: &axum::Router,
     cookie: &str,
     track: &str,
     card: &str,
-    steps: &AtomicUsize,
+    meter: &Meter,
     expected: Option<&str>,
 ) -> [usize; 2] {
     let mut work = [0; 2];
     for (index, suffix) in ["", "/conversations"].into_iter().enumerate() {
-        let before = steps.load(Ordering::SeqCst);
+        let epoch = meter.open_window();
         let response = app
             .clone()
             .oneshot(
@@ -32,6 +33,7 @@ async fn read_titles(
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
+        meter.close_window(epoch);
         assert_eq!(status, StatusCode::OK, "{body}");
         let rows = if suffix.is_empty() {
             &body["cards"]
@@ -45,7 +47,7 @@ async fn read_titles(
             .find(|row| row["id"] == card)
             .unwrap();
         assert_eq!(row["title"], json!(expected), "{suffix}: {row}");
-        work[index] = steps.load(Ordering::SeqCst) - before;
+        work[index] = epoch;
     }
     work
 }
@@ -117,19 +119,21 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
         let card = card.id.to_string();
         // Instrument every application connection: moving a scan to readers must not hide it.
         let db = state.sqlite_db().unwrap();
-        let steps = Arc::new(AtomicUsize::new(0));
+        let meter = Arc::new(Meter::default());
         let mut held = Vec::new();
         for _ in 0..db.read_pool().options().get_max_connections() {
             let mut connection = db.read_pool().acquire().await.unwrap();
-            configure_progress(&mut connection, Some(steps.clone())).await.unwrap();
+            meter.install(&mut connection).await.unwrap();
             held.push(connection);
         }
         drop(held);
-        let counter = steps.clone();
+        let counter = meter.clone();
         db.writer().autocommit(move |connection| Box::pin(async move {
-            configure_progress(connection, Some(counter)).await
+            counter.install(connection).await
         })).await.unwrap();
-        let baseline = read_titles(&app, &cookie, &track, &card, &steps, None).await;
+        meter.assert_installed(db.read_pool().options().get_max_connections() as usize
+            + db.writer().pool_state_for_test().max_connections as usize);
+        let baseline = read_titles(&app, &cookie, &track, &card, &meter, None).await;
         // Use production import primitives to preserve real provenance and payload contracts.
         let mut rows = Vec::new();
         for _ in 0..2048 {
@@ -162,14 +166,14 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
                 .unwrap();
         }
         tx.commit().await.unwrap();
-        let no_human = read_titles(&app, &cookie, &track, &card, &steps, None).await;
+        let no_human = read_titles(&app, &cookie, &track, &card, &meter, None).await;
         let first = human(&fixture, &card, "First effective Human\nsecond line").await;
         let with_human = read_titles(
             &app,
             &cookie,
             &track,
             &card,
-            &steps,
+            &meter,
             Some("First effective Human"),
         )
         .await;
@@ -177,31 +181,34 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
             .bind(&first))
             .await
             .unwrap();
-        let withdrawn = read_titles(&app, &cookie, &track, &card, &steps, None).await;
+        let withdrawn = read_titles(&app, &cookie, &track, &card, &meter, None).await;
         human(&fixture, &card, "Next effective Human").await;
         let next = read_titles(
             &app,
             &cookie,
             &track,
             &card,
-            &steps,
+            &meter,
             Some("Next effective Human"),
         )
         .await;
         (fixture.repo.db()).writer().execute(sqlx::query("UPDATE conversation_presentations SET erased_by_operation_id=?1 WHERE card_id=?2 AND source_kind='human_message'")
             .bind("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").bind(&card)).await.unwrap();
-        let erased = read_titles(&app, &cookie, &track, &card, &steps, None).await;
+        let erased = read_titles(&app, &cookie, &track, &card, &meter, None).await;
         // Remove instrumentation before asserting so a regression still releases the real pool.
         let mut held = Vec::new();
         for _ in 0..db.read_pool().options().get_max_connections() {
             let mut connection = db.read_pool().acquire().await.unwrap();
-            configure_progress(&mut connection, None).await.unwrap();
+            meter.remove(&mut connection).await.unwrap();
             held.push(connection);
         }
         drop(held);
-        db.writer().autocommit(|connection| Box::pin(async move {
-            configure_progress(connection, None).await
+        let counter = meter.clone();
+        db.writer().autocommit(move |connection| Box::pin(async move {
+            counter.remove(connection).await
         })).await.unwrap();
+        let settled = meter.finish();
+        let baseline = baseline.map(|epoch| settled[epoch].vm);
         // Allow fixed metadata overhead while rejecting even one pass over the imported prefix.
         for (case, work) in [
             ("no Human", no_human),
@@ -210,32 +217,15 @@ async fn conversation_title_http_imported_prefix_has_bounded_sql_work() {
             ("next", next),
             ("erased", erased),
         ] {
-            eprintln!(
-                "title-cost {case}: ticks={work:?}, baseline={baseline:?} (100 VM instructions/tick)"
-            );
+            let work = work.map(|epoch| settled[epoch].vm);
+            eprintln!("title-cost {case}: vm={work:?}, baseline={baseline:?}");
             for index in 0..2 {
                 assert!(
-                    work[index] <= baseline[index] + 30,
-                    "{case} endpoint={index}: SQL VM ticks {work:?}, baseline {baseline:?}; imported history must not be scanned"
+                    work[index] <= baseline[index] + 3000,
+                    "{case} endpoint={index}: SQL VM {work:?}, baseline {baseline:?}; imported history must not be scanned"
                 );
             }
         }
 
     })).await.expect("independent write operation")
-}
-
-async fn configure_progress(
-    connection: &mut sqlx::SqliteConnection,
-    steps: Option<Arc<AtomicUsize>>,
-) -> sqlx::Result<()> {
-    let mut handle = connection.lock_handle().await?;
-    if let Some(counter) = steps {
-        handle.set_progress_handler(100, move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-            true
-        });
-    } else {
-        handle.remove_progress_handler();
-    }
-    Ok(())
 }
