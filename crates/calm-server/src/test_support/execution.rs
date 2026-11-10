@@ -143,27 +143,31 @@ impl Drop for Supervisor {
     }
 }
 
-/// Cargo reports the artifact path. Do not infer its private target-directory
-/// layout, and do not substitute a script for the registered helper ELF image.
+/// Cargo reports the artifact path through the one builder,
+/// scripts/prepare-proc-supervisor-helper.py. Do not infer its private
+/// target-directory layout, and do not substitute a script for the registered
+/// helper ELF image. nextest runs every test in its own process, so its
+/// `proc-supervisor-helper` setup script builds once before any test starts;
+/// a test here never runs Cargo. libtest runs this whole binary in one process,
+/// which builds once here.
 fn helper_binary() -> PathBuf {
+    const PREPARED: &str = "NEIGE_TEST_PROC_SUPERVISOR_BIN";
     static HELPER: OnceLock<PathBuf> = OnceLock::new();
     HELPER
         .get_or_init(|| {
-            let output = std::process::Command::new("cargo")
-                .args([
-                    "build",
-                    "--locked",
-                    "-p",
-                    "calm-proc-supervisor",
-                    "--bin",
-                    "calm-proc-supervisor",
-                    "--message-format=json-render-diagnostics",
-                    "-j",
-                    "6",
-                ])
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .env_remove("NEIGE_CODEX_BIN")
-                .env("RUSTC_WRAPPER", "")
+            if std::env::var_os("NEXTEST").is_some_and(|runner| runner == "1") {
+                return std::env::var_os(PREPARED)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        panic!("{PREPARED} is unset: the nextest setup script did not prepare it")
+                    });
+            }
+            let output = std::process::Command::new("python3")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../scripts/prepare-proc-supervisor-helper.py"
+                ))
+                .arg("--print")
                 .output()
                 .unwrap();
             assert!(
@@ -171,20 +175,8 @@ fn helper_binary() -> PathBuf {
                 "helper build: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            String::from_utf8(output.stdout)
-                .unwrap()
-                .lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .find_map(|artifact| {
-                    if artifact["reason"] == "compiler-artifact"
-                        && artifact["target"]["name"] == "calm-proc-supervisor"
-                    {
-                        artifact["executable"].as_str().map(PathBuf::from)
-                    } else {
-                        None
-                    }
-                })
-                .expect("Cargo reported the production supervisor executable")
+            let path = String::from_utf8(output.stdout).unwrap();
+            PathBuf::from(path.strip_suffix('\n').expect("helper builder path line"))
         })
         .clone()
 }
