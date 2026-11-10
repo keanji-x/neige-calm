@@ -1,6 +1,6 @@
 //! Settlement CAS against the released receipt schema, without unrelated owner fixtures.
 use super::SqliteDb;
-use super::acp_submission_finish;
+use super::{ACP_BLOCKING_RECEIPT_SQL, acp_submission_finish};
 use crate::error::TruthError;
 use calm_types::error::CoreError;
 use sqlx::Row;
@@ -22,6 +22,12 @@ async fn receipt() -> SqliteDb {
         .writer()
         .execute(sqlx::raw_sql(include_str!(
             "../../../migrations/0187_acp_kept_cleanup.sql"
+        )))
+        .await
+        .unwrap();
+    pool.writer()
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0216_acp_shared_restart_release.sql"
         )))
         .await
         .unwrap();
@@ -293,7 +299,7 @@ async fn collision_inventory(
                 }
                 ("c", 1, ["worker_session_id"]) if name == "acp_one_unresolved_submission" => {
                     partial_count += 1;
-                    let indexed: i64 = sqlx::query_scalar(concat!("SELECT count(*) FROM acp_submissions INDEXED BY acp_one_unresolved_submission WHERE state='send","ing' OR (state='unknown' AND kept_cleanup_json IS NULL)"))
+                    let indexed: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM acp_submissions INDEXED BY acp_one_unresolved_submission WHERE {ACP_BLOCKING_RECEIPT_SQL}"))
                         .fetch_one(pool.read_pool()).await.unwrap();
                     assert_eq!(
                         indexed, 0,

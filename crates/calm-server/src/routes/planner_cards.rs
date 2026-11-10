@@ -386,8 +386,6 @@ pub(crate) async fn interrupt_planner_card(
         .session_projection_active_for_card(&card.id.to_string())
         .await?
         .ok_or_else(dormant)?;
-    let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
-
     let canonical =
         crate::conversation_inputs::has_canonical_storage(s.repo.as_ref(), card.id.as_str())
             .await?;
@@ -407,6 +405,20 @@ pub(crate) async fn interrupt_planner_card(
     } else {
         None
     };
+    let harness = s.harness.get(&runtime.id).ok_or_else(|| {
+        if canonical
+            && runtime.agent_provider.as_ref().is_some_and(|provider| {
+                provider.protocol() == calm_types::runtime::AgentProtocol::Acp
+            })
+        {
+            CalmError::PlannerHarnessDormant(
+                "No live session can receive Stop. The previous turn may have run; history is kept."
+                    .into(),
+            )
+        } else {
+            dormant()
+        }
+    })?;
     let phase = harness.runtime_header().await?.phase;
     // Dispatch for IssuingTurn too (best-effort), but only TurnRunning reports `stopped: true`.
     let dispatch = matches!(

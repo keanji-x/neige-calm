@@ -509,18 +509,31 @@ pub(crate) async fn declaration(
                         calm_types::conversation::InputDeliveryFact::Unknown
                     ) =>
                 {
-                    // Canonical Unknown also describes a live prompt awaiting its
-                    // receipt. Only the journal's unresolved Unknown is recovery;
-                    // Sending and Completed retain ordinary typed delivery feedback.
                     if let Some(receipt) = sqlite::acp_submission_get(
                         &mut **tx,
                         &worker,
                         fact.attempt.submission_id.as_str(),
                     )
                     .await?
-                        && !matches!(receipt.state, sqlite::AcpSubmissionState::Unknown)
                     {
-                        return Ok(None);
+                        match receipt.state {
+                            sqlite::AcpSubmissionState::Completed => return Ok(None),
+                            sqlite::AcpSubmissionState::Sending => {
+                                // A saved dispatch can outlive its in-memory owner. Its
+                                // outcome is still unconfirmed and cannot be retried.
+                                let live = state.harness.get(&worker).is_some_and(|handle| {
+                                    handle
+                                        .active_turn_id_for_thread(&receipt.thread_id)
+                                        .as_deref()
+                                        == Some(receipt.turn_id.as_str())
+                                });
+                                return Ok((!live).then_some(R::Held {
+                                    cause: C::NativeCompletionPending,
+                                    reason: H::NativeCompletionUnavailable,
+                                }));
+                            }
+                            sqlite::AcpSubmissionState::Unknown => {}
+                        }
                     }
                     let request = PlannerFactory::abandonment_target_tx(tx, &carrier)
                         .await?

@@ -8,6 +8,11 @@ mod stop_timeout_tests;
 mod terminal_error;
 
 #[tokio::test]
+async fn canonical_acp_cold_sending_is_held_without_a_stop_target() {
+    Box::pin(acp_recovery("cold_sending")).await;
+}
+
+#[tokio::test]
 async fn canonical_acp_cold_unknown_explicit_abandon_starts_fresh_without_resend() {
     Box::pin(acp_recovery("fresh")).await;
 }
@@ -213,6 +218,26 @@ async fn acp_recovery(scenario: &str) {
             status(&app, &cookie, &uri, "stale", stale).await,
             StatusCode::CONFLICT
         );
+        if scenario == "cold_sending" {
+            // The server can exit after the prompt crosses the wire, before the
+            // receipt owner commits its eventual Unknown or Completed result.
+            let mut tx = write_session.begin_immediate().await.unwrap();
+            sqlx::query("UPDATE acp_submissions SET state='sending' WHERE worker_session_id=?1")
+                .bind(&worker).execute(&mut **tx).await.unwrap();
+            tx.commit().await.unwrap();
+            let run = super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
+            assert_eq!(run["recovery"]["action"], "held", "{run}");
+            assert_eq!(run["recovery"]["cause"], "native_completion_pending", "{run}");
+            assert!(run["native_turn_id"].is_null(), "{run}");
+            assert_eq!(
+                status(&app, &cookie, &format!("/api/cards/{card}/planner/interrupt"), "stop", json!({})).await,
+                StatusCode::CONFLICT
+            );
+            assert_eq!(run["active_input"]["submissions"][0]["attempt"]["delivery"], "unknown");
+            assert_eq!(history_rows(&fixture, &card, old_thread).await, history_before);
+            assert_eq!(acp_carrier(&fixture, &card).await.2, before);
+            return;
+        }
         if scenario == "system" {
             let run = super::presentation_read_feedback_tests::read_run(&app, &cookie, &card).await;
             assert_eq!(run["recovery"]["action"], "held");

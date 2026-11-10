@@ -192,3 +192,56 @@ pub(super) async fn canonical_receipt_tx(
     }
     Ok(Some((receipt, association)))
 }
+/// Runs before the listener starts, after the shared process sweep has
+/// succeeded. This grants no source authority or permission to send a prompt.
+pub(in crate::acp_planner) async fn recover_shared_after_boot(
+    repo: &dyn crate::db::RepoEventWrite,
+    provider: AgentProvider,
+) -> Result<()> {
+    let inventory = provider.clone();
+    let candidates = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            shared_acp_restart_candidates_tx(tx, &inventory)
+                .await
+                .map_err(CalmError::from)
+        })
+    })
+    .await?;
+    for (card, worker) in candidates {
+        let diagnostic = worker.clone();
+        let provider = provider.clone();
+        let release = write_in_tx_typed(repo, move |tx| {
+            Box::pin(async move {
+                let carrier = current_input_fact_carrier_tx(tx, &card, &worker).await?;
+                let (binding, row) =
+                    crate::harness::profile::input_carrier_contract_tx(tx, &carrier).await?;
+                let Some(thread) = row.thread_id else {
+                    return Ok(());
+                };
+                if binding.provider != provider
+                    || row.mcp_token_hash.is_some()
+                    || row.agent_session_id.is_none()
+                {
+                    return Ok(());
+                }
+                let found = canonical_receipt_tx(tx, &card, &worker, &provider).await?;
+                release_shared_acp_restart_tx(
+                    tx,
+                    &card,
+                    &worker,
+                    &thread,
+                    found
+                        .as_ref()
+                        .map(|(receipt, _)| receipt.client_id.as_str()),
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await;
+        if let Err(error) = release {
+            tracing::warn!(worker = %diagnostic, %error, "Shared ACP restart release retained its fence");
+        }
+    }
+    Ok(())
+}

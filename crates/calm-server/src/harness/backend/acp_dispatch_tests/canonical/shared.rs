@@ -105,3 +105,164 @@ async fn canonical_antigravity_unconfirmed_process_stop_cannot_release_kept_inpu
     assert_eq!(fx.prompts(), 1);
     fx.session.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn canonical_antigravity_restart_resumes_native_and_dispatches_only_pending() {
+    let fx = Fixture::with_provider(AgentProvider::Antigravity, "lost", true).await;
+    fx.dispatch().await.unwrap();
+    fx.wait_idle().await;
+    fx.session.shutdown().await.unwrap();
+    assert_eq!(fx.prompts(), 1);
+    let original = fx.receipt_bytes(&fx.submission).await;
+    let owner = &fx.owner;
+    let write_db = owner.repo.db().clone();
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            let source = &fx.source;
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier = current_input_carrier_tx(&mut tx, &owner.card, &owner.worker)
+                    .await
+                    .unwrap();
+                crate::conversation_inputs::accept_human_tx(
+                    &mut tx,
+                    &source.current_principal().unwrap(),
+                    &mut carrier,
+                    HumanPayload {
+                        text: "queued before restart".into(),
+                        bound_attachments: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+
+    let reopened = super::super::super::dispatch_fixture::Owner {
+        repo: Arc::new(
+            crate::db::sqlite::SqlxRepo::open(&owner.db_url)
+                .await
+                .unwrap(),
+        ),
+        card: owner.card.clone(),
+        track: owner.track.clone(),
+        worker: owner.worker.clone(),
+        thread: owner.thread.clone(),
+        db_url: owner.db_url.clone(),
+    };
+    let (backend, session, _held) =
+        session_for_provider(&reopened, &fx.dir, AgentProvider::Antigravity);
+    crate::acp_planner::config::boot(reopened.repo.as_ref(), session.host())
+        .await
+        .unwrap();
+    backend.recover_retained().await.unwrap();
+    let frame = runtime_frame_observation(reopened.repo.pool(), &reopened.card, &reopened.worker)
+        .await
+        .unwrap();
+    assert_eq!(
+        frame.snapshot.header.phase,
+        crate::harness::HarnessPhaseTag::Idle
+    );
+    assert!(frame.snapshot.canonical_inputs.active.is_none());
+    assert_eq!(frame.snapshot.canonical_inputs.pending.len(), 1);
+    assert_eq!(fx.receipt_bytes(&fx.submission).await, original);
+    let db = reopened.repo.db().clone();
+    let next = db
+        .writer()
+        .with_writer(|write_session| {
+            let reopened = &reopened;
+            let source = &fx.source;
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                let mut carrier =
+                    current_input_carrier_tx(&mut tx, &reopened.card, &reopened.worker)
+                        .await
+                        .unwrap();
+                let plan = crate::db::sqlite::conversation::pending_plan_for_prefix_tx(
+                    &mut tx,
+                    &carrier,
+                    std::num::NonZeroU32::MIN,
+                    vec![],
+                )
+                .await
+                .unwrap();
+                let claimed = crate::conversation_inputs::claim_initial_tx(
+                    &mut tx,
+                    source,
+                    &mut carrier,
+                    plan,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                claimed.submission_id
+            })
+        })
+        .await
+        .unwrap();
+
+    std::fs::write(fx.dir.path().join("scenario"), "reply").unwrap();
+    crate::harness::input_dispatch::initial(
+        reopened.repo.as_ref(),
+        &fx.source,
+        &reopened.card,
+        &reopened.worker,
+        &next,
+        &backend,
+        &TurnModelSelection::inherit(),
+        PlannerPermissionMode::Never,
+        &backend.handoff_for_test().await,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !session.driver_finished_for_test() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        crate::harness::input_dispatch::complete_once(
+            reopened.repo.as_ref(),
+            &backend,
+            &reopened.card,
+            &reopened.worker,
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+    session.shutdown().await.unwrap();
+
+    let requests = fx.requests();
+    let prompts: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "session/prompt")
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    let native = &prompts[0]["params"]["sessionId"];
+    assert_eq!(&prompts[1]["params"]["sessionId"], native);
+    assert_ne!(prompts[0]["_pid"], prompts[1]["_pid"]);
+    assert!(
+        prompts[1]["params"]["prompt"]
+            .to_string()
+            .contains("queued before restart")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| r["method"] == "session/resume" && &r["params"]["sessionId"] == native)
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r["method"] == "session/new")
+            .count(),
+        1
+    );
+}

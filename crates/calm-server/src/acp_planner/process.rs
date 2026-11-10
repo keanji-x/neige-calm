@@ -24,19 +24,29 @@ impl Process {
         worker: &str,
         cwd: &std::path::Path,
     ) -> Result<Self> {
-        Self::spawn_control(host, registration, worker, cwd)
+        Self::spawn_control(host, registration, worker, cwd, false)
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn spawn_shared(
+        host: &AcpPlannerHost,
+        registration: Registration<'_>,
+        cwd: &std::path::Path,
+    ) -> std::result::Result<Self, StartFailure> {
+        let worker = registration.config.provider.wire_name();
+        Self::spawn_control(host, registration, worker, cwd, true).await
     }
 
     /// Spawn the registered agent, `initialize` it, admit its reported identity, and
     /// authenticate it when its profile names a method. Any refusal stops the process before a
     /// session operation.
-    pub async fn spawn_control(
+    async fn spawn_control(
         host: &AcpPlannerHost,
         registration: Registration<'_>,
         worker: &str,
         cwd: &std::path::Path,
+        boot_swept: bool,
     ) -> std::result::Result<Self, StartFailure> {
         let Registration { config, profile } = registration;
         let mut command = Command::new(&config.command);
@@ -56,6 +66,9 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        if boot_swept {
+            command.env(super::config::MARKER_KEY, host.instance.marker(worker));
+        }
         set_process_group_leader(&mut command);
         let mut child = spawn_within(
             command,

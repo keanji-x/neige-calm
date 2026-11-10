@@ -1,6 +1,8 @@
 //! Canonical fact storage. These primitives borrow the owner's transaction: the
 //! acceptance/claim owner must commit the sole harness queue, authority checks,
 //! receipts and events with these facts. They neither enqueue nor drive a retry.
+mod acp_restart;
+pub use acp_restart::{release_shared_acp_restart_tx, shared_acp_restart_candidates_tx};
 mod recovery;
 mod terminal_recovery;
 pub use terminal_recovery::terminal_recovery_request_tx;

@@ -356,8 +356,25 @@ pub(super) async fn boot_with_sweep<F: std::future::Future<Output = Result<()>>>
     let mut markers = ids.clone();
     markers.push(super::catalog::WORKER.into());
     markers.push("readiness".into());
+    let shared: Vec<_> = calm_types::runtime::AgentProtocol::Acp
+        .providers()
+        .filter(|provider| {
+            super::profile::AcpAgentProfile::of(provider)
+                .is_some_and(|profile| profile.shared_server)
+        })
+        .collect();
+    markers.extend(
+        shared
+            .iter()
+            .map(|provider| provider.wire_name().to_owned()),
+    );
     let unproven = match sweep(markers).await {
-        Ok(()) => Default::default(),
+        Ok(()) => {
+            for provider in shared {
+                super::session::recover_shared_after_boot(repo, provider).await?;
+            }
+            Default::default()
+        }
         Err(error) => {
             tracing::warn!(%error, "ACP boot pre-C4 sweep did not confirm; old MCP credentials revoked; boot continues");
             ids.into_iter().collect()
