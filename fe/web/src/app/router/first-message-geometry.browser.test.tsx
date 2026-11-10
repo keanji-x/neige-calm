@@ -90,7 +90,7 @@ it.each([1280, 390])('keeps the last ordinary deleted queue row in place until i
   const text = 'The last ordinary queued message leaves through its existing spring.';
   let pending = [{ entry_id: 'ordinary-last', text, rev: 0, queued_at_ms: 1 }];
   const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
-  const fixture = renderDailyFixture({ reply: request => {
+  const fixture = renderDailyFixture({ initial: '/?day=2026-10-04', reply: request => {
     if (request.method === 'DELETE' && request.path.endsWith('/planner/input/ordinary-last')) {
       pending = [];
       return ok({ card_id: 'daily-planner', worker_session_id: 'runtime', entry_id: 'ordinary-last', rev: 0, text: null });
@@ -206,7 +206,7 @@ it.each([1280, 390])('keeps the ordinary queue exit spring when displayed bound 
   const oldText = 'Actual provider-bound input at revision zero.'; const currentText = 'Later ordinary queue input at revision one.';
   let pending = [{ entry_id: 'ordinary-shared', rev: 1, text: currentText, queued_at_ms: 1 }];
   const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
-  const fixture = renderDailyFixture({ reply: request => {
+  const fixture = renderDailyFixture({ initial: '/?day=2026-10-04', reply: request => {
     if (request.path.includes('/daily-planner/harness/items')) return ok(historicalConversationPage(conversationCardId(request.path), [{ id: 7, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily',
       thread_id: 'thread', turn_id: 'older-provider-turn', item_uuid: 'old-bound-row', item_type: 'userMessage', method: 'item/completed',
       params: '{}', created_at_ms: 1, turn_error_text: null, input_segments: [{ presentation: 'user', text: oldText, attachments: [],

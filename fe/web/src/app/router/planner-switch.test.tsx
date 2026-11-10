@@ -44,7 +44,7 @@ it.each(['/track/daily?panel=conversations', '/'])('switches the selected Assist
   await waitFor(() => expect(screen.getByRole('button', { name: /Role: Member/ })).toBeTruthy());
   expect(input.textContent).toBe('');
   expect(screen.queryAllByRole('alert')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  if (initial !== '/') await userEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
   expect(screen.getAllByRole('button', { name: /Conversation Other conversation/ })).toHaveLength(1);
   expect(screen.getAllByRole('button', { name: /Conversation Daily Planner conversation/ })).toHaveLength(1);
 });

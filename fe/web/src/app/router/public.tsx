@@ -119,10 +119,10 @@ import {
   trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
-import { DailyTodayRoute } from './daily-planner.tsx';
+import { DailyTodayRoute, type DailyCenterPresentation } from './daily-planner.tsx';
 import { ConversationComposer, ConversationDock } from './conversation-composer.tsx';
 import mobileChatStyles from './mobile-chat.module.css';
-import { ConversationSurface } from './mobile-conversation-surface.tsx';
+import { ConversationSurface, type EmbeddedConversationPresentation } from './mobile-conversation-surface.tsx';
 import { trackConversationRows } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
@@ -214,7 +214,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro, supervisor) => <TrackRouteBody reportHeader={supervisor} reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro, supervisor, center) => <TrackRouteBody center={center} reportHeader={supervisor} reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -336,12 +336,14 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options?: { onPresent?: () => void; embedded?: EmbeddedConversationPresentation; presented?: boolean; onArchive?: (cardId: string, archived: boolean) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
   const registry = useConversationCommands();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
-  const mainTarget = useConversationPaneTarget(source.scopeId, source.rows);
+  const savedTarget = useConversationPaneTarget(source.scopeId, source.rows);
+  const mainTarget = [savedTarget[0] ?? (options?.embedded?.active && source.planner !== null
+    ? { kind: 'row' as const, id: source.planner.cardId } : null), savedTarget[1]] as const;
   const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
   const lastMainRow = useRef<string | null>(null);
   useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
@@ -361,9 +363,9 @@ function useConversationPanel(
   const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
     .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.terminal?.workbench.open !== true });
+    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.presented !== false && options?.terminal?.workbench.open !== true });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact && !options?.embedded?.active, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
       companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
       companion: options?.terminal !== undefined
         ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
@@ -401,7 +403,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
+  options?: { onPresent?: () => void; embedded?: EmbeddedConversationPresentation; onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -569,7 +571,7 @@ function useConversationPane(
     recheckManagedProviders: managed.recheck,
     supportsAssistantProviders: managed.supportsAssistantProviders,
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
-    openDraft: () => setOpenTarget({ kind: 'draft' }), closeView: () => setOpenTarget(null),
+    openDraft: () => { options?.onPresent?.(); setOpenTarget({ kind: 'draft' }); }, closeView: () => setOpenTarget(null),
     onGone: () => go({ name: 'today' }),
     onAdopt: onAdoptDraft,
   });
@@ -773,6 +775,7 @@ function useConversationPane(
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <ConversationSurface
+        embedded={options?.embedded}
         mobileSheet={compactComposer}
         focusInput={panePresented && (draftOpen || (open !== null && composerFocusFor === open.id))}
         contextTitle={scope?.title}
@@ -954,6 +957,7 @@ function useConversationPane(
   );
 
   const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
+    options?.onPresent?.();
     setOpenTarget({ kind: 'row', id: conversation.id });
   });
   const receipts = useReadReceipts();
@@ -1085,7 +1089,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportHeader, reportEmpty, panelContent, mobileReportIntro, prepareReport,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportHeader, reportEmpty, panelContent, mobileReportIntro, prepareReport, center,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1098,6 +1102,7 @@ function TrackRouteBody({
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
+  center?: DailyCenterPresentation;
   reportEvidence?: ReactNode;
   reportHeader?: ReactNode;
   panelContent?: ReactNode;
@@ -1105,6 +1110,8 @@ function TrackRouteBody({
   prepareReport: ReportPreparationPort;
   reportEmpty?: ReactNode;
 }) {
+  const [centerHost, setCenterHost] = useState<HTMLDivElement | null>(null);
+  const [guideHost, setGuideHost] = useState<HTMLDivElement | null>(null);
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
   const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -1153,6 +1160,7 @@ function TrackRouteBody({
   const routePanel = useRoutePanel();
   /* Whether `?panel=` describes anything at all on this viewport. */
   const compactViewport = useCompactViewport();
+  const centerActive = center !== undefined && !compactViewport;
   /* `?from=` is a property of this visit, so every same-track move hands it back
    * explicitly (`go` clears what it is not given); crossing tracks drops it. */
   const routeFrom = useRouteFrom() ?? undefined;
@@ -1273,7 +1281,7 @@ function TrackRouteBody({
         commands: plannerCommands,
       },
     },
-    { onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+    { onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, guideHost: setGuideHost, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
       onRemove={(id) => cardDeletion.request(id, { kind: 'surface-center' })} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
@@ -1497,10 +1505,11 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
+      fillReading={centerActive}
       progressDisclosure={progressDisclosure}
       panelContent={panelContent}
       mobileReportIntro={mobileReportIntro}
-      mobilePanelObscured={chat.isOpen || sourceOpen}
+      mobilePanelObscured={(!centerActive && chat.isOpen) || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
       mobileTitleReadView={(controls) => <TrackSelector track={track} controls={controls}
@@ -1569,7 +1578,11 @@ function TrackRouteBody({
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
-      report={<>{reportHeader}<TrackReportRegion
+      report={<>
+        {center !== undefined && <div className={mobileChatStyles.embeddedSlot} hidden={!centerActive}>
+          {center.render(<div ref={setCenterHost} className={mobileChatStyles.embeddedSlot} />, guideHost)}
+        </div>}
+        {!centerActive && <>{reportHeader}<TrackReportRegion
         presentation={reportPresentation}
         trackId={track.id}
         activityAt={track.activityAt}
@@ -1598,6 +1611,7 @@ function TrackRouteBody({
         outlineEmpty={reportEmpty}
         empty={reportEmpty ?? <ReportEmpty />}
       >{reportEvidence}</TrackReportRegion></>}
+      </>}
       backlinks={backlinks !== undefined && (backlinks.backlinks.length > 0 || backlinks.truncated || backlinks.skipped_sources > 0)
         ? (
           <ReportBacklinks inline
@@ -1615,11 +1629,13 @@ function TrackRouteBody({
       conversationContextList={chat.contextList}
       conversationList={chat.list}
       onStartConversation={chat.startConversation}
-      conversationOpen={chat.isOpen}
+      showConversationAction={!centerActive}
+      conversationOpen={!centerActive && chat.isOpen}
       inputNotifications={inputNotifications}
       /* Both kinds of item are the Planner's, so both reply to it: sending it a message is what
          answers an ask and what makes a stopped Planner continue. */
       onReply={plannerCard === undefined ? undefined : () => {
+        center?.onOpenAssistant();
         registry.requestOpen(plannerCard.id, { focusComposer: true });
       }}
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}

@@ -68,8 +68,9 @@ it.each([1440, 390])('catalog main report and sidebar %i', async width => {
 it.each([1440, 390])('catalog Today and conversation %i', async width => {
   await page.viewport(width, 900);
   renderDailyFixture({ reportBody: '', emptyWorkspace: true });
-  await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
-  await shot('02-today-' + width, ["今天还没有记录"]);
+  const emptyTitle = width >= 960 ? '聊聊你想做什么' : '今天还没有记录';
+  await expect.element(page.getByRole('heading', { name: emptyTitle })).toBeVisible();
+  await shot('02-today-' + width, [emptyTitle]);
   if (width === 1440) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   else {
     await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();

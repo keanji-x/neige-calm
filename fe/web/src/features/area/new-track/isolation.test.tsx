@@ -75,3 +75,11 @@ it('selects isolation using only the keyboard', async () => {
   expect(screen.getByRole('button', { name: 'Workspace isolation: None' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Not isolated · no guarantees' })).toBeTruthy();
 });
+
+
+it('labels the creation preferences visibly without changing their selection semantics', () => {
+  mount();
+  expect(screen.getByRole('button', { name: 'Template: No template' }).textContent).toContain('Template:');
+  expect(screen.getByRole('button', { name: 'Folder: /repo' }).textContent).toContain('Repo: repo');
+  expect(screen.getByRole('button', { name: 'Workspace isolation: Worktree' }).textContent).toContain('Isolation: Worktree');
+});

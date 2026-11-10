@@ -81,13 +81,13 @@ it('keeps category headers glyph-free and reserves the disclosure glyph for Area
   }
 });
 
-it('aligns Area tracks with the Area label and fills the selected row', async () => {
+it('indents Area tracks beneath their parent and fills the selected row', async () => {
   await scene(true);
   const group = page.getByRole('group', { name: 'area Work', exact: true });
   const areaTitle = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
   const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
-  expect(textBounds(selected.querySelector('[title]')!).left).toBeCloseTo(textBounds(areaTitle).left, 1);
-  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBe(0);
+  expect(textBounds(selected.querySelector('[title]')!).left).toBeGreaterThan(textBounds(areaTitle).left);
+  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeGreaterThan(0);
   expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeCloseTo(
     textBounds(selected.querySelector('[title]')!).left - textBounds(areaTitle).left, 1);
   expect(selected.getAttribute('aria-current')).toBe('page');
@@ -108,7 +108,7 @@ it.each(['light', 'dark'])('uses the same rail background bounds for hover and s
     };
     await page.getByRole('button', { name: 'Go to Today' }).hover();
     const expected = bounds(selected.element());
-    expect(parseFloat(expected[0])).toBe(0);
+    expect(parseFloat(expected[0])).toBeGreaterThan(0);
     for (const row of [idle, selected]) {
       await row.hover();
       expect(bounds(row.element())).toEqual(expected);
@@ -167,10 +167,10 @@ it.each(['light', 'dark'] as const)('preserves label alignment and leading statu
   rail.style.setProperty('--space-2', '6px');
   const group = page.getByRole('group', { name: 'area Work', exact: true });
   const area = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
-  for (const row of group.getByRole('button', { name: /^Track / }).elements()) {
-    expect(row.querySelector('[title]')!.getBoundingClientRect().left)
-      .toBeCloseTo(area.querySelector('[title]')!.getBoundingClientRect().left, 1);
-  }
+  const rows = group.getByRole('button', { name: /^Track / }).elements();
+  const childStart = rows[0].querySelector('[title]')!.getBoundingClientRect().left;
+  expect(childStart).toBeGreaterThan(area.querySelector('[title]')!.getBoundingClientRect().left);
+  for (const row of rows) expect(row.querySelector('[title]')!.getBoundingClientRect().left).toBeCloseTo(childStart, 1);
   for (const marker of document.querySelectorAll('[data-nc-activity]')) {
     const title = marker.parentElement!.parentElement!.querySelector('[title]')!;
     expect(marker.getBoundingClientRect().right).toBeLessThan(title.getBoundingClientRect().left);
@@ -197,7 +197,7 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
     const row = group.getByRole('button', { name: /^Track / });
     await row.first().hover();
     const caption = row.first().element().querySelector<HTMLElement>('[title]')!;
-    expect(caption.getBoundingClientRect().left).toBeCloseTo(areaTitle.getBoundingClientRect().left, 1);
+    expect(caption.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
     const menu = group.getByRole('button', { name: `Actions for track ${title}`, exact: true }).first();
     expect(caption.getBoundingClientRect().right).toBeLessThanOrEqual(menu.element().getBoundingClientRect().left);
     expect(rail.scrollWidth).toBe(rail.clientWidth);

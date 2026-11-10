@@ -778,7 +778,7 @@ describe('the new-track page is a route reached from Area groups', () => {
     // Exposed first: the absence checks below would pass vacuously against a page that never rendered.
     expect(await findComposer()).toBeTruthy();
     expect(screen.queryByLabelText('Area')).toBeNull();
-    expect(screen.getByRole('button', { name: FOLDER_CHIP_NAME }).textContent).toBe(FOLDER_PLACEHOLDER);
+    expect(screen.getByRole('button', { name: FOLDER_CHIP_NAME }).textContent).toBe(`Repo: ${FOLDER_PLACEHOLDER}`);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create track' }));
     await waitFor(() => expect(createdTrackBodies(sent)).toHaveLength(1));

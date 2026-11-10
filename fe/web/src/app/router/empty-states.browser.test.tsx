@@ -13,7 +13,7 @@ async function settle() {
 it.each([1440, 390, 320])('keeps the empty daily report and conversation reachable at %i', async (width) => {
   await page.viewport(width, 900);
   renderDailyFixture({ reportBody: '' });
-  await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
+  await expect.element(page.getByRole('heading', { name: width >= 960 ? '聊聊你想做什么' : '今天还没有记录' })).toBeVisible();
   await settle();
   await page.screenshot({ path: `./__screenshots__/empty-audit/daily-${width}.png` });
   if (width >= 960) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();

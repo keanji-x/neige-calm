@@ -340,45 +340,44 @@
 
   .brandActions { margin-inline-start: auto; }
 
-  /*
-   * THE VERTICAL SCALE.
-   *
-   * The rule is about *optical* distance, not about DOM depth, and it is one
-   * line:
-   *
-   *     every Area/Track row uses one cadence; section breaks alone increase.
-   *
-   * Two Gestalt consequences it has to satisfy, and both are checkable:
-   *   - an Area label and its Tracks share one cadence; the label is already
-   *     distinguished by tone and by its disclosure control;
-   *   - a muted Area disclosure carries grouping without extra whitespace.
-   *
-   * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
-   * a 24px label slot:
-   *
-   *   area name  -> its first track    --space-1    2px   -> 11.6px
-   *   row        -> row               --space-1    2px   -> 11.6px
-   *   section lb -> its first row     --space-2    4px   -> 15.3px
-   *   section    -> section           --space-8   16px   -> 27.3px
-   *
-   * 11.6 = 11.6 < 15.3 < 27.3. Area and Track rows are even; section-level
-   * breaks remain clear jumps rather than nudges.
-   *
-   * The Area used to get a zero gap to make parent/child proximity carry the
-   * hierarchy by itself. Its deliberately quieter type, position and chevron
-   * already say “group”, so the special-case rhythm was only visual noise,
-   * including between Areas.
-   *
-   * Every step is a `gap` on the container that owns the relationship, never a
-   * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
-   * margin" (margin collapses, gap does not, and a margin-made rhythm cannot be
-   * verified by measuring one container) and "同一个组件不能在同一轴上既写 gap
-   * 又给子元素写 margin".
-   */
+  .primaryNav {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding-block-end: var(--space-2);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .primaryNavRow {
+    color: var(--text-2);
+  }
+
+  .primaryNavActive {
+    background: var(--selection-bg);
+    color: var(--text);
+  }
+
+  .primaryNavActive:hover {
+    background: var(--selection-hover-bg);
+  }
+
+  .primaryNavIcon {
+    line-height: 1;
+    color: var(--text-3);
+    pointer-events: none;
+  }
+
+  .primaryNavActive .primaryNavIcon,
+  .primaryNavRow:hover .primaryNavIcon {
+    color: var(--text);
+  }
+
+  /* Every Area/Track row uses one cadence; section breaks alone increase (§2.3). */
   .sidebarSections {
     display: flex;
     flex-direction: column;
     gap: var(--navigation-section-gap);
+    padding-block-start: var(--space-2);
   }
 
   .section {
@@ -394,9 +393,20 @@
   }
 
   .trackList {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0;
+  }
+
+  .areaGroup > .trackList::before {
+    content: '';
+    position: absolute;
+    inset-block: var(--space-1);
+    inset-inline-start: calc(var(--navigation-label-inset) + var(--control-h-sm) / 2);
+    inline-size: 1px;
+    background: var(--hairline);
+    pointer-events: none;
   }
 
   .areaGroups {
@@ -543,22 +553,8 @@
 
   .emptyArea { padding-inline: var(--space-6); }
 
-  /*
-   * Pinned to the bottom of `.rail`'s scrollport, so a long Areas list scrolls
-   * underneath it instead of pushing the account menu out of view. `auto`
-   * still parks it at the bottom when the list is short.
-   *
-   * Sticky insets are resolved against the scrollport minus the rail's own
-   * padding, so `0` would park the row one rail padding above the bottom edge
-   * with rows showing through beneath it. The row instead takes that padding
-   * over: a negative inset and margin of the same size, and its own padding
-   * in their place, so its fill reaches the edge and the avatar stays where it
-   * sat before. The rail fill hides rows scrolling behind it. The z-index
-   * makes this row a stacking context that also holds
-   * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip),
-   * so it is the menu's own `--z-overlay`: the menu keeps the rank it had
-   * before, and the row still clears the `--z-raised` area action buttons.
-   */
+  /* Sticky insets are resolved against the scrollport minus the rail's own
+     padding, so negative inset/margin and matching padding reach the edge. */
   .userRow {
     position: sticky;
     inset-block-end: calc(-1 * var(--account-bottom-gutter));
@@ -580,6 +576,11 @@
     text-overflow: ellipsis;
     color: var(--text-2);
     pointer-events: none;
+  }
+
+  .userSettingsButton {
+    margin-inline-start: auto;
+    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
   }
 
   .menuWrap {
@@ -725,10 +726,6 @@
     .userRow,
     .brandRow {
       background: var(--surface-navigation);
-    }
-
-    .sidebarSections {
-      padding-block-start: 0;
     }
 
     .rail {

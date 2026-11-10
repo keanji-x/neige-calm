@@ -6,12 +6,12 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './document.module.css';
 
 export function ReportDetails({ title, meta, layout, variant = 'section', reference = false, onToggle, children }: Readonly<{
-  title: string; meta?: ReactNode; layout: 'grid' | 'appendix'; variant?: 'section' | 'entry';
+  title: string; meta?: ReactNode; layout: 'grid' | 'appendix'; variant?: 'section' | 'entry' | 'card';
   reference?: boolean; onToggle?: (open: boolean) => void; children: ReactNode;
 }>) {
   const [expanded, setExpanded] = useState(false);
   const Heading = variant === 'section' ? 'h2' : 'h3';
-  return <details className={`${styles.reference} ${layout === 'appendix' ? styles.appendix : ''} ${variant === 'entry' ? styles.detailEntry : ''}`}
+  return <details className={`${styles.reference} ${layout === 'appendix' ? styles.appendix : ''} ${variant !== 'section' ? styles.detailEntry : ''} ${variant === 'card' ? styles.detailCard : ''}`}
     data-nc-report-reference={reference ? '' : undefined} onToggle={event => { setExpanded(event.currentTarget.open); onToggle?.(event.currentTarget.open); }}>
     <summary className={styles.referenceSummary}>
       <Heading className={styles.referenceHead}>

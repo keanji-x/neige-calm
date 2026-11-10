@@ -39,7 +39,7 @@ it.each([
   let finish: (response: ApiTransportResponse) => void = () => {};
   const held = new Promise<ApiTransportResponse>((resolve) => { finish = resolve; });
   let rows = history;
-  const { client, requests } = renderDailyFixture({ identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
+  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,
@@ -102,7 +102,7 @@ it('keeps the reading place when an existing send is retried under its same key'
   const held = new Promise<ApiTransportResponse>((resolve) => { finish = resolve; });
   let attempts = 0;
   const rejected: ApiTransportResponse = { status: 429, statusText: 'Too Many Requests', body: { code: 'rate_limited', error: 'Wait before retrying.' } };
-  const { requests } = renderDailyFixture({ identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
+  const { requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'visibility-user', displayName: 'Visibility User', role: 'owner', sessionId: 'visibility-session' }, reply: (request) => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null,

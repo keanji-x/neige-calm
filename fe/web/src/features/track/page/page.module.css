@@ -1314,3 +1314,8 @@
   }
 
 }
+
+@layer features {
+  .fillReading { overflow: hidden; }
+  .fillReading .workspace { grid-template-rows: minmax(0, 1fr); }
+}

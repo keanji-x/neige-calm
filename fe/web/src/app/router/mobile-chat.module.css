@@ -16,3 +16,12 @@
   .scrollOverlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
 
 }
+
+@layer features {
+  .embeddedSlot { display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; }
+  .embedded { display: flex; flex-direction: column; flex: 1; min-block-size: 0; min-inline-size: 0; }
+  .embeddedSlot[hidden], .embedded[hidden] { display: none; }
+  .embeddedTitle { font: var(--type-metadata); color: var(--text-3); margin-block-end: var(--space-3); }
+  .embeddedMessages { display: flex; flex-direction: column; flex: 1; min-block-size: 0; overflow: auto; overscroll-behavior: contain; }
+  .embeddedFooter { flex: none; min-inline-size: 0; }
+}

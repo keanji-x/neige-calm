@@ -157,9 +157,9 @@ it('retains the displayed report while a replacement prepares and does not ackno
   expect(held.jobs).toHaveLength(before);
 });
 
-it('uses the same report presentation boundary for Today', async () => {
+it('uses the same report presentation boundary for a historical daily report', async () => {
   const frame = frames(); const held = heldPreparation();
-  const fixture = setup(held.execute, '/'); fixtures.push(fixture);
+  const fixture = setup(held.execute, '/?day=2026-10-04'); fixtures.push(fixture);
   await screen.findByRole('button', { name: 'Rename track' });
   expect(held.jobs).toHaveLength(0);
   expect(document.querySelector('[data-nc-report]')).toBeNull();

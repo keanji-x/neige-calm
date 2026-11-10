@@ -177,7 +177,7 @@ describe('NewTrackForm asks only what the track starts from', () => {
     await fillMessage();
     /* Unset, the chip names the default; its name and hover string say which
            control it is on top of that. */
-    expect(folderChip().textContent).toBe(FOLDER_PLACEHOLDER);
+    expect(folderChip().textContent).toBe(`Repo: ${FOLDER_PLACEHOLDER}`);
     expect(folderChip().getAttribute('title')).toBe(FOLDER_CHIP_NAME);
     /* Matched on the mechanism's own words rather than /workspace/i, which the chip
            itself would now match. */

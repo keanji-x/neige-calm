@@ -216,6 +216,7 @@ it.each([
   expect(field.bottom).toBeLessThanOrEqual(window.innerHeight);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
+  if (count === 4 && width === 1280) await page.screenshot({ path: '../../../../test-results/v10-track-asks.png' });
   for (let index = 0; index < count; index++) {
     await expect.element(ask.getByRole('heading', { name: new RegExp(`^Question ${index + 1}:`) })).toBeVisible();
     await ask.getByRole('button', { name: new RegExp(`^Plan ${index + 1}\\.1(?: |$)`) }).click();

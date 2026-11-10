@@ -3,13 +3,21 @@ import { useState } from '../../ui/state/public.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react';
+import { createPortal } from 'react-dom';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Sheet } from '../../ui/sheet/public.tsx';
 import styles from './mobile-chat.module.css';
 
 /** Conversation assembly: viewport-derived layout and business intent. Sheet
  * owns native presentation, motion, portal migration and focus timing. */
-export function ConversationSurface({ mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
+export type EmbeddedConversationPresentation = Readonly<{
+  active: boolean;
+  host: HTMLDivElement | null;
+  guideHost: (host: HTMLDivElement | null) => void;
+  label: string;
+}>;
+
+export function ConversationSurface({ embedded, mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ embedded?: EmbeddedConversationPresentation; mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
   const [editing, setEditing] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const previousOpen = useRef(props.open);
@@ -21,7 +29,9 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   if (!props.open) restingViewportHeight.current = visibleViewport.height;
   const expandedForInput = (focusInput || editing) && visibleViewport.height < restingViewportHeight.current;
   const [desktopNode, setDesktopNode] = useState<HTMLDivElement | null>(null);
-  const desktopSlot = useMemo(() => ({ current: desktopNode }), [desktopNode]);
+  const [embeddedNode, setEmbeddedNode] = useState<HTMLDivElement | null>(null);
+  const footerNode = embedded?.active ? embeddedNode : desktopNode;
+  const desktopSlot = useMemo(() => ({ current: footerNode }), [footerNode]);
   const dialog = useRef<HTMLDialogElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Preserve the application's public surface marker on the observed panel;
@@ -58,8 +68,16 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const requestedHeight = visibleViewport.height * (fullscreen ? 1 : expandedForInput ? 0.92 : 0.8);
   const sheetHeight = fullscreen ? requestedHeight : Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   const frame = { title: props.title, contextTitle, children: props.children };
-  return <><Drawer {...props} open={!mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
-    footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet ? null : props.children}</Drawer>
+  // Keep the embedded targets mounted through compact presentation: Sheet owns
+  // moving the one footer and retaining its caret. Only the active host paints history.
+  return <>
+    {embedded?.host != null && createPortal(<section className={styles.embedded} aria-label={embedded.label} hidden={!embedded.active}>
+      <h2 className={styles.embeddedTitle}>{embedded.label}</h2>
+      <div className={styles.embeddedMessages} data-nc-drawer-scroll={embedded.active ? '' : undefined}>{embedded.active ? props.children : null}</div>
+      <div className={styles.embeddedFooter}><div ref={embedded.guideHost} /><div ref={setEmbeddedNode} /></div>
+    </section>, embedded.host)}
+    <Drawer {...props} open={!embedded?.active && !mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
+      footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet || embedded?.active ? null : props.children}</Drawer>
     <Sheet enabled={mobileSheet} open={props.open} label={props.title || '对话'} frame={{ heightPx: sheetHeight, bottomInsetPx: visibleViewport.bottomInset }}
       desktopFooterRef={desktopSlot} dialogRef={dialog} panelRef={capturePanel} finalFocusRef={finalFocus}
       focusInput={focusInput} resolveInitialFocus={resolveInitialFocus} onCloseRequest={props.onClose} onFooterHeight={setFooterHeight}

@@ -104,7 +104,7 @@ describe('two id spaces, never crossed', () => {
       initialTemplateId: 'small-change',
     });
     await fillMessage();
-    expect(templateTrigger().getAttribute('aria-label')).toBe('Template: Small change');
+    expect(templateTrigger().textContent).toBe('Template: Small change');
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({
       message: 'Ship the thing', template_id: 'small-change',
@@ -119,7 +119,7 @@ describe('two id spaces, never crossed', () => {
       initialTemplateId: 'small-change',
     });
     await fillMessage();
-    expect(templateTrigger().getAttribute('aria-label')).toBe('Template: small-change');
+    expect(templateTrigger().textContent).toBe('Template: small-change');
     expect((submitButton() as HTMLButtonElement).disabled).toBe(true);
 
     const menu = await openTemplates();

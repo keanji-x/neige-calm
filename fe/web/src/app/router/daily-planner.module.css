@@ -28,3 +28,13 @@
     .reportIntro p { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); margin-block-start: var(--space-2); color: var(--text-3); }
   }
 }
+
+@layer features {
+  .center, .assistant { display: flex; flex-direction: column; flex: 1; min-block-size: 0; min-inline-size: 0; }
+  .assistant[hidden] { display: none; }
+  .guide { display: flex; flex-wrap: wrap; gap: var(--space-4); padding-block: var(--space-2); border-block-start: 1px solid var(--hairline); color: var(--text-3); font: var(--type-metadata); }
+  .guide button { cursor: pointer; }
+  .guide button:hover { color: var(--text); }
+  .subview { flex: 1; min-block-size: 0; overflow: auto; }
+  .subviewTitle { font: var(--type-ui); font-weight: var(--weight-semibold); margin-block: var(--space-2) var(--space-4); }
+}

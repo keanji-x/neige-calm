@@ -516,7 +516,7 @@ it('preserves the footer DOM and caret across native and desktop presentations t
     expect(editor.closest('[data-nc-conversation-region]')).toBe(footer);
     await expect.poll(() => document.activeElement).toBe(editor);
     await expect.poll(() => document.getSelection()?.anchorNode).toBe(text);
-    expect(document.getSelection()?.anchorOffset).toBe(5);
+    await expect.poll(() => document.getSelection()?.anchorOffset, { message: `Caret restored at ${width}px` }).toBe(5);
     expect(editor.textContent).toBe('Retained caret draft');
   }
   await page.getByRole('button', { name: 'Close conversation', exact: true }).click();

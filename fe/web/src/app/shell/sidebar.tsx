@@ -3,7 +3,6 @@ import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 // The workspace rail: shared groups with owner-defined membership and actions.
-
 import { useEffect, useRef } from 'react';
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesign/core/DropdownMenu';
 
@@ -14,6 +13,7 @@ import {
 } from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { Icon } from '../../ui/icon/public.tsx';
+import { ListText } from '../../ui/list-typography/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
 import { ConnectionIndicator } from './connection-indicator.tsx';
 import {
@@ -29,7 +29,7 @@ import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type Sideba
 import { AreaGroup } from './area-group.tsx';
 import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
-import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
+import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
@@ -143,6 +143,9 @@ export function Sidebar({
   });
 
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
+  const primaryNavPresentation = navigationRowPresentation({ kind: 'entry', depth: 0 });
+  const todayActive = currentPath === '/';
+  const recipesActive = currentPath === '/recipes' || currentPath.startsWith('/recipes/');
 
   const deletingArea = userAreas.find((area) => area.id === areaConfirm.target);
   const typed = useTypedConfirm(deletingArea?.name ?? '');
@@ -277,6 +280,36 @@ export function Sidebar({
         </>
       ) : (
         <>
+          <div className={styles.primaryNav} data-nc-primary-nav="">
+            <div className={`${styles.areaRowWrap} ${primaryNavPresentation.className}`}>
+              <button
+                type="button"
+                data-nc-role="row"
+                className={`${styles.areaRow} ${styles.primaryNavRow} ${todayActive ? styles.primaryNavActive : ''} ${rowLayout('content')}`}
+                aria-current={todayActive ? 'page' : undefined}
+                onClick={() => onGo({ name: 'today' })}
+              >
+                <span className={`${styles.primaryNavIcon} ${rowLayout('leading')}`} aria-hidden="true">
+                  <Icon name="calendar" size="md" />
+                </span>
+                <ListText tone={primaryNavPresentation.tone} emphasis={todayActive ? 'selected' : undefined} className={styles.areaName} title="Today">Today</ListText>
+              </button>
+            </div>
+            <div className={`${styles.areaRowWrap} ${primaryNavPresentation.className}`}>
+              <button
+                type="button"
+                data-nc-role="row"
+                className={`${styles.areaRow} ${styles.primaryNavRow} ${recipesActive ? styles.primaryNavActive : ''} ${rowLayout('content')}`}
+                aria-current={recipesActive ? 'page' : undefined}
+                onClick={() => onGo({ name: 'recipes' })}
+              >
+                <span className={`${styles.primaryNavIcon} ${rowLayout('leading')}`} aria-hidden="true">
+                  <Icon name="tasks" size="md" />
+                </span>
+                <ListText tone={primaryNavPresentation.tone} emphasis={recipesActive ? 'selected' : undefined} className={styles.areaName} title="Recipes">Recipes</ListText>
+              </button>
+            </div>
+          </div>
           <div className={styles.sidebarSections}>
           {shownSections.map((id) => {
             if (id !== 'areas') {
@@ -355,6 +388,18 @@ export function Sidebar({
               )}
             />
             {!collapsed && <span className={styles.userName} aria-hidden="true">{userLabel}</span>}
+            {!collapsed && (
+              <button
+                type="button"
+                data-nc-role="icon"
+                className={`${styles.iconButton} ${styles.userSettingsButton}`}
+                aria-label="Open settings"
+                title="Settings"
+                onClick={onOpenSettings}
+              >
+                <Icon name="settings" size="sm" />
+              </button>
+            )}
       </div>
 
       <DeleteConfirmDialog confirm={trackConfirm} copy={DELETE_TRACK_COPY} />

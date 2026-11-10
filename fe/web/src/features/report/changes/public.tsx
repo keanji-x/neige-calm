@@ -8,13 +8,14 @@ import { ReportDetails } from '../document/details.tsx';
 import { ReportDocument } from '../document/public.tsx';
 import styles from './changes.module.css';
 
-export function ReportChangeDetails({ change, onOpenTrack, onToggleEdits, children }: Readonly<{
+export function ReportChangeDetails({ change, onOpenTrack, onToggleEdits, children, card = false }: Readonly<{
+  card?: boolean;
   change: ReportChange; onOpenTrack: (trackId: string) => void;
   onToggleEdits: (open: boolean) => void; children: ReactNode;
 }>) {
   return <ReportDetails title={change.track_title || 'Untitled Track'}
     meta={`${change.area_name} · ${change.edit_count} report ${change.edit_count === 1 ? 'edit' : 'edits'}`}
-    layout="grid" variant="entry">
+    layout="grid" variant={card ? 'card' : 'entry'}>
     <div className={styles.content}>
       <Button label="Open source report" variant="ghost" size="sm" onClick={() => onOpenTrack(change.track_id)}>Open report</Button>
       {change.summary_before !== change.summary_after && <dl className={styles.fields}>

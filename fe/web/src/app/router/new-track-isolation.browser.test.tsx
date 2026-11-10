@@ -13,7 +13,7 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import '../../styles/entry.css';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
 function mount() {
   const creates: ApiRequest[] = [];
@@ -35,7 +35,10 @@ function mount() {
   const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/area/a/new'] }) });
-  render(<><DepthFeedback /><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></>);
+  const container = document.createElement('div');
+  container.id = 'root';
+  document.body.append(container);
+  render(<><DepthFeedback /><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></>, { container });
   return { creates, router };
 }
 
@@ -44,6 +47,7 @@ it.each([1280, 390])('composer isolation option, badge, explanation and admissio
   const { creates } = mount();
   const trigger = page.getByRole('button', { name: 'Workspace isolation: Worktree' });
   await expect.element(trigger).toBeVisible();
+  await page.screenshot({ path: `../../../../test-results/v10-new-track-${width}.png` });
   expect(trigger.element().closest('[data-nc-composer-preferences]')).toBeTruthy();
   await trigger.click();
   await expect.element(page.getByRole('menuitem', { name: /Worktree.*Selected/ })).toBeVisible();
