@@ -136,9 +136,14 @@ async fn handle(
                         // A stale event scope still invalidates the Area list after
                         // deletion/move. It reveals no entity identity or payload.
                         Err(crate::error::CalmError::NotFound(_)) => {
-                            // Deleted descendants invalidate the list; a live
-                            // hidden Track remains outside the visitor scope.
-                            matches!(s.repo.track_get(track.as_str()).await, Ok(None))
+                            match s.repo.track_get(track.as_str()).await {
+                                Ok(None) => true,
+                                Ok(Some(row)) => {
+                                    row.area_id.as_str() != id
+                                        && row.purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE)
+                                }
+                                Err(_) => false,
+                            }
                         }
                         Err(_) => false,
                     }

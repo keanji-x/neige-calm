@@ -91,7 +91,7 @@ pub(crate) async fn get_report_series(
         )
             .into_response());
     }
-    let resolved = hydrate_chart_series(
+    let mut resolved = hydrate_chart_series(
         &state.mcp_context,
         id.as_str(),
         block,
@@ -100,8 +100,41 @@ pub(crate) async fn get_report_series(
         crate::report_series::rest_resolved_at,
     )
     .await;
+    if matches!(audience, Audience::ShareLink { .. }) {
+        project_shared_series(&mut resolved);
+    }
     audience.publish(state.repo.as_ref(), &id, &fence).await?;
     Ok((StatusCode::OK, Json(resolved)).into_response())
+}
+
+// Hydration diagnostics belong to the owner. Keep the public status/data contract
+// while withholding plugin and host details from anonymous readers.
+fn project_shared_series(resolved: &mut serde_json::Value) {
+    match resolved["status"].as_str() {
+        Some("unavailable") => {
+            resolved["reason"] = "series data is unavailable".into();
+        }
+        Some("pending") => {
+            if resolved["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty())
+            {
+                resolved["reason"] = "series source is unavailable".into();
+            }
+        }
+        Some("ok") => {
+            if let Some(series) = resolved["series"].as_array_mut() {
+                for entry in series {
+                    if entry["status"] != "ok"
+                        && let Some(entry) = entry.as_object_mut()
+                    {
+                        entry.remove("reason");
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn source_pool(state: &RouteState) -> Result<sqlx::SqlitePool> {

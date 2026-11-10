@@ -137,7 +137,14 @@ resolves the token and rechecks publication through `share_access`, including
 its original Area. Share Reports use `track_report_read::listed_blocks` for
 both `blocks` and reconstructed `body`; task blocks and task diagnostics are
 never published. Prose, charts, tables, views and sources retain their existing
-read contracts. Series hydration stays in the existing series owner.
+read contracts. Series hydration stays in the existing series owner. After
+hydration, `report_resource` projects ShareLink series diagnostics: top-level
+`unavailable.reason` is always `"series data is unavailable"` (the frontend
+requires a string); a nonempty `pending.reason` becomes
+`"series source is unavailable"`, while normal queued reads omit it. In an `ok`
+response, non-ok series entries retain their status but omit free-text `reason`.
+Numeric points and presentation fields are preserved. Owner reads keep the
+complete original diagnostics, including plugin/CLI failures.
 
 The presented token is hashed as `hex(Sha256(token))`. One autocommit statement
 snapshots active access, target containment, registry and membership facts.
@@ -209,7 +216,10 @@ card details or global cursor. Clients restart the current conversation page
 on invalidation as private drafts can become published at an existing
 presentation position. `EventScope` selects relevant events; Area
 Track descendants are checked dynamically. Existing hidden Tracks do not
-invalidate an Area; deleted descendants still invalidate its list. Lag forces
+invalidate an Area; deleted descendants and visible Tracks that have moved out
+of the event's old Area still invalidate its list. On a containment NotFound,
+the current Track row distinguishes deletion or migration from hidden area-chat
+scaffolding; lookup failures do not authorize invalidation. Lag forces
 a scoped re-fetch.
 Every wake rechecks active access; revocation or target deletion emits
 `{"type":"closed"}` and closes the socket. Revocation wakes access readers

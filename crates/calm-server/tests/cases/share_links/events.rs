@@ -195,3 +195,60 @@ async fn area_socket_invalidates_for_new_descendants_and_their_deletion() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn area_socket_invalidates_when_visible_descendant_moves_out() {
+    let fx = Fixture::new().await;
+    let link = fx.create(false).await;
+    let token = link["token"].as_str().unwrap();
+    let (mut ws, server) = socket(&fx, token).await;
+    assert_eq!(frame(&mut ws).await["type"], "snapshot");
+    let destination = fx
+        .state
+        .raw_repo()
+        .area_create(
+            OWNER_USER_ID,
+            NewArea {
+                name: "destination".into(),
+                color: "#ffffff".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+    // Preserve an actual Track event's old home scope, as an event buffered
+    // before the move would have. No payload is exposed by the public socket.
+    let mut events = fx.state.events.subscribe();
+    let (status, value) = fx
+        .request(
+            "PATCH",
+            &format!("/api/tracks/{}", fx.track),
+            Some(&fx.cookie),
+            json!({"title":"before move"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let event = events.recv().await.unwrap();
+    let expected = json!({"type":"invalidate","scope":{"kind":"area","id":fx.area}});
+    assert_eq!(frame(&mut ws).await, expected);
+    fx.state
+        .raw_repo()
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(
+            sqlx::query("UPDATE tracks SET area_id=?2 WHERE id=?1")
+                .bind(&fx.track)
+                .bind(destination.id.as_str()),
+        )
+        .await
+        .unwrap();
+    let (status, target) = fx
+        .request("GET", &format!("/api/share/{token}"), None, json!(null))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(target["tracks"], json!([]));
+    fx.state.events.emit_envelope_for_test(event);
+    assert_eq!(frame(&mut ws).await, expected);
+    server.abort();
+}

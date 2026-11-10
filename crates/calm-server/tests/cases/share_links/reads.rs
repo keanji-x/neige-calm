@@ -595,3 +595,191 @@ async fn owner_report_publication_rechecks_membership_after_assembly() {
     release.notify_one();
     assert_eq!(read.await.unwrap().0, StatusCode::FORBIDDEN);
 }
+
+async fn series_fixture() -> (Fixture, Value, String, String) {
+    let fx = Fixture::new().await;
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../fixtures/market_series_reply.json")).unwrap();
+    initial_report(&fx).await;
+    add_block(&fx, "chart.series", fixture["block"].clone(), None, 0).await;
+    let link = fx.create(true).await;
+    let root = base(link["token"].as_str().unwrap(), &fx.track);
+    let (_, report) = fx
+        .request("GET", &format!("{root}/report"), None, json!(null))
+        .await;
+    let block = report["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["kind"] == "chart.series")
+        .unwrap();
+    let block_id = block["id"].as_str().unwrap().to_owned();
+    let query = format!("block_id={block_id}&rev={}", block["rev"]);
+    (fx, fixture, root, query)
+}
+
+async fn store_series(
+    fx: &Fixture,
+    fixture: &Value,
+    query: &str,
+    row: calm_server::report_series::NewRow,
+) {
+    use calm_server::report_series::{SeriesRequest, store};
+    let block = query
+        .strip_prefix("block_id=")
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let request = SeriesRequest::from_payload(&fixture["block"]).unwrap();
+    let track = fx.track.clone();
+    fx.state
+        .raw_repo()
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .with_writer(move |session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await.unwrap();
+                store::upsert_row_tx(&mut tx, &track, &block, &request.request_hash, &row)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+}
+
+async fn series_audiences(fx: &Fixture, root: &str, query: &str) -> (Value, Value) {
+    let block_query = query.strip_prefix("block_id=").unwrap();
+    let (block, rev) = block_query.split_once("&rev=").unwrap();
+    let (status, owner) = fx
+        .request(
+            "GET",
+            &format!("/api/tracks/{}/report/series/{block}?rev={rev}", fx.track),
+            Some(&fx.cookie),
+            json!(null),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{owner}");
+    let (status, public) = fx
+        .request(
+            "GET",
+            &format!("{root}/report/series?{query}"),
+            None,
+            json!(null),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{public}");
+    (owner, public)
+}
+
+#[tokio::test]
+async fn shared_series_unavailable_reason_is_public_and_owner_keeps_diagnostics() {
+    let (fx, fixture, root, query) = series_fixture().await;
+    let diagnostic = "CLI /private/bin/plugin: isError budget exceeded";
+    store_series(
+        &fx,
+        &fixture,
+        &query,
+        calm_server::report_series::NewRow {
+            status: "unavailable".into(),
+            reason: Some(diagnostic.into()),
+            as_of: "2026-09-10".into(),
+            resolved_at: chrono::Utc::now().timestamp_millis(),
+            pinned: false,
+            summary: None,
+            data: None,
+        },
+    )
+    .await;
+    let (owner, public) = series_audiences(&fx, &root, &query).await;
+    assert_eq!(owner["reason"], diagnostic);
+    let mut expected = owner;
+    expected["reason"] = json!("series data is unavailable");
+    assert_eq!(public, expected);
+}
+
+#[tokio::test]
+async fn shared_series_pending_reason_is_public_and_queued_reason_stays_absent() {
+    let (fx, _, root, query) = series_fixture().await;
+    let (owner, public) = series_audiences(&fx, &root, &query).await;
+    assert_eq!(owner["status"], "pending");
+    assert!(owner["reason"].as_str().unwrap().contains("plugin"));
+    let mut expected = owner;
+    expected["reason"] = json!("series source is unavailable");
+    assert_eq!(public, expected);
+    // Hold the real enqueue after its in-flight insert. Subsequent reads see
+    // normal in-flight work, with no enqueue-miss reason.
+    let ctx = fx.state.mcp_context();
+    ctx.series_resolver.failpoints.hold_in_precheck();
+    let app = fx.app.clone();
+    let url = format!("{root}/report/series?{query}");
+    let held = tokio::spawn(async move { request(&app, "GET", &url, None, json!(null)).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while ctx.series_resolver.failpoints.precheck_entered() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let (owner, public) = series_audiences(&fx, &root, &query).await;
+    ctx.series_resolver.failpoints.release_precheck();
+    held.await.unwrap();
+    assert_eq!(owner["status"], "pending");
+    assert!(owner.get("reason").is_none());
+    assert_eq!(public, owner);
+}
+
+#[tokio::test]
+async fn shared_series_partial_failures_keep_status_and_points_without_reasons() {
+    let (fx, mut fixture, root, query) = series_fixture().await;
+    let failures = json!([
+        {"asset":"missing", "status":"unknown_asset", "reason":"/private/plugin unknown asset"},
+        {"asset":"offline", "status":"unavailable", "reason":"isError budget exhausted"}
+    ]);
+    for key in ["reply", "resolved"] {
+        fixture[key]["series"]
+            .as_array_mut()
+            .unwrap()
+            .extend(failures.as_array().unwrap().clone());
+    }
+    store_series(
+        &fx,
+        &fixture,
+        &query,
+        calm_server::report_series::NewRow {
+            status: "ok".into(),
+            reason: None,
+            as_of: "2026-09-10".into(),
+            resolved_at: chrono::Utc::now().timestamp_millis(),
+            pinned: true,
+            summary: Some(fixture["resolved"].clone()),
+            data: Some(fixture["reply"].clone()),
+        },
+    )
+    .await;
+    for detail in ["full", "summary"] {
+        let (owner, public) =
+            series_audiences(&fx, &root, &format!("{query}&detail={detail}")).await;
+        assert_eq!(owner["status"], "ok");
+        assert_eq!(owner["series"][2], failures[0]);
+        assert_eq!(owner["series"][3], failures[1]);
+        let mut expected = owner;
+        for index in [2, 3] {
+            expected["series"][index]
+                .as_object_mut()
+                .unwrap()
+                .remove("reason");
+        }
+        assert_eq!(public, expected);
+        if detail == "full" {
+            assert_eq!(
+                public["series"][0]["points"],
+                fixture["reply"]["series"][0]["points"]
+            );
+        }
+    }
+}
