@@ -3,9 +3,66 @@
 use super::TranscriptRow;
 use crate::mail::TOOL_MAIL_SEND;
 use crate::mcp_server::tools::user_ask::TOOL_USER_ASK;
+use calm_types::harness::{HarnessInterruptionReason, HarnessTimeoutEvidence};
+use calm_types::model::{HarnessInputPresentation, SystemInputPresentation};
 use serde_json::{Value, json};
 
-pub(super) fn params(row: &TranscriptRow) -> String {
+/// The public labels match SYSTEM_PRESENTATION_LABELS in core/domain/conversation.ts.
+/// Exhaustiveness forces new presentations to make an explicit publication decision.
+fn presentation_label(presentation: HarnessInputPresentation) -> Option<&'static str> {
+    use HarnessInputPresentation::*;
+    match presentation {
+        User => None,
+        System => Some("System update"),
+        SystemWorkerTurnFinished => Some("Worker turn finished"),
+        SystemReportEdited => Some("Report edited"),
+        SystemTaskCompleted => Some("Task completed"),
+        SystemTaskFailed => Some("Task failed"),
+        SystemMail => Some("Mail"),
+        SystemPlannerTurnBudget => Some("Planner turn budget"),
+        SystemPlannerContextUsage => Some("Planner context usage"),
+    }
+}
+
+pub(super) fn system_label(presentation: SystemInputPresentation) -> &'static str {
+    presentation_label(presentation.get()).expect("System presentation excludes User")
+}
+
+pub(super) fn project_row(item: &mut TranscriptRow) {
+    if let Some(segments) = &mut item.input_segments {
+        for segment in segments {
+            if let Some(label) = presentation_label(segment.presentation) {
+                segment.text = label.into();
+                segment.attachments.clear();
+                segment.origin = None;
+            }
+        }
+    }
+    item.turn_error_text = public_turn_error(item);
+    item.params = params(item);
+}
+
+fn public_turn_error(item: &TranscriptRow) -> Option<String> {
+    if item.method != "turn/completed" {
+        return None;
+    }
+    let raw: Value = serde_json::from_str(&item.params).ok()?;
+    if raw["status"] != "interrupted" {
+        return None;
+    }
+    let metadata = raw.get("harness_interruption_reason")?;
+    // Consume the owning legacy cause / complete versioned evidence contracts.
+    let reason = serde_json::from_value::<HarnessInterruptionReason>(metadata.clone())
+        .ok()
+        .or_else(|| {
+            let HarnessTimeoutEvidence::V1 { request, .. } =
+                serde_json::from_value(metadata.clone()).ok()?;
+            Some(request.reason)
+        })?;
+    Some(reason.message().into())
+}
+
+fn params(row: &TranscriptRow) -> String {
     let Ok(raw) = serde_json::from_str::<Value>(&row.params) else {
         return "{}".into();
     };
@@ -15,7 +72,6 @@ pub(super) fn params(row: &TranscriptRow) -> String {
         numbers(&raw, &mut out, &["durationMs"]);
         if raw["error"].is_object() {
             let mut error = json!({});
-            strings(&raw["error"], &mut error, &["message"]);
             // The renderer consumes only the error variant name, never its payload.
             match &raw["error"]["codexErrorInfo"] {
                 Value::String(code) => error["codexErrorInfo"] = json!(code),
@@ -116,7 +172,6 @@ fn user_part(part: &Value) -> Option<Value> {
     let mut out = json!({});
     strings(part, &mut out, &["type"]);
     match part["type"].as_str()? {
-        "inputText" | "text" => strings(part, &mut out, &["text"]),
         "localImage" => {
             out["path"] = json!(crate::planner_attachments::REDACTED_LOCAL_IMAGE_PATH);
         }

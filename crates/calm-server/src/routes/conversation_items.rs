@@ -177,11 +177,20 @@ fn redact(source: &mut ConversationDisplaySource, audience: Audience<'_>) {
     {
         project_item(item, audience);
     }
+    if let Audience::ShareLink { .. } = audience
+        && let ConversationDisplaySource::System {
+            presentation, text, ..
+        } = source
+    {
+        *text = share_projection::system_label(*presentation).into();
+    }
 }
 
 fn project_item(item: &mut TranscriptRow, audience: Audience<'_>) {
-    item.params = match audience {
-        Audience::Owner(_) => crate::planner_attachments::redact_local_image_paths(&item.params),
-        Audience::ShareLink { .. } => share_projection::params(item),
-    };
+    match audience {
+        Audience::Owner(_) => {
+            item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
+        }
+        Audience::ShareLink { .. } => share_projection::project_row(item),
+    }
 }

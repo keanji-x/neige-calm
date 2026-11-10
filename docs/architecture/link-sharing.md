@@ -161,16 +161,32 @@ The public router, outside `require_session`, declares `security(())` for:
 
 Conversation items/live reuse the canonical/historical readers, cursor rules
 and audience projection. Owner transcript reads retain their existing behavior,
-including local-image redaction. ShareLink transcript `params` use a fail-closed
-allowlist for Native, ImportedItem and HistoricalRaw sources, in both versioned
-pages and historical arrays. Agent text and user content remain speech, with
-`localImage.path` redacted. MCP calls publish only tool identity and activity
-metadata, except `neige_user_ask` questions (title/options) and
+including local-image redaction. ShareLink projects the complete transcript row
+through one route-owned `share_projection::project_row` entry point for Native,
+ImportedItem and HistoricalRaw sources, in both versioned pages and historical
+arrays without a contract. User `input_segments` preserve presentation, text,
+attachments and origin. Every System segment publishes only its static public
+label from the conversation renderer vocabulary, with no attachments or origin.
+Claimed System display rows use the same exhaustive presentation-to-label mapping;
+Observation turn text, gate log tails, host paths and internal task details stay
+Owner-only. A new presentation variant must explicitly choose a public label.
+
+Transcript `params` use a fail-closed allowlist. Agent text remains speech.
+UserMessage/user_message envelope text parts (`inputText` and `text`) are withheld,
+even on historical rows without segments: joined System prompts and legacy
+envelopes have no User provenance. Only proven User segments publish user text.
+Image parts retain public image/inputImage URLs and redacted `localImage.path`.
+MCP calls publish only tool identity and activity metadata, except `neige_user_ask` questions (title/options) and
 `neige_mail_send` summary. Command text, `cwd`, command output, file paths/diffs,
 MCP results/non-speech arguments, dynamic tool arguments/results and reasoning
 summary/content are withheld. File changes retain only their count; activities
 retain status, duration and exit code, with tool errors reduced to a failure
-signal. Turn outcomes retain status, duration and their explicit outcome fields.
+signal. Turn outcomes retain status, duration and error variant keys, never
+provider `error.message` or variant payloads. `turn_error_text` is withheld unless
+an interrupted turn carries the owning contract's max_turn_duration cause or
+complete versioned evidence; it then contains only
+`HarnessInterruptionReason::MaxTurnDuration.message()`, regardless of provider
+error text. Owner rows and System text retain their existing complete behavior.
 Unknown fields and future activity payloads are withheld by default.
 
 Shared presentation reads require an effective claim for the current Human

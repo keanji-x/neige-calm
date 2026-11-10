@@ -218,14 +218,32 @@ fn samples() -> Vec<(Option<&'static str>, &'static str, Value, Value)> {
         (
             Some("userMessage"),
             "item/completed",
-            json!({"type":"userMessage","content":[{"type":"inputText","text":"Public question","internal":"SECRET text"},{"type":"localImage","path":"SECRET image"}]}),
-            json!({"type":"userMessage","content":[{"type":"inputText","text":"Public question"},{"type":"localImage","path":"[redacted]"}]}),
+            json!({"type":"userMessage","content":[{"type":"inputText","text":"SECRET internal system prompt"},{"type":"text","text":"SECRET legacy diff"},{"type":"localImage","path":"SECRET image"},{"type":"inputImage","imageUrl":"https://example.com/public.png"}]}),
+            json!({"type":"userMessage","content":[{"type":"localImage","path":"[redacted]"},{"type":"inputImage","imageUrl":"https://example.com/public.png"}]}),
+        ),
+        (
+            Some("user_message"),
+            "item/completed",
+            json!({"type":"user_message","content":[{"type":"text","text":"SECRET old envelope"}]}),
+            json!({"type":"user_message","content":[]}),
         ),
         (
             None,
             "turn/completed",
             json!({"id":"turn","status":"completed","durationMs":11,"internal":"SECRET turn"}),
             json!({"id":"turn","status":"completed","durationMs":11}),
+        ),
+        (
+            None,
+            "turn/completed",
+            json!({"id":"failed-turn","status":"failed","error":{"message":"SECRET provider /private/socket","codexErrorInfo":{"other":{"path":"SECRET error payload"}}}}),
+            json!({"id":"failed-turn","status":"failed","error":{"codexErrorInfo":{"other":null}}}),
+        ),
+        (
+            None,
+            "turn/completed",
+            json!({"id":"timeout-turn","status":"interrupted","harness_interruption_reason":"max_turn_duration","error":{"message":"SECRET timeout /private/provider"}}),
+            json!({"id":"timeout-turn","status":"interrupted","harness_interruption_reason":"max_turn_duration","error":{}}),
         ),
         (
             Some("futureTool"),
@@ -283,7 +301,10 @@ async fn shared_item_projection_allowlists_all_transcript_sources_and_preserves_
     ] {
         for (index, (kind, method, payload, expected)) in samples().into_iter().enumerate() {
             // Canonical Human inputs have their own presentation, never a Native echo.
-            if source == "native" && (kind == Some("userMessage") || method == "turn/completed") {
+            if source == "native"
+                && (matches!(kind, Some("userMessage" | "user_message"))
+                    || method == "turn/completed")
+            {
                 continue;
             }
             let params = if method == "turn/completed" {
@@ -292,6 +313,26 @@ async fn shared_item_projection_allowlists_all_transcript_sources_and_preserves_
                 json!({"completedAtMs":42,"internal":"SECRET envelope","item":payload})
             };
             let raw = params.to_string();
+            let mut segments = json!([
+                {"presentation":"user","text":"Public human","attachments":[{"id":"550e8400-e29b-41d4-a716-446655440000.png","size":12,"contentType":"image/png","url":"https://example.com/public.png"}],"origin":{"observation":"user_message","event_id":17,"queue_entry":{"id":"human-input","rev":1}}},
+                {"presentation":"system","text":"SECRET /host/cwd dirty /host/task.md","attachments":[{"id":"550e8400-e29b-41d4-a716-446655440000.png","size":12,"contentType":"image/png","url":"https://example.com/SECRET.png"}],"origin":{"observation":"system_context","event_id":18,"queue_entry":{"id":"SECRET-queue","rev":1}}}
+            ]);
+            let system_labels = [
+                ("system_worker_turn_finished", "Worker turn finished"),
+                ("system_report_edited", "Report edited"),
+                ("system_task_completed", "Task completed"),
+                ("system_task_failed", "Task failed"),
+                ("system_mail", "Mail"),
+                ("system_planner_turn_budget", "Planner turn budget"),
+                ("system_planner_context_usage", "Planner context usage"),
+            ];
+            for (presentation, _) in system_labels {
+                let mut segment = segments[1].clone();
+                segment["presentation"] = json!(presentation);
+                segments.as_array_mut().unwrap().push(segment);
+            }
+            // Keep legacy user envelopes without segments to exercise the unproven text path.
+            let stored_segments = (kind != Some("userMessage")).then(|| segments.to_string());
             let row = repo
                 .fixture_transcript_insert(
                     &worker,
@@ -303,7 +344,7 @@ async fn shared_item_projection_allowlists_all_transcript_sources_and_preserves_
                     kind,
                     method,
                     &raw,
-                    None,
+                    stored_segments.as_deref(),
                 )
                 .await
                 .unwrap();
@@ -361,7 +402,35 @@ async fn shared_item_projection_allowlists_all_transcript_sources_and_preserves_
                             json!({"completedAtMs":42,"item":expected})
                         };
                         assert_eq!(actual, expected, "{source} {kind:?} {contract}");
-                        assert!(!actual.to_string().contains("SECRET"));
+                        assert!(
+                            !item.to_string().contains("SECRET"),
+                            "{source} {contract}: {item}"
+                        );
+                        if kind != Some("userMessage") {
+                            assert_eq!(item["input_segments"][0], segments[0]);
+                            assert_eq!(
+                                item["input_segments"][1],
+                                json!({"presentation":"system","text":"System update","attachments":[]})
+                            );
+                            for (index, (presentation, label)) in system_labels.iter().enumerate() {
+                                assert_eq!(
+                                    item["input_segments"][index + 2],
+                                    json!({"presentation":presentation,"text":label,"attachments":[]})
+                                );
+                            }
+                        }
+                        let timeout = params["harness_interruption_reason"] == "max_turn_duration";
+                        assert_eq!(
+                            item["turn_error_text"],
+                            if timeout {
+                                json!(
+                                    calm_types::harness::HarnessInterruptionReason::MaxTurnDuration
+                                        .message()
+                                )
+                            } else {
+                                Value::Null
+                            }
+                        );
                     } else {
                         // Existing Owner behavior includes local-image path redaction only.
                         let expected: Value = serde_json::from_str(
@@ -369,6 +438,12 @@ async fn shared_item_projection_allowlists_all_transcript_sources_and_preserves_
                         )
                         .unwrap();
                         assert_eq!(actual, expected);
+                        if kind != Some("userMessage") {
+                            assert_eq!(item["input_segments"], segments);
+                        }
+                        if let Some(message) = params.pointer("/error/message") {
+                            assert_eq!(item["turn_error_text"], *message);
+                        }
                     }
                 }
             }

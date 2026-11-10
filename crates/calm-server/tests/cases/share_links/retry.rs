@@ -67,8 +67,16 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
                     &mut tx,
                     &mut carrier,
                     SystemObservation::try_from(
-                        calm_types::observation::Observation::SystemContext {
-                            text: "Published System".into(),
+                        calm_types::observation::Observation::TaskGateResult {
+                            idempotency_key: "private-attempt".into(),
+                            key: "private-task".into(),
+                            passed: false,
+                            failing_step: Some("test".into()),
+                            exit_code: Some(101),
+                            log_tail: "SECRET cwd=/host/work dirty=[/host/private.txt] <task>internal</task>".into(),
+                            attempt: 1,
+                            status_detail: None,
+                            target: None,
                         },
                     )
                     .unwrap(),
@@ -136,7 +144,8 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
     }
     let before = page(&fx, &shared_url, false).await;
     assert_eq!(before["items"].as_array().unwrap().len(), 2, "{before}");
-    assert!(before.to_string().contains("Published System"));
+    assert!(before.to_string().contains("System update"));
+    assert!(!before.to_string().contains("SECRET"));
     let retry = db
         .writer()
         .with_writer(|session| {
@@ -160,7 +169,7 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
         .unwrap();
     let retired_owner = page(&fx, &owner_url, true).await;
     assert_eq!(retired_owner["items"].as_array().unwrap().len(), 2);
-    assert!(retired_owner.to_string().contains("Published System"));
+    assert!(retired_owner.to_string().contains("SECRET cwd=/host/work"));
     assert!(
         page(&fx, &shared_url, false).await["items"]
             .as_array()
