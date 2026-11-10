@@ -333,24 +333,40 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
  * not a `Conversation`: the card is minted by the first message, so until one is
  * sent there is no card id and nothing to fetch.
  */
+type ConversationPanelOptions = Readonly<{
+  defaultRowId: string | null;
+  onPresent?: () => void;
+  embedded?: EmbeddedConversationPresentation;
+  presented?: boolean;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  terminal?: { workbench: TerminalWorkbench; render: () => ReactNode };
+  showTrack?: boolean;
+  resizable?: boolean;
+  reportComposer?: Readonly<{ ready: boolean; returnLabel: string }>;
+}>;
+
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { onPresent?: () => void; embedded?: EmbeddedConversationPresentation; presented?: boolean; onArchive?: (cardId: string, archived: boolean) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options: ConversationPanelOptions,
 ) {
   const registry = useConversationCommands();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
   const savedTarget = useConversationPaneTarget(source.scopeId, source.rows);
-  const mainTarget = [savedTarget[0] ?? (options?.embedded?.active && source.planner !== null
-    ? { kind: 'row' as const, id: source.planner.cardId } : null), savedTarget[1]] as const;
-  const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
+  // The declared default owns resources even when its surface is absent. Keep
+  // that fallback out of preferences: only an explicit selection opens a Sheet.
+  const declaredDefault = options.defaultRowId === null ? null : { kind: 'row' as const, id: options.defaultRowId };
+  const logicalTarget = savedTarget[0] ?? declaredDefault;
+  const surfaceTarget = savedTarget[0] ?? (options.embedded?.active ? logicalTarget : null);
+  const mainTarget = [surfaceTarget, savedTarget[1]] as const;
+  const parentId = logicalTarget?.kind === 'row' ? logicalTarget.id : null;
   const lastMainRow = useRef<string | null>(null);
   useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
-  const dockOwnerId = parentId ?? (compact && options?.reportComposer !== undefined
+  const dockOwnerId = parentId ?? (compact && options.reportComposer !== undefined
     ? source.rows.find((row) => row.id === lastMainRow.current)?.id ?? source.planner?.cardId ?? source.rows[0]?.id ?? null
     : null);
-  const mainReportComposer = options?.reportComposer === undefined ? undefined : { ...options.reportComposer, conversationId: dockOwnerId };
+  const mainReportComposer = options.reportComposer === undefined ? undefined : { ...options.reportComposer, conversationId: dockOwnerId };
   const capabilities = useQuery({ queryKey: ['server-version'],
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
   const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
@@ -358,24 +374,25 @@ function useConversationPanel(
   const sideDraft = useConversationDraft(sideSlot);
   const childId = sideTarget[0]?.kind === 'row' ? sideTarget[0].id : null;
   const child = source.rows.find((row) => row.id === childId);
-  const belongsToParent = !compact && parentId !== null && (sideTarget[0]?.kind === 'draft'
+  const sideOwnerMatches = parentId !== null && (sideTarget[0]?.kind === 'draft'
     ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
-  const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
-    .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
+  const ownedCardIds = useMemo(() => [parentId, sideOwnerMatches ? childId : null]
+    .filter((id): id is string => id !== null), [parentId, sideOwnerMatches, childId]);
   // The companion is a sibling of the main surface. Its presentation follows
   // its own desktop/parent/terminal host, independently of the main subview.
   const companionVisible = !compact;
-  const terminalVisible = companionVisible && options?.terminal?.workbench.open === true;
-  const sidePresented = belongsToParent && !terminalVisible;
+  const terminalVisible = companionVisible && options.terminal?.workbench.open === true;
+  const sideAvailable = sideOwnerMatches && !compact;
+  const sidePresented = sideAvailable && !terminalVisible;
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: sidePresented });
+    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: sideAvailable, presented: sidePresented });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options.terminal !== undefined, onTerminal: options.terminal?.workbench.reveal,
       companionVisible: terminalVisible || (sidePresented && side.isOpen),
-      companion: options?.terminal !== undefined
+      companion: options.terminal !== undefined
         ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={companionVisible}
-            sideOpen={belongsToParent && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
-        : belongsToParent && side.isOpen ? side.drawerFor : undefined,
+            sideOpen={sideAvailable && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
+        : sideAvailable && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {
@@ -383,7 +400,7 @@ function useConversationPanel(
           return false;
         }
         setSideError(null);
-        options?.terminal?.workbench.suspend();
+        options.terminal?.workbench.suspend();
         if (sideDraft !== null && sideDraft.submitted !== null) {
           sideTarget[1]({ kind: 'draft' });
           if (question !== '') { setSideError('This side draft still has an unsettled delivery. Continue or retry it before starting another.'); return false; }
@@ -1291,7 +1308,7 @@ function TrackRouteBody({
         commands: plannerCommands,
       },
     },
-    { onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, guideHost: setGuideHost, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+    { defaultRowId: center !== undefined && plannerCard !== undefined ? plannerCard.id : null, onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, guideHost: setGuideHost, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
       onRemove={(id) => cardDeletion.request(id, { kind: 'surface-center' })} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );

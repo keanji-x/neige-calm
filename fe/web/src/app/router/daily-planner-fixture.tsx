@@ -80,44 +80,57 @@ export function renderDailyFixture({ history, identity, routeProbe, withTranspor
 }
 
 /** Real router with a negotiated create/adoption/working-side transport boundary. */
-export function renderWorkingDailySideFixture({ paginated = false } = {}) {
+export function renderWorkingDailySideFixture({ paginated = false, routeProbe, uiPreferences, withTransport, extraPlanner = false, initial }: {
+  paginated?: boolean; routeProbe?: ReactNode; uiPreferences?: UiPreferences;
+  withTransport?: (transport: ApiTransportPort) => ApiTransportPort; extraPlanner?: boolean; initial?: string;
+} = {}) {
   const rows: Conversation[] = [];
   const stopped = new Set<string>();
+  const creations = new Map<string, ApiRequest>();
   const receipts = createReadReceiptsKernel({ baselineMs: 0 });
   let generation = 0;
   const fixture = renderDailyFixture({
-    receipts,
+    receipts, routeProbe, uiPreferences, withTransport, extraPlanner, initial,
     identity: { userId: 'local-owner', displayName: 'Owner', role: 'owner', sessionId: 'side-lifecycle' },
     reply: request => {
       const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
-      if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationSide: true,
+      if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: true, conversationSide: true, conversationCreateModel: true,
         webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 26, dbInstanceId: 'daily-side' });
+      if (request.path.startsWith('/api/models?')) return ok({ models: [{ id: 'probe-model', model: 'probe-model', resolved_model: null, display_name: 'Probe Model', description: 'Probe', is_default: false, supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Low' }, { reasoning_effort: 'high', description: 'High' }], default_reasoning_effort: 'low' }], default: { model: 'installation-default', reasoning_effort: null, supported_reasoning_efforts: null }, default_source: 'config_read', source: 'live', fetched_at_ms: 1 });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
       }]);
       if (request.path === '/api/tracks/daily/conversations') {
-        if (request.method !== 'POST') return ok([...rows]);
+        if (request.method !== 'POST') return ok([...(extraPlanner ? [{ id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }] : []), ...rows]);
         const id = trackConversationCardId('daily', request.headers?.['Idempotency-Key'] ?? '');
         const row: Conversation = { id, trackId: 'daily', title: 'Adopted side', kind: 'track-assistant', provider: 'codex', state: 'running',
-          sourceCardId: 'daily-planner', updatedAt: 3, archivedAt: null, lastTurnCompletedAt: 3 };
-        rows.push(row);
+          sourceCardId: (request.body as { side?: { source_card_id: string } }).side?.source_card_id, updatedAt: 3, archivedAt: null, lastTurnCompletedAt: 3 };
+        if (!rows.some(existing => existing.id === id)) rows.push(row);
+        creations.set(id, request);
         return { status: 201, statusText: 'Created', body: { ...row, initialInput: { kind: 'known', receipt: initialReceiptFor(request, 'side-first', 0) } } };
+      }
+      if (request.path.endsWith('/initial-input') && !creations.has(request.path.split('/')[5])) {
+        return { status: 404, statusText: 'Not Found', body: { code: 'not_found', error: 'Conversation not created' } };
       }
       if (request.path.includes('/planner/run?contract=conversation_v1')) {
         const id = conversationCardId(request.path);
-        return ok(historicalConversationRun({ card_id: id, worker_session_id: 'runtime', phase: stopped.has(id) ? 'idle' : 'turn_running', model: null,
-          reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending: id === 'daily-planner' ? [] : [{ entry_id: 'side-first', rev: 0, text: 'Explore independently', queued_at_ms: 100 }], pending_overflow: 0, manual_compact_supported: true, recovery: null,
+        const input = creations.get(id)?.body as { text: string; model?: string; reasoning_effort?: string } | undefined;
+        return ok(historicalConversationRun({ card_id: id, worker_session_id: 'runtime', phase: stopped.has(id) ? 'idle' : 'turn_running', model: input?.model ?? null,
+          reasoning_effort: input?.reasoning_effort ?? null, permission_mode: 'never', blocked_reason: null, pending: id === 'daily-planner' ? [] : [{ entry_id: 'side-first', rev: 0, text: input?.text ?? 'Explore independently', queued_at_ms: 100 }], pending_overflow: 0, manual_compact_supported: true, recovery: null,
           compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null }, stopped.has(id) ? 'idle' : 'running', true));
       }
       if (request.path.includes('/harness/items')) {
         const id = conversationCardId(request.path);
         if (request.path.includes('&cursor=')) return ok(historicalConversationPage(id, [], null));
-        const position = paginated ? 101 + generation * 10 : 1;
+        const position = paginated ? 101 + generation * 10 : 1 + generation;
         return ok(historicalConversationPage(id, [{ id: position, worker_session_id: 'runtime', card_id: id, track_id: 'daily', thread_id: 'thread',
-          turn_id: null, turn_error_text: null, item_uuid: 'reply', item_type: 'agentMessage', method: 'item/completed', created_at_ms: position,
-          params: JSON.stringify({ item: { type: 'agentMessage', text: 'Working on [Side evidence](mailto:side@example.test).' + (paginated ? '\n\n' + Array.from({ length: 35 }, (_, n) => `Paragraph ${n}. ${'Independent conversation reading. '.repeat(8)}`).join('\n\n') : '') } }) }], paginated ? { contract: 'conversation_v1', source: 'historical_raw', card_id: id, position: position - 1 } : null));
+          turn_id: null, turn_error_text: null, item_uuid: `reply-${generation}`, item_type: 'agentMessage', method: 'item/completed', created_at_ms: position,
+          params: JSON.stringify({ item: { type: 'agentMessage', text: (generation > 0 ? 'Updated source after first snapshot. ' : '') + 'Working on [Side evidence](mailto:side@example.test).' + (paginated ? '\n\n' + Array.from({ length: 35 }, (_, n) => `Paragraph ${n}. ${'Independent conversation reading. '.repeat(8)}`).join('\n\n') : '') } }) }], paginated ? { contract: 'conversation_v1', source: 'historical_raw', card_id: id, position: position - 1 } : null));
       }
+      if (request.path.endsWith('/planner/input') && request.method === 'POST') return ok({
+        card_id: conversationCardId(request.path), worker_session_id: 'runtime', entry_id: 'side-continuation',
+      });
       if (request.path.endsWith('/planner/interrupt')) {
         const id = conversationCardId(request.path); stopped.add(id);
         return ok({ card_id: id, worker_session_id: 'runtime', stopped: true });
