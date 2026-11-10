@@ -994,7 +994,14 @@
   .attachment {
     max-width: 160px;
     border-radius: 6px;
+  }
+
+  .attachmentButton {
+    display: block;
+    inline-size: 100%;
+    border-radius: inherit;
     overflow: hidden;
+    cursor: zoom-in;
   }
 
   .attachment img {

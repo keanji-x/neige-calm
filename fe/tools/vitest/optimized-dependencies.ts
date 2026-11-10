@@ -48,6 +48,8 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/Heading',
   '@astryxdesign/core/Icon',
   '@astryxdesign/core/IconButton',
+  '@astryxdesign/core/i18n',
+  '@astryxdesign/core/Lightbox',
   '@astryxdesign/core/List',
   '@astryxdesign/core/Markdown',
   '@astryxdesign/core/MetadataList',
