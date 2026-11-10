@@ -7,6 +7,9 @@
 # and the export_bindings_* tests would then run in parallel and corrupt the
 # checked-in generated bindings — make that a hard error instead.
 nextest-version = { required = "0.9.100" }
+# #3482 — the `proc-supervisor-helper` setup script below (tracking issue
+# nextest-rs/nextest#978 keeps setup scripts experimental).
+experimental = ["setup-scripts"]
 
 [profile.default]
 # Exclude the ts-rs `export_bindings_*` generator tests (calm-types /
@@ -78,3 +81,17 @@ threads-required = 4
 # partition resumes normal four-way parallelism as soon as it finishes.
 filter = 'test(/^migration_suite::migration_replay_harness::synthetic_fixture_replays_from_every_supported_version$/)'
 threads-required = 4
+
+# #3482 — calm-server library tests run the real calm-proc-supervisor ELF.
+# nextest runs every test in its own process, so build it once here, before any
+# test starts, and hand Cargo's reported path only to the matching tests. A held
+# target lock then waits in this setup step, not inside a test's 600s ceiling.
+# libtest (`cargo test`) runs test_support::execution's call of the same builder.
+[scripts.setup.proc-supervisor-helper]
+command = 'python3 scripts/prepare-proc-supervisor-helper.py --nextest-env'
+
+# Inherited by profile.ci. test_support is compiled only into this binary, and
+# the script runs only when a selected test matches.
+[[profile.default.scripts]]
+filter = 'package(calm-server) & kind(lib)'
+setup = 'proc-supervisor-helper'
