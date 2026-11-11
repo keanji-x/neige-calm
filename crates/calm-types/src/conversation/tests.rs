@@ -206,3 +206,25 @@ fn journal_v2_proof_binds_exact_attempt_refs_and_original_digest_without_payload
     };
     assert!(SubmissionDispatchProof::from_stored_plan(attempt, &changed, digest).is_err());
 }
+
+#[test]
+fn human_v1_render_bytes_stay_compatible_with_guest_extension() {
+    let serialized = serde_json::to_string(&human()).unwrap();
+    assert_eq!(
+        serialized,
+        r#"{"kind":"human","message":{"message_id":"0123456789abcdef0123456789abcdef","revision":1},"author":{"registered_user_id":"alice","display_name":"Alice"}}"#
+    );
+    let guest = SubmissionRenderInput::LinkGuest {
+        message: MessageRevisionRef {
+            message_id: ConversationMessageId::parse(ID).unwrap(),
+            revision: NonZeroU32::MIN,
+        },
+        share_link_id: "approval".into(),
+    };
+    assert_eq!(guest.input_ref(), human().input_ref());
+    assert_eq!(
+        serde_json::from_str::<SubmissionRenderInput>(&serde_json::to_string(&guest).unwrap())
+            .unwrap(),
+        guest
+    );
+}

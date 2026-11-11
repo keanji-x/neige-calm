@@ -50,6 +50,10 @@ pub fn router(auth: AuthState) -> Router<AppState> {
             "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/run",
             get(run),
         )
+        .route(
+            "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/input",
+            axum::routing::post(super::share_input::send),
+        )
         .merge(crate::ws::share_events::router())
         .layer(Extension(auth))
 }

@@ -268,11 +268,11 @@ impl PlannerHarnessStartAdapter {
         &self,
         runtime: &super::super::OperationRuntime,
         card_id: &CardId,
-        source: crate::auth::HumanInputSource,
+        source: crate::conversation_inputs::InputSource,
         workspace_root: PathBuf,
     ) -> Result<RetainedSourceObservation> {
         let (bound, wire, _) = self
-            .retained_input_context(card_id, source.into(), workspace_root)
+            .retained_input_context(card_id, source, workspace_root)
             .await?;
         if self.harness_registry.get(&wire.worker_session_id).is_none() {
             return Ok(RetainedSourceObservation::Deferred);

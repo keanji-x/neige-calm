@@ -48,6 +48,7 @@ pub mod planner_switch;
 pub mod plugins;
 pub mod read_receipts;
 pub mod settings;
+pub mod share_input;
 pub mod share_links;
 pub mod share_reads;
 pub mod task_recovery;

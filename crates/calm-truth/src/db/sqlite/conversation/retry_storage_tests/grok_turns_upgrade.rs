@@ -203,11 +203,11 @@ async fn provider_upgrade(
     };
     // The real claim writer, an attempt, a retry relation, a Human retirement and a reference
     // successor: every member and deferred edge of the rebuilt graph holds a row.
-    let s = seed_repo(repo, card, false).await;
+    let s =
+        historical_seed_tests::seed(repo, card, historical_seed_tests::Graph::References184).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate().await.unwrap();
-        successor(&mut tx, &s).await;
+        let tx = write_session.begin_immediate().await.unwrap();
         tx.commit().await.unwrap();
         assert!(turn_admits(&s.repo, &s.card, "codex").await);
         assert!(!turn_admits(&s.repo, &s.card, added).await);

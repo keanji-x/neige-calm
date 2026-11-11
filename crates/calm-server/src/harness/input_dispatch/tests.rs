@@ -1,5 +1,6 @@
 mod failed_fact;
 mod private_fence;
+mod share;
 mod source_gate;
 
 use super::*;

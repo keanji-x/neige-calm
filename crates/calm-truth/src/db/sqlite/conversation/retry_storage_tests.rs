@@ -21,11 +21,10 @@ pub(super) struct Seed {
     pub(super) render: SubmissionRenderPlan,
 }
 
-pub(super) async fn seed_repo(repo: SqlxRepo, card: String, legacy: bool) -> Seed {
+pub(super) async fn seed_repo(repo: SqlxRepo, card: String) -> Seed {
     seed_repo_invocation(
         repo,
         card,
-        legacy,
         FrozenInputInvocation {
             model: Some("original-model".into()),
             effort: Some("high".into()),
@@ -38,23 +37,20 @@ pub(super) async fn seed_repo(repo: SqlxRepo, card: String, legacy: bool) -> See
 pub(super) async fn seed_repo_invocation(
     repo: SqlxRepo,
     card: String,
-    legacy: bool,
     invocation: FrozenInputInvocation,
 ) -> Seed {
-    seed_repo_payload(repo, card, legacy, invocation, body("frozen Human")).await
+    seed_repo_payload(repo, card, invocation, body("frozen Human")).await
 }
 
 pub(super) async fn seed_repo_payload(
     repo: SqlxRepo,
     card: String,
-    legacy: bool,
     invocation: FrozenInputInvocation,
     payload: HumanPayload,
 ) -> Seed {
     seed_repo_binding(
         repo,
         card,
-        legacy,
         invocation,
         payload,
         (calm_types::runtime::AgentProvider::Codex, "thread"),
@@ -65,150 +61,128 @@ pub(super) async fn seed_repo_payload(
 pub(super) async fn seed_repo_binding(
     repo: SqlxRepo,
     card: String,
-    legacy: bool,
     invocation: FrozenInputInvocation,
     payload: HumanPayload,
     (provider, thread): (calm_types::runtime::AgentProvider, &str),
 ) -> Seed {
     let carrier = runtime(&repo, &card).await;
     let write_db = (repo.db()).clone();
-    write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate().await.unwrap();
-        sqlx::query(
-            "UPDATE worker_sessions SET provider=?1, thread_id=?2,
+    write_db
+        .writer()
+        .with_writer(|write_session| {
+            Box::pin(async move {
+                let mut tx = write_session.begin_immediate().await.unwrap();
+                sqlx::query(
+                    "UPDATE worker_sessions SET provider=?1, thread_id=?2,
         handle_state_json=json_set(handle_state_json, '$.last_thread_id', ?2) WHERE id=?3",
-        )
-        .bind(provider.wire_name())
-        .bind(thread)
-        .bind(&carrier)
-        .execute(&mut **tx)
-        .await
-        .unwrap();
-        let mut current = current_input_carrier_tx(&mut tx, &card, &carrier)
-            .await
-            .unwrap();
-        let human = accept_pending_human_tx(&mut tx, &mut current, LEGACY_OWNER_USER_ID, payload)
-            .await
-            .unwrap();
-        let AcceptedInputRef::Human { message: human } = human.input_ref else {
-            panic!("Human")
-        };
-        let system = SystemObservation::try_from(calm_types::observation::Observation::SystemContext {
-            text: "frozen System".into(),
-        })
-        .unwrap();
-        let observation_id = SystemObservationId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
-        allocate_presentation_tx(
-            &mut tx,
-            &card,
-            PresentationSource::SystemObservation(&observation_id),
-        )
-        .await
-        .unwrap();
-        current.checkpoint.pending.push(PendingInput::System {
-            observation_id,
-            observation: system,
-            queue_position: 1,
-            queued_at_ms: 1,
-            envelope_id: None,
-            addressable: true,
-        });
-        current.checkpoint.next_queue_position = 2;
-        super::carrier::save_input_carrier_tx(&mut tx, &mut current)
-            .await
-            .unwrap();
-        let render = pending_plan_for_prefix_tx(
-            &mut tx,
-            &current,
-            std::num::NonZeroU32::new(2).unwrap(),
-            vec![
-                SystemRenderContext::new(
-                    calm_types::model::HarnessInputPresentation::System,
-                    "frozen context".into(),
                 )
-                .unwrap(),
-            ],
-        )
+                .bind(provider.wire_name())
+                .bind(thread)
+                .bind(&carrier)
+                .execute(&mut **tx)
+                .await
+                .unwrap();
+                let mut current = current_input_carrier_tx(&mut tx, &card, &carrier)
+                    .await
+                    .unwrap();
+                let human =
+                    accept_pending_human_tx(&mut tx, &mut current, LEGACY_OWNER_USER_ID, payload)
+                        .await
+                        .unwrap();
+                let AcceptedInputRef::Human { message: human } = human.input_ref else {
+                    panic!("Human")
+                };
+                let system = SystemObservation::try_from(
+                    calm_types::observation::Observation::SystemContext {
+                        text: "frozen System".into(),
+                    },
+                )
+                .unwrap();
+                let observation_id =
+                    SystemObservationId::parse("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+                allocate_presentation_tx(
+                    &mut tx,
+                    &card,
+                    PresentationSource::SystemObservation(&observation_id),
+                )
+                .await
+                .unwrap();
+                current.checkpoint.pending.push(PendingInput::System {
+                    observation_id,
+                    observation: system,
+                    queue_position: 1,
+                    queued_at_ms: 1,
+                    envelope_id: None,
+                    addressable: true,
+                });
+                current.checkpoint.next_queue_position = 2;
+                super::carrier::save_input_carrier_tx(&mut tx, &mut current)
+                    .await
+                    .unwrap();
+                let render = pending_plan_for_prefix_tx(
+                    &mut tx,
+                    &current,
+                    std::num::NonZeroU32::new(2).unwrap(),
+                    vec![
+                        SystemRenderContext::new(
+                            calm_types::model::HarnessInputPresentation::System,
+                            "frozen context".into(),
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .await
+                .unwrap();
+                let mut execution = provenance();
+                let ConversationExecutionProvenance::LegacySingleUserDeployment {
+                    provider: original,
+                    ..
+                } = &mut execution
+                else {
+                    panic!("owner execution fixture")
+                };
+                *original = provider.clone();
+                let claimed =
+                    claim_initial_submission_tx(&mut tx, &mut current, render.clone(), &execution)
+                        .await
+                        .unwrap();
+                begin_input_attempt_tx(
+                    &mut tx,
+                    &mut current,
+                    InputAttempt {
+                        submission_id: claimed.submission_id.clone(),
+                        attempt_id: InputAttemptId::parse(ATTEMPT).unwrap(),
+                    },
+                    InputCorrelationFact {
+                        provider: provider.clone(),
+                        thread_id: thread.into(),
+                        native_turn_id: None,
+                        native_session_id: None,
+                        local_turn_id: None,
+                        rpc_request_id: None,
+                    },
+                    invocation,
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                Seed {
+                    repo,
+                    card,
+                    carrier,
+                    root: claimed.submission_id,
+                    human,
+                    render,
+                }
+            })
+        })
         .await
-        .unwrap();
-        if legacy {
-            // Seed the released inline schema, not the new claim writer. Migration
-            // and repository reopen below are the production behavior under test.
-            let root = InputSubmissionId::parse("11111111111111111111111111111111").unwrap();
-            super::tests::submission(
-                &mut tx,
-                &card,
-                root.as_str(),
-                "22222222222222222222222222222222",
-                &render,
-            )
-            .await;
-            sqlx::query("INSERT INTO conversation_submission_inputs(submission_id, input_position, input_kind, message_id,
-            revision, queue_position, queued_at_ms, effective) VALUES(?1, 0, 'human', ?2, 1, 0, 1,
-            1)")
-                .bind(root.as_str()).bind(human.message_id.as_str()).execute(&mut **tx).await.unwrap();
-            sqlx::query(
-                "INSERT INTO conversation_submission_inputs(submission_id, input_position, input_kind,
-            observation_id, queue_position, queued_at_ms, system_addressable, effective) VALUES(?1,
-            1, 'system', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 1, 1, 1, 1)",
-            )
-            .bind(root.as_str())
-            .execute(&mut **tx)
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            return Seed {
-                repo,
-                card,
-                carrier,
-                root,
-                human,
-                render,
-            };
-        }
-        let mut execution = provenance();
-        let ConversationExecutionProvenance::LegacySingleUserDeployment {
-            provider: original, ..
-        } = &mut execution;
-        *original = provider.clone();
-        let claimed = claim_initial_submission_tx(&mut tx, &mut current, render.clone(), &execution)
-            .await
-            .unwrap();
-        begin_input_attempt_tx(
-            &mut tx,
-            &mut current,
-            InputAttempt {
-                submission_id: claimed.submission_id.clone(),
-                attempt_id: InputAttemptId::parse(ATTEMPT).unwrap(),
-            },
-            InputCorrelationFact {
-                provider: provider.clone(),
-                thread_id: thread.into(),
-                native_turn_id: None,
-                native_session_id: None,
-                local_turn_id: None,
-                rpc_request_id: None,
-            },
-            invocation,
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        Seed {
-            repo,
-            card,
-            carrier,
-            root: claimed.submission_id,
-            human,
-            render,
-        }
-
-    })).await.expect("independent write operation")
+        .expect("independent write operation")
 }
 
 pub(super) async fn seed() -> Seed {
     let (repo, _, card) = fixture().await;
-    seed_repo(repo, card, false).await
+    seed_repo(repo, card).await
 }
 
 // Roll back only the SQL effects to let guard tests stage invalid linkages.
@@ -427,85 +401,6 @@ async fn canonical_retry_storage_rejects_foreign_chain_and_mutable_reference() {
         tx.rollback().await.unwrap();
 
     })).await.expect("independent write operation")
-}
-
-#[tokio::test]
-async fn canonical_retry_storage_root_erasure_propagates_to_all_references() {
-    let s = seed().await;
-    let write_db = (s.repo.db()).clone();
-    write_db
-        .writer()
-        .with_writer(|write_session| {
-            Box::pin(async move {
-                let mut tx = write_session.begin_immediate().await.unwrap();
-                successor(&mut tx, &s).await;
-                let mut erased = s.render.clone();
-                let SubmissionRenderPlan::V1 { segments } = &mut erased;
-                for segment in segments {
-                    match segment {
-                        SubmissionRenderSegment::Input {
-                            input: SubmissionRenderInput::System { payload, .. },
-                            ..
-                        } => {
-                            *payload = PrivateHistoryPayload::ErasedByPrivateHistoryOperation {
-                                operation_id: super::tests::operation(),
-                            }
-                        }
-                        SubmissionRenderSegment::Context { payload } => {
-                            *payload = PrivateHistoryPayload::ErasedByPrivateHistoryOperation {
-                                operation_id: super::tests::operation(),
-                            }
-                        }
-                        SubmissionRenderSegment::Input {
-                            input: SubmissionRenderInput::Human { .. },
-                            ..
-                        } => {}
-                    }
-                }
-                sqlx::query(
-                    "UPDATE conversation_input_submissions SET render_plan_json=?1 WHERE id=?2",
-                )
-                .bind(serde_json::to_string(&erased).unwrap())
-                .bind(s.root.as_str())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-                sqlx::query(
-                    "UPDATE conversation_message_revisions SET payload_json=?1 WHERE message_id=?2",
-                )
-                .bind(
-                    serde_json::to_string(
-                        &PrivateHistoryPayload::<HumanPayload>::ErasedByPrivateHistoryOperation {
-                            operation_id: super::tests::operation(),
-                        },
-                    )
-                    .unwrap(),
-                )
-                .bind(s.human.message_id.as_str())
-                .execute(&mut **tx)
-                .await
-                .unwrap();
-                for id in [s.root.clone(), InputSubmissionId::parse(SUCCESSOR).unwrap()] {
-                    let stored = submission_plan_tx(&mut tx, &id).await.unwrap();
-                    assert_eq!(stored.plan, erased);
-                    assert_eq!(stored.original_digest.as_str(), digest(&s.render).unwrap());
-                }
-                assert!(matches!(
-                    revision_tx(&mut tx, &s.human).await.unwrap().payload,
-                    PrivateHistoryPayload::ErasedByPrivateHistoryOperation { .. }
-                ));
-                let page = super::super::conversation_read::page_on_connection(
-                    &mut tx, &s.card, 0, 100, false,
-                )
-                .await
-                .unwrap();
-                let display = serde_json::to_string(&page).unwrap();
-                assert!(!display.contains("frozen System") && !display.contains("frozen Human"));
-                tx.commit().await.unwrap();
-            })
-        })
-        .await
-        .expect("independent write operation")
 }
 
 #[tokio::test]
@@ -855,3 +750,9 @@ async fn canonical_retry_intent_is_independent_of_crossing_submission() {
             .unwrap();
     assert!(submissions.iter().any(|name| name == "retry_intent_id"));
 }
+
+#[cfg(test)]
+mod erasure_tests;
+
+#[cfg(test)]
+mod historical_seed_tests;

@@ -373,20 +373,13 @@ async fn u2_imported_schema_only_preserves_contract_sequence_fk_and_trigger() {
         let write_db = (repo.db()).clone();
         write_db.writer().with_writer(|write_session| Box::pin(async move {
             let mut tx = write_session.begin_immediate().await.unwrap();
-            let h = insert_message_tx(
-                &mut tx,
-                &card,
-                &MessageAuthor::AuthenticatedHuman {
-                    registered_user_id: LEGACY_OWNER_USER_ID.into(),
-                },
-                body("original"),
-            )
-            .await
-            .unwrap();
+            let h = crate::db::sqlite::historical_fixtures::owner_message_before_guest_tx(
+                &mut tx, &card, body("original"),
+            ).await;
             allocate_presentation_tx(
                 &mut tx,
                 &card,
-                PresentationSource::HumanMessage(&h.reference.message_id),
+                PresentationSource::HumanMessage(&h.message_id),
             )
             .await
             .unwrap();

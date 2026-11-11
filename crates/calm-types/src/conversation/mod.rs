@@ -40,6 +40,11 @@ pub enum ConversationHistoryContract {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConversationExecutionProvenance {
+    ShareDelegation {
+        delegation: crate::share_links::ShareDelegation,
+        provider: crate::runtime::AgentProvider,
+        profile: crate::harness::HarnessProfile,
+    },
     LegacySingleUserDeployment {
         deployment_owner_user_id: String,
         provider: crate::runtime::AgentProvider,
@@ -50,6 +55,7 @@ pub enum ConversationExecutionProvenance {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessageAuthor {
+    LinkGuest { share_link_id: String },
     AuthenticatedHuman { registered_user_id: String },
 }
 
@@ -105,3 +111,21 @@ pub enum PrivateHistoryPayload<T> {
 mod checkpoint_tests;
 #[cfg(test)]
 mod tests;
+
+impl ConversationExecutionProvenance {
+    pub fn binding(
+        &self,
+    ) -> (
+        &crate::runtime::AgentProvider,
+        &crate::harness::HarnessProfile,
+    ) {
+        match self {
+            Self::LegacySingleUserDeployment {
+                provider, profile, ..
+            }
+            | Self::ShareDelegation {
+                provider, profile, ..
+            } => (provider, profile),
+        }
+    }
+}

@@ -1,5 +1,5 @@
-//! Fixed graph seed for migration tests starting after 0166 and before 0210.
-//! A historical database cannot use today's Track writer or retirement columns.
+//! Fixed migration inputs for released storage contracts: cards before 0210
+//! and authenticated messages before 0217 use their exact historical columns.
 use sqlx::{Sqlite, Transaction};
 
 pub(super) async fn card_before_retirement(
@@ -45,4 +45,72 @@ pub(super) async fn conversation_card(repo: &super::SqlxRepo) -> (String, String
         })
         .await
         .unwrap()
+}
+
+/// Frozen authenticated-message columns from 0175, before 0217 added guest attribution.
+pub(super) async fn insert_message_before_guest_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    message: &super::conversation::StoredMessage,
+    revision: &super::conversation::StoredMessageRevision,
+) {
+    let calm_types::conversation::MessageAuthor::AuthenticatedHuman { registered_user_id } =
+        &message.author
+    else {
+        panic!("guest data has no pre-0217 encoding")
+    };
+    sqlx::query(
+        "INSERT INTO conversation_messages(id,card_id,current_revision,author_kind,
+        author_user_id,created_at_ms,withdrawn_at_ms)
+        VALUES(?1,?2,?3,'authenticated_human',?4,?5,?6)",
+    )
+    .bind(message.current.message_id.as_str())
+    .bind(&message.card_id)
+    .bind(i64::from(message.current.revision.get()))
+    .bind(registered_user_id)
+    .bind(message.created_at_ms)
+    .bind(message.withdrawn_at_ms)
+    .execute(&mut **tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO conversation_message_revisions(message_id,revision,body_sha256,
+        payload_json,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+    )
+    .bind(revision.reference.message_id.as_str())
+    .bind(i64::from(revision.reference.revision.get()))
+    .bind(&revision.body_sha256)
+    .bind(serde_json::to_string(&revision.payload).unwrap())
+    .bind(revision.created_at_ms)
+    .execute(&mut **tx)
+    .await
+    .unwrap();
+}
+
+pub(super) async fn owner_message_before_guest_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card: &str,
+    payload: calm_types::conversation::HumanPayload,
+) -> calm_types::conversation::MessageRevisionRef {
+    use calm_types::conversation::*;
+    let reference = MessageRevisionRef {
+        message_id: ConversationMessageId::parse(&crate::model::new_id()).unwrap(),
+        revision: std::num::NonZeroU32::MIN,
+    };
+    let message = super::conversation::StoredMessage {
+        current: reference.clone(),
+        card_id: card.into(),
+        author: MessageAuthor::AuthenticatedHuman {
+            registered_user_id: calm_types::organization::LEGACY_OWNER_USER_ID.into(),
+        },
+        created_at_ms: 1,
+        withdrawn_at_ms: None,
+    };
+    let revision = super::conversation::StoredMessageRevision {
+        reference: reference.clone(),
+        body_sha256: super::conversation::digest(&payload).unwrap(),
+        payload: PrivateHistoryPayload::Present { value: payload },
+        created_at_ms: 1,
+    };
+    insert_message_before_guest_tx(tx, &message, &revision).await;
+    reference
 }

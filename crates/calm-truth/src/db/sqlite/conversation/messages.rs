@@ -38,20 +38,27 @@ pub async fn insert_message_tx(
         message_id: ConversationMessageId::parse(&new_id()).map_err(invalid_identity)?,
         revision: NonZeroU32::MIN,
     };
-    let MessageAuthor::AuthenticatedHuman { registered_user_id } = author;
-    super::super::area_membership::application_user_require_registered(tx, registered_user_id)
-        .await?;
+    let (kind, user, link) = match author {
+        MessageAuthor::AuthenticatedHuman { registered_user_id } => {
+            super::super::area_membership::application_user_require_registered(
+                tx,
+                registered_user_id,
+            )
+            .await?;
+            (
+                "authenticated_human",
+                Some(registered_user_id.as_str()),
+                None,
+            )
+        }
+        MessageAuthor::LinkGuest { share_link_id } => {
+            ("link_guest", None, Some(share_link_id.as_str()))
+        }
+    };
     let now = now_ms();
-    sqlx::query(
-        "INSERT INTO conversation_messages(id,card_id,current_revision,author_kind,author_user_id,created_at_ms)
-         VALUES (?1,?2,1,'authenticated_human',?3,?4)",
-    )
-    .bind(reference.message_id.as_str())
-    .bind(card_id)
-    .bind(registered_user_id)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query("INSERT INTO conversation_messages(id,card_id,current_revision,author_kind,author_user_id,author_share_link_id,created_at_ms) VALUES(?1,?2,1,?3,?4,?5,?6)")
+        .bind(reference.message_id.as_str()).bind(card_id).bind(kind).bind(user).bind(link).bind(now)
+        .execute(&mut **tx).await?;
     let stored = StoredMessageRevision {
         reference,
         body_sha256: digest(&payload)?,
@@ -67,7 +74,7 @@ pub async fn message_tx(
     message_id: &ConversationMessageId,
 ) -> Result<StoredMessage> {
     let row = sqlx::query(
-        "SELECT card_id,current_revision,author_kind,author_user_id,created_at_ms,withdrawn_at_ms
+        "SELECT card_id,current_revision,author_kind,author_user_id,author_share_link_id,created_at_ms,withdrawn_at_ms
          FROM conversation_messages WHERE id=?1",
     )
     .bind(message_id.as_str())
@@ -77,6 +84,9 @@ pub async fn message_tx(
     let author = match row.try_get::<&str, _>("author_kind")? {
         "authenticated_human" => MessageAuthor::AuthenticatedHuman {
             registered_user_id: row.try_get("author_user_id")?,
+        },
+        "link_guest" => MessageAuthor::LinkGuest {
+            share_link_id: row.try_get("author_share_link_id")?,
         },
         _ => {
             return Err(CalmError::Internal(

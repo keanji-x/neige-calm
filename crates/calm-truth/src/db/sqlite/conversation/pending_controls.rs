@@ -37,7 +37,9 @@ pub async fn pending_human_messages_tx(
         else {
             continue;
         };
-        let MessageAuthor::AuthenticatedHuman { registered_user_id } = current.author;
+        let MessageAuthor::AuthenticatedHuman { registered_user_id } = current.author else {
+            continue;
+        };
         messages.push(PendingHumanMessage {
             reference: message.clone(),
             author_user_id: registered_user_id,

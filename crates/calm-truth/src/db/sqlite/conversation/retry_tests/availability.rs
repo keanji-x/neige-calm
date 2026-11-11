@@ -8,7 +8,6 @@ async fn canonical_retry_old_invocation_or_inherited_selection_is_keep_only() {
         let s = super::super::retry_storage_tests::seed_repo_invocation(
             repo,
             card,
-            false,
             FrozenInputInvocation {
                 model: model.map(str::to_owned),
                 effort: effort.map(str::to_owned),
@@ -95,7 +94,6 @@ async fn canonical_retry_unavailable_inputs_keep_typed_reasons_and_no_writes() {
         let s = super::super::retry_storage_tests::seed_repo_payload(
             repo,
             card,
-            false,
             FrozenInputInvocation {
                 model: Some("frozen".into()),
                 effort: Some("high".into()),
@@ -161,7 +159,9 @@ async fn canonical_retry_unavailable_inputs_keep_typed_reasons_and_no_writes() {
                 }
                 Case::Binding => {
                     let ConversationExecutionProvenance::LegacySingleUserDeployment { profile, .. } =
-                        &mut execution;
+                        &mut execution else {
+                        panic!("owner execution fixture")
+                    };
                     *profile = calm_types::harness::HarnessProfile::PlainChat;
                     RetryUnavailableReason::UnsupportedBinding
                 }
@@ -294,7 +294,6 @@ async fn binding_availability(
     let s = super::super::retry_storage_tests::seed_repo_binding(
         repo,
         card,
-        false,
         FrozenInputInvocation {
             model: Some("frozen".into()),
             effort: Some("high".into()),

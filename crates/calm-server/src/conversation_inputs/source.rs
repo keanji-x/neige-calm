@@ -6,6 +6,7 @@ use calm_types::conversation::{CanonicalPendingIdentity, SubmissionRenderInput};
 #[derive(Clone)]
 pub(crate) enum InputSource {
     Human(HumanInputSource),
+    Share(super::ShareInputSource),
     HumanRepeat(HumanRepeatSource),
     Dispatcher(Box<crate::dispatcher::canonical_inputs::DispatcherInputSource>),
 }
@@ -37,9 +38,10 @@ impl InputSource {
     ) -> Result<()> {
         match (self, id) {
             (Self::HumanRepeat(repeat), Some(id)) if &repeat.retry_intent_id == id => Ok(()),
-            (Self::Human(_), None) | (Self::Dispatcher(_), None) => Ok(()),
+            (Self::Human(_), None) | (Self::Share(_), None) | (Self::Dispatcher(_), None) => Ok(()),
             (Self::HumanRepeat(_), Some(_) | None)
             | (Self::Human(_), Some(_))
+            | (Self::Share(_), Some(_))
             | (Self::Dispatcher(_), Some(_)) => Err(CalmError::Forbidden(
                 "source does not qualify this exact retry intent".into(),
             )),
@@ -57,7 +59,7 @@ impl InputSource {
             }),
             (Self::Human(_), CanonicalPendingIdentity::Accepted { .. })
             | (
-                Self::HumanRepeat(_) | Self::Dispatcher(_),
+                Self::HumanRepeat(_) | Self::Share(_) | Self::Dispatcher(_),
                 CanonicalPendingIdentity::Accepted { .. }
                 | CanonicalPendingIdentity::ExplicitSuccessor { .. },
             ) => self.clone(),
@@ -70,7 +72,7 @@ impl InputSource {
         carrier: &CurrentInputCarrier,
     ) -> Result<Option<conversation::StoredRetryIntent>> {
         match self {
-            Self::Human(_) | Self::Dispatcher(_) => Ok(None),
+            Self::Human(_) | Self::Share(_) | Self::Dispatcher(_) => Ok(None),
             Self::HumanRepeat(repeat) => {
                 authorize_human_resource_tx(tx, &repeat.human, carrier.card_id()).await?;
                 let intent =
@@ -87,8 +89,8 @@ impl InputSource {
                 let original =
                     conversation::submission_identity_tx(tx, &intent.predecessor_submission_id)
                         .await?;
-                let calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment { provider, profile, .. } = original.execution;
-                if binding.provider != provider || binding.profile != profile {
+                let (provider, profile) = original.execution.binding();
+                if binding.provider != *provider || binding.profile != *profile {
                     return Err(CalmError::Conflict(
                         "Human repeat provider binding changed".into(),
                     ));
@@ -100,13 +102,14 @@ impl InputSource {
 
     pub(crate) fn require_repo(&self, repo: &dyn crate::db::RepoEventWrite) -> Result<()> {
         match self {
-            Self::Human(_) | Self::HumanRepeat(_) => Ok(()),
+            Self::Human(_) | Self::Share(_) | Self::HumanRepeat(_) => Ok(()),
             Self::Dispatcher(source) => source.require_repo(repo),
         }
     }
 
     pub(crate) fn check_current(&self) -> Result<()> {
         match self {
+            Self::Share(source) => source.check_current(),
             Self::Human(source) => source.current_principal().map(drop),
             Self::HumanRepeat(source) => source.human.current_principal().map(drop),
             Self::Dispatcher(source) => source.check_current().map(drop),
@@ -123,7 +126,7 @@ impl InputSource {
                 .repeat_intent_tx(tx, carrier)
                 .await?
                 .is_some_and(|intent| intent.plan.plan == *plan)),
-            Self::Human(_) | Self::Dispatcher(_) => {
+            Self::Human(_) | Self::Share(_) | Self::Dispatcher(_) => {
                 for segment in plan.segments() {
                     if let calm_types::conversation::SubmissionRenderSegment::Input {
                         input, ..
@@ -154,12 +157,15 @@ impl InputSource {
             (Self::Dispatcher(source), SubmissionRenderInput::System { .. }) => {
                 source.authorizes_tx(tx, carrier, input).await
             }
-            (Self::Human(_), SubmissionRenderInput::System { .. })
-            | (Self::Dispatcher(_), SubmissionRenderInput::Human { .. })
-            | (
-                Self::HumanRepeat(_),
-                SubmissionRenderInput::Human { .. } | SubmissionRenderInput::System { .. },
-            ) => Ok(false),
+            (
+                Self::Share(source),
+                SubmissionRenderInput::LinkGuest {
+                    message,
+                    share_link_id,
+                },
+            ) => Ok(source.delegation().id == *share_link_id
+                && source.matches_tx(tx, carrier, message).await?),
+            _ => Ok(false),
         }
     }
 }
@@ -170,6 +176,7 @@ pub(crate) async fn authorize_resource_tx(
     carrier: &CurrentInputCarrier,
 ) -> Result<String> {
     match source {
+        InputSource::Share(source) => source.authorize_tx(tx, carrier.card_id()).await,
         InputSource::Human(source) => {
             authorize_human_resource_tx(tx, source, carrier.card_id()).await?;
             Ok(source.current_principal()?.user_id)
@@ -289,20 +296,10 @@ pub(crate) async fn source_inputs_tx(
                     .await?
             }
             (
-                InputSource::Human(_),
-                calm_types::conversation::PendingInput::System { .. }
-                | calm_types::conversation::PendingInput::ExplicitSuccessor { .. },
-            )
-            | (
-                InputSource::Dispatcher(_),
-                calm_types::conversation::PendingInput::Human { .. }
-                | calm_types::conversation::PendingInput::ExplicitSuccessor { .. },
-            )
-            | (
-                InputSource::HumanRepeat(_),
-                calm_types::conversation::PendingInput::Human { .. }
-                | calm_types::conversation::PendingInput::System { .. },
-            ) => false,
+                InputSource::Share(source),
+                calm_types::conversation::PendingInput::Human { message, .. },
+            ) => source.matches_tx(tx, carrier, message).await?,
+            _ => false,
         };
         if qualified {
             identities.push(pending.identity());
@@ -336,14 +333,23 @@ pub(crate) async fn authorize_execution_tx(
     }
     let (binding, runtime) = crate::harness::profile::input_carrier_binding_tx(tx, carrier).await?;
     source.check_current()?;
-    Ok((
-        calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id: owner,
-            provider: binding.provider,
-            profile: binding.profile,
-        },
-        runtime,
-    ))
+    let execution = match &source {
+        InputSource::Share(source) => {
+            calm_types::conversation::ConversationExecutionProvenance::ShareDelegation {
+                delegation: source.delegation().clone(),
+                provider: binding.provider,
+                profile: binding.profile,
+            }
+        }
+        _ => {
+            calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+                deployment_owner_user_id: owner,
+                provider: binding.provider,
+                profile: binding.profile,
+            }
+        }
+    };
+    Ok((execution, runtime))
 }
 
 pub(crate) async fn claim_initial_tx(

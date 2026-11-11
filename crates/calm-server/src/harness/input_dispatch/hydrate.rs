@@ -10,7 +10,7 @@ use crate::db::sqlite::conversation::{message_tx, revision_tx};
 use crate::error::{CalmError, Result};
 use provider::InputItem;
 
-pub(super) async fn hydrate(
+pub(crate) async fn hydrate(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     plan: &SubmissionRenderPlan,
@@ -50,6 +50,29 @@ pub(super) async fn hydrate(
                             .into_iter()
                             .map(|attachment| InputItem::local_image(attachment.path)),
                     );
+                }
+                SubmissionRenderInput::LinkGuest {
+                    message,
+                    share_link_id,
+                } => {
+                    let identity = message_tx(tx, &message.message_id).await?;
+                    if identity.card_id != card_id
+                        || identity.withdrawn_at_ms.is_some()
+                        || identity.author
+                            != (MessageAuthor::LinkGuest {
+                                share_link_id: share_link_id.clone(),
+                            })
+                    {
+                        return Err(CalmError::Conflict(
+                            "guest reference and original author disagree".into(),
+                        ));
+                    }
+                    let PrivateHistoryPayload::Present { value } =
+                        revision_tx(tx, message).await?.payload
+                    else {
+                        return Err(erased());
+                    };
+                    text.push(format!("[Link guest]\n{}", value.text));
                 }
                 SubmissionRenderInput::System {
                     payload: PrivateHistoryPayload::Present { value },

@@ -28,11 +28,11 @@ async fn pending_controls_migration_preserves_retries_claims_and_imported_presen
     .unwrap();
     let repo = repo_on(db);
     let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
-    let s = seed_repo(repo, card, false).await;
+    let s =
+        historical_seed_tests::seed(repo, card, historical_seed_tests::Graph::References184).await;
     let write_db = (s.repo.db()).clone();
     write_db.writer().with_writer(|write_session| Box::pin(async move {
-        let mut tx = write_session.begin_immediate().await.unwrap();
-        successor(&mut tx, &s).await;
+        let tx = write_session.begin_immediate().await.unwrap();
         tx.commit().await.unwrap();
         let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
             .bind(&s.card)

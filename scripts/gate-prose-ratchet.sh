@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# #3633 bounded SQL exception: long_literal/crates/**/*.rs 208 -> 213.
+# Five SQL statements describe real storage contracts:
+# 1. conversation/messages.rs inserts explicit Human or LinkGuest attribution.
+# 2. conversation/claim_storage.rs inserts the frozen execution delegation.
+# 3. routes/track_conversations.rs reads the current Planner session state.
+# 4. share_links/input.rs prepares a canonical Planner for its HTTP projection.
+# 5. canonical_lifecycle_tests/share_recovery_tests.rs seeds the durable native
+#    thread association that precedes a production claim's unattempted restart.
+# Query changes edit their owning source/fixture and this existing baseline;
+# ordinary tests need no inventory entry. The existing scan and selftest each
+# run once per CI lint workflow; no scan rule or exclusion changes.
 # F-released bounded declaration exception: long_literal 207 -> 209.
 # The two new matches are released.rs's flattened canonical/header field list
 # and its optional-field list. They describe the persisted owner contract,

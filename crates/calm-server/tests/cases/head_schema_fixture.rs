@@ -154,6 +154,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0214_mail_hourly_quota.sql",
     "0215_share_links.sql",
     "0216_acp_shared_restart_release.sql",
+    "0217_share_guest_execution.sql",
 ];
 
 #[test]

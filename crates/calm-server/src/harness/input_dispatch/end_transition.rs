@@ -1,7 +1,6 @@
 //! Consume one actual immutable END as a pure canonical transition. This owner
 //! never starts/wakes a backend or grants the next input. Native acknowledgement
 //! evidence, when present, is committed atomically with the original END.
-use calm_types::conversation::ConversationExecutionProvenance;
 use calm_types::runtime::AgentProvider;
 use sqlx::{Sqlite, Transaction};
 
@@ -42,11 +41,7 @@ async fn sample_tx(
         return Ok(None);
     };
     let (binding, current) = input_carrier_contract_tx(tx, &carrier).await?;
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        provider: recorded_provider,
-        profile,
-        ..
-    } = &original.identity.execution;
+    let (recorded_provider, profile) = original.identity.execution.binding();
     if binding.provider != *provider
         || recorded_provider != provider
         || binding.profile != *profile
@@ -255,10 +250,16 @@ pub(crate) async fn accepted_recovery_tx(
     else {
         return Ok(None);
     };
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        deployment_owner_user_id,
-        ..
-    } = &sample.original.identity.execution;
+    let deployment_owner_user_id = match &sample.original.identity.execution {
+        calm_types::conversation::ConversationExecutionProvenance::LegacySingleUserDeployment {
+            deployment_owner_user_id,
+            ..
+        } => deployment_owner_user_id,
+        calm_types::conversation::ConversationExecutionProvenance::ShareDelegation {
+            delegation,
+            ..
+        } => &delegation.approver_user_id,
+    };
     let accepted = matches!((&sample.target.scope,&fact.delivery),
         (ExecutionEndScope::NativeTurn{native_turn_id,..},InputDeliveryFact::Accepted{evidence:NativeInputAcceptance::NativeTurn{native_turn_id:accepted},..}) if native_turn_id==accepted);
     let scope = crate::db::sqlite::session_backend::codex_backend_scope_tx(

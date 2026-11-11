@@ -7,9 +7,7 @@ use crate::db::sqlite::conversation::{current_input_fact_carrier_tx, submission_
 use crate::error::{CalmError, Result};
 use crate::harness::backend::{ExecutionEndScope, InputAcknowledgementBasis};
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
-use calm_types::conversation::{
-    ConversationExecutionProvenance, InputDeliveryFact, NativeInputAcceptance,
-};
+use calm_types::conversation::{InputDeliveryFact, NativeInputAcceptance};
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 use sqlx::{Sqlite, Transaction};
 
@@ -100,13 +98,11 @@ async fn verified_replay_tx(
             continue;
         }
         let identity = submission_identity_tx(tx, submission_id).await?;
-        let ConversationExecutionProvenance::LegacySingleUserDeployment {
-            provider, profile, ..
-        } = identity.execution;
+        let (provider, profile) = identity.execution.binding();
         if identity.card_id != card
             || identity.ordinal != 0
-            || provider != AgentProvider::Claude
-            || profile != binding.profile
+            || *provider != AgentProvider::Claude
+            || *profile != binding.profile
         {
             return Err(CalmError::Conflict(
                 "Claude replay evidence crosses its original input".into(),

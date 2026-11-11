@@ -88,11 +88,16 @@ pub async fn claim_initial_submission_tx(
             )
         }
     };
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        deployment_owner_user_id,
-        provider,
-        profile: _,
-    } = provenance;
+    let (provider, _) = provenance.binding();
+    let deployment_owner_user_id = match provenance {
+        ConversationExecutionProvenance::LegacySingleUserDeployment {
+            deployment_owner_user_id,
+            ..
+        } => deployment_owner_user_id,
+        ConversationExecutionProvenance::ShareDelegation { delegation, .. } => {
+            &delegation.approver_user_id
+        }
+    };
     super::super::area_membership::application_user_require_registered(
         tx,
         deployment_owner_user_id,

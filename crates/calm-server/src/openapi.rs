@@ -71,6 +71,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
+        crate::routes::share_input::send,
         crate::routes::share_reads::resolve,
         crate::routes::share_reads::report,
         crate::routes::share_reads::series,
@@ -342,6 +343,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         ConversationItemsQuery,
         calm_types::harness::HarnessLiveReplies,
         calm_types::harness::HarnessLiveReply,
+        crate::routes::share_input::ShareInputRequest,
         SendPlannerInputRequest,
         SendPlannerInputResponse,
         TrackConversationSummary,

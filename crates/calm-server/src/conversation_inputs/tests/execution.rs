@@ -8,7 +8,7 @@ use calm_types::conversation::{
     SubmissionRenderInput, SubmissionRenderSegment,
 };
 
-async fn source(auth: &AuthState, token: &str) -> HumanInputSource {
+pub(super) async fn source(auth: &AuthState, token: &str) -> HumanInputSource {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         axum::http::header::COOKIE,
@@ -35,7 +35,10 @@ async fn first_plan(
         .await
         .unwrap();
     let calm_types::conversation::MessageAuthor::AuthenticatedHuman { registered_user_id } =
-        identity.author;
+        identity.author
+    else {
+        panic!("owner fixture")
+    };
     let display_name: String =
         sqlx::query_scalar("SELECT display_name FROM application_users WHERE id=?1")
             .bind(&registered_user_id)
@@ -86,7 +89,7 @@ async fn accept_owner(fx: &Fixture) -> (String, HumanInputSource) {
     (token, source)
 }
 
-async fn transfer_area_to_alice(fx: &Fixture) {
+pub(super) async fn transfer_area_to_alice(fx: &Fixture) {
     fx.register("alice").await;
     let write_db = (fx.input.repo.db()).clone();
     write_db

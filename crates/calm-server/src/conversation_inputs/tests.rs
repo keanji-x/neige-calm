@@ -1,6 +1,7 @@
 //! Real session middleware -> source facade -> protected canonical transaction.
 //! Today itself is created by its production lifecycle, without launching a model.
 mod execution;
+mod share;
 use super::*;
 use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
