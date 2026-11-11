@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -12,7 +12,7 @@ import styles from './shell.module.css';
 import { SidebarFixture as Sidebar } from './sidebar-fixture.tsx';
 import { TrackRow } from '../../features/track/row/public.tsx';
 
-afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
+afterEach(() => { cleanup(); vi.useRealTimers(); delete document.documentElement.dataset.theme; });
 
 async function scene(areaName = 'Work') {
   await page.viewport(1400, 900);
@@ -52,6 +52,29 @@ async function scene(areaName = 'Work') {
   const focusDisclosure = page.getByRole('button', { name: 'Collapse Focus', exact: true });
   return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, focusDisclosure };
 }
+
+it('keeps Hidden groups keyboard navigation when pointer-open focus is delayed to the next frame', async () => {
+  const { options } = await scene();
+  await page.getByRole('button', { name: 'Group actions for Focus' }).click();
+  await page.getByRole('menuitem', { name: 'Hide group' }).click();
+  vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+  const trigger = options.element() as HTMLButtonElement;
+  trigger.focus();
+  fireEvent.click(trigger, { detail: 1 });
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const hidden = screen.getByRole('menuitem', { name: 'Hidden groups' });
+  expect(document.activeElement).toBe(hidden);
+
+  act(() => { vi.advanceTimersToNextFrame(); });
+
+  expect(document.activeElement).toBe(hidden);
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+  const focus = screen.getByRole('menuitem', { name: 'Show Focus' });
+  expect(document.activeElement).toBe(focus);
+  fireEvent.keyDown(focus, { key: 'Enter' });
+  expect(screen.getByRole('button', { name: 'Collapse Focus' })).toBeTruthy();
+  expect(document.activeElement).toBe(trigger);
+});
 
 it('renders fixed folder icons and inline chevrons across Focus, Pinned and Area disclosures', async () => {
   await scene();

@@ -1,0 +1,64 @@
+diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenu.js b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenu.js
+index 2086c1f..ea9115d 100644
+--- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenu.js
++++ b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenu.js
+@@ -562,13 +562,22 @@ function DropdownMenuPopover({
+     if (!popover.isOpen || !shouldFocusOnOpenRef.current) {
+       return;
+     }
+-    shouldFocusOnOpenRef.current = false;
+-    requestAnimationFrame(() => {
+-      if (openModalityRef.current === 'pointer' || !focusFirst()) {
+-        listRef.current?.focus();
++    const openModality = openModalityRef.current;
++    openModalityRef.current = 'keyboard';
++    const frame = requestAnimationFrame(() => {
++      shouldFocusOnOpenRef.current = false;
++      const list = listRef.current;
++      const active = list?.ownerDocument.activeElement;
++      // Navigation or hover may already have moved into a row or its flyout.
++      // Initial focus must not replace the user's newer focus choice.
++      if (!list || active !== list && list.contains(active ?? null)) {
++        return;
++      }
++      if (openModality === 'pointer' || !focusFirst()) {
++        list.focus();
+       }
+-      openModalityRef.current = 'keyboard';
+     });
++    return () => cancelAnimationFrame(frame);
+   }, [popover.isOpen, focusFirst, listRef]);
+ 
+   // Extend useListFocus with Enter/Space activation + typeahead
+diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenu.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenu.tsx
+index 75a05f7..f609050 100644
+--- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenu.tsx
++++ b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenu.tsx
+@@ -748,13 +748,22 @@ function DropdownMenuPopover({
+     if (!popover.isOpen || !shouldFocusOnOpenRef.current) {
+       return;
+     }
+-    shouldFocusOnOpenRef.current = false;
+-    requestAnimationFrame(() => {
+-      if (openModalityRef.current === 'pointer' || !focusFirst()) {
+-        listRef.current?.focus();
++    const openModality = openModalityRef.current;
++    openModalityRef.current = 'keyboard';
++    const frame = requestAnimationFrame(() => {
++      shouldFocusOnOpenRef.current = false;
++      const list = listRef.current;
++      const active = list?.ownerDocument.activeElement;
++      // Navigation or hover may already have moved into a row or its flyout.
++      // Initial focus must not replace the user's newer focus choice.
++      if (!list || (active !== list && list.contains(active ?? null))) {
++        return;
++      }
++      if (openModality === 'pointer' || !focusFirst()) {
++        list.focus();
+       }
+-      openModalityRef.current = 'keyboard';
+     });
++    return () => cancelAnimationFrame(frame);
+   }, [popover.isOpen, focusFirst, listRef]);
+ 
+   // Extend useListFocus with Enter/Space activation + typeahead

@@ -227,7 +227,8 @@ $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) &: $(shell find $(W
 $(WORKTREE)/target/release/neige-tailnet: $(wildcard $(WORKTREE)/tailnet/*.go) $(WORKTREE)/tailnet/go.mod $(WORKTREE)/tailnet/go.sum $(WORKTREE)/tailnet/build.sh
 	$(WORKTREE)/tailnet/build.sh $@
 
-$(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json
+# Directory mtime catches patch removals; individual files catch patch edits.
+$(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json $(WORKTREE)/fe/package.json $(WORKTREE)/fe/patches $(wildcard $(WORKTREE)/fe/patches/*.patch)
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm ci
 
