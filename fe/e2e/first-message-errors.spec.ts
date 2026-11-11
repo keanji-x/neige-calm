@@ -3,10 +3,11 @@ import { expect, test, type Page } from '@playwright/test';
 import { captureFirstMessageErrors } from './helpers/first-message-errors.js';
 
 test.describe('classifier', () => {
-  function fixture() {
-    const events = new EventEmitter();
+  async function fixture() {
+    // Responses are emitted directly; nothing is routed.
+    const events = Object.assign(new EventEmitter(), { route: async () => {}, unroute: async () => {} });
     const url = 'http://localhost/api/cards/created/planner/run?contract=conversation_v1';
-    const errors = captureFirstMessageErrors(events as unknown as Page, () => url);
+    const errors = await captureFirstMessageErrors(events as unknown as Page, () => url);
     const body = JSON.stringify({ error: 'conversation runtime changed while reading', code: 'conflict' });
     const diagnostic = 'Failed to load resource: the server responded with a status of 409 (Conflict)';
     const consoleError = (text = diagnostic, location = url) => events.emit('console', {
@@ -20,7 +21,7 @@ test.describe('classifier', () => {
   }
 
   test('allows a declared conflict even when its console event arrives first', async () => {
-    const { errors, response, consoleError } = fixture();
+    const { errors, response, consoleError } = await fixture();
     consoleError();
     response();
     expect(await errors()).toEqual([]);
@@ -34,7 +35,7 @@ test.describe('classifier', () => {
     { name: 'null body', body: null },
   ]) test(`rejects a 409 with ${scenario.name}`, async () => {
     const { body } = scenario;
-    const { errors, response, consoleError, diagnostic } = fixture();
+    const { errors, response, consoleError, diagnostic } = await fixture();
     consoleError();
     response({ text: () => Promise.resolve(JSON.stringify(body)) });
     expect(await errors()).toEqual([expect.stringContaining('→ 409:'), diagnostic]);
@@ -48,20 +49,20 @@ test.describe('classifier', () => {
     { name: 'POST', method: 'POST' },
     { name: 'server failure', status: 500 },
   ]) test(`rejects a matching body on ${overrides.name}`, async () => {
-    const { errors, response } = fixture();
+    const { errors, response } = await fixture();
     response(overrides);
     expect(await errors()).toEqual([expect.stringContaining(`→ ${overrides.status ?? 409}:`)]);
   });
 
   test('rejects malformed and unreadable bodies without an unhandled rejection', async () => {
-    const { errors, response } = fixture();
+    const { errors, response } = await fixture();
     response({ text: () => Promise.resolve('not JSON') });
     response({ text: () => Promise.reject(new Error('cancelled')) });
     expect(await errors()).toEqual([expect.stringContaining('not JSON'), expect.stringContaining('<unreadable body>')]);
   });
 
   test('waits for response bodies before deciding which console errors are allowed', async () => {
-    const { errors, response, consoleError, body } = fixture();
+    const { errors, response, consoleError, body } = await fixture();
     let resolveBody!: (body: string) => void;
     const bodyPromise = new Promise<string>(resolve => { resolveBody = resolve; });
     response({ text: () => bodyPromise });
@@ -75,7 +76,7 @@ test.describe('classifier', () => {
   });
 
   test('does not let a declared conflict mask other console or page errors', async () => {
-    const { events, errors, response, consoleError, diagnostic, url } = fixture();
+    const { events, errors, response, consoleError, diagnostic, url } = await fixture();
     response();
     consoleError();
     consoleError(); // No second body-validated response to account for this resource error.
@@ -86,7 +87,7 @@ test.describe('classifier', () => {
   });
 
   test('does not spend a validated response on a 500 diagnostic at the same URL', async () => {
-    const { errors, response, consoleError } = fixture();
+    const { errors, response, consoleError } = await fixture();
     response();
     const unexpected = 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)';
     consoleError(unexpected);
@@ -98,15 +99,54 @@ test.describe('classifier', () => {
 test('accepts the declared run-read conflict and its Chromium resource error', async ({ page }) => {
   const origin = 'http://first-message.test';
   const runUrl = `${origin}/api/cards/created/planner/run?contract=conversation_v1`;
+  // Registered after the helper's own route, so this origin is answered here and never fetched.
+  const errors = await captureFirstMessageErrors(page, () => runUrl);
   await page.route(`${origin}/**`, route => route.request().url() === `${origin}/`
     ? route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Errors</title>' })
     : route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({
       error: 'conversation runtime changed while reading', code: 'conflict',
     }) }));
-  const errors = captureFirstMessageErrors(page, () => runUrl);
   await page.goto(origin);
   const consoleError = page.waitForEvent('console', message => message.type() === 'error');
   await page.evaluate(async url => { await (await fetch(url)).text(); }, runUrl);
   await consoleError;
   expect(await errors()).toEqual([]);
+});
+
+test('classifies a run read the page aborts after its headers by the bytes the server sent', async ({ page, context }) => {
+  // A real refusal at a run-read address: no card has this id.
+  const path = '/api/cards/conv-00000000000000000000000000000000/planner/run?contract=conversation_v1';
+  await page.goto('/api/version');
+  const browserIdentity = await page.evaluate(async () => await (await fetch('/api/auth/whoami')).json() as unknown);
+  const apiIdentity = await context.request.get('/api/auth/whoami');
+  expect(await apiIdentity.json()).toEqual(browserIdentity);
+  const served = await context.request.get(path, { maxRedirects: 0, maxRetries: 0 });
+  expect(served.status()).toBeGreaterThanOrEqual(400);
+  const body = await served.text();
+  const errors = await captureFirstMessageErrors(page, () => undefined);
+  // As a query cancellation does when an invalidation replaces a read whose headers have arrived.
+  const status = await page.evaluate(async url => {
+    const controller = new AbortController();
+    const response = await fetch(url, { signal: controller.signal });
+    controller.abort();
+    return response.status;
+  }, path);
+  expect(status).toBe(served.status());
+  expect((await errors()).filter(error => error.startsWith('GET ')))
+    .toEqual([`GET ${new URL(path, page.url()).href} → ${status}: ${body}`]);
+});
+
+
+test('keeps caller routes after collecting errors', async ({ page }) => {
+  const origin = 'http://first-message.test';
+  let calls = 0;
+  await page.route(`${origin}/**`, route => {
+    calls++;
+    return route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Caller route</title>' });
+  });
+  await page.goto(origin);
+  const errors = await captureFirstMessageErrors(page, () => undefined);
+  expect(await errors()).toEqual([]);
+  await page.evaluate(async () => (await fetch('/caller-owned')).text());
+  expect(calls).toBe(2);
 });
