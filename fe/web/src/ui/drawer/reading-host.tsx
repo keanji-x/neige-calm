@@ -43,10 +43,10 @@ export function EmbeddedReadingHost({ id, label, hidden, children, footer }: Rea
   const overlay = useRef<HTMLDivElement>(null);
   const ports = useMemo(() => ({ key: 'embedded', navigation, overlay }), []);
   const hostRef = useReadingHostRef<HTMLElement>(ports);
-  return <section ref={hostRef} className={styles.host} aria-label={label} hidden={hidden} data-nc-conversation-region={hidden ? undefined : id}>
+  return <section ref={hostRef} className={styles.host} aria-label={label} hidden={hidden} data-nc-embedded-reading="" data-nc-conversation-region={hidden ? undefined : id}>
       <h2 className={styles.title}>{label}</h2>
       <div className={styles.viewport}>
-        <div className={styles.scroll} data-nc-drawer-scroll={hidden ? undefined : ''}>{children}</div>
+        <div className={styles.scroll} data-nc-drawer-scroll={hidden ? undefined : ''}><div className={styles.column}>{children}</div></div>
         <div ref={overlay} className={styles.overlay} data-nc-chat-scroll-overlay={hidden ? undefined : ''} />
       </div>
       <div className={styles.footer}>{footer}</div>

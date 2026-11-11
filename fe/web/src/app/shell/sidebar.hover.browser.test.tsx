@@ -70,7 +70,7 @@ it('reveals group actions and accepts a direct click from a resting desktop poin
 
   await page.elementLocator(document.body).hover();
   const create = page.getByRole('button', { name: 'New area', exact: true }).element();
-  expect(getComputedStyle(create.parentElement!).opacity).toBe('0');
+  expect(getComputedStyle(create).opacity).toBe('1');
   const sourceBox = create.parentElement!.getBoundingClientRect();
   expect(create.getBoundingClientRect().toJSON()).toEqual(sourceBox.toJSON());
   const actionsAtRest = document.querySelectorAll<HTMLElement>('nav[aria-label="Workspace"] [role="group"] button:not([data-nc-role="row"])');
@@ -84,7 +84,7 @@ it('reveals group actions and accepts a direct click from a resting desktop poin
   }
   await page.getByRole('button', { name: 'New area', exact: true }).click();
   expect(createArea).toHaveBeenCalledTimes(1);
-  await expect.element(page.getByRole('button', { name: 'Collapse Areas', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Collapse area Work', exact: true })).toBeVisible();
 
   const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]')!;
   const actionsWrap = actions.parentElement!;
@@ -160,29 +160,28 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
   const removedHeight = emptyGroupHeight - emptyGroup.getBoundingClientRect().height;
   expect(removedHeight).toBeGreaterThan(0);
   expect(areaRect.top).toBeCloseTo(areaTopBeforeEmptyCollapse - removedHeight, 3);
-  expect(areaRect.height).toBe(firstRect.height);
-  expect(firstRect.top - areaRect.top).toBeCloseTo(secondRect.top - firstRect.top, 3);
-  expect(nextRect.top - secondRect.bottom).toBeCloseTo(8, 3);
+  expect(areaRect.height).toBeCloseTo(firstRect.height, 0);
+  expect(firstRect.top - areaRect.top).toBeCloseTo(31, 1);
+  expect(secondRect.top - firstRect.top).toBeCloseTo(30, 1);
+  expect(nextRect.top - secondRect.bottom).toBeCloseTo(16, 2);
   for (const theme of ['light', 'dark']) {
     document.documentElement.dataset.theme = theme;
     const railBackground = getComputedStyle(areaRow.closest('nav')!).backgroundColor;
+    const trackTitle = first.querySelector<HTMLElement>('[title="First"]')!;
     const areaContrast = contrastRatio(getComputedStyle(areaName).color, railBackground);
-    const primaryTextContrast = contrastRatio(
-      getComputedStyle(first.querySelector<HTMLElement>('[title="First"]')!).color,
-      railBackground,
-    );
+    const primaryTextContrast = contrastRatio(getComputedStyle(trackTitle).color, railBackground);
     expect(areaContrast).toBeGreaterThanOrEqual(4.5);
-    expect(areaContrast).toBeCloseTo(primaryTextContrast, 3);
-    const font = (element: Element) => {
-      const style = getComputedStyle(element);
-      return [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.letterSpacing];
-    };
-    expect(font(areaName)).toEqual(font(first.querySelector<HTMLElement>('[title="First"]')!));
+    expect(primaryTextContrast).toBeGreaterThanOrEqual(4.5);
+    expect(areaContrast).toBeCloseTo(primaryTextContrast, 2);
+    expect(getComputedStyle(areaName).fontFamily).toBe(getComputedStyle(trackTitle).fontFamily);
+    expect(parseFloat(getComputedStyle(areaName).fontSize)).toBeGreaterThan(parseFloat(getComputedStyle(trackTitle).fontSize));
+    expect(getComputedStyle(areaName).fontWeight).toBe('500');
+    expect(getComputedStyle(trackTitle).fontWeight).toBe('400');
   }
   document.documentElement.dataset.theme = 'light';
   const restColor = getComputedStyle(areaName).color;
   await page.getByText('Work', { exact: true }).hover();
   await waitFor(() => expect(getComputedStyle(areaRow).backgroundColor).not.toBe(restBackground));
-  expect(getComputedStyle(areaName).color).toBe(restColor);
+  await waitFor(() => expect(getComputedStyle(areaName).color).not.toBe(restColor));
   expect(getComputedStyle(areaRow).backgroundColor).not.toBe(restBackground);
 });

@@ -80,15 +80,20 @@ function TodayCenter({ assistant, changes, supervisor, guideHost, view, onView }
     restoreGuide.current = false;
   }, [view]);
   const guide = <nav className={styles.guide} aria-label="Today views">
-      <button ref={changesGuide} type="button" onClick={() => onView('changes')}>Report changes</button>
-      {supervisor !== undefined && <button ref={supervisorGuide} type="button" onClick={() => onView('supervisor')}>Daily Supervisor</button>}
+      <button ref={changesGuide} type="button" onClick={() => onView('changes')}><span>Report changes</span><Icon name="chevron-right" size="sm" /></button>
+      {supervisor !== undefined && <>
+        <span className={styles.guideSep} aria-hidden="true">·</span>
+        <button ref={supervisorGuide} type="button" onClick={() => onView('supervisor')}><span>Daily Supervisor</span><Icon name="chevron-right" size="sm" /></button>
+      </>}
     </nav>;
   return <div className={styles.center}>
     <div className={styles.assistant} hidden={view !== 'assistant'}>{assistant}</div>
     {guideHost !== null && createPortal(guide, guideHost)}
     {!compact && view !== 'assistant' && <section className={styles.subview} aria-label={view === 'changes' ? 'Report changes' : 'Daily Supervisor view'}>
-      <button ref={back} type="button" className={styles.backToToday} onClick={() => { restoreGuide.current = true; onView('assistant'); }}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
-      {view === 'changes' ? changes : supervisor}
+      <div className={styles.subviewColumn}>
+        <button ref={back} type="button" className={styles.backToToday} onClick={() => { restoreGuide.current = true; onView('assistant'); }}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
+        {view === 'changes' ? changes : supervisor}
+      </div>
     </section>}
   </div>;
 }

@@ -85,8 +85,8 @@ export function TrackRow(props: TrackRowProps) {
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
-  /* Rail status uses the leading gutter; panel status shares the trailing delete slot. */
-  const trailingStatus = variant === 'rail' || variant === 'panel';
+  /* Rail status shares the leading icon gutter; panel status shares the trailing delete slot. */
+  const detachedStatus = variant === 'rail' || variant === 'panel';
 
   return (
     <div className={[
@@ -99,6 +99,7 @@ export function TrackRow(props: TrackRowProps) {
         data-nc-role="row"
         className={[
           styles.row, variantClass(variant), variant === 'rail' ? rowLayout('content') : '',
+          variant === 'rail' && activity !== 'quiet' ? rowLayout('oneAction') : '',
           variant === 'rail' && hasPin ? rowLayout('twoActions') : '',
           active ? styles.rowActive : '',
           hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '', actions !== undefined ? styles.hasMenu : '',
@@ -108,21 +109,21 @@ export function TrackRow(props: TrackRowProps) {
         aria-describedby={activity === 'unread' ? descriptionId : undefined}
         onClick={() => onOpen(track.id)}
       >
-        {!trailingStatus && (
+        {!detachedStatus && (
           <span className={styles.leadingStatus} aria-hidden="true"><ActivityIndicator state={activity} /></span>
         )}
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
           <ListText tone={presentation?.tone ?? "primary"} emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
-            className={styles.title} title={title} fadeOverflow={variant === 'rail' && actions !== undefined}><TrackTitle track={track} /></ListText>
+            className={styles.title} title={title} fadeOverflow={variant === 'rail' && (actions !== undefined || activity !== 'quiet')}><TrackTitle track={track} /></ListText>
         </span>
-        {!trailingStatus && (
+        {!detachedStatus && (
           <span className={styles.age}>{relativeTime(track.updatedAt, now)}</span>
         )}
       </button>
 
       {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
-      {trailingStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('leading') : ''}`} aria-hidden="true">
+      {detachedStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('outer') : ''}`} aria-hidden="true">
         <ActivityIndicator state={activity} />
       </span>}
       {hasPin && onSetPinned !== undefined && (

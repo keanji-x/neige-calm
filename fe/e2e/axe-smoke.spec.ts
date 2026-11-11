@@ -32,7 +32,9 @@ test('the primary routes have no WCAG A or AA violations in light mode', async (
     /* Wait for animations: Playwright calls a fading `ui/dialog` panel visible before it is opaque, so
      * axe could sample a blend of panel and scrim and report a contrast violation no reader sees. */
     await page.evaluate(() => Promise.all(
-      document.getAnimations().map((animation) => animation.finished.catch(() => undefined)),
+      document.getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined)),
     ));
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])

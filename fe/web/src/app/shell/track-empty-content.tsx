@@ -3,7 +3,7 @@ import type { EmptyStateSchema } from '../../ui/empty-state/public.tsx';
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
 
 /** Shared shortcut wording for desktop and mobile; membership stays in its owner. */
-export function trackEmptyContent(view: keyof SidebarTrackGroups): EmptyStateSchema {
+export function trackEmptyContent(view: Exclude<keyof SidebarTrackGroups, 'focus'>): EmptyStateSchema {
   switch (view) {
     case 'pinned': return { icon: <Icon name="pin" />, title: '还没有已置顶的 Track。', description: '置顶的 Track 会显示在这里。' };
     case 'unread': return { icon: <Icon name="chat" />, title: '没有未读的 Track。', description: '有新进展的 Track 会显示在这里。' };

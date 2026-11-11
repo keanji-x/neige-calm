@@ -131,7 +131,7 @@ it('opens the actual NewTrack folder picker from its inline folder host', async 
   render(<NewTrackForm loadTemplate={vi.fn()} submitting={false} error={null} templates={[]} templatesLoaded
     initialTemplateId={null} initialCwd={null} onManageRecipes={vi.fn()}
     listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })} onSubmit={vi.fn()} />);
-  const folder = screen.getByRole('button', { name: /^Folder:/ });
+  const folder = screen.getByRole('button', { name: /^Repo:/ });
   await userEvent.click(folder);
   expect(folder.parentElement!.getAnimations()).toHaveLength(0);
   const node = screen.getByRole('dialog');

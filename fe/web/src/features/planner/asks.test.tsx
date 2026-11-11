@@ -55,6 +55,7 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Previous question' }));
     expect(screen.getByRole('button', { name: 'release' }).getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByRole('button', { name: 'main' }).getAttribute('aria-pressed')).toBe('false');
+    await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Which branch?' }), 'custom branch');
     expect(screen.getByRole('button', { name: 'release' }).getAttribute('aria-pressed')).toBe('false');
   });
@@ -70,18 +71,22 @@ describe('PlannerAskDrawer', () => {
   });
   it('accepts the reader’s own words for an option question', async () => {
     const { onAnswer } = setup([SINGLE]);
+    expect(screen.queryByRole('textbox', { name: 'Merge PR #12?' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), 'Wait for CI');
     await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, [{ text: 'Wait for CI' }]));
   });
   it('submits a custom answer with Enter', async () => {
     const { onAnswer } = setup([SINGLE]);
+    await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), ' Wait for CI {Enter}');
     await waitFor(() => expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: 'Wait for CI' }]));
     expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
   });
   it('advances custom answers with Enter and sends only after the last question', async () => {
     const { onAnswer } = setup([TWO]);
+    await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
     await userEvent.type(screen.getByRole('textbox', { name: 'Which branch?' }), 'hotfix{Enter}');
     expect(onAnswer).not.toHaveBeenCalled();
     const notes = screen.getByRole('textbox', { name: 'Notes?' });
@@ -91,6 +96,7 @@ describe('PlannerAskDrawer', () => {
   });
   it.each([{ isComposing: true }, { keyCode: 229 }])('does not submit an IME confirmation (%j)', async ime => {
     const { onAnswer } = setup([SINGLE]);
+    fireEvent.click(screen.getByRole('button', { name: 'Other…' }));
     const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Merge PR #12?' });
     fireEvent.change(input, { target: { value: '等检查完成' } });
     fireEvent.keyDown(input, { key: 'Enter', ...ime });
@@ -103,6 +109,7 @@ describe('PlannerAskDrawer', () => {
     let finish!: () => void;
     const onAnswer = vi.fn<AnswerAsk>(() => new Promise<void>(resolve => { finish = resolve; }));
     setup([SINGLE], onAnswer);
+    fireEvent.click(screen.getByRole('button', { name: 'Other…' }));
     const input = screen.getByRole('textbox', { name: 'Merge PR #12?' });
     fireEvent.change(input, { target: { value: '   ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -116,6 +123,7 @@ describe('PlannerAskDrawer', () => {
   });
   it('rejects blank free answers and clamps the server’s character limit', () => {
     setup([SINGLE]);
+    fireEvent.click(screen.getByRole('button', { name: 'Other…' }));
     const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Merge PR #12?' });
     fireEvent.change(input, { target: { value: '   ' } });
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Answer' }).disabled).toBe(true);
@@ -213,6 +221,7 @@ it('offers only the two explicit choices for a lifecycle question, with no ambig
     questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] };
   setup([ask]);
   expect(screen.queryByRole('textbox', { name: 'Continue this closed track?' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Other…' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Reopen and continue' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Keep closed' })).toBeTruthy();
 });
@@ -224,6 +233,7 @@ describe('PlannerAskDrawer with a paused turn (#2348)', () => {
     expect(ask.textContent).toContain('Turn paused, waiting for your approval');
     expect(ask.querySelector('[data-nc-ask-paused]')?.textContent).toBe('Turn paused, waiting for your approval');
     expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Other…' })).toBeNull();
     expect(screen.queryByRole('group', { name: 'Your answer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Answer' })).toBeNull();
     expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull();
@@ -252,6 +262,8 @@ describe('PlannerAskDrawer with a paused turn (#2348)', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '1 more ask' }));
     fireEvent.click(screen.getByRole('button', { name: 'Merge PR #12?' }));
+    expect(screen.queryByRole('textbox')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Other…' }));
     expect(screen.getByRole('textbox', { name: 'Merge PR #12?' })).toBeTruthy();
     expect(screen.queryByText('Turn paused, waiting for your approval')).toBeNull();
   });

@@ -35,6 +35,7 @@
     font-weight: var(--weight-medium);
   }
   .selected {
+    font-weight: var(--weight-medium);
     color: var(--text);
   }
 }

@@ -68,13 +68,13 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
     const status = wrapper.querySelector('[data-nc-activity]')!;
     const menu = wrapper.querySelector<HTMLButtonElement>('button[aria-label^="Actions for track Touch"]')!;
     expect(status).not.toBeNull();
-    expect(status.getBoundingClientRect().right).toBeLessThan(menu.getBoundingClientRect().left);
+    expect(menu.getBoundingClientRect().right).toBeLessThanOrEqual(status.getBoundingClientRect().left);
     expect(getComputedStyle(status.parentElement!).opacity).toBe('1');
   }
 
 });
 
-it('keeps a standalone rail pin reachable without covering leading status on touch', async () => {
+it('keeps a standalone rail pin reachable without covering trailing status on touch', async () => {
   const onSetPinned = vi.fn();
   const track: Track = { id: 'standalone', areaId: 'a', title: 'Standalone rail task with a long title that must stop before its pin control', sort: 0, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, attention: 'input' };
@@ -84,7 +84,7 @@ it('keeps a standalone rail pin reachable without covering leading status on tou
   const pin = page.getByRole('button', { name: `Pin ${track.title}` });
   const status = document.querySelector('[data-nc-activity="attention"]')!;
   expect(getComputedStyle(pin.element()).opacity).toBe('1');
-  expect(status.getBoundingClientRect().right).toBeLessThan(pin.element().getBoundingClientRect().left);
+  expect(pin.element().getBoundingClientRect().right).toBeLessThanOrEqual(status.getBoundingClientRect().left);
   const row = page.getByRole('button', { name: /^Track Standalone/ }).element();
   expect(row.querySelector('[title]')!.getBoundingClientRect().right).toBeLessThanOrEqual(pin.element().getBoundingClientRect().left);
   await userEvent.click(pin);

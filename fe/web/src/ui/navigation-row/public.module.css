@@ -6,23 +6,27 @@
     --navigation-gap: var(--space-1);
     --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
     --navigation-inner-inset: var(--navigation-text-inset);
-    --navigation-depth-inset: 0px;
-    --navigation-label-start: calc(var(--navigation-text-inset) + var(--navigation-depth-inset));
-    --navigation-selection-inset: var(--navigation-depth-inset);
+    --navigation-selection-inset: 0px;
+    --navigation-label-start: var(--navigation-text-inset);
     --navigation-two-actions: calc(var(--navigation-inner-inset) + var(--navigation-slot) + var(--navigation-gap));
     position: relative;
   }
 
-  .nested { --navigation-depth-inset: var(--space-5); }
-  .caption { --navigation-label-start: var(--navigation-inset); }
+  /* Nested child entries indent their highlight past the left tree guide while keeping the shared label spine. */
+  .nested {
+    --navigation-selection-inset: calc(var(--navigation-label-inset) + var(--space-3) + var(--space-half));
+    --navigation-label-start: var(--navigation-text-inset);
+  }
+  .caption { --navigation-label-start: var(--navigation-text-inset); }
 
   .content {
     min-inline-size: 0;
     padding-inline-start: var(--navigation-label-start);
-    padding-inline-end: var(--navigation-text-inset);
+    padding-inline-end: var(--space-2);
   }
   .labelStart { padding-inline-start: var(--navigation-label-start); }
-  .twoActions { padding-inline-end: var(--navigation-two-actions); }
+  .content.oneAction { padding-inline-end: calc(var(--navigation-inset) + var(--space-4) + var(--space-half)); }
+  .content.twoActions { padding-inline-end: var(--navigation-two-actions); }
 
   .leading,
   .inner,
@@ -56,12 +60,15 @@
     place-items: center;
   }
 
+  .revealActions > .content { padding-inline-end: var(--space-2); }
+  .revealActions > .content.oneAction { padding-inline-end: calc(var(--navigation-inset) + var(--space-4) + var(--space-half)); }
   .revealActions:hover > .content,
   .revealActions:focus-within > .content,
   .revealActions:has([aria-expanded='true']) > .content {
     padding-inline-end: var(--navigation-two-actions);
   }
   @media (hover: none) {
-    .revealActions > .content { padding-inline-end: var(--navigation-two-actions); }
+    .revealActions > .content,
+    .revealActions > .content.oneAction { padding-inline-end: var(--navigation-two-actions); }
   }
 }

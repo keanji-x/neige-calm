@@ -14,24 +14,20 @@ import { TrackRow } from '../../features/track/row/public.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
-async function scene(activitiesVisible: boolean, areaName = 'Work') {
+async function scene(areaName = 'Work') {
   await page.viewport(1400, 900);
   const preferences = createUiPreferences();
   /* The kernel's baseline is 1, so a Track whose `activityAt` is later reads as unread. */
   const kernel = createReadReceiptsKernel({ baselineMs: 1 });
   const { wrap } = readReceiptsFixture(kernel);
-  if (activitiesVisible) {
-    preferences.setSidebarGroupVisible('unread', true);
-    preferences.setSidebarGroupVisible('running', true);
-  }
   const area: Area = { id: 'work', name: areaName, color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const reading: Area = { ...area, id: 'reading', name: 'Reading', sort: 2 };
   const tracks: Track[] = [
-    { id: 'review', title: 'Review result', attention: 'input' as const, working: false },
-    { id: 'running', title: 'Build frontend', attention: 'none' as const, working: true },
+    { id: 'review', title: 'Review result', attention: 'input' as const, working: false, pinnedAt: null },
+    { id: 'running', title: 'Build frontend', attention: 'none' as const, working: true, pinnedAt: 10 },
     { id: 'loose', title: 'Next task', attention: 'none' as const, working: false, pinnedAt: null, activityAt: null },
-  ].map((row) => ({ areaId: area.id, sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp', pinnedAt: 10,
+  ].map((row) => ({ areaId: area.id, sort: 1, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: 10, ...row }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
@@ -53,48 +49,49 @@ async function scene(activitiesVisible: boolean, areaName = 'Work') {
   const options = page.getByRole('button', { name: 'Sidebar view options' });
   const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
   const today = page.getByRole('button', { name: 'Go to Today' });
-  const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
-  return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure };
+  const focusDisclosure = page.getByRole('button', { name: 'Collapse Focus', exact: true });
+  return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, focusDisclosure };
 }
 
-it('keeps category headers glyph-free and reserves the disclosure glyph for Areas', async () => {
-  await scene(true);
+it('renders fixed folder icons and inline chevrons across Focus, Pinned and Area disclosures', async () => {
+  await scene();
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   for (const width of ['15rem', '11rem']) {
     rail.style.inlineSize = width;
+    const todayLabel = page.getByRole('button', { name: 'Today', exact: true }).element().querySelector('[title="Today"]')!;
     const area = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
-    const section = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element();
-    expect(area.querySelectorAll('svg').length).toBe(1);
-    expect(section.querySelectorAll('svg').length).toBe(0);
-    const leading = area.querySelector('svg')!.parentElement!;
-    const captionStart = leading.getBoundingClientRect().left;
-    expect(textBounds(area.querySelector('[title]')!).left).toBeGreaterThan(captionStart);
-    for (const title of ['Running', 'Unread', 'Pinned', 'Waiting on you', 'Areas']) {
+    expect(area.querySelectorAll('svg').length).toBe(2);
+    expect(textBounds(area.querySelector('[title]')!).left).toBeCloseTo(textBounds(todayLabel).left, 1);
+    for (const title of ['Focus', 'Pinned']) {
       for (const action of ['Collapse', 'Expand']) {
         const disclosure = page.getByRole('button', { name: `${action} ${title}`, exact: true });
-        expect(textBounds(disclosure.element().querySelector('[title]')!).left).toBeCloseTo(captionStart, 1);
-        await disclosure.hover();
-        expect(disclosure.element().querySelectorAll('svg').length).toBe(0);
+        expect(textBounds(disclosure.element().querySelector('[title]')!).left).toBeCloseTo(textBounds(todayLabel).left, 1);
+        expect(disclosure.element().querySelectorAll('svg').length).toBe(2);
         await disclosure.click();
       }
     }
   }
 });
 
-it('indents Area tracks beneath their parent and fills the selected row', async () => {
-  await scene(true);
+it('indents child tracks clear of the left tree guide while aligning labels on the shared spine', async () => {
+  await scene();
   const group = page.getByRole('group', { name: 'area Work', exact: true });
-  const areaTitle = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
+  const areaButton = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
+  const areaTitle = areaButton.querySelector('[title]')!;
+  const folderBox = areaButton.querySelector('svg')!.parentElement!.getBoundingClientRect();
+  const guideX = folderBox.left + folderBox.width / 2;
   const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
-  expect(textBounds(selected.querySelector('[title]')!).left).toBeGreaterThan(textBounds(areaTitle).left);
-  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeGreaterThan(0);
-  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeCloseTo(
-    textBounds(selected.querySelector('[title]')!).left - textBounds(areaTitle).left, 1);
+  const selectedTitle = selected.querySelector('[title]')!;
+  const rowLeft = selected.getBoundingClientRect().left;
+  const pillLeft = rowLeft + parseFloat(getComputedStyle(selected, '::before').insetInlineStart);
+  expect(textBounds(selectedTitle).left).toBeCloseTo(textBounds(areaTitle).left, 1);
+  expect(pillLeft).toBeGreaterThanOrEqual(guideX + 3.5);
+  expect(pillLeft).toBeLessThan(textBounds(selectedTitle).left);
   expect(selected.getAttribute('aria-current')).toBe('page');
 });
 
 it.each(['light', 'dark'])('uses the same rail background bounds for hover and selection in %s', async (theme) => {
-  await scene(true);
+  await scene();
   document.documentElement.dataset.theme = theme;
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   const group = page.getByRole('group', { name: 'area Work', exact: true });
@@ -117,13 +114,13 @@ it.each(['light', 'dark'])('uses the same rail background bounds for hover and s
     }
     const shortcut = page.getByRole('group', { name: 'Pinned', exact: true }).getByRole('button', { name: /^Track Build frontend/ });
     await shortcut.hover();
-    expect(getComputedStyle(shortcut.element(), '::before').insetInlineStart).toBe('0px');
+    expect(bounds(shortcut.element())).toEqual(expected);
     expect(getComputedStyle(shortcut.element()).backgroundColor).toBe('rgba(0, 0, 0, 0)');
   }
 });
 
-it('keeps activity markers before their own Track text at every hierarchy level', async () => {
-  const { today } = await scene(true);
+it('aligns trailing activity markers on one column clear of Track text', async () => {
+  const { today } = await scene();
   await today.hover();
   const markers = document.querySelectorAll('[data-nc-activity]');
   expect(markers.length).toBeGreaterThan(0);
@@ -134,7 +131,7 @@ it('keeps activity markers before their own Track text at every hierarchy level'
     expect(box.left + box.width / 2).toBeCloseTo(globalCenter, 1);
     const row = marker.parentElement!.parentElement!;
     const title = row.querySelector('[title]')!;
-    expect(marker.getBoundingClientRect().right).toBeLessThan(title.getBoundingClientRect().left);
+    expect(marker.getBoundingClientRect().left).toBeGreaterThanOrEqual(title.getBoundingClientRect().right);
   }
 });
 
@@ -153,14 +150,13 @@ it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s actio
   for (const working of [false, true]) {
     view.rerender(tree(working));
     const marker = document.querySelector('[data-nc-activity]')!;
-    const control = page.getByRole('button', { name: variant === 'rail' ? 'Pin Slot geometry' : 'Delete Slot geometry', exact: true }).element();
-    if (variant === 'rail') expect(centerX(marker)).toBeLessThan(centerX(control));
-    else expect(centerX(marker)).toBeCloseTo(centerX(control), 1);
+    const control = page.getByRole('button', { name: 'Delete Slot geometry', exact: true }).element();
+    expect(centerX(marker)).toBeCloseTo(centerX(control), 1);
   }
 });
 
-it.each(['light', 'dark'] as const)('preserves label alignment and leading status when sizing tokens change in %s mode', async (theme) => {
-  await scene(true);
+it.each(['light', 'dark'] as const)('preserves label alignment and trailing status when sizing tokens change in %s mode', async (theme) => {
+  await scene();
   document.documentElement.dataset.theme = theme;
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   rail.style.setProperty('--control-h-sm', '24px');
@@ -169,11 +165,11 @@ it.each(['light', 'dark'] as const)('preserves label alignment and leading statu
   const area = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
   const rows = group.getByRole('button', { name: /^Track / }).elements();
   const childStart = rows[0].querySelector('[title]')!.getBoundingClientRect().left;
-  expect(childStart).toBeGreaterThan(area.querySelector('[title]')!.getBoundingClientRect().left);
+  expect(childStart).toBeCloseTo(area.querySelector('[title]')!.getBoundingClientRect().left, 1);
   for (const row of rows) expect(row.querySelector('[title]')!.getBoundingClientRect().left).toBeCloseTo(childStart, 1);
   for (const marker of document.querySelectorAll('[data-nc-activity]')) {
     const title = marker.parentElement!.parentElement!.querySelector('[title]')!;
-    expect(marker.getBoundingClientRect().right).toBeLessThan(title.getBoundingClientRect().left);
+    expect(marker.getBoundingClientRect().left).toBeGreaterThanOrEqual(title.getBoundingClientRect().right);
   }
   expect(rail.scrollWidth).toBe(rail.clientWidth);
 });
@@ -181,7 +177,7 @@ it.each(['light', 'dark'] as const)('preserves label alignment and leading statu
 it('keeps long rail labels within the shared columns without horizontal scrolling', async () => {
   const areaName = 'A long workspace area 用于验证窄侧边栏的对齐与截断';
   const title = 'A long task title 用于验证文字与右侧操作之间的边界';
-  const { view, sidebar, tracks, today } = await scene(true, areaName);
+  const { view, sidebar, tracks, today } = await scene(areaName);
   view.rerender(sidebar(tracks.map(track => ({ ...track, title }))));
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   for (const width of ['11rem', '18rem']) {
@@ -190,14 +186,14 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
     const expected = today.element().lastElementChild!.getBoundingClientRect().left;
     const areaButton = page.getByRole('button', { name: `Collapse area ${areaName}`, exact: true });
     const areaTitle = areaButton.element().querySelector<HTMLElement>('[title]')!;
-    expect(areaTitle.getBoundingClientRect().left).toBe(expected);
+    expect(areaTitle.getBoundingClientRect().left).toBeCloseTo(expected, 1);
     const areaMenu = page.getByRole('button', { name: `Area actions for ${areaName}`, exact: true });
     expect(areaTitle.getBoundingClientRect().right).toBeLessThanOrEqual(areaMenu.element().getBoundingClientRect().left);
     const group = page.getByRole('group', { name: `area ${areaName}`, exact: true });
     const row = group.getByRole('button', { name: /^Track / });
     await row.first().hover();
     const caption = row.first().element().querySelector<HTMLElement>('[title]')!;
-    expect(caption.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
+    expect(caption.getBoundingClientRect().left).toBeCloseTo(areaTitle.getBoundingClientRect().left, 1);
     const menu = group.getByRole('button', { name: `Actions for track ${title}`, exact: true }).first();
     expect(caption.getBoundingClientRect().right).toBeLessThanOrEqual(menu.element().getBoundingClientRect().left);
     expect(rail.scrollWidth).toBe(rail.clientWidth);
@@ -220,22 +216,21 @@ it('lets clicks in a decorative status slot reach Track navigation', async () =>
 });
 
 it('places view options and preserves disclosure and keyboard navigation', async () => {
-  const { onGo, options, collapse, today, areasDisclosure } = await scene(false);
-  const areasTitle = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element()
-    .querySelector<HTMLElement>('[title="Areas"]')!;
+  const { onGo, options, collapse, today, focusDisclosure } = await scene();
+  const focusTitle = focusDisclosure.element().querySelector<HTMLElement>('[title="Focus"]')!;
   const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
     .querySelector<HTMLElement>('[title="Work"]')!;
-  expect(textBounds(areaTitle).left).toBeGreaterThan(textBounds(areasTitle).left);
+  expect(textBounds(areaTitle).left).toBeCloseTo(textBounds(focusTitle).left, 1);
 
-  const areasButton = areasDisclosure.element();
-  expect(areasButton.querySelector('svg')).toBeNull();
-  expect(areasButton.getAttribute('aria-expanded')).toBe('true');
-  await areasDisclosure.click();
-  expect(areasButton.getAttribute('aria-expanded')).toBe('false');
-  await page.getByRole('button', { name: 'Expand Areas', exact: true }).click();
-  expect(areasButton.getAttribute('aria-expanded')).toBe('true');
+  const focusButton = focusDisclosure.element();
+  expect(focusButton.querySelectorAll('svg')).toHaveLength(2);
+  expect(focusButton.getAttribute('aria-expanded')).toBe('true');
+  await focusDisclosure.click();
+  expect(focusButton.getAttribute('aria-expanded')).toBe('false');
+  await page.getByRole('button', { name: 'Expand Focus', exact: true }).click();
+  expect(focusButton.getAttribute('aria-expanded')).toBe('true');
   await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
-  await expect.element(areasDisclosure).toHaveFocus();
+  await expect.element(focusDisclosure).toHaveFocus();
   await today.click();
   expect(onGo).toHaveBeenCalledExactlyOnceWith({ name: 'today' });
   onGo.mockClear();
@@ -246,8 +241,8 @@ it('places view options and preserves disclosure and keyboard navigation', async
   expect(optionsBox.right).toBeLessThanOrEqual(collapseBox.left);
   expect(optionsBox.top + optionsBox.height / 2).toBeCloseTo(collapseBox.top + collapseBox.height / 2, 0);
   const newAreaBox = page.getByRole('button', { name: 'New area', exact: true }).element().getBoundingClientRect();
-  expect(newAreaBox.width).toBeCloseTo(28, 0);
-  expect(newAreaBox.height).toBeCloseTo(28, 0);
+  expect(newAreaBox.width).toBeGreaterThan(120);
+  expect(newAreaBox.height).toBeCloseTo(30, 0);
   const centerX = (element: Element) => {
     const box = element.getBoundingClientRect();
     return box.left + box.width / 2;
@@ -262,34 +257,26 @@ it('places view options and preserves disclosure and keyboard navigation', async
   expect(centerX(trackDelete)).toBeCloseTo(centerX(areaPlus), 0);
   expect(centerX(options.element())).toBeCloseTo(centerX(areaMenu), 0);
   expect(centerX(page.getByRole('button', { name: 'Group actions for Pinned', exact: true }).element())).toBeCloseTo(centerX(areaMenu), 0);
-  expect(centerX(page.getByRole('button', { name: 'Group actions for Areas', exact: true }).element())).toBeCloseTo(centerX(areaMenu), 0);
+  expect(centerX(page.getByRole('button', { name: 'Group actions for Focus', exact: true }).element())).toBeCloseTo(centerX(areaMenu), 0);
   expect(centerX(collapse.element())).toBeCloseTo(centerX(areaPlus), 0);
 
-  await options.click();
-  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toBeVisible();
-  await userEvent.keyboard('{ArrowDown}');
-  await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveFocus();
-  await userEvent.keyboard('{ArrowRight}');
-  await expect.element(page.getByRole('menuitem', { name: 'Show Unread' })).toHaveFocus();
-  await userEvent.keyboard('{Enter}');
-  await expect.element(page.getByRole('menu')).not.toBeInTheDocument();
+  await page.getByRole('button', { name: 'Group actions for Focus', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Hide group', exact: true }).click();
   await expect.element(options).toHaveFocus();
   await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveFocus();
   await userEvent.keyboard('{ArrowRight}');
-  await expect.element(page.getByRole('menuitem', { name: 'Show Running' })).toHaveFocus();
-  await userEvent.keyboard(' ');
+  await expect.element(page.getByRole('menuitem', { name: 'Show Focus' })).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('menu')).not.toBeInTheDocument();
   await expect.element(options).toHaveFocus();
-
-
 });
 
 it('manages group ordering, visibility and pointer restoration', async () => {
-  const { options, onGo } = await scene(true);
-  for (const title of ['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']) {
+  const { options, onGo } = await scene();
+  for (const title of ['Focus', 'Pinned']) {
     const button = page.getByRole('button', { name: `Collapse ${title}`, exact: true });
-    expect(button.element().getBoundingClientRect().height).toBeCloseTo(28, 0);
+    expect(button.element().getBoundingClientRect().height).toBeCloseTo(30, 0);
     await button.click();
     await expect.element(page.getByRole('button', { name: `Expand ${title}`, exact: true })).toHaveAttribute('aria-expanded', 'false');
     await page.getByRole('button', { name: `Expand ${title}`, exact: true }).click();
@@ -325,56 +312,52 @@ it('manages group ordering, visibility and pointer restoration', async () => {
 });
 
 it('keeps pin controls usable and updates live group membership', async () => {
-  const { today, onGo, onSetPinned, kernel, tracks, sidebar, view } = await scene(true);
+  const { today, onGo, onSetPinned, tracks, sidebar, view } = await scene();
   await today.hover();
   expect(page.getByRole('button', { name: 'Pin Next task' }).query()).toBeNull();
-  const runningGroup = page.getByRole('group', { name: 'Running', exact: true });
-  const runningRow = runningGroup.getByRole('button', { name: /^Track Build frontend/ });
-  const menu = runningGroup.getByRole('button', { name: 'Actions for track Build frontend' });
-  await runningRow.hover();
+  const pinnedGroup = page.getByRole('group', { name: 'Pinned', exact: true });
+  const pinnedRow = pinnedGroup.getByRole('button', { name: /^Track Build frontend/ });
+  const menu = pinnedGroup.getByRole('button', { name: 'Actions for track Build frontend' });
+  await pinnedRow.hover();
   await menu.click();
   await page.getByRole('menuitem', { name: 'Unpin globally', exact: true }).click();
   expect(onSetPinned).toHaveBeenCalledWith('running', false);
-  await page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
+  await page.getByRole('group', { name: 'Pinned', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
   expect(onGo).toHaveBeenCalledWith({ name: 'track', trackId: 'running' });
   expect(document.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
-  // Another device reads both; this one sees it when its tab is shown again.
-  for (const id of ['review', 'running']) {
-    await kernel.transport.send({ method: 'POST', path: `/api/read-receipts/track/${id}/read`, credentials: 'include', body: { readThroughMs: 10 } });
-  }
-  window.dispatchEvent(new Event('visibilitychange'));
-  await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Unread', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
-  await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
-  view.rerender(sidebar(tracks.map((track) => ({ ...track, working: false }))));
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true })).toBeVisible();
-  await expect.element(page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('group', { name: 'Focus', exact: true })).toBeVisible();
+  view.rerender(sidebar(tracks.map((track) => ({ ...track, attention: 'none' as const }))));
+  await expect.element(page.getByRole('group', { name: 'Focus', exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('group', { name: 'Pinned', exact: true })).toBeVisible();
 });
 
 it('recovers hidden groups through the full pointer list and Escape layers', async () => {
-  const { options } = await scene(true);
+  const { options } = await scene();
   // Pointer recovery remains usable even after inspecting and closing the full hidden list.
-  const recoverable = ['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas'];
-  for (const title of recoverable) {
-    await page.getByRole('button', { name: `Group actions for ${title}` }).click();
+  const recoverable = [
+    { menu: 'Group actions for Pinned', show: 'Show Pinned', group: 'Pinned' },
+    { menu: 'Group actions for Focus', show: 'Show Focus', group: 'Focus' },
+    { menu: 'Area actions for Work', show: 'Show area Work', group: 'area Work' },
+  ] as const;
+  for (const item of recoverable) {
+    await page.getByRole('button', { name: item.menu }).click();
     await page.getByRole('menuitem', { name: 'Hide group', exact: true }).click();
   }
   await options.click();
   await page.getByRole('menuitem', { name: 'Hidden groups' }).click();
-  for (const title of recoverable) await expect.element(page.getByRole('menuitem', { name: `Show ${title}`, exact: true })).toBeVisible();
+  for (const item of recoverable) await expect.element(page.getByRole('menuitem', { name: item.show, exact: true })).toBeVisible();
   await userEvent.keyboard('{Escape}');
   await expect.element(page.getByRole('menuitem', { name: 'Hidden groups' })).toHaveAttribute('aria-expanded', 'false');
   await userEvent.keyboard('{Escape}');
   await expect.element(options).toHaveAttribute('aria-expanded', 'false');
-  for (const title of recoverable) {
+  for (const item of recoverable) {
     await options.click();
     const hidden = page.getByRole('menuitem', { name: 'Hidden groups' });
     // Hover opens this submenu; a later click intentionally toggles it closed after the vendor guard.
     await hidden.hover();
     await expect.element(hidden).toHaveAttribute('aria-expanded', 'true');
-    await page.getByRole('menuitem', { name: `Show ${title}`, exact: true }).click();
-    await expect.element(page.getByRole('group', { name: title, exact: true })).toBeVisible();
+    await page.getByRole('menuitem', { name: item.show, exact: true }).click();
+    await expect.element(page.getByRole('group', { name: item.group, exact: true })).toBeVisible();
   }
 
 });
@@ -520,7 +503,7 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   await expect.element(page.getByRole('menuitem', { name: 'Pin globally', exact: true })).toHaveFocus();
   expect(menu.element().getAttribute('aria-expanded')).toBe('true');
   const status = row.element().parentElement!.querySelector('[data-nc-activity]')!.parentElement!;
-  await expect.poll(() => getComputedStyle(status).opacity).toBe('1');
+  await expect.poll(() => getComputedStyle(status).opacity).toBe('0');
   expect(getComputedStyle(menu.element()).opacity).toBe('1');
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();
@@ -532,18 +515,20 @@ function textBounds(node: Element) {
   return range.getBoundingClientRect();
 }
 
-it('aligns Area and flat entry text in one schema-owned column and type', async () => {
-  await scene(true);
+it('aligns Level 1 and Level 2 labels on one spine while differentiating folder and child Track typography', async () => {
+  await scene();
+  const primaryToday = page.getByRole('button', { name: 'Today', exact: true }).element().querySelector('[title="Today"]')!;
   const area = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
-  const flat = page.getByRole('group', { name: 'Waiting on you', exact: true }).element().querySelector('[title="Review result"]')!;
-  const font = (node: Element) => {
-    const style = getComputedStyle(node);
-    return [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.letterSpacing];
-  };
+  const childRow = page.getByRole('group', { name: 'Focus', exact: true }).getByRole('button', { name: /^Track Review result/ }).element();
+  const child = childRow.querySelector('[title="Review result"]')!;
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   for (const width of ['15rem', '11rem']) {
     rail.style.inlineSize = width;
-    expect.soft(textBounds(area).left).toBeCloseTo(textBounds(flat).left, 1);
-    expect.soft(font(area)).toEqual(font(flat));
+    expect.soft(textBounds(area).left).toBeCloseTo(textBounds(primaryToday).left, 1);
+    expect.soft(textBounds(child).left).toBeCloseTo(textBounds(area).left, 1);
+    expect.soft(getComputedStyle(area).fontFamily).toBe(getComputedStyle(child).fontFamily);
+    expect.soft(parseFloat(getComputedStyle(area).fontSize)).toBeGreaterThan(parseFloat(getComputedStyle(child).fontSize));
+    expect.soft(getComputedStyle(area).fontWeight).toBe('500');
+    expect.soft(getComputedStyle(child).fontWeight).toBe('400');
   }
 });

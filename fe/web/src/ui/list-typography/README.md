@@ -16,7 +16,7 @@ and actions. The colocated CSS Module defines typography;
 host components retain positioning, truncation and selection backgrounds.
 Text emphasis also belongs here: `emphasis="medium"` preserves the two-line
 Track row's 500 weight, and `emphasis="selected"` gives both Track and
-conversation names the same primary color without changing their weight. Hosts pass state;
+conversation names medium weight (`500`) and primary color (`--text`). Hosts pass state;
 they do not override the name's size, family or weight in local CSS.
 Tools, Tasks and Conversations are module headings. Their status groups and conversation names retain the group tone; sidebar Areas and Tracks
 share the primary entry tone. Expanded items correspond to Tracks. Panel entries use a 28px row cadence; sidebar Track entries use 32px,

@@ -10,7 +10,7 @@ import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import { AREA_TRACK_LIMIT, limitAreaTracks, type Track } from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { SpringRotation } from '../../ui/motion/rotation.tsx';
-import { Icon } from '../../ui/icon/public.tsx';
+import { Icon, type IconName } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { NavTarget } from '../router/navigation.ts';
@@ -39,6 +39,7 @@ type GroupProps = Readonly<{
   title: string;
   /** Distinguishes an Area disclosure from a workspace-wide group. */
   label: string;
+  icon: IconName;
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   level: 'section' | 'area';
@@ -49,30 +50,35 @@ type GroupProps = Readonly<{
 }>;
 
 /** Group geometry, disclosure and action slots; hosts supply membership and actions. */
-export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
+export function SidebarGroup({ title, label, icon, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
   const actionRef = useRef<HTMLSpanElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const presentation = navigationRowPresentation(level === 'section' ? { kind: 'caption', depth: 0 } : { kind: 'entry', depth: 0 });
+  const presentation = navigationRowPresentation({ kind: 'entry', depth: 0 });
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
   const button = <button
     ref={disclosureRef}
     type="button"
     data-nc-role="row"
-    className={`${styles.areaRow} ${rowLayout('content')} ${rowLayout('twoActions')}`}
+    className={`${styles.areaRow} ${styles.folderRow} ${rowLayout('content')} ${rowLayout('twoActions')}`}
     aria-expanded={disclosure.isOpen}
     aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} ${label}`}
     onClick={disclosure.toggle}
   >
-    {level === 'area' && <SpringRotation className={`${styles.chevron} ${rowLayout('leading')}`} angle={disclosure.isOpen ? 90 : 0}>
-      <Icon name="chevron-right" size="md" />
-    </SpringRotation>}
-    <ListText tone={presentation.tone} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
+    <span className={`${styles.folderIcon} ${rowLayout('leading')}`} aria-hidden="true">
+      <Icon name={icon} size="md" />
+    </span>
+    <span className={styles.folderTitleWrap}>
+      <ListText tone={presentation.tone} emphasis="medium" className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
+      <SpringRotation className={styles.inlineChevron} angle={disclosure.isOpen ? 90 : 0}>
+        <Icon name="chevron-right" size="sm" />
+      </SpringRotation>
+    </span>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
     <div className={`${styles.areaRowWrap} ${presentation.className}`}>
-      {level === 'section' ? <ListText as="h2" tone={presentation.tone} className={styles.groupHeading}>{button}</ListText> : button}
+      {level === 'section' ? <h2 className={styles.groupHeading}>{button}</h2> : button}
       <span ref={actionRef} className={`${styles.areaActions} ${rowLayout('inner')}`}>
         <DropdownMenu isMenuOpen={menuOpen} onOpenChange={setMenuOpen} placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
@@ -107,7 +113,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
   const pendingRevealRef = useRef(false);
   const limited = limitAreaTracks(tracks, AREA_TRACK_LIMIT, activeTrackId);
   const rows = showAll ? tracks : limited.rows;
-  const entryPresentation: NavigationEntrySpec = { kind: 'entry', depth: group.level === 'area' ? 1 : 0 };
+  const entryPresentation: NavigationEntrySpec = { kind: 'entry', depth: 1 };
   const revealPresentation = navigationRowPresentation(entryPresentation);
   useEffect(() => {
     if (!pendingRevealRef.current) return;
@@ -136,7 +142,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
         ref={toggleRef}
         type="button"
         data-nc-role="row"
-        className={`${ownStyles.showMore} ${revealPresentation.className} ${rowLayout('labelStart')}`}
+        className={`${ownStyles.showMore} ${revealPresentation.className}`}
         aria-label={showAll ? `Show less in ${group.title}` : `Show ${limited.hiddenCount} more in ${group.title}`}
         onClick={() => { pendingRevealRef.current = showAll; setShowAll(!showAll); }}
       ><ListText tone={revealPresentation.tone} className={ownStyles.showMoreLabel}>{showAll ? 'Show less' : `Show ${limited.hiddenCount} more`}</ListText></button>}

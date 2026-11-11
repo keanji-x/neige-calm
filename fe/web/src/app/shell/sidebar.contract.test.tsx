@@ -59,13 +59,17 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   ));
 }
 
-describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => {
+describe('INV-SIDEBAR-007 Focus, Pinned and peer Areas, and pinning is not relocation', () => {
+  const unpinnedBlocked = track({ id: 'focus-1', title: 'Blocked', attention: 'input', pinnedAt: null });
   const pinnedAndBlocked = track({ id: 'both', title: 'Both', attention: 'input', pinnedAt: 10 });
 
-  it('renders Waiting on you, then Pinned, then Areas', () => {
-    renderSidebar({ tracks: [pinnedAndBlocked] });
+  it('renders Focus, then Pinned, followed by peer Area disclosures', () => {
+    renderSidebar({ tracks: [unpinnedBlocked, pinnedAndBlocked] });
     const headings = screen.getAllByRole('heading').map((node) => node.textContent);
-    expect(headings).toEqual(['Waiting on you', 'Pinned', 'Areas']);
+    expect(headings).toEqual(['Focus', 'Pinned']);
+    const pinnedGroup = screen.getByRole('group', { name: 'Pinned' });
+    const areaGroup = screen.getByRole('group', { name: 'area Work' });
+    expect(Boolean(pinnedGroup.compareDocumentPosition(areaGroup) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
   it('keeps a pinned track in its area list as well as in the Pinned section', () => {
@@ -74,14 +78,16 @@ describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => 
     expect(screen.getAllByRole('button', { name: /^Track Pinned task/ })).toHaveLength(2);
   });
 
-  it('surfaces a pinned attention track in Waiting on you too — three rows, not one', () => {
-    renderSidebar({ tracks: [pinnedAndBlocked] });
-    expect(screen.getAllByRole('button', { name: /^Track Both/ })).toHaveLength(3);
+  it('surfaces unpinned attention tracks in Focus without duplicating pinned tracks', () => {
+    renderSidebar({ tracks: [unpinnedBlocked, pinnedAndBlocked] });
+    expect(screen.getAllByRole('button', { name: /^Track Blocked/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Track Both/ })).toHaveLength(2);
   });
 
-  it('drops a section entirely when it is empty rather than reordering the rest', () => {
+  it('omits empty shortcut sections completely while keeping Area disclosures visible', () => {
     renderSidebar({ tracks: [track()] });
-    expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Areas']);
+    expect(screen.queryAllByRole('heading')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 });
 
@@ -183,13 +189,15 @@ describe('active row', () => {
     expect(screen.getByRole('button', { name: 'Collapse area Work' }).getAttribute('aria-current')).toBeNull();
   });
 
-  /* "Waiting on you" and "Pinned" are shortcuts into the tree; a location is shown
+  /* "Focus" and "Pinned" are shortcuts into the tree; a location is shown
    * where the thing lives. */
   it('marks the open track once, in its area, not in the shortcut sections', () => {
-    const open = track({ id: 'w9', title: 'Row', attention: 'input', pinnedAt: 10 });
-    renderSidebar({ tracks: [open], currentPath: '/track/w9' });
+    const openFocus = track({ id: 'w9', title: 'Row', attention: 'input', pinnedAt: null });
+    const openPinned = track({ id: 'w10', title: 'Pinned row', attention: 'input', pinnedAt: 10 });
+    renderSidebar({ tracks: [openFocus, openPinned], currentPath: '/track/w9' });
     const rows = screen.getAllByRole('button', { name: /^Track Row/ });
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(2);
     expect(rows.filter((row) => row.getAttribute('aria-current') === 'page')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Track Pinned row/ })).toHaveLength(2);
   });
 });

@@ -1,6 +1,5 @@
 import type { DialogOrigin } from '../../ui/dialog/public.tsx';
 import type { SidebarTrackGroups } from './sidebar-track-groups.ts';
-import { trackEmptyContent } from './track-empty-content.tsx';
 import { EmptyState } from '../../ui/empty-state/public.tsx';
 // The workspace rail: shared groups with owner-defined membership and actions.
 import { useEffect, useRef } from 'react';
@@ -27,7 +26,7 @@ import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
 import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
-import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
+import { SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 
@@ -96,16 +95,14 @@ export function Sidebar({
   const receipts = useReadReceipts();
   const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
   const waiting = memberships.waiting;
-  const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; tracks: readonly Track[] }> = [
-    { id: 'waiting', title: 'Waiting on you', tracks: waiting },
-    { id: 'pinned', title: 'Pinned', tracks: memberships.pinned },
-    { id: 'unread', title: 'Unread', tracks: memberships.unread },
-    { id: 'running', title: 'Running', tracks: memberships.running },
+  const groups: ReadonlyArray<{ id: Exclude<SidebarSectionId, 'areas'>; title: string; icon: 'star' | 'pin'; tracks: readonly Track[] }> = [
+    { id: 'focus', title: 'Focus', icon: 'star', tracks: memberships.focus },
+    { id: 'pinned', title: 'Pinned', icon: 'pin', tracks: memberships.pinned },
   ];
 
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
   const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
-    && (id === 'areas' || id === 'unread' || id === 'running' || groups.find((group) => group.id === id)!.tracks.length > 0);
+    && (id === 'areas' || groups.find((group) => group.id === id)!.tracks.length > 0);
   const shownSections = sectionOrder.filter(sectionVisible);
   const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
   const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);
@@ -119,7 +116,6 @@ export function Sidebar({
       id: `area:${area.id}` as SidebarGroupId, title: `area ${area.name}`,
       restore: () => {
         preferences.setSidebarGroupVisible('areas', true);
-        preferences.setSidebarGroupExpanded('areas', true);
         preferences.setSidebarGroupVisible(`area:${area.id}`, true);
       },
     })),
@@ -157,12 +153,11 @@ export function Sidebar({
   // Reveal the current row when visible without undoing manual Area collapse.
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
-  const areasExpanded = preferences.sidebarGroupExpanded('areas');
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
     railRef.current?.querySelector('[aria-current="page"]')
       ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeTrackId, collapsed, activeAreaExpanded, areasExpanded]);
+  }, [activeTrackId, collapsed, activeAreaExpanded]);
 
   /* A collapsed Area initial is an entrance into the expanded tree: restore focus
        to the disclosure it reveals, or activating the unmounted initial drops focus
@@ -252,7 +247,7 @@ export function Sidebar({
         <>
           {/* The rail's colours belong only to the indicator vocabulary and the current
                         location; titles never carry a state colour. */}
-          {preferences.sidebarGroupVisible('waiting') && waiting.length > 0 && (
+          {preferences.sidebarGroupVisible('focus') && waiting.length > 0 && (
             <div className={styles.stripWaiting} aria-label={`${waiting.length} waiting on you`}>
               {waiting.length}
             </div>
@@ -269,7 +264,6 @@ export function Sidebar({
               title={area.name}
               onClick={() => {
                 pendingAreaFocusRef.current = area.id;
-                preferences.setSidebarGroupExpanded('areas', true);
                 preferences.setAreaExpanded(area.id, true);
                 onToggleCollapsed();
               }}
@@ -292,7 +286,7 @@ export function Sidebar({
                 <span className={`${styles.primaryNavIcon} ${rowLayout('leading')}`} aria-hidden="true">
                   <Icon name="calendar" size="md" />
                 </span>
-                <ListText tone={primaryNavPresentation.tone} emphasis={todayActive ? 'selected' : undefined} className={styles.areaName} title="Today">Today</ListText>
+                <ListText tone={primaryNavPresentation.tone} emphasis={todayActive ? 'selected' : 'medium'} className={styles.areaName} title="Today">Today</ListText>
               </button>
             </div>
             <div className={`${styles.areaRowWrap} ${primaryNavPresentation.className}`}>
@@ -306,7 +300,7 @@ export function Sidebar({
                 <span className={`${styles.primaryNavIcon} ${rowLayout('leading')}`} aria-hidden="true">
                   <Icon name="tasks" size="md" />
                 </span>
-                <ListText tone={primaryNavPresentation.tone} emphasis={recipesActive ? 'selected' : undefined} className={styles.areaName} title="Recipes">Recipes</ListText>
+                <ListText tone={primaryNavPresentation.tone} emphasis={recipesActive ? 'selected' : 'medium'} className={styles.areaName} title="Recipes">Recipes</ListText>
               </button>
             </div>
           </div>
@@ -314,51 +308,60 @@ export function Sidebar({
           {shownSections.map((id) => {
             if (id !== 'areas') {
               const group = groups.find((group) => group.id === id)!;
-              return <SidebarTrackGroup key={id} title={group.title} label={group.title} level="section"
+              return <SidebarTrackGroup key={id} title={group.title} label={group.title} icon={group.icon} level="section"
                 management={management(id, `Group actions for ${group.title}`)}
-                emptyState={readError === null && !readLoading && (id === 'pinned' || activityError === null) ? trackEmptyContent(id) : null} tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
+                emptyState={null} tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
                 expanded={preferences.sidebarGroupExpanded(id)}
-                onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)} {...rowProps} />;
+                onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)}
+                {...rowProps} />;
             }
-            return <SidebarGroup key={id} title="Areas" label="Areas" level="section"
-            management={management(id, 'Group actions for Areas')}
-            expanded={areasExpanded}
-            onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
-            actions={<span ref={createRef} className={`${styles.iconButton} ${rowLayout('chromeOuter')}`}><button type="button" data-nc-role="icon" className={styles.sourceButton}
-              aria-label="New area" onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}><Icon name="plus" /></button></span>}>
-            {readError === null && !readLoading && userAreas.length === 0 && (
-              <div className={styles.emptyArea}>
-                <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
-              </div>
-            )}
+            return <div key={id} className={styles.areaGroups}>
+              {readError === null && !readLoading && userAreas.length === 0 && (
+                <div className={styles.emptyArea}>
+                  <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
+                </div>
+              )}
 
-            {shownAreas.length > 0 && (
-              <div className={styles.areaGroups}>
-                {shownAreas.map((area) => (
-                  <AreaGroup
-                    key={area.id}
-                    area={area}
-                    management={management(`area:${area.id}`, `Area actions for ${area.name}`)}
-                    readReady={readError === null && !readLoading && activityError === null}
-                    areaTracks={tracksByArea.get(area.id) ?? []}
-                    activeTrackId={activeTrackId}
-                    expanded={preferences.areaExpanded(area.id)}
-                    onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}
-                    showClosed={preferences.areaShowsClosed(area.id)}
-                    onSetShowClosed={(next) => preferences.setAreaShowsClosed(area.id, next)}
-                    disclosureRef={(element) => {
-                      if (element === null) areaDisclosureRefs.current.delete(area.id);
-                      else areaDisclosureRefs.current.set(area.id, element);
-                    }}
-                    onEdit={(origin) => onRequestEditArea(area, origin)}
-                    onRequestDelete={areaConfirm.request}
-                    onNewTrack={onNewTrack}
-                    {...rowProps}
-                  />
-                ))}
+              {shownAreas.map((area) => (
+                <AreaGroup
+                  key={area.id}
+                  area={area}
+                  management={management(`area:${area.id}`, `Area actions for ${area.name}`)}
+                  readReady={readError === null && !readLoading && activityError === null}
+                  areaTracks={tracksByArea.get(area.id) ?? []}
+                  activeTrackId={activeTrackId}
+                  expanded={preferences.areaExpanded(area.id)}
+                  onToggle={(nextExpanded) => preferences.setAreaExpanded(area.id, nextExpanded)}
+                  showClosed={preferences.areaShowsClosed(area.id)}
+                  onSetShowClosed={(next) => preferences.setAreaShowsClosed(area.id, next)}
+                  disclosureRef={(element) => {
+                    if (element === null) areaDisclosureRefs.current.delete(area.id);
+                    else areaDisclosureRefs.current.set(area.id, element);
+                  }}
+                  onEdit={(origin) => onRequestEditArea(area, origin)}
+                  onRequestDelete={areaConfirm.request}
+                  onNewTrack={onNewTrack}
+                  {...rowProps}
+                />
+              ))}
+
+              <div className={`${styles.areaRowWrap} ${primaryNavPresentation.className}`}>
+                <span ref={createRef} className={styles.newAreaAnchor}>
+                  <button
+                    type="button"
+                    data-nc-role="row"
+                    className={`${styles.areaRow} ${styles.newAreaRow} ${rowLayout('content')}`}
+                    aria-label="New area"
+                    onClick={() => onRequestCreateArea({ kind: 'anchor', anchor: { ref: createRef }, unavailable: 'surface-center' })}
+                  >
+                    <span className={`${styles.newAreaIcon} ${rowLayout('leading')}`} aria-hidden="true">
+                      <Icon name="plus" size="md" />
+                    </span>
+                    <ListText tone={primaryNavPresentation.tone} className={styles.areaName} title="New area">New area</ListText>
+                  </button>
+                </span>
               </div>
-            )}
-          </SidebarGroup>;
+            </div>;
           })}
           </div>
 

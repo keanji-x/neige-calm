@@ -90,10 +90,12 @@ real shell composition, Area routing, modal focus boundaries and panel history.
 
 ## Accessibility contract
 
-- The rail is a `<nav aria-label="Workspace">`; each section has an `<h2>`
-  containing its disclosure button. All groups have an accessible group label.
-  Waiting on you, Pinned, Unread, Running and Areas share the same disclosure;
-  Area rows share its geometry and retain their own actions.
+- The rail is a `<nav aria-label="Workspace">`; shortcut sections (`Focus`, `Pinned`)
+  wrap their disclosure button in an `<h2>`, while peer `Area` folders render directly as
+  Level 1 disclosures without an outer `"Areas"` wrapper heading. All groups have an
+  accessible group label (`Focus`, `Pinned`, `area <name>`) and share the unified folder
+  pattern: a fixed type icon (`star`, `pin`, `folder`) on the leading axis, a medium label
+  on the shared `40px` spine, and an inline rotating chevron immediately after the label.
 - Track rows are `<button>` with `aria-current="page"` when their URL is open.
 - On the desktop rail, an Area is a muted disclosure button with `aria-expanded` and no page URL.
   Click, Enter, Space and assistive activation all toggle it immediately;
@@ -131,20 +133,20 @@ Every sidebar group has the same Move up, Move down and Hide group actions.
 Movement swaps visible siblings at the same level; boundary actions are disabled.
 Area editing, closed-Track display and deletion remain Area-owned menu entries.
 The top-row menu provides Hidden groups with Show actions for every hidden
-workspace group, including Pinned, Waiting on you, Areas, Unread and
-Running (initially off). Restoring an Area also reveals and expands its Areas
-parent. Area entries say `Show area <name>` to distinguish same-named workspace
-groups. Hiding a group returns focus to the top-row menu and never navigates,
-marks work read or changes running work.
+workspace group (`Focus`, `Pinned`, `Areas`, and individual Areas). Restoring an Area
+also reveals its `Areas` slot. Area entries say `Show area <name>` to distinguish
+same-named workspace groups. Hiding a group returns focus to the top-row menu and never
+navigates, marks work read or changes running work.
 
 The full registered order retains hidden slots, removes stale/duplicate IDs and
 appends newly created Areas. Layout is a browser-local per-origin/per-user choice
 that survives server restarts; it never writes the shared Area sort value. Hidden
 Area choices also apply to the collapsed strip. Shortcut membership still uses
-all user-visible Areas, so hiding an Area's tree does not hide its work from Pinned,
-Unread or Running. Unread uses completion receipts; Running independently reads
-the kernel working verdict. Empty shortcut groups remain omitted. Waiting on you,
-Pinned and Areas start visible and can also be hidden or moved.
+all user-visible Areas, so hiding an Area's tree does not hide its work from `Focus`
+or `Pinned`. `Focus` aggregates unpinned failed, waiting-on-you and running Tracks so
+pinned Tracks never duplicate across `Focus` and `Pinned`. Empty shortcut groups are
+omitted automatically (`emptyState={null}`). `Focus`, `Pinned` and `Areas` start visible
+and can be hidden or reordered.
 
 Area disclosure, each Area's `Show closed` choice (`area-closed:<id>`, off by
 default) and the manual sidebar width choice are browser-local display
@@ -159,10 +161,10 @@ storage the choices remain in memory for the app instance.
 the behaviour; every invariant below was mutation-verified (break the production
 line, watch the named test go red) before landing.
 
-- **INV-SIDEBAR-007** — default sections render **Waiting on you → Pinned → Areas**
-  (enabled Unread and Running appear between Pinned and Areas), and
-  **pinning is not relocation**: a pinned track appears under Pinned *and* in its
-  area's list, and if it also needs attention it appears in all three.
+- **INV-SIDEBAR-007** — default sections render **Focus → Pinned → Areas**, and
+  **pinning is not relocation**: a pinned track appears under `Pinned` *and* in its
+  area's list, while unpinned attention/running tracks appear under `Focus` *and* in
+  their area's list without duplicating pinned items in `Focus`.
 - **E2E-INV-SHELL-003** — the kernel system area must never reach the rail. The
   server filters it, `areaListQueryOptions` filters it again, and `Sidebar`
   filters it a third time with `visibleAreas`.

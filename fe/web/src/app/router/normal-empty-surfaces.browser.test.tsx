@@ -190,13 +190,15 @@ it('catalog body patch without net changes', async () => {
 it('catalog confirmed empty desktop shortcut groups', async () => {
   await page.viewport(1440,1000);
   const preferences = createUiPreferences();
-  for (const id of ['pinned','unread','waiting','running'] as const) {
+  for (const id of ['focus','pinned'] as const) {
     preferences.setSidebarGroupVisible(id,true);
     preferences.setSidebarGroupExpanded(id,true);
   }
   renderDailyFixture({emptyWorkspace:true,reportBody:'',uiPreferences:preferences});
-  await expect.element(page.getByRole('heading',{name:'没有运行中的 Track。',exact:true})).toBeVisible();
-  await shot('34-desktop-empty-shortcuts', ["没有未读的 Track。", "没有运行中的 Track。"]);
+  await expect.element(page.getByRole('heading',{name:'聊聊你想做什么',exact:true})).toBeVisible();
+  expect(page.getByRole('group',{name:'Focus',exact:true}).query()).toBeNull();
+  expect(page.getByRole('group',{name:'Pinned',exact:true}).query()).toBeNull();
+  await shot('34-desktop-empty-shortcuts', ["聊聊你想做什么"]);
 });
 
 it('catalog a surface without live previews', async () => {

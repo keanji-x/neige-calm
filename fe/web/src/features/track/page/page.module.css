@@ -1317,5 +1317,6 @@
 
 @layer features {
   .fillReading { overflow: hidden; }
+  .fillReading .workHeader { border-block-end-color: transparent; }
   .fillReading .workspace { grid-template-rows: minmax(0, 1fr); }
 }
