@@ -43,17 +43,17 @@ describe('pure verdict edge cases', () => {
   const passing: MutationRunResult = {
     failed_test_ids: ['source remains guarded'], apply_check_exit_code: 0, apply_exit_code: 0, reverse_exit_code: 0,
     target_changed_after_apply: true, target_restored_after_revert: true,
-    test_run_exit_code: 1, test_infrastructure_errors: [],
+    test_run: { exit_code: 1 }, test_infrastructure_errors: [],
   };
   it.each([
     ['dead-mutation', { ...passing, failed_test_ids: [] }, ['dead-mutation']],
     ['under-red', { ...passing, failed_test_ids: ['different expected'] }, ['under-red', 'over-red']],
     ['over-red', { ...passing, failed_test_ids: [...passing.failed_test_ids, 'extra red'] }, ['over-red']],
-    ['patch-noop', { ...passing, target_changed_after_apply: false }, ['patch-noop']],
-    ['patch-check-failed', { ...passing, apply_check_exit_code: 1 }, ['patch-check-failed']],
-    ['patch-apply-failed', { ...passing, apply_exit_code: 1 }, ['patch-apply-failed']],
+    ['patch-noop', { ...passing, failed_test_ids: [], target_changed_after_apply: false, test_run: null }, ['patch-noop']],
+    ['patch-check-failed', { ...passing, failed_test_ids: [], apply_check_exit_code: 1, apply_exit_code: null, reverse_exit_code: null, target_changed_after_apply: false, test_run: null }, ['patch-check-failed']],
+    ['patch-apply-failed', { ...passing, failed_test_ids: [], apply_exit_code: 1, reverse_exit_code: null, target_changed_after_apply: false, test_run: null }, ['patch-apply-failed']],
     ['revert-failed', { ...passing, reverse_exit_code: 1 }, ['revert-failed']],
-    ['test-run-failed', { ...passing, failed_test_ids: [], test_run_exit_code: null }, ['test-run-failed']],
+    ['test-run-failed', { ...passing, failed_test_ids: [], test_run: { exit_code: null } }, ['test-run-failed']],
     ['test-infrastructure-failed', { ...passing, test_infrastructure_errors: ['broken suite'] }, ['test-infrastructure-failed']],
     ['infra suppresses dead mutation', { ...passing, failed_test_ids: [], test_infrastructure_errors: ['broken'] }, ['test-infrastructure-failed']],
     ['revert-drift', { ...passing, target_restored_after_revert: false }, ['revert-drift']],
@@ -677,7 +677,7 @@ describe('every id list in a report record is bounded', () => {
   const baseResult: MutationRunResult = {
     failed_test_ids: [], apply_check_exit_code: 0, apply_exit_code: 0, reverse_exit_code: 0,
     target_changed_after_apply: true, target_restored_after_revert: true,
-    test_run_exit_code: 1, test_infrastructure_errors: [],
+    test_run: { exit_code: 1 }, test_infrastructure_errors: [],
   };
 
   it('caps actual_red and announces the drop inside the emitted list', () => {
@@ -702,7 +702,7 @@ describe('every id list in a report record is bounded', () => {
   it('caps the verdict error id lists while leaving ok and the codes untouched', () => {
     const reds = Array.from({ length: reportTestIdLimit + 200 }, (_v, index) => `red${index}`);
     const verdict = judgeMutation({ ...baseEntry, expected_red: ['gone', 'gone'] }, {
-      ...baseResult, failed_test_ids: [...reds, ...reds], test_run_exit_code: 1,
+      ...baseResult, failed_test_ids: [...reds, ...reds], test_run: { exit_code: 1 },
     });
     const bounded = boundedVerdict(verdict);
     expect(bounded.ok).toBe(verdict.ok);
@@ -731,13 +731,14 @@ describe('every id list in a report record is bounded', () => {
     const failureMessages = Object.fromEntries(reds.slice(0, 60)
       .map((id) => [id, Array.from({ length: 200 }, () => huge)]));
     const verdict = judgeMutation({ ...baseEntry, expected_red: declared }, {
-      ...baseResult, failed_test_ids: failed, test_run_exit_code: 1,
+      ...baseResult, failed_test_ids: failed, test_run: { exit_code: 1 },
     });
     // Every error code that carries a non-empty id list is present, so nothing is under-counted.
     expect(verdict.errors.map(({ code }) => code))
       .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'under-red', 'over-red']);
     const record = {
       mutation_id: baseEntry.mutation_id,
+      test_run: { exit_code: 1 },
       expected_red: declared,
       actual_red: boundedTestIdList(failed),
       verdict: boundedVerdict(verdict),
@@ -821,6 +822,7 @@ describe('every id list in a report record is bounded', () => {
       .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'test-infrastructure-failed']);
     const record = {
       mutation_id: baseEntry.mutation_id,
+      test_run: { exit_code: 1 },
       expected_red: declared,
       actual_red: boundedTestIdList(failed),
       verdict: boundedVerdict(verdict),

@@ -58,3 +58,5 @@ for (const directory of declaredFixtureDirectories) {
   exerciseFixture(name);
 }
 console.log(`mutation fixture e2e: ${declaredFixtureDirectories.length}/${declaredFixtureDirectories.length} passed`);
+
+await import('./cli-fixtures.mjs');

@@ -41,11 +41,13 @@ export function mutationWitnessNeedsBrowser(
 export interface MutationRunResult {
   failed_test_ids: readonly string[];
   apply_check_exit_code: number;
-  apply_exit_code: number;
+  /** null means apply was not attempted; attempted processes without an exit normalize to failure. */
+  apply_exit_code: number | null;
   reverse_exit_code: number | null;
   target_changed_after_apply: boolean;
   target_restored_after_revert: boolean;
-  test_run_exit_code: number | null;
+  /** null means not attempted; an object with exit_code:null means launch/signal failure. */
+  test_run: null | { exit_code: number | null };
   test_infrastructure_errors: readonly string[];
 }
 
@@ -642,21 +644,27 @@ export function judgeMutation(entry: MutationEntry, result: MutationRunResult): 
   if (duplicateExpected.length > 0) errors.push({ code: 'duplicate-expected-red', test_ids: duplicateExpected });
   if (duplicateActual.length > 0) errors.push({ code: 'duplicate-actual-red', test_ids: duplicateActual });
   if (result.apply_check_exit_code !== 0) errors.push({ code: 'patch-check-failed', test_ids: [] });
-  if (result.apply_exit_code !== 0) errors.push({ code: 'patch-apply-failed', test_ids: [] });
-  if (!result.target_changed_after_apply) errors.push({ code: 'patch-noop', test_ids: [] });
-  if (result.reverse_exit_code !== null && result.reverse_exit_code !== 0) errors.push({ code: 'revert-failed', test_ids: [] });
+  else if (result.apply_exit_code !== 0) errors.push({ code: 'patch-apply-failed', test_ids: [] });
+  else if (!result.target_changed_after_apply) errors.push({ code: 'patch-noop', test_ids: [] });
+  if ((result.apply_exit_code === 0 || result.reverse_exit_code !== null) && result.reverse_exit_code !== 0) errors.push({ code: 'revert-failed', test_ids: [] });
   if (!result.target_restored_after_revert) errors.push({ code: 'revert-drift', test_ids: [] });
 
-  if (result.test_run_exit_code !== 0 && result.test_run_exit_code !== 1) errors.push({ code: 'test-run-failed', test_ids: [] });
-  if (result.test_infrastructure_errors.length > 0) errors.push({ code: 'test-infrastructure-failed', test_ids: [...result.test_infrastructure_errors] });
-  const expected = new Set(entry.expected_red);
-  const actual = new Set(result.failed_test_ids);
-  if (!errors.some(({ code }) => code === 'test-run-failed' || code === 'test-infrastructure-failed')) {
-    if (actual.size === 0) errors.push({ code: 'dead-mutation', test_ids: [] });
-    const missing = difference(expected, actual);
-    const extra = difference(actual, expected);
-    if (missing.length > 0 && actual.size > 0) errors.push({ code: 'under-red', test_ids: missing });
-    if (extra.length > 0) errors.push({ code: 'over-red', test_ids: extra });
+  const validPatch = result.apply_check_exit_code === 0 && result.apply_exit_code === 0
+    && result.target_changed_after_apply;
+  if (validPatch) {
+    if (result.test_run === null || (result.test_run.exit_code !== 0 && result.test_run.exit_code !== 1)) {
+      errors.push({ code: 'test-run-failed', test_ids: [] });
+    }
+    if (result.test_infrastructure_errors.length > 0) errors.push({ code: 'test-infrastructure-failed', test_ids: [...result.test_infrastructure_errors] });
+    const expected = new Set(entry.expected_red);
+    const actual = new Set(result.failed_test_ids);
+    if (!errors.some(({ code }) => code === 'test-run-failed' || code === 'test-infrastructure-failed')) {
+      if (actual.size === 0) errors.push({ code: 'dead-mutation', test_ids: [] });
+      const missing = difference(expected, actual);
+      const extra = difference(actual, expected);
+      if (missing.length > 0 && actual.size > 0) errors.push({ code: 'under-red', test_ids: missing });
+      if (extra.length > 0) errors.push({ code: 'over-red', test_ids: extra });
+    }
   }
   return { ok: errors.length === 0, errors };
 }
