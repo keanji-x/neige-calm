@@ -99,10 +99,11 @@ try {
     const patchPath = resolve(temporary, `${entry.mutation_id}.diff`);
     const jsonPath = resolve(temporary, `${entry.mutation_id}.json`);
     writeFileSync(patchPath, entry.patch);
-    const check = git(['apply', `--directory=${gitApplyDirectory}`, '--check', patchPath]);
-    const apply = check.status === 0 ? git(['apply', `--directory=${gitApplyDirectory}`, patchPath]) : { status: 125 };
-    const targetChanged = !byteSequencesEqual(before, readFileSync(target));
-    let test = { status: /** @type {number | null} */ (null) };
+    let check = null;
+    let apply = null;
+    let targetChanged = false;
+    /** @type {null | { status: number | null }} */
+    let test = null;
     /** @type {string[]} */
     let failed = [];
     /** @type {string[]} */
@@ -113,18 +114,28 @@ try {
     let restoreError = null;
     const testFiles = testScope === 'witness' ? mutationWitnessTestPaths(entry, witnessCatalog) : [];
     try {
-      test = spawnSync('npx', ['vitest', 'run', ...testFiles, '--reporter=json', `--outputFile=${jsonPath}`], {
-        cwd: feRoot, encoding: 'utf8',
-      });
+      check = git(['apply', `--directory=${gitApplyDirectory}`, '--check', patchPath]);
+      if (check.status === 0) apply = git(['apply', `--directory=${gitApplyDirectory}`, patchPath]);
+      targetChanged = !byteSequencesEqual(before, readFileSync(target));
+      if (check.status === 0 && apply?.status === 0 && targetChanged) {
+        test = spawnSync('npx', ['vitest', 'run', ...testFiles, '--reporter=json', `--outputFile=${jsonPath}`], {
+          cwd: feRoot, encoding: 'utf8',
+        });
+      }
     } finally {
-      if (apply.status === 0) reverse = git(['apply', `--directory=${gitApplyDirectory}`, '--reverse', patchPath]);
-      if (!byteSequencesEqual(before, readFileSync(target))) {
+      if (apply?.status === 0) reverse = git(['apply', `--directory=${gitApplyDirectory}`, '--reverse', patchPath]);
+      let needsRestore = true;
+      try { needsRestore = !byteSequencesEqual(before, readFileSync(target)); } catch {
+        // A failed apply/read may leave the target absent; still try the original byte fallback.
+      }
+      if (needsRestore) {
         try { writeFileSync(target, before); } catch (error) { restoreError = error; }
       }
     }
-    const restored = byteSequencesEqual(before, readFileSync(target));
     if (restoreError) throw new Error(`${entry.mutation_id}: byte restoration failed`, { cause: restoreError });
-    if ((test.status === 0 || test.status === 1)) {
+    const restored = byteSequencesEqual(before, readFileSync(target));
+    if (!restored) throw new Error(`${entry.mutation_id}: byte restoration failed`, { cause: restoreError });
+    if (test !== null && (test.status === 0 || test.status === 1)) {
       try {
         ({ failedTestIds: failed, infrastructureErrors, failureMessagesByTestId: failureMessages }
           = parseVitestReport(readFileSync(jsonPath, 'utf8')));
@@ -134,17 +145,17 @@ try {
     }
     const verdict = judgeMutation(entry, {
       failed_test_ids: failed,
-      apply_check_exit_code: check.status ?? 125,
-      apply_exit_code: apply.status ?? 125,
-      reverse_exit_code: reverse?.status ?? null,
+      apply_check_exit_code: check?.status ?? 125,
+      apply_exit_code: apply === null ? null : apply.status ?? 125,
+      reverse_exit_code: reverse === null ? null : reverse.status ?? 125,
       target_changed_after_apply: targetChanged,
       target_restored_after_revert: restored,
-      test_run_exit_code: test.status,
+      test_run: test === null ? null : { exit_code: test.status },
       test_infrastructure_errors: infrastructureErrors,
     });
     // Only the UNEXPECTED reds get details. Every id list is bounded, not just failure_details: `actual_red` and
     // `verdict.errors[].test_ids` dominate the size when a mutation reds the whole suite.
-    report.push({ mutation_id: entry.mutation_id, test_files: testScope === 'witness' ? testFiles : null,
+    report.push({ mutation_id: entry.mutation_id, test_run: test === null ? null : { exit_code: test.status }, test_files: testScope === 'witness' ? testFiles : null,
       expected_red: entry.expected_red,
       actual_red: boundedTestIdList(failed), verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, entry.expected_red, failureMessages) });
