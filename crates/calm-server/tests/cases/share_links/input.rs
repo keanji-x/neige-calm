@@ -312,3 +312,41 @@ async fn shared_list_prepends_canonical_planner_without_owner_title_fallback() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(titled[0]["title"], "Shared plan");
 }
+
+#[tokio::test]
+async fn guest_receipt_replays_after_current_session_pointer_is_cleared() {
+    let fx = Fixture::new().await;
+    let (card, _) = canonical(&fx).await;
+    let link = fx.create(true).await;
+    let path = format!(
+        "/api/share/{}/tracks/{}/conversations/{card}/input",
+        link["token"].as_str().unwrap(),
+        fx.track
+    );
+    let body = json!({"text":"durable guest receipt"});
+    let accepted = send(&fx, &path, Some("cleared-session"), body.clone()).await;
+    assert_eq!(accepted.0, StatusCode::OK, "{:?}", accepted.1);
+    fx.state
+        .raw_repo()
+        .sqlite_db()
+        .unwrap()
+        .writer()
+        .execute(sqlx::query("UPDATE cards SET session_id=NULL WHERE id=?1").bind(&card))
+        .await
+        .unwrap();
+    assert_eq!(
+        send(&fx, &path, Some("cleared-session"), body).await,
+        accepted
+    );
+    assert_eq!(
+        send(
+            &fx,
+            &path,
+            Some("fresh-key"),
+            json!({"text":"needs a carrier"})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+}

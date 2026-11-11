@@ -84,8 +84,9 @@ pub(crate) async fn send(
             })
             .filter(crate::harness::backend::factory::PlannerFactory::canonical_inputs)
             .ok_or_else(|| CalmError::Conflict("canonical Planner or Assistant required".into()))?;
-            let mut carrier =
-                sqlite::conversation::current_input_content_carrier_tx(tx, &card).await?;
+            if !sqlite::conversation::card_has_canonical_storage(tx, &card).await? {
+                return Err(CalmError::Conflict("canonical conversation storage required".into()));
+            }
             let hash = format!(
                 "{}{}",
                 sqlite::CANONICAL_PLANNER_INPUT_BINDING_PREFIX,
@@ -96,9 +97,6 @@ pub(crate) async fn send(
             let author = MessageAuthor::LinkGuest {
                 share_link_id: source.delegation().id.clone(),
             };
-            let handoff = registry
-                .canonical_sources(carrier.worker_session_id(), &track.clone().into())
-                .begin_handoff();
             if let Some(receipt) = sqlite::planner_input_binding_get(&mut **tx, &card, &key).await?
             {
                 if receipt.payload_hash != hash {
@@ -117,6 +115,14 @@ pub(crate) async fn send(
                 if message.card_id != card || message.author != author {
                     return Err(CalmError::Conflict("receipt author changed".into()));
                 }
+                // Receipt evidence survives loss of the current carrier. This
+                // optional pointer only scopes a transient handoff.
+                let target: Option<(String, String)> = sqlx::query_as(
+                    "SELECT ws.id,ws.track_id FROM cards c JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id WHERE c.id=?1",
+                ).bind(&card).fetch_optional(&mut **tx).await?;
+                let handoff = target.map(|(worker, track)| {
+                    registry.canonical_sources(&worker, &track.into()).begin_handoff()
+                });
                 source.check_current()?;
                 return Ok((
                     SendPlannerInputResponse {
@@ -128,6 +134,11 @@ pub(crate) async fn send(
                     handoff,
                 ));
             }
+            let mut carrier =
+                sqlite::conversation::current_input_content_carrier_tx(tx, &card).await?;
+            let handoff = registry
+                .canonical_sources(carrier.worker_session_id(), &track.clone().into())
+                .begin_handoff();
             let accepted = sqlite::conversation::accept_pending_message_tx(
                 tx,
                 &mut carrier,
@@ -175,7 +186,7 @@ pub(crate) async fn send(
                     scope,
                     event,
                 }),
-                handoff,
+                Some(handoff),
             ))
         })
     })
@@ -183,12 +194,14 @@ pub(crate) async fn send(
     if let Some(event) = event {
         s.events.emit_envelope(event);
     }
-    crate::operation::planner_start_fence::finish_canonical_human_handoff(
-        s,
-        ack.card_id.clone(),
-        InputSource::Share(wake),
-        handoff,
-    )
-    .await;
+    if let Some(handoff) = handoff {
+        crate::operation::planner_start_fence::finish_canonical_human_handoff(
+            s,
+            ack.card_id.clone(),
+            InputSource::Share(wake),
+            handoff,
+        )
+        .await;
+    }
     Ok(Json(ack))
 }
