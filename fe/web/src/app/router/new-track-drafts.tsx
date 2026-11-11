@@ -69,9 +69,9 @@ function useDraftStore() {
 }
 
 /** Read a retained intention for presentation; it never proves live Area membership. */
-export function useNewTrackDraft(areaId: string | undefined): NewTrackSession | null {
+export function useNewTrackDraftArea(areaId: string | undefined): Area | undefined {
   const store = useDraftStore();
-  return useSyncExternalStore(store.subscribe, () => areaId === undefined ? null : store.get(areaId));
+  return useSyncExternalStore(store.subscribe, () => areaId === undefined ? undefined : store.get(areaId)?.area);
 }
 
 /** Seed the existing draft from a confirmed create response before entering its route. */
@@ -81,7 +81,7 @@ export function usePrepareNewTrack(): (area: Area) => void {
 
 export function useNewTrackSession(areaId: string, area: Area | undefined) {
   const store = useDraftStore();
-  const session = useNewTrackDraft(areaId);
+  const session = useSyncExternalStore(store.subscribe, () => store.get(areaId));
   useEffect(() => { if (area !== undefined) store.ensure(area); }, [area, store]);
   return { store, session };
 }

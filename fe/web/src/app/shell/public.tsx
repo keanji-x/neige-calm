@@ -39,7 +39,7 @@ import {
 } from '../providers/queries.ts';
 import { useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useNewTrackBack, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
-import { useNewTrackDraft, usePrepareNewTrack } from '../router/new-track-drafts.tsx';
+import { useNewTrackDraftArea, usePrepareNewTrack } from '../router/new-track-drafts.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileWorkspaceHeader } from './mobile-header.tsx';
 import { MobileTracks } from './mobile-tracks.tsx';
@@ -217,10 +217,10 @@ export function AppShell({
   >(null);
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
   const routeAreaId = routeParamFromPath(currentPath, '/area/');
-  const newTrackDraft = useNewTrackDraft(newTrackBack === null ? undefined : routeAreaId);
+  const newTrackArea = useNewTrackDraftArea(newTrackBack === null ? undefined : routeAreaId);
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
-  const activeArea = areas.find((area) => area.id === activeAreaId) ?? newTrackDraft?.area ?? areas[0];
+  const activeArea = areas.find((area) => area.id === activeAreaId) ?? newTrackArea ?? areas[0];
   const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
