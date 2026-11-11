@@ -103,7 +103,7 @@ describe('creating an Area before its list is available', () => {
       await expect.element(page.getByRole('button', { name: 'Create track', exact: true })).toBeDisabled();
       await page.getByRole('button', { name: 'Track options' }).click();
       await expect.element(page.getByRole('button', { name: 'Template: Saved workflow' })).toBeVisible();
-      await expect.element(page.getByRole('button', { name: 'Folder: /srv/research' })).toBeVisible();
+      await expect.element(page.getByRole('button', { name: 'Repo: research (/srv/research)' })).toBeVisible();
       await page.getByRole('button', { name: 'Track options' }).click();
       releaseReads();
       await expect.element(page.getByRole('button', { name: 'Create track', exact: true })).toBeEnabled();
