@@ -94,7 +94,7 @@ async fn populated_upgrade(empty_presentations: bool) {
         database_id: Arc::new("upgrade-test".into()),
     };
     let (_, card) = crate::db::sqlite::historical_fixtures::conversation_card(&repo).await;
-    let s = seed_repo(repo, card, true).await;
+    let s = historical_seed_tests::seed(repo, card, historical_seed_tests::Graph::Inline183).await;
     // Include native backing rows/presentations as well as Human and System.
     use crate::db::{RepoOutOfDomain, TranscriptReceiptItem};
     let track: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")

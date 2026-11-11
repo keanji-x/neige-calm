@@ -665,3 +665,6 @@ mod acp_recovery;
 mod track_contention;
 
 mod retained_batch;
+
+#[cfg(feature = "fixtures")]
+mod share_recovery_tests;

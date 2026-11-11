@@ -492,7 +492,7 @@ async fn canonical_retry_inactive_text_plan_reopens_without_git_dependency() {
     );
     let repo = super::super::SqlxRepo::open(&url).await.unwrap();
     let (_, card) = super::tests::fixture_card(&repo).await;
-    let s = super::retry_storage_tests::seed_repo(repo, card, false).await;
+    let s = super::retry_storage_tests::seed_repo(repo, card).await;
     let decision = {
         let write_db = (s.repo.db()).clone();
         let s = &s;

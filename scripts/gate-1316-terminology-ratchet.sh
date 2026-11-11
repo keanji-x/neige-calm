@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# #3633 bounded guest-conversation contract exception: spec/crates 532 -> 535
+# preserves the released 'spec' profile in 0217 and the required 'shared-spec'
+# API kind in its producer and independent HTTP assertion. spec/docs 0 -> 1
+# documents that exact public kind. runtime_id/crates 1118 -> 1125 and
+# harness_item/crates 298 -> 300 preserve frozen initiating_runtime_id and
+# harness_items identifiers while 0217 rebuilds the conversation tables. Two
+# of the runtime_id references are the fixed released-schema graph projection
+# used by historical-upgrade fixtures; five are in 0217 itself.
+# Contract changes edit their owning query/migration/projection and this existing
+# baseline; ordinary additions need no file/test roster. The existing scan and
+# selftest each run once per CI lint workflow; no scan rule or exclusion changes.
 # #3540 bounded forward-migration exception: spec/crates +1, runtime_id/crates
 # +2, harness_item/crates +2 preserve the released profile value and physical
 # initiating_runtime_id/harness_items identifiers in 0213. No domain name,

@@ -23,6 +23,14 @@ pub(super) async fn fixture_card_for_provider(
     repo: &SqlxRepo,
     provider: calm_types::runtime::AgentProvider,
 ) -> (String, String) {
+    fixture_card_with_id(repo, provider, crate::model::new_id()).await
+}
+
+pub(super) async fn fixture_card_with_id(
+    repo: &SqlxRepo,
+    provider: calm_types::runtime::AgentProvider,
+    card_id: String,
+) -> (String, String) {
     let write_db = (repo.db()).clone();
     write_db
         .writer()
@@ -62,7 +70,7 @@ pub(super) async fn fixture_card_for_provider(
                 .unwrap();
                 let card = card_create_with_id_tx(
                     &mut tx,
-                    crate::model::new_id(),
+                    card_id,
                     NewCard {
                         track_id: track.id,
                         kind: "codex".into(),

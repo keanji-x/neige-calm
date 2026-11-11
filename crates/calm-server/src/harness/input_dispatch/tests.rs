@@ -1,7 +1,7 @@
 mod failed_fact;
 mod private_fence;
-mod source_gate;
 mod share;
+mod source_gate;
 
 use super::*;
 use crate::db::prelude::*;

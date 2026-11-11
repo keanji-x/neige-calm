@@ -45,10 +45,10 @@ impl Inner {
                         }
                     }
                     for id in ids {
-                        if !delegations.contains_key(&id) {
+                        if let std::collections::btree_map::Entry::Vacant(entry) = delegations.entry(id) {
                             // Missing/deleted approval remains held; the immutable history stays.
-                            match crate::db::sqlite::share_links::get_tx(tx, &id).await {
-                                Ok(link) => { delegations.insert(id, link.delegation); },
+                            match crate::db::sqlite::share_links::get_tx(tx, entry.key()).await {
+                                Ok(link) => { entry.insert(link.delegation); },
                                 Err(calm_truth::TruthError::Core(calm_types::error::CoreError::NotFound(_))) => {},
                                 Err(error) => return Err(error.into()),
                             }

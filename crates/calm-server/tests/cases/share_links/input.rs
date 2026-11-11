@@ -36,15 +36,18 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
         send(&fx, &path, None, json!({"text":"hello"})).await.0,
         StatusCode::BAD_REQUEST
     );
-    for body in [
-        json!({"text":"hello","attachments":[]}),
-        json!({"text":"hello","actor":"user"}),
-        json!({"text":" "}),
+    for (body, expected) in [
+        (
+            json!({"text":"hello","attachments":[]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"text":"hello","actor":"user"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (json!({"text":" "}), StatusCode::BAD_REQUEST),
     ] {
-        assert_eq!(
-            send(&fx, &path, Some("guest-key"), body).await.0,
-            StatusCode::BAD_REQUEST
-        );
+        assert_eq!(send(&fx, &path, Some("guest-key"), body).await.0, expected);
     }
     let (status, ack) = send(
         &fx,
@@ -290,4 +293,22 @@ async fn shared_list_prepends_canonical_planner_without_owner_title_fallback() {
         .await;
     assert_eq!(status, StatusCode::OK, "{owner}");
     assert_eq!(owner, json!([]));
+    db.writer()
+        .execute(sqlx::query("UPDATE cards SET title='Shared plan' WHERE id=?1").bind(&card))
+        .await
+        .unwrap();
+    let (status, titled) = fx
+        .request(
+            "GET",
+            &format!(
+                "/api/share/{}/tracks/{}/conversations",
+                link["token"].as_str().unwrap(),
+                fx.track
+            ),
+            None,
+            json!(null),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(titled[0]["title"], "Shared plan");
 }
