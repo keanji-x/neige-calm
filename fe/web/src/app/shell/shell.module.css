@@ -125,29 +125,9 @@
     visibility: hidden;
   }
 
-  /* The conversation is the foreground navigation while it is open. Hiding
-     the report rail here is state-based rather than width-based: at 1366px a
-     closed report has ample gutter, while at 1440px the 40% drawer consumes
-     that same gutter and would clip the rail's left-floating preview. */
-  .main:has([data-nc-drawer]) [data-nc-report-outline] {
-    display: none;
-  }
-
-  .main:has([data-nc-drawer]) [data-nc-report] {
-    /* The conversation consumes the margin needed by the report's hanging numbers. */
-    --report-section-number-opacity: 0;
-  }
-
-  @container (inline-size >= 85rem) {
+  @container (inline-size < calc(40rem + 64px)) {
     .main:has([data-nc-drawer]) [data-nc-report] {
-      --report-section-number-opacity: 1;
-    }
-
-    .main:has([data-nc-drawer]) [data-nc-report-outline] {
-      display: block;
-    }
-
-    .main:has([data-nc-drawer]) [data-nc-report]:has(> [data-nc-report-outline]) {
+      /* The conversation consumes the margin needed by the report's hanging numbers. */
       --report-section-number-opacity: 0;
     }
   }

@@ -584,6 +584,11 @@
    * page it is the content of.
    */
   .doc {
+    /* Own the inline container so the report and its outline query the real
+       document column rather than `.main`, and resolve 100cqi against it. */
+    container-type: inline-size;
+    --document-measure: min(var(--document-measure-max), 100cqi);
+    --document-start: max(0px, calc((100cqi - var(--document-measure)) / 2));
     display: flex;
     flex-direction: column;
     min-inline-size: 0;
@@ -1096,6 +1101,8 @@
     }
 
     .doc {
+      --document-measure: var(--document-measure-max);
+      --document-start: 0px;
       inline-size: 100%;
       max-inline-size: var(--document-measure);
       margin-inline: auto;

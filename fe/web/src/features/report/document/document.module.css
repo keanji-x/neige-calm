@@ -468,12 +468,10 @@
     transition: opacity var(--motion-quick) var(--ease-feedback);
   }
 
-  /* The outline's closed-state threshold is 68rem. Declare the default
-     relationship here: when that rail can paint, its dots are the section
-     markers and the numbers yield. The shell overrides this same property for
-     drawer states where the rail deliberately hides, then restores zero on an
-     ultrawide drawer where the rail returns. */
-  @container (inline-size >= 68rem) {
+  /* Match the outline rail's `40rem + 64px` document-column threshold: when the
+     rail has the 32px leading gutter it needs to paint beside the 40rem reading
+     column, its dots are the section markers and the numbers yield. */
+  @container (inline-size >= calc(40rem + 64px)) {
     .doc:has(> nav) {
       --report-section-number-opacity: 0;
     }
