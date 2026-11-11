@@ -68,7 +68,7 @@
 
   /* Every rail state paints the same inset surface; navigation-row owns depth geometry. */
   .variantRail {
-    min-block-size: 1.875rem;
+    min-block-size: var(--navigation-entry-height, 1.875rem);
     grid-template-columns: minmax(0, 1fr);
     position: relative;
     isolation: isolate;
@@ -128,7 +128,6 @@
   }
 
   .variantRail .title {
-    font-size: 0.8125rem;
     color: var(--text-2);
   }
 
@@ -254,20 +253,10 @@
   }
 
   /*
-   * Two sides, two meanings — **left is state, right is action** — but only
-   * where a left column actually exists.
-   *
-   * In the rail it does: every area row carries a disclosure chevron there, so
-   * a track's pin joins an established column and the whole rail reads down two
-   * clean icon rules. In the main column there is no chevron and nothing else
-   * to join, so a leading gutter would indent the entire list 28px away from
-   * the page title it belongs to — to reserve room for a control that is
-   * invisible until you hover. There the pin stays trailing, outboard of the
-   * delete for the reason §4.5 gives: pin is the one of the two that persists
-   * at rest, so putting it outermost means a pinned row shows one control flush
-   * to its edge rather than one floating beside an empty slot.
-   *
-   * The rail consumes ui/navigation-row slots instead of mirroring shell offsets.
+   * Non-rail surfaces have no leading icon gutter, so pin stays trailing and
+   * outboard of delete: pin persists at rest on non-rail surfaces, so putting
+   * it outermost shows one control flush to the edge rather than beside an
+   * empty slot. Rail rows consume ui/navigation-row trailing slots instead.
    */
   .wrapper:where(:not(.wrapperRail)) .pin {
     inset-inline-end: var(--space-1);

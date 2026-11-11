@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { ChartColumn, Search, Star, ArrowLeft, ArrowRight, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, PanelLeft, Paperclip, Pin, Plus, SquareTerminal, Settings, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { ChartColumn, Search, Star, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, PanelLeft, Paperclip, Pin, Plus, SquareTerminal, Settings, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
 import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
@@ -12,7 +12,6 @@ const glyphs = Object.freeze({
   'chevron-right': (props: LucideProps) => <ChevronRight {...props} />,
   'panel-left': (props: LucideProps) => <PanelLeft {...props} />,
   'arrow-left': (props: LucideProps) => <ArrowLeft {...props} />,
-  'arrow-right': (props: LucideProps) => <ArrowRight {...props} />,
   'arrow-up': (props: LucideProps) => <ArrowUp {...props} />,
   'plus': (props: LucideProps) => <Plus {...props} />,
   'delete': (props: LucideProps) => <Trash2 {...props} />,

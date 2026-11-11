@@ -608,8 +608,8 @@ describe('shared desktop primary header', () => {
     const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
     expect(centre(title) - centre(today)).toBeCloseTo(0, 0);
     expect(centre(title) - centre(collapse)).toBeCloseTo(0, 0);
-    const firstCategory = rail.querySelector('h2')!;
-    expect(today.parentElement!.getBoundingClientRect().bottom).toBeCloseTo(firstCategory.getBoundingClientRect().top, 0);
+    const primaryNav = rail.querySelector<HTMLElement>('[data-nc-primary-nav]')!;
+    expect(today.parentElement!.getBoundingClientRect().bottom).toBeCloseTo(primaryNav.getBoundingClientRect().top, 0);
     const dividerColor = getComputedStyle(header).borderBlockEndColor;
     expect(dividerColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(today.parentElement!).borderBlockEndWidth).toBe('0px');

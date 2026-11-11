@@ -34,9 +34,8 @@ export function ConversationSurface({ embedded, mobileSheet, contextTitle, focus
   const footerNode = embedded?.active ? embeddedNode : desktopNode;
   const desktopSlot = useMemo(() => ({ current: footerNode }), [footerNode]);
   const dialog = useRef<HTMLDialogElement | null>(null);
-  const mobileNavigation = useRef<HTMLDivElement>(null);
   const mobileOverlay = useRef<HTMLDivElement>(null);
-  const mobileReadingPorts = useMemo(() => ({ key: 'sheet', navigation: mobileNavigation, overlay: mobileOverlay }), []);
+  const mobileReadingPorts = useMemo(() => ({ key: 'sheet', overlay: mobileOverlay }), []);
   const mobileReadingHost = useReadingHostRef<HTMLElement>(mobileReadingPorts);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Preserve the application's public surface marker on the observed panel;

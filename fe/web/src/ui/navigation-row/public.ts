@@ -8,19 +8,20 @@ export type NavigationRowSpec = Readonly<
 >;
 export type NavigationEntrySpec = Extract<NavigationRowSpec, { kind: 'entry' }>;
 
-const kinds = Object.freeze({
-  caption: Object.freeze({ tone: 'secondary' as const }),
-  entry: Object.freeze({ tone: 'primary' as const }),
-});
+const entryTones = Object.freeze({
+  0: 'primary',
+  1: 'compact',
+} as const satisfies Record<NavigationEntrySpec['depth'], ListTextRole>);
 
 /** Required content-region schema. CSS alone owns the shared leading-gutter and label columns. */
 export function navigationRowPresentation(presentation: NavigationRowSpec): Readonly<{ className: string; tone: ListTextRole }> {
-  return { className: [
-    styles.row,
-    presentation.kind === 'caption' ? styles.caption : '',
-    presentation.depth === 1 ? styles.nested : '',
-  ].filter(Boolean).join(' '),
-    tone: kinds[presentation.kind].tone };
+  return {
+    className: [
+      styles.row,
+      presentation.depth === 1 ? styles.nested : '',
+    ].filter(Boolean).join(' '),
+    tone: presentation.kind === 'caption' ? 'secondary' : entryTones[presentation.depth],
+  };
 }
 
 /** Geometry-only slots remain available for surrounding chrome. */

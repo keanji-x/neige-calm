@@ -85,7 +85,7 @@ export function TrackRow(props: TrackRowProps) {
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
-  /* Rail status shares the leading icon gutter; panel status shares the trailing delete slot. */
+  /* Rail and panel status sit in detached trailing slots outside the row button. */
   const detachedStatus = variant === 'rail' || variant === 'panel';
 
   return (

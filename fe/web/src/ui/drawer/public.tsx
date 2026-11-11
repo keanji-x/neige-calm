@@ -67,8 +67,7 @@ export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel 
   const titleId = useId();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const seamRef = useRef<HTMLDivElement | null>(null);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
-  const readingPorts = useMemo(() => ({ key: 'drawer', navigation: seamRef, overlay: overlayRef }), []);
+  const readingPorts = useMemo(() => ({ key: 'drawer', navigation: seamRef }), []);
   const captureReadingHost = useReadingHostRef(readingPorts, panelRef);
   const parentResizeGroup = suppliedResizeGroup;
   const hostRef = useRef<HTMLDivElement | null>(null);

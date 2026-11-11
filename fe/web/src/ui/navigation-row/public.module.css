@@ -2,8 +2,9 @@
   /* The same columns serve icons, text and controls regardless of glyph size. */
   .row {
     --navigation-slot: var(--control-h-sm);
-    --navigation-inset: var(--navigation-label-inset);
+    --navigation-inset: var(--navigation-label-inset, var(--space-1));
     --navigation-gap: var(--space-1);
+    --navigation-entry-height: 1.875rem;
     --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
     --navigation-inner-inset: var(--navigation-text-inset);
     --navigation-selection-inset: 0px;
@@ -14,10 +15,8 @@
 
   /* Nested child entries indent their highlight past the left tree guide while keeping the shared label spine. */
   .nested {
-    --navigation-selection-inset: calc(var(--navigation-label-inset) + var(--space-3) + var(--space-half));
-    --navigation-label-start: var(--navigation-text-inset);
+    --navigation-selection-inset: calc(var(--navigation-inset) + var(--space-3) + var(--space-half));
   }
-  .caption { --navigation-label-start: var(--navigation-text-inset); }
 
   .content {
     min-inline-size: 0;

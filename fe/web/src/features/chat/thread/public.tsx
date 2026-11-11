@@ -201,8 +201,8 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const hasTranscript = turns.length > 0;
   useEffect(() => {
     const readingHost = readingHostAround(frameRef.current);
-    setRailSeam(readingHost?.navigation.current ?? null);
-    setScrollOverlay(readingHost?.overlay.current ?? null);
+    setRailSeam(readingHost?.navigation?.current ?? null);
+    setScrollOverlay(readingHost?.overlay?.current ?? null);
   }, [hasTranscript, compactViewport]);
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
   const [scrolledUp, setScrolledUp] = useState(false);

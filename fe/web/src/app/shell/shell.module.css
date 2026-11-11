@@ -424,7 +424,7 @@
   }
 
   .folderRow,
-  .newAreaRow { min-block-size: 1.875rem; }
+  .newAreaRow { min-block-size: var(--navigation-entry-height); }
 
   .groupHeading,
   .newAreaAnchor { display: grid; min-inline-size: 0; margin: 0; }
@@ -463,16 +463,6 @@
 
   .areaRow:hover { background: var(--overlay-hover); }
   .areaRow:focus-visible { outline-offset: -2px; }
-
-  .chevron {
-    line-height: 1;
-    border-radius: var(--radius-sm);
-    color: var(--text-3);
-    pointer-events: none;
-    transition: none;
-  }
-
-  .chevronOpen { rotate: 90deg; }
 
   /* Category captions stay quiet; actual Area names retain the group text role. */
   .areaName {
@@ -705,8 +695,7 @@
     .areaRow,
     .areaActions,
     .areaNew,
-    .iconButton,
-    .chevron {
+    .iconButton {
       transition: none;
     }
   }

@@ -7,7 +7,7 @@ import { Icon, type IconName } from './public.tsx';
 afterEach(cleanup);
 
 const names: readonly IconName[] = [
-  'chevron-left', 'chevron-right', 'panel-left', 'arrow-left', 'arrow-right', 'arrow-up', 'plus', 'close', 'delete',
+  'chevron-left', 'chevron-right', 'panel-left', 'arrow-left', 'arrow-up', 'plus', 'close', 'delete',
   'agent', 'claude', 'codex', 'terminal', 'settings', 'tools', 'tasks', 'pin', 'star',
   'status-waiting', 'status-running', 'status-failed', 'status-done', 'status-exited',
   'chat', 'notification', 'folder', 'file', 'calendar', 'link', 'fullscreen',

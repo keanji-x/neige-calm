@@ -14,7 +14,7 @@
     align-items: center;
     margin-inline-start: var(--navigation-selection-inset, 0px);
     inline-size: calc(100% - var(--navigation-selection-inset, 0px));
-    min-block-size: 1.875rem;
+    min-block-size: var(--navigation-entry-height, 1.875rem);
     padding-block: 0;
     padding-inline-start: calc(var(--navigation-label-start) - var(--navigation-selection-inset, 0px));
     padding-inline-end: var(--space-2);
@@ -25,7 +25,6 @@
   }
 
   .showMoreLabel {
-    font-size: 0.8125rem;
     color: inherit;
   }
 

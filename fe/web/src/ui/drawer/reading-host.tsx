@@ -6,8 +6,8 @@ import styles from './reading-host.module.css';
 export type ReadingHostPorts = Readonly<{
   /** Stable presentation identity within one reader, including host remounts. */
   key: string;
-  navigation: RefObject<HTMLElement | null>;
-  overlay: RefObject<HTMLElement | null>;
+  navigation?: RefObject<HTMLElement | null>;
+  overlay?: RefObject<HTMLElement | null>;
 }>;
 type ReadingHostElement = HTMLElement & { ncReadingHost?: ReadingHostPorts };
 

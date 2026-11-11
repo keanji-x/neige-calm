@@ -678,26 +678,31 @@ describe('sidebar group management', () => {
 
 
 it('distinguishes hidden Areas from workspace groups with the same title', async () => {
-  renderSidebar({ areas: [area({ name: 'Pinned' })], tracks: [track({ pinnedAt: 5 })] });
+  const kernel = createReadReceiptsKernel({ baselineMs: 1 });
+  renderSidebar({ areas: [area({ name: 'Pinned' })], tracks: [track({ pinnedAt: 5 })] }, undefined, kernel);
+  await waitFor(() => expect(kernel.requests).toHaveLength(1));
   await userEvent.click(screen.getByRole('button', { name: 'Group actions for Pinned' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
   await userEvent.click(screen.getByRole('button', { name: 'Area actions for Pinned' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
   await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-  await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
-  expect(screen.getByRole('menuitem', { name: 'Show Pinned' })).toBeTruthy();
+  await userEvent.keyboard('{ArrowDown}{ArrowRight}');
+  expect(await screen.findByRole('menuitem', { name: 'Show Pinned' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Show area Pinned' })).toBeTruthy();
 });
 
 
 it('keeps Show recovery for every built-in group after all groups are hidden', async () => {
   const preferences = createUiPreferences();
+  const kernel = createReadReceiptsKernel({ baselineMs: 1 });
   const onGo = vi.fn();
   const rows = [
     track({ id: 'f1', title: 'Recoverable focus', attention: 'input', pinnedAt: null }),
     track({ id: 'p1', title: 'Recoverable pin', pinnedAt: 5 }),
   ];
-  renderSidebar({ tracks: rows, onGo }, preferences);
+  renderSidebar({ tracks: rows, onGo }, preferences, kernel);
+  // Let the initial receipt query settle before opening transient menus.
+  await waitFor(() => expect(kernel.requests).toHaveLength(1));
   expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(4);
   for (const menu of ['Group actions for Focus', 'Group actions for Pinned', 'Area actions for Work']) {
     await userEvent.click(screen.getByRole('button', { name: menu }));
@@ -707,13 +712,13 @@ it('keeps Show recovery for every built-in group after all groups are hidden', a
   expect(screen.queryByRole('group', { name: 'area Work' })).toBeNull();
   const labels = ['Focus', 'Pinned', 'area Work'];
   await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-  await userEvent.click(await screen.findByRole('menuitem', { name: 'Hidden groups' }));
+  await userEvent.keyboard('{ArrowDown}{ArrowRight}');
   await screen.findByRole('menuitem', { name: 'Show Focus' });
   for (const label of labels) expect(screen.getByRole('menuitem', { name: `Show ${label}` })).toBeTruthy();
   await userEvent.keyboard('{Escape}{Escape}');
   for (const label of labels) {
     await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Hidden groups' }));
+    await userEvent.keyboard('{ArrowDown}{ArrowRight}');
     await userEvent.click(await screen.findByRole('menuitem', { name: `Show ${label}` }));
   }
   expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(['Focus', 'Pinned']);
