@@ -1,4 +1,5 @@
 import { TemplatePluginGuides } from './template-plugin-guides.tsx';
+import { Banner } from '@astryxdesign/core/Banner';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef } from 'react';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -157,12 +158,14 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   };
   const areaFailure = workspace.areasError !== null
     ? readErrorText(workspace.areasError, 'Areas could not be refreshed. Your draft is kept here.')
-    : !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
+    : !workspace.areasLoading && !available ? 'Area unavailable. Your draft is kept here; select and copy it to use elsewhere.' : null;
   const createdTrackId = session.createdTrackId;
   const configurationLocked = session.creating || session.request !== null || !available || createdTrackId !== null;
   const loadTemplate = useCallback((id: string) => runOperation(transport, templateDetailOperation(id), unauthorized), [transport, unauthorized]);
 
   return <NewTrackForm
+    readNotice={workspace.areasLoading ? <Banner status="info" title="Loading Area…"
+      description="You can keep writing. Create track will be available when loading finishes." /> : undefined}
     mentionTrigger={mentionTrigger}
     templatePluginGuides={id => <TemplatePluginGuides key={id} templateId={id} transport={transport} unauthorized={unauthorized} />}
     modelControls={<>

@@ -12,6 +12,14 @@ const areas: readonly Area[] = Object.freeze([
 ]);
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 
+it('keeps a system Area out of the label and choices when its list is absent', async () => {
+  render(<AreaSelector areas={[]} activeArea={{ ...areas[0], kind: 'system' }}
+    onSelectArea={vi.fn()} onCreateArea={vi.fn()} />);
+  await page.getByRole('button', { name: 'Switch area, Choose area' }).click();
+  expect(page.getByRole('menuitem', { name: 'Product' }).query()).toBeNull();
+  await expect.element(page.getByRole('menuitem', { name: 'New area' })).toBeVisible();
+});
+
 it('opens the real AreaSelector from a stable nonpressed source and retains centered placement', async () => {
   await page.viewport(1200, 900);
   render(<><DepthFeedback /><div style={{ position: 'absolute', left: 300.25, top: 80.5, width: 400.5 }}>

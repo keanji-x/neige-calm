@@ -826,7 +826,12 @@ export function useAreaMutations(transport: ApiTransportPort, unauthorized: Unau
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.areas() }); },
   });
   return {
-    create: async (body, idempotencyKey) => toArea(await create.mutateAsync({ body, idempotencyKey })),
+    create: async (body, idempotencyKey) => {
+      const created = toArea(await create.mutateAsync({ body, idempotencyKey }));
+      const current = client.getQueryData<Area[]>(queryKeys.areas())?.find(area => area.id === created.id);
+      // Route drafts must receive the same newest defaults as the shared list.
+      return current === undefined ? created : newestArea(created, current);
+    },
     update: async (areaId, body) => toArea(await update.mutateAsync({ areaId, body })),
     remove: async (areaId, signal) => { await remove.mutateAsync({ areaId, signal }); },
   };

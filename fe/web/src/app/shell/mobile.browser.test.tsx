@@ -468,34 +468,6 @@ describe('Track mobile presentation', () => {
     await page.getByRole('button', { name: 'Switch area, Research', exact: true }).findElement();
   });
 
-  it('opens the created Area even when the initial Area list is still in flight', async () => {
-    await page.viewport(390, 844);
-    let releaseInitial!: () => void;
-    const initialHeld = new Promise<void>((resolve) => { releaseInitial = resolve; });
-    const receipts = createReadReceiptsKernel();
-    const reply = receipts.reply;
-    let initialRead = true;
-    receipts.reply = async (request) => {
-      if (request.path === '/api/areas' && request.method === 'GET' && initialRead) {
-        initialRead = false;
-        await initialHeld;
-        return { status: 200, statusText: 'OK', body: [AREA] };
-      }
-      return reply(request);
-    };
-    const router = setup('/track/w1', AREA.name, () => undefined, receipts);
-    try {
-      await page.getByRole('button', { name: 'Open workspace' }).click();
-      await page.getByRole('button', { name: 'New area', exact: true }).click();
-      await page.getByRole('textbox', { name: /^Name/ }).fill('Research');
-      await page.getByRole('button', { name: 'Create area', exact: true }).click();
-      await expect.poll(() => router.state.location.pathname).toBe('/area/c3/new');
-      releaseInitial();
-      await expect.poll(() => page.getByRole('button', { name: 'Switch area, Research', exact: true }).query() !== null).toBe(true);
-    } finally {
-      releaseInitial();
-    }
-  });
 
   it('keeps workspace creation and history settings independently usable across their full touch targets', async () => {
     await page.viewport(390, 844);

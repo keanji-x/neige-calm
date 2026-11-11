@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
+import { NewTrackDraftProvider } from '../router/new-track-drafts.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
@@ -29,7 +30,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 // The kernel's read receipts; a case may replace them before it renders.
 let receipts = createReadReceiptsKernel();
 function render(node: ReactNode) {
-  return renderDom(readReceiptsFixture(receipts).wrap(node));
+  return renderDom(readReceiptsFixture(receipts).wrap(<NewTrackDraftProvider>{node}</NewTrackDraftProvider>));
 }
 
 

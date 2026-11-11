@@ -39,6 +39,7 @@ import {
 } from '../providers/queries.ts';
 import { useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useNewTrackBack, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
+import { useNewTrackDraft, usePrepareNewTrack } from '../router/new-track-drafts.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileWorkspaceHeader } from './mobile-header.tsx';
 import { MobileTracks } from './mobile-tracks.tsx';
@@ -151,6 +152,7 @@ export function AppShell({
 }: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
+  const prepareNewTrack = usePrepareNewTrack();
   const trackMutations = useTrackMutations(transport, unauthorized);
   const pinFeedback = useOperationFeedback();
   const templates = useTrackTemplates(transport, unauthorized);
@@ -215,9 +217,10 @@ export function AppShell({
   >(null);
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
   const routeAreaId = routeParamFromPath(currentPath, '/area/');
+  const newTrackDraft = useNewTrackDraft(newTrackBack === null ? undefined : routeAreaId);
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
-  const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
+  const activeArea = areas.find((area) => area.id === activeAreaId) ?? newTrackDraft?.area ?? areas[0];
   const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
@@ -374,7 +377,10 @@ export function AppShell({
     void write.then((saved) => {
       if (creation !== null) areaIntent.release(creation);
       setAreaEditorTarget(null);
-      if (target.kind === 'create') requestNewTrack(saved.id);
+      if (target.kind === 'create') {
+        prepareNewTrack(saved);
+        requestNewTrack(saved.id);
+      }
     }).catch((failure: unknown) => {
       if (target.kind === 'edit') { setAreaEditorError(writeFailureText(AREA_PATCH_FAILURES, AREA_PATCH_TEXT)(failure)); return; }
       const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, AREA_CREATE_FAILURES);

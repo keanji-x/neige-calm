@@ -588,6 +588,7 @@ describe('delete mutation wiring', () => {
     releaseResponse();
     await act(async () => { await pending; });
 
+    await expect(pending).resolves.toEqual(newerEvent);
     expect(client.getQueryData(queryKeys.areas())).toEqual([newerEvent]);
   });
 

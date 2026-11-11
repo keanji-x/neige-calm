@@ -14,6 +14,7 @@ import { AreaCreatePreflightError } from '../providers/queries.ts';
 import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { ReadReceiptsProvider } from '../providers/read-receipts.tsx';
+import { NewTrackDraftProvider } from '../router/new-track-drafts.tsx';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
 
@@ -116,13 +117,13 @@ function renderShell(compact = false, transport: ApiTransportPort = { send: vi.f
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
       <ThemeProvider storage={memoryStorage()}><ReadReceiptsProvider transport={createReadReceiptsKernel().transport} unauthorized={unauthorized}>
-        <AppShell
+        <NewTrackDraftProvider><AppShell
           transport={transport}
           unauthorized={unauthorized}
           onOpenSettings={vi.fn()}
           onOpenPlugins={vi.fn()}
           onSignOut={vi.fn()}
-        />
+        /></NewTrackDraftProvider>
       </ReadReceiptsProvider></ThemeProvider>
     </QueryClientProvider>,
   );

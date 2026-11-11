@@ -15,7 +15,9 @@ export function AreaSelector({ areas, activeArea, onSelectArea, onCreateArea }: 
 }>) {
   const sourceRef = useRef<HTMLSpanElement | null>(null);
   const shown = visibleAreas(areas);
-  const current = shown.find((area) => area.id === activeArea?.id);
+  // A newly created Area can name the draft before the full picker list arrives.
+  const current = shown.find((area) => area.id === activeArea?.id)
+    ?? visibleAreas(activeArea === undefined ? [] : [activeArea])[0];
   return <Menu wrapClassName={styles.area} menuClassName={styles.menu}
     itemClassName={styles.item} separatorClassName={styles.separator}
     items={[
