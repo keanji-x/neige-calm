@@ -38,6 +38,10 @@ pub struct FrozenHumanAttribution {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SubmissionRenderInput {
+    LinkGuest {
+        message: MessageRevisionRef,
+        share_link_id: String,
+    },
     Human {
         message: MessageRevisionRef,
         author: FrozenHumanAttribution,
@@ -51,9 +55,11 @@ pub enum SubmissionRenderInput {
 impl SubmissionRenderInput {
     pub fn input_ref(&self) -> AcceptedInputRef {
         match self {
-            Self::Human { message, .. } => AcceptedInputRef::Human {
-                message: message.clone(),
-            },
+            Self::Human { message, .. } | Self::LinkGuest { message, .. } => {
+                AcceptedInputRef::Human {
+                    message: message.clone(),
+                }
+            }
             Self::System { observation_id, .. } => AcceptedInputRef::System {
                 observation_id: observation_id.clone(),
             },

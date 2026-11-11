@@ -3,6 +3,8 @@
 //! Canonical ingress checks this owner in its protected transaction. Key replay
 //! must check it before retrieving a stored result. Storage retains factual rules.
 mod execution;
+mod share;
+pub(crate) use share::ShareInputSource;
 pub(crate) mod pending_controls;
 pub(crate) mod resolution;
 mod source;

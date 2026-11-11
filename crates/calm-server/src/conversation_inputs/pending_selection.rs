@@ -27,6 +27,21 @@ pub(super) async fn plan_tx(
             }
             count
         }
+        (InputSource::Share(share), Some(PendingInput::Human { .. })) => {
+            let mut count = 0u32;
+            for input in pending {
+                let PendingInput::Human { message, .. } = input else {
+                    break;
+                };
+                if !share.matches_tx(tx, carrier, message).await? {
+                    break;
+                }
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| CalmError::Conflict("pending prefix too large".into()))?;
+            }
+            count
+        }
         // Dispatcher inputs keep their exact producer-bound selection. Retry
         // intents use their separate relation-backed admission, never this path.
         (_, Some(_)) => 1,

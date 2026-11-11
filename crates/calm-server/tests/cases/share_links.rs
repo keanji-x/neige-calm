@@ -756,3 +756,6 @@ mod conversations;
 
 #[path = "share_links/retry.rs"]
 mod retry;
+
+#[path = "share_links/input.rs"]
+mod input;

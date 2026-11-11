@@ -1,7 +1,7 @@
 # Link sharing and execution approval
 
-Status: PR2 L2 design for #3633, extending merged PR1 (#3639).
-PR2 supplies anonymous shared reads and live invalidation, not visitor execution.
+Status: PR3 L2 implementation for #3633, extending merged shared reads.
+PR3 adds text-only original-conversation guest input and execution provenance.
 This decision supersedes the earlier frozen environment binding prerequisite.
 
 ## Outcome and delivery boundaries
@@ -56,11 +56,12 @@ access facts: a hash of a strong random one-time token and monotonic `revoked_at
 SQL fences prevent delegation edits, access resurrection and physical link
 removal while the target exists. Revocation never changes delegation, pending
 input, messages or receipts.
-Future PR3 accepted work refers to immutable delegation facts and does not check
+PR3 accepted work refers to immutable delegation facts and does not check
 token revocation; reads and new acceptance require active access. Target deletion
 uses existing lifecycle/FK cascades: Track links disappear with their Track, Area
-links with their Area. Revoking a link never invokes target deletion. PR3 must
-keep accepted work references within that same target lifecycle.
+links with their Area. Revoking a link never invokes target deletion. Track-scoped history keeps immutable delegation facts without an FK to the link.
+A Track moved out of an Area survives deletion of that former Area and its links;
+its accepted guest work remains held.
 
 Protected POST/GET `/api/tracks/{id}/share-links`, POST/GET
 `/api/areas/{id}/share-links` and DELETE `/api/share-links/{id}` are the entire PR1
@@ -126,7 +127,7 @@ worktree, with the full predicted/actual red set compared before safe restore.
 Verification plan: the worker runs focused owner/share HTTP tests,
 formatter and real API generation; the kernel gate runs text, full L2 contracts,
 quick Rust, focused replay and OpenAPI statuses. Planner owns
-the two independent L2 reviews. PR2 supplies no visitor execution endpoint.
+the two independent L2 reviews. PR3 adds the public text-only send endpoint below.
 
 ## PR2 shared read boundary
 
@@ -244,3 +245,54 @@ The existing `db/mod.rs` interface registry exceeds 800 lines. PR2 keeps its
 small factual read declarations with the owning `RepoRead` interface; splitting
 that registry is separate from this authority change. New implementation and
 test modules stay below the repository's practical file size limit.
+
+
+## PR3 guest execution boundary
+
+`POST /api/share/{token}/tracks/{track_id}/conversations/{card_id}/input`
+requires `Idempotency-Key` and a strict `{ "text": "…" }` body. Attachments,
+Actor overrides and replacement fields are refused. Active access, current
+issuer, registered User Area ownership (`AreaAccess::Delete`), dynamic scope
+and a canonical Planner/Assistant binding are required before receipt replay
+or fresh acceptance. Historical V1 cards return 409. The canonical receipt hash
+includes the link id, so a key cannot cross Owner/Guest or Guest/Guest sources.
+Only the link id reaches messages, events and receipt hashes; raw tokens never
+enter the canonical queue or execution context. Acceptance emits the existing
+`HarnessUserMessageEnqueued` event.
+
+`MessageAuthor::LinkGuest` identifies the link without registering a visitor.
+`SubmissionRenderInput::LinkGuest` names the canonical message revision and
+link id; `input_ref()` remains `AcceptedInputRef::Human`. The existing Human V1
+JSON and digest remain unchanged. `ConversationExecutionProvenance::ShareDelegation`
+freezes the full immutable delegation with provider/profile on the logical Turn.
+Truth reads those facts without joining the live link, so history remains
+readable when the old Area and its approval disappear. The additive migration
+is `0217_share_guest_execution.sql`: upstream already released
+`0216_acp_shared_restart_release.sql`, which remains byte-frozen.
+
+`InputSource::Share` retains the actual deployment issuer declaration from
+`ValidatedApplicationAuth::from_state` on public acceptance and from the installed
+Dispatcher on recovery. Claim, model reads, Workspace admission and native
+crossings revalidate the live delegation, current deployment issuer, registered
+Area owner and current Track/Area containment. They deliberately ignore
+`revoked_at` for accepted work. Revocation blocks new reads/sends and receipt
+replays; ownership, issuer or scope loss holds the original input without
+reminting its identity or deleting its history. Area scope excludes area-chat.
+Cold reconciliation reloads pending and unattempted guest sources through the
+same owner. No session cookie, raw token or stored Actor supplies execution authority.
+
+Owner and each link select only their contiguous qualified pending prefix.
+Different execution provenance cannot enter an active Turn through supplemental
+claims; it stays pending for the next logical Turn. Owner and ShareLink transcript
+reads decode guest text with the public label `Link guest`. The shared conversation
+list prepends the current canonical Planner as `shared-spec`, using only an explicit
+card title; the owner list keeps its existing Assistant-only behavior.
+
+Verification ownership remains L2: the worker runs focused HTTP/lifecycle tests,
+real API generation, formatting and single-factor ownership/scope/revocation
+mutations. The declared kernel gate owns text gates, all contract gates, Rust
+quick gates, frontend lint/build/OpenAPI contract checks and one focused replay.
+Planner owns both independent review channels. The migration rebuild preserves
+the dependent graph, indexes, triggers and presentation sequence and checks only
+new foreign-key violations. Ordinary new tests use the existing registrations;
+no new test census or CI invocation is introduced.

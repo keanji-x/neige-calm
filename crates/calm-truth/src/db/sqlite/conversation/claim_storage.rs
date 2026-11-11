@@ -82,18 +82,27 @@ pub(super) async fn insert_turn_tx(
     submission_id: &InputSubmissionId,
     provenance: &ConversationExecutionProvenance,
 ) -> Result<()> {
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        deployment_owner_user_id,
-        provider,
-        profile,
-    } = provenance;
+    let (provider, profile) = provenance.binding();
+    let (kind, owner, delegation) = match provenance {
+        ConversationExecutionProvenance::LegacySingleUserDeployment {
+            deployment_owner_user_id,
+            ..
+        } => (
+            "legacy_single_user_deployment",
+            deployment_owner_user_id,
+            None,
+        ),
+        ConversationExecutionProvenance::ShareDelegation { delegation, .. } => (
+            "share_delegation",
+            &delegation.approver_user_id,
+            Some(serde_json::to_string(delegation)?),
+        ),
+    };
     let profile = serde_json::to_value(profile)?;
-    sqlx::query("INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,execution_kind,
-         deployment_owner_user_id,provider,profile,created_at_ms)
-         VALUES(?1,?2,?3,?4,'legacy_single_user_deployment',?5,?6,?7,?8)")
+    sqlx::query("INSERT INTO conversation_turns(id,card_id,initiating_runtime_id,initial_submission_id,execution_kind,deployment_owner_user_id,provider,profile,created_at_ms,share_delegation_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
         .bind(logical_turn_id.as_str()).bind(card_id).bind(carrier_id).bind(submission_id.as_str())
-        .bind(deployment_owner_user_id).bind(provider.wire_name()).bind(profile.as_str().ok_or_else(|| CalmError::Internal("invalid persisted harness profile".into()))?)
-        .bind(now_ms()).execute(&mut **tx).await?;
+        .bind(kind).bind(owner).bind(provider.wire_name()).bind(profile.as_str().ok_or_else(|| CalmError::Internal("invalid persisted harness profile".into()))?)
+        .bind(now_ms()).bind(delegation).execute(&mut **tx).await?;
     Ok(())
 }
 

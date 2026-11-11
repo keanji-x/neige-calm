@@ -45,11 +45,7 @@ pub(super) async fn acknowledge_tx(
         ));
     }
     let identity = submission_identity_tx(tx, &attempt.submission_id).await?;
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        provider: recorded_provider,
-        profile,
-        ..
-    } = &identity.execution;
+    let (recorded_provider, profile) = identity.execution.binding();
     if recorded_provider != provider || *profile != binding.profile {
         return Err(CalmError::Conflict(
             "acknowledgement crosses its execution provenance".into(),

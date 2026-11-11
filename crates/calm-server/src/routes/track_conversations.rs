@@ -420,7 +420,52 @@ pub(crate) async fn load_published_summaries(
     w: &WorkerState,
     track_id: &str,
 ) -> Result<Vec<TrackConversationSummary>> {
-    load_summaries(w, track_id, None, true).await
+    let mut rows = load_summaries(w, track_id, None, true).await?;
+    for card in w.repo.cards_by_track(track_id).await? {
+        let Some(binding) = crate::harness::profile::PlannerBinding::from_card(
+            &card,
+            w.repo
+                .card_role_get(card.id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::Conflict("conversation role missing".into()))?,
+        ) else {
+            continue;
+        };
+        if binding.profile != crate::harness::profile::HarnessProfile::Planner
+            || !crate::harness::backend::factory::PlannerFactory::canonical_inputs(&binding)
+            || !crate::conversation_inputs::has_canonical_storage(w.repo.as_ref(), card.id.as_str())
+                .await?
+        {
+            continue;
+        }
+        let db = w
+            .repo
+            .sqlite_db()
+            .ok_or_else(|| CalmError::Internal("conversation summary requires SQLite".into()))?;
+        let (state, completed): (Option<String>, Option<i64>) = sqlx::query_as(&format!(
+            "SELECT ws.state,{LAST_TURN_COMPLETED_MS_SUBQUERY} FROM cards c LEFT JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id WHERE c.id=?1"))
+            .bind(card.id.as_str()).fetch_one(db.read_pool()).await?;
+        rows.insert(
+            0,
+            TrackConversationSummary {
+                id: card.id.to_string(),
+                track_id: track_id.into(),
+                title: card.title,
+                kind: "shared-spec".into(),
+                provider: binding.provider,
+                source_card_id: None,
+                archived_at: None,
+                state: state
+                    .map(WorkerSessionState::try_from)
+                    .transpose()
+                    .map_err(CalmError::Internal)?,
+                updated_at: card.updated_at,
+                last_turn_completed_at: completed,
+            },
+        );
+        break;
+    }
+    Ok(rows)
 }
 
 async fn load_summaries(

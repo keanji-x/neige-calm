@@ -77,7 +77,10 @@ pub(in crate::db::sqlite) async fn retry_availability_tx(
     let ConversationExecutionProvenance::LegacySingleUserDeployment {
         provider: original_provider,
         ..
-    } = original.execution;
+    } = original.execution
+    else {
+        return Ok(Err(RetryUnavailableReason::UnsupportedSource));
+    };
     if !supported
         || original_provider != provider
         || attempt.correlation.provider != provider
@@ -104,6 +107,10 @@ async fn text_unavailable_tx(
 ) -> Result<Option<RetryUnavailableReason>> {
     for segment in plan.segments() {
         match segment {
+            SubmissionRenderSegment::Input {
+                input: SubmissionRenderInput::LinkGuest { .. },
+                ..
+            } => return Ok(Some(RetryUnavailableReason::UnsupportedSource)),
             SubmissionRenderSegment::Input {
                 input: SubmissionRenderInput::Human { message, author },
                 ..

@@ -113,7 +113,8 @@ pub async fn release_submission_tx(
         let queued_at_ms = row.try_get("queued_at_ms")?;
         let envelope_id = row.try_get("envelope_id")?;
         let entry = match input {
-            SubmissionRenderInput::Human { message, .. } => {
+            SubmissionRenderInput::Human { message, .. }
+            | SubmissionRenderInput::LinkGuest { message, .. } => {
                 let current = message_tx(tx, &message.message_id).await?;
                 if current.card_id != carrier.card_id {
                     return Err(CalmError::Conflict(

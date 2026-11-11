@@ -4,7 +4,7 @@ use calm_types::conversation::{ConversationMessageId, MessageRevisionRef, Privat
 use calm_types::conversation_display::*;
 use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
 
-pub(super) const COLUMNS: &str = r#"m.id AS message_id,m.current_revision,m.author_kind,m.author_user_id,m.withdrawn_at_ms,
+pub(super) const COLUMNS: &str = r#"m.id AS message_id,m.current_revision,m.author_kind,m.author_user_id,m.author_share_link_id,m.withdrawn_at_ms,
                 u.display_name,r.body_sha256,r.payload_json,r.created_at_ms AS revision_created"#;
 pub(super) const JOINS: &str = r#"LEFT JOIN conversation_messages m ON m.id=p.message_id AND m.card_id=p.card_id
          LEFT JOIN application_users u ON u.id=m.author_user_id
@@ -19,7 +19,10 @@ pub(super) fn decode(row: &SqliteRow, card: &str) -> Result<ConversationDisplayS
         let identity = ConversationDisplayIdentity::Human {
             message_id: message_id.clone(),
         };
-        if row.try_get::<&str, _>("author_kind")? != "authenticated_human" {
+        if !matches!(
+            row.try_get::<&str, _>("author_kind")?,
+            "authenticated_human" | "link_guest"
+        ) {
             return Err(CalmError::Conflict(
                 "canonical Legacy display requires its declared adoption",
             ));
@@ -47,8 +50,19 @@ pub(super) fn decode(row: &SqliteRow, card: &str) -> Result<ConversationDisplayS
                     message_id,
                     revision: revision.get(),
                     author: ConversationHumanAuthor {
-                        user_id: row.try_get("author_user_id")?,
-                        display_name: row.try_get("display_name")?,
+                        user_id: if row.try_get::<&str, _>("author_kind")? == "link_guest" {
+                            format!(
+                                "share-link:{}",
+                                row.try_get::<String, _>("author_share_link_id")?
+                            )
+                        } else {
+                            row.try_get("author_user_id")?
+                        },
+                        display_name: if row.try_get::<&str, _>("author_kind")? == "link_guest" {
+                            "Link guest".into()
+                        } else {
+                            row.try_get("display_name")?
+                        },
                     },
                     text: value.text,
                     attachments: value

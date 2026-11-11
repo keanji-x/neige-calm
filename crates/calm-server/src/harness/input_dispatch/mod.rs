@@ -5,7 +5,7 @@
 mod acknowledgement;
 pub(crate) mod end_transition;
 pub(crate) use acknowledgement::acknowledge;
-mod hydrate;
+pub(crate) mod hydrate;
 mod supplemental;
 pub(crate) use end_transition::{complete_once, execution_target_tx, retained_execution_target_tx};
 pub(crate) use supplemental::supplemental;
@@ -14,9 +14,9 @@ pub(crate) use supplemental::supplemental;
 mod tests;
 
 use calm_types::conversation::{
-    ConversationExecutionProvenance, FrozenInputInvocation, InputAttempt, InputAttemptFact,
-    InputAttemptId, InputCorrelationFact, InputDeliveryFact, InputInvocation, InputSubmissionId,
-    LogicalTurnId, NativeInputAcceptance, SubmissionDispatchProof,
+    FrozenInputInvocation, InputAttempt, InputAttemptFact, InputAttemptId, InputCorrelationFact,
+    InputDeliveryFact, InputInvocation, InputSubmissionId, LogicalTurnId, NativeInputAcceptance,
+    SubmissionDispatchProof,
 };
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::runtime::AgentProvider;
@@ -266,10 +266,7 @@ async fn prepare_tx(
     let (execution, runtime) =
         crate::conversation_inputs::authorize_execution_tx(tx, &source, &carrier, &stored.plan)
             .await?;
-    let ConversationExecutionProvenance::LegacySingleUserDeployment {
-        provider: frozen_provider,
-        ..
-    } = &identity.execution;
+    let (frozen_provider, _) = identity.execution.binding();
     if identity.card_id != card_id
         || *frozen_provider != provider
         || execution != identity.execution

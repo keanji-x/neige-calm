@@ -1895,6 +1895,7 @@ pub(crate) mod canonical_inputs;
 mod git_delivery_settled;
 pub(crate) mod planner_admission;
 mod progress_obligation;
+mod share_inputs;
 mod task_completed;
 
 #[cfg(test)]

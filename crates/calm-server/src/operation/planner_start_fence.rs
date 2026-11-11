@@ -225,7 +225,7 @@ pub(crate) async fn wake_canonical_human(
     card_id: CardId,
     source: crate::auth::HumanInputSource,
 ) {
-    wake_human(state, card_id, source, None).await;
+    wake_human(state, card_id, source.into(), None).await;
 }
 
 /// Existing-worker mutations must acquire this handoff before commit. The
@@ -233,16 +233,16 @@ pub(crate) async fn wake_canonical_human(
 pub(crate) async fn finish_canonical_human_handoff(
     state: crate::state::RouteState,
     card_id: CardId,
-    source: crate::auth::HumanInputSource,
+    source: impl Into<crate::conversation_inputs::InputSource>,
     handoff: crate::harness::registry::SourceHandoff,
 ) {
-    wake_human(state, card_id, source, Some(handoff)).await;
+    wake_human(state, card_id, source.into(), Some(handoff)).await;
 }
 
 async fn wake_human(
     state: crate::state::RouteState,
     card_id: CardId,
-    source: crate::auth::HumanInputSource,
+    source: crate::conversation_inputs::InputSource,
     mut handoff: Option<crate::harness::registry::SourceHandoff>,
 ) {
     let (handed_off, observed) = tokio::sync::oneshot::channel();

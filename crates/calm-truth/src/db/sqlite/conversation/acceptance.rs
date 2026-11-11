@@ -20,16 +20,25 @@ pub async fn accept_pending_human_tx(
     authenticated_user_id: &str,
     payload: HumanPayload,
 ) -> Result<AcceptedPendingInput> {
-    let (position, next) = pending_position(carrier)?;
-    let stored = insert_message_tx(
+    accept_pending_message_tx(
         tx,
-        &carrier.card_id,
+        carrier,
         &MessageAuthor::AuthenticatedHuman {
             registered_user_id: authenticated_user_id.into(),
         },
         payload,
     )
-    .await?;
+    .await
+}
+
+pub async fn accept_pending_message_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    carrier: &mut CurrentInputCarrier,
+    author: &MessageAuthor,
+    payload: HumanPayload,
+) -> Result<AcceptedPendingInput> {
+    let (position, next) = pending_position(carrier)?;
+    let stored = insert_message_tx(tx, &carrier.card_id, author, payload).await?;
     let presentation_sequence = allocate_presentation_tx(
         tx,
         &carrier.card_id,

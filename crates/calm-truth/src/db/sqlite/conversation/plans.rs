@@ -125,7 +125,20 @@ async fn pending_plan_for_entries_tx(
             });
         }
         let identity = super::message_tx(tx, &message.message_id).await?;
-        let MessageAuthor::AuthenticatedHuman { registered_user_id } = identity.author;
+        if let MessageAuthor::LinkGuest { share_link_id } = &identity.author {
+            segments.push(SubmissionRenderSegment::Input {
+                input_position: u32::try_from(position)
+                    .map_err(|_| CalmError::Conflict("input position too large"))?,
+                input: SubmissionRenderInput::LinkGuest {
+                    message: message.clone(),
+                    share_link_id: share_link_id.clone(),
+                },
+            });
+            continue;
+        }
+        let MessageAuthor::AuthenticatedHuman { registered_user_id } = identity.author else {
+            unreachable!("guest handled above")
+        };
         let display_name: Option<String> =
             sqlx::query_scalar("SELECT display_name FROM application_users WHERE id=?1")
                 .bind(&registered_user_id)
@@ -359,7 +372,7 @@ pub async fn submission_identity_tx(
 ) -> Result<StoredSubmissionIdentity> {
     let row = sqlx::query(
         "SELECT s.card_id,s.logical_turn_id,s.ordinal,t.execution_kind,
-                t.deployment_owner_user_id,t.provider,t.profile
+                t.deployment_owner_user_id,t.provider,t.profile,t.share_delegation_json
          FROM conversation_input_submissions s
          JOIN conversation_turns t ON t.id=s.logical_turn_id AND t.card_id=s.card_id
          WHERE s.id=?1",
@@ -368,11 +381,6 @@ pub async fn submission_identity_tx(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| CalmError::NotFound(format!("submission {submission_id}")))?;
-    if row.try_get::<&str, _>("execution_kind")? != "legacy_single_user_deployment" {
-        return Err(CalmError::Conflict(
-            "unsupported submission execution provenance",
-        ));
-    }
     let provider = serde_json::from_value(serde_json::Value::String(row.try_get("provider")?))?;
     let profile = serde_json::from_value(serde_json::Value::String(row.try_get("profile")?))?;
     Ok(StoredSubmissionIdentity {
@@ -381,10 +389,24 @@ pub async fn submission_identity_tx(
             .map_err(|error| CalmError::Internal(error.to_string()))?,
         ordinal: u32::try_from(row.try_get::<i64, _>("ordinal")?)
             .map_err(|_| CalmError::Internal("invalid submission ordinal".into()))?,
-        execution: ConversationExecutionProvenance::LegacySingleUserDeployment {
-            deployment_owner_user_id: row.try_get("deployment_owner_user_id")?,
-            provider,
-            profile,
+        execution: match row.try_get::<&str, _>("execution_kind")? {
+            "legacy_single_user_deployment" => {
+                ConversationExecutionProvenance::LegacySingleUserDeployment {
+                    deployment_owner_user_id: row.try_get("deployment_owner_user_id")?,
+                    provider,
+                    profile,
+                }
+            }
+            "share_delegation" => ConversationExecutionProvenance::ShareDelegation {
+                delegation: serde_json::from_str(row.try_get("share_delegation_json")?)?,
+                provider,
+                profile,
+            },
+            _ => {
+                return Err(CalmError::Conflict(
+                    "unsupported submission execution provenance",
+                ));
+            }
         },
     })
 }

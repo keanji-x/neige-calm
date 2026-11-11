@@ -1,11 +1,13 @@
 //! Owning share management transactions. HTTP consumes these decisions, never
 //! interprets Actor/role headers or treats stored consent as runtime admission.
+mod execution;
 use crate::auth::HumanInputSource;
 use crate::db::{RouteRepo, sqlite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use calm_types::share_links::{
     ShareDelegation, ShareLink, ShareLinkCreated, SharePurpose, ShareResourcePolicy, ShareScope,
 };
+pub(crate) use execution::authorize_accepted_tx;
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
@@ -150,19 +152,19 @@ pub(crate) async fn resolve(
             "share approval is no longer current".into(),
         ));
     }
-    match &link.delegation.scope {
-        ShareScope::Track(id) if track_id.is_some_and(|requested| requested != id) => {
+    if let Some(track_id) = track_id {
+        let requested = facts
+            .requested_track
+            .as_ref()
+            .ok_or_else(|| CalmError::NotFound("shared Track".into()))?;
+        if !contains_track(
+            &link.delegation.scope,
+            track_id,
+            requested.area_id.as_str(),
+            requested.purpose.as_deref(),
+        ) {
             return Err(CalmError::NotFound("shared Track".into()));
         }
-        ShareScope::Area(id)
-            if facts.requested_track.as_ref().is_some_and(|track| {
-                track.area_id.as_str() != id
-                    || track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
-            }) =>
-        {
-            return Err(CalmError::NotFound("shared Track".into()));
-        }
-        ShareScope::Track(_) | ShareScope::Area(_) => {}
     }
     let area = facts.area;
     crate::auth::current_deployment_owner(config)?;
@@ -182,4 +184,11 @@ pub(crate) async fn require_publication(
         ));
     }
     Ok(())
+}
+
+fn contains_track(scope: &ShareScope, track: &str, area: &str, purpose: Option<&str>) -> bool {
+    match scope {
+        ShareScope::Track(id) => id == track,
+        ShareScope::Area(id) => id == area && purpose != Some(crate::AREA_CHAT_PURPOSE),
+    }
 }

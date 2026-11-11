@@ -49,8 +49,8 @@ mod runtime_frame;
 mod storage_contract;
 
 pub use acceptance::{
-    AcceptedPendingInput, accept_pending_human_tx, accept_pending_system_tx,
-    event_system_observation_id_tx,
+    AcceptedPendingInput, accept_pending_human_tx, accept_pending_message_tx,
+    accept_pending_system_tx, event_system_observation_id_tx,
 };
 pub use attempts::{begin_input_attempt_tx, record_input_attempt_fact_tx};
 pub use carrier::{

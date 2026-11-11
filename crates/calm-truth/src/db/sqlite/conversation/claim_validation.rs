@@ -71,6 +71,28 @@ pub(super) async fn validate_claim_tx(
                 }
             }
             (
+                PendingInput::Human { message, .. },
+                SubmissionRenderInput::LinkGuest { share_link_id, .. },
+            ) => {
+                let current = message_tx(tx, &message.message_id).await?;
+                if current.card_id != carrier.card_id
+                    || current.current != *message
+                    || current.withdrawn_at_ms.is_some()
+                    || current.author
+                        != (MessageAuthor::LinkGuest {
+                            share_link_id: share_link_id.clone(),
+                        })
+                    || !matches!(
+                        revision_tx(tx, message).await?.payload,
+                        PrivateHistoryPayload::Present { .. }
+                    )
+                {
+                    return Err(CalmError::Conflict(
+                        "guest pending revision or attribution changed",
+                    ));
+                }
+            }
+            (
                 PendingInput::System { observation, .. },
                 SubmissionRenderInput::System {
                     payload: PrivateHistoryPayload::Present { value },
@@ -84,7 +106,10 @@ pub(super) async fn validate_claim_tx(
                 }
             }
             (PendingInput::Human { .. }, SubmissionRenderInput::System { .. })
-            | (PendingInput::System { .. }, SubmissionRenderInput::Human { .. })
+            | (
+                PendingInput::System { .. },
+                SubmissionRenderInput::Human { .. } | SubmissionRenderInput::LinkGuest { .. },
+            )
             | (
                 PendingInput::System { .. },
                 SubmissionRenderInput::System {
@@ -99,7 +124,9 @@ pub(super) async fn validate_claim_tx(
             // Successors claim only through the relation-backed InitialClaim path.
             (
                 PendingInput::ExplicitSuccessor { .. },
-                SubmissionRenderInput::Human { .. } | SubmissionRenderInput::System { .. },
+                SubmissionRenderInput::Human { .. }
+                | SubmissionRenderInput::LinkGuest { .. }
+                | SubmissionRenderInput::System { .. },
             ) => {
                 return Err(CalmError::Conflict(
                     "pending input and submitted source/payload kind disagree",

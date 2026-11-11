@@ -315,6 +315,7 @@ impl Inner {
             return Ok(());
         }
         self.producer()?;
+        self.reconcile_share_inputs().await?;
         for (track, card) in PlannerAdmission::reconcile_candidates(self.repo.as_ref()).await? {
             if !crate::conversation_inputs::has_canonical_storage(self.repo.as_ref(), card.as_str())
                 .await?
