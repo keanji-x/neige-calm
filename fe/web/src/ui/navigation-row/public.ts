@@ -1,7 +1,7 @@
 import type { ListTextRole } from '../list-typography/public.tsx';
 import styles from './public.module.css';
 
-export type NavigationRowPart = 'row' | 'content' | 'labelStart' | 'oneAction' | 'twoActions'
+export type NavigationRowPart = 'row' | 'guide' | 'content' | 'labelStart' | 'oneAction' | 'twoActions'
   | 'leading' | 'inner' | 'outer' | 'chromeOuter' | 'inlineActions' | 'revealActions';
 export type NavigationRowSpec = Readonly<
   { kind: 'caption'; depth: 0 } | { kind: 'entry'; depth: 0 | 1 }

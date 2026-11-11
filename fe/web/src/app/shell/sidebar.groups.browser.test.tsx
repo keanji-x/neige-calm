@@ -81,9 +81,14 @@ it('indents child tracks clear of the left tree guide while aligning labels on t
   const folderBox = areaButton.querySelector('svg')!.parentElement!.getBoundingClientRect();
   const guideX = folderBox.left + folderBox.width / 2;
   const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
+  const trackList = selected.parentElement!.parentElement!;
+  const guidePaint = getComputedStyle(trackList, '::before');
+  const guideCenter = trackList.getBoundingClientRect().left
+    + parseFloat(guidePaint.insetInlineStart) + parseFloat(guidePaint.inlineSize) / 2;
   const selectedTitle = selected.querySelector('[title]')!;
   const rowLeft = selected.getBoundingClientRect().left;
   const pillLeft = rowLeft + parseFloat(getComputedStyle(selected, '::before').insetInlineStart);
+  expect(guideCenter).toBeCloseTo(guideX, 0.5);
   expect(textBounds(selectedTitle).left).toBeCloseTo(textBounds(areaTitle).left, 1);
   expect(pillLeft).toBeGreaterThanOrEqual(guideX + 3.5);
   expect(pillLeft).toBeLessThan(textBounds(selectedTitle).left);

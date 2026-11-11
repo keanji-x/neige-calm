@@ -374,20 +374,10 @@
   }
 
   .trackList {
-    position: relative;
+    --navigation-guide-color: color-mix(in srgb, var(--hairline-strong) 48%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0;
-  }
-
-  .trackList::before {
-    content: '';
-    position: absolute;
-    inset-inline-start: calc(var(--navigation-label-inset) + var(--control-h-sm) / 2 - 0.5px);
-    inset-block: var(--space-1) var(--space-1);
-    inline-size: 1px;
-    background: color-mix(in srgb, var(--hairline-strong) 48%, transparent);
-    pointer-events: none;
   }
 
   .areaGroups {

@@ -1,9 +1,15 @@
 @layer ui {
-  /* The same columns serve icons, text and controls regardless of glyph size. */
-  .row {
+  /* The same columns serve icons, text, tree guides and controls regardless of glyph size. */
+  .row,
+  .guide {
     --navigation-slot: var(--control-h-sm);
     --navigation-inset: var(--navigation-label-inset, var(--space-1));
     --navigation-gap: var(--space-1);
+    --navigation-axis: calc(var(--navigation-inset) + var(--navigation-slot) / 2);
+    position: relative;
+  }
+
+  .row {
     --navigation-entry-height: 1.875rem;
     --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
     --navigation-inner-inset: var(--navigation-text-inset);
@@ -14,12 +20,21 @@
     --navigation-active-hover-bg: color-mix(in srgb, var(--text) 2.5%, var(--surface-card));
     --navigation-active-shadow: 0 1px 2px oklch(0% 0 0 / 0.045),
       inset 0 0 0 1px color-mix(in srgb, var(--hairline) 75%, transparent);
-    position: relative;
   }
 
   /* Nested child entries indent their highlight past the left tree guide while keeping the shared label spine. */
   .nested {
-    --navigation-selection-inset: calc(var(--navigation-inset) + var(--space-3) + var(--space-half));
+    --navigation-selection-inset: calc(var(--navigation-axis) + var(--navigation-gap));
+  }
+
+  .guide::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: calc(var(--navigation-axis) - 0.5px);
+    inset-block: var(--space-1);
+    inline-size: 1px;
+    background: var(--navigation-guide-color, transparent);
+    pointer-events: none;
   }
 
   .content {

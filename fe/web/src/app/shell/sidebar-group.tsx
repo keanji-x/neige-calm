@@ -124,7 +124,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
 
   return <SidebarGroup {...group}>
     {tracks.length === 0 && emptyState !== null && <div className={styles.emptyArea}><EmptyState {...emptyState} variant="compact" /></div>}
-    {tracks.length > 0 && <div className={styles.trackList}>
+    {tracks.length > 0 && <div className={`${styles.trackList} ${rowLayout('guide')}`}>
       {rows.map((track) => <TrackRow
         key={track.id}
         track={track}

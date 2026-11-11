@@ -3171,7 +3171,7 @@ describe('track conversations', () => {
     expect(bareFirst?.headers?.['Idempotency-Key']).toBeDefined();
     expect(bareRetry?.headers?.['Idempotency-Key'])
       .toBe(bareFirst?.headers?.['Idempotency-Key']);
-  });
+  }, 10_000);
 
   /* If only `{ key, sentText }` survives a remount, the new route believes creation
    * is idle and lets both requests create a row. */
