@@ -675,9 +675,6 @@
   /* Inline evidence keeps its intrinsic ratio within the reading column. */
   .image { max-width: 100%; height: auto; vertical-align: middle; }
   .imageButton { display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
-}
-
-@layer features {
   .detailCard {
     padding: var(--space-3);
     border: 1px solid var(--hairline);

@@ -3,8 +3,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './daily-planner.module.css';
 // Reuse the Track route body; this composition only resolves dates and report evidence.
-import { useLayoutEffect, useRef, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -30,7 +29,8 @@ export type DailyCenterPresentation = Readonly<{
   title: string;
   presented: boolean;
   onOpenAssistant: () => void;
-  render: (assistant: ReactNode, guideHost: HTMLDivElement | null) => ReactNode;
+  footerPrefix: ReactNode;
+  render: (assistant: ReactNode) => ReactNode;
 }>;
 
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
@@ -39,7 +39,21 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
   renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode, supervisor: ReactNode, center?: DailyCenterPresentation) => ReactNode;
 }>) {
   const [view, setView] = useState<DailyCenterView>('assistant');
+  const previousView = useRef(view);
+  const restoreGuide = useRef(false);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const changesGuide = useRef<HTMLButtonElement>(null);
+  const supervisorGuide = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (previousView.current === view) return;
+    const from = previousView.current;
+    previousView.current = view;
+    if (view !== 'assistant') backRef.current?.focus();
+    else if (restoreGuide.current) (from === 'changes' ? changesGuide.current : supervisorGuide.current)?.focus();
+    restoreGuide.current = false;
+  }, [view]);
   const user = useCurrentUser();
+  const showSupervisor = user?.userId === DEPLOYMENT_OWNER_USER_ID;
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
   const trackId = daily.data?.track_id;
@@ -58,40 +72,38 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
     <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
     <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>,
     supervisor,
-    selectedDate === undefined ? { title: 'Today Assistant', presented: view === 'assistant', onOpenAssistant: () => setView('assistant'), render: (assistant, guideHost) => <TodayCenter view={view} onView={setView} assistant={assistant} guideHost={guideHost}
-      changes={<DailyReportChanges key={date} standalone isToday date={shiftDailyDate(date, -1)} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />}
-      supervisor={user?.userId === DEPLOYMENT_OWNER_USER_ID ? supervisor : undefined} /> } : undefined);
+    selectedDate === undefined ? {
+      title: 'Today Assistant',
+      presented: view === 'assistant',
+      onOpenAssistant: () => setView('assistant'),
+      footerPrefix: <nav className={styles.guide} aria-label="Today views">
+        <button ref={changesGuide} type="button" onClick={() => setView('changes')}><span>Report changes</span><Icon name="chevron-right" size="sm" /></button>
+        {showSupervisor && <>
+          <span className={styles.guideSep} aria-hidden="true">·</span>
+          <button ref={supervisorGuide} type="button" onClick={() => setView('supervisor')}><span>Daily Supervisor</span><Icon name="chevron-right" size="sm" /></button>
+        </>}
+      </nav>,
+      render: (assistant) => <TodayCenter view={view} backRef={backRef} onBack={() => { restoreGuide.current = true; setView('assistant'); }} assistant={assistant}
+        changes={<DailyReportChanges key={date} standalone isToday date={shiftDailyDate(date, -1)} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />}
+        supervisor={showSupervisor ? supervisor : undefined} />,
+    } : undefined);
 }
 
 /** View state is visit-local; keep the live conversation mounted so its draft and history survive. */
-function TodayCenter({ assistant, changes, supervisor, guideHost, view, onView }: Readonly<{ view: DailyCenterView; onView: (view: DailyCenterView) => void; guideHost: HTMLDivElement | null; assistant: ReactNode; changes: ReactNode; supervisor?: ReactNode }>) {
+function TodayCenter({ assistant, changes, supervisor, view, backRef, onBack }: Readonly<{
+  view: DailyCenterView;
+  backRef: RefObject<HTMLButtonElement | null>;
+  onBack: () => void;
+  assistant: ReactNode;
+  changes: ReactNode;
+  supervisor?: ReactNode;
+}>) {
   const compact = useCompactViewport();
-  const previous = useRef(view);
-  const restoreGuide = useRef(false);
-  const back = useRef<HTMLButtonElement>(null);
-  const changesGuide = useRef<HTMLButtonElement>(null);
-  const supervisorGuide = useRef<HTMLButtonElement>(null);
-  useLayoutEffect(() => {
-    if (previous.current === view) return;
-    const from = previous.current;
-    previous.current = view;
-    if (view !== 'assistant') back.current?.focus();
-    else if (restoreGuide.current) (from === 'changes' ? changesGuide.current : supervisorGuide.current)?.focus();
-    restoreGuide.current = false;
-  }, [view]);
-  const guide = <nav className={styles.guide} aria-label="Today views">
-      <button ref={changesGuide} type="button" onClick={() => onView('changes')}><span>Report changes</span><Icon name="chevron-right" size="sm" /></button>
-      {supervisor !== undefined && <>
-        <span className={styles.guideSep} aria-hidden="true">·</span>
-        <button ref={supervisorGuide} type="button" onClick={() => onView('supervisor')}><span>Daily Supervisor</span><Icon name="chevron-right" size="sm" /></button>
-      </>}
-    </nav>;
   return <div className={styles.center}>
     <div className={styles.assistant} hidden={view !== 'assistant'}>{assistant}</div>
-    {guideHost !== null && createPortal(guide, guideHost)}
     {!compact && view !== 'assistant' && <section className={styles.subview} aria-label={view === 'changes' ? 'Report changes' : 'Daily Supervisor view'}>
       <div className={styles.subviewColumn}>
-        <button ref={back} type="button" className={styles.backToToday} onClick={() => { restoreGuide.current = true; onView('assistant'); }}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
+        <button ref={backRef} type="button" className={styles.backToToday} onClick={onBack}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
         {view === 'changes' ? changes : supervisor}
       </div>
     </section>}
@@ -153,17 +165,15 @@ function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrac
   </>;
   if (standalone) return <><h2 className={styles.subviewTitle}>Report changes · {date}</h2>{content}</>;
   return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
-    {open && <div className={styles.subviewHeader}>
-      <button type="button" className={styles.backToToday} onClick={(event) => {
-        const details = event.currentTarget.closest('details');
-        if (details !== null) details.open = false;
-        setOpen(false);
-      }}>
-        <Icon name="arrow-left" size="sm" />
-        <span>Back to Today</span>
-      </button>
-    </div>}
-    {content}
+    {(close) => <>
+      {open && <div className={styles.subviewHeader}>
+        <button type="button" className={styles.backToToday} onClick={close}>
+          <Icon name="arrow-left" size="sm" />
+          <span>Back to Today</span>
+        </button>
+      </div>}
+      {content}
+    </>}
   </ReportDetails>;
 }
 

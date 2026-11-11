@@ -14,10 +14,6 @@
   /* Leading history controls keep their intrinsic width in the flex host. */
   .messages > button { align-self: flex-start; }
   .scrollOverlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
-
-}
-
-@layer features {
   .embeddedSlot { display: flex; flex: 1; min-block-size: 0; min-inline-size: 0; }
   .embeddedSlot[hidden] { display: none; }
 }

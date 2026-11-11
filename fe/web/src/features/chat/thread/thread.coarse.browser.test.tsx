@@ -43,8 +43,7 @@ function RailPane({ turns, paneHeight = 400 }: {
   paneHeight?: number;
 }) {
   const navigation = useRef<HTMLDivElement>(null);
-  const overlay = useRef<HTMLDivElement>(null);
-  const ports = useMemo(() => ({ key: 'drawer', navigation, overlay }), []);
+  const ports = useMemo(() => ({ key: 'drawer', navigation }), []);
   const hostRef = useReadingHostRef<HTMLElement>(ports);
   return (
     <div

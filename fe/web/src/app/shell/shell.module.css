@@ -451,14 +451,13 @@
   .areaRow:focus-visible { outline-offset: -2px; }
 
   .primaryNavActive {
-    background: var(--surface-card);
-    box-shadow: 0 1px 2px oklch(0% 0 0 / 0.045),
-      inset 0 0 0 1px color-mix(in srgb, var(--hairline) 75%, transparent);
+    background: var(--navigation-active-bg);
+    box-shadow: var(--navigation-active-shadow);
     color: var(--text);
   }
 
   .primaryNavActive:hover {
-    background: color-mix(in srgb, var(--text) 2.5%, var(--surface-card));
+    background: var(--navigation-active-hover-bg);
   }
 
   /* Category captions stay quiet; actual Area names retain the group text role. */

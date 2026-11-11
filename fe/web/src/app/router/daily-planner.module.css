@@ -33,9 +33,6 @@
     .reportIntro h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
     .reportIntro p { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); margin-block-start: var(--space-2); color: var(--text-3); }
   }
-}
-
-@layer features {
   .center, .assistant { display: flex; flex-direction: column; flex: 1; min-block-size: 0; min-inline-size: 0; }
   .assistant[hidden] { display: none; }
   .guide {

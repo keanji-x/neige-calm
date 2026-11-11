@@ -89,16 +89,15 @@
   }
 
   .variantRail.rowActive {
-    --track-row-background: var(--surface-card);
+    --track-row-background: var(--navigation-active-bg);
   }
 
   .variantRail.rowActive::before {
-    box-shadow: 0 1px 2px oklch(0% 0 0 / 0.045),
-      inset 0 0 0 1px color-mix(in srgb, var(--hairline) 75%, transparent);
+    box-shadow: var(--navigation-active-shadow);
   }
 
   .variantRail.rowActive:hover {
-    --track-row-background: color-mix(in srgb, var(--text) 2.5%, var(--surface-card));
+    --track-row-background: var(--navigation-active-hover-bg);
   }
 
   /* The leading 6px column. It spans both lines and centres against the row,

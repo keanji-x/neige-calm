@@ -1141,7 +1141,6 @@ function TrackRouteBody({
   reportEmpty?: ReactNode;
 }) {
   const [centerHost, setCenterHost] = useState<HTMLDivElement | null>(null);
-  const [guideHost, setGuideHost] = useState<HTMLDivElement | null>(null);
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
   const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -1311,7 +1310,7 @@ function TrackRouteBody({
         commands: plannerCommands,
       },
     },
-    { defaultRowId: center !== undefined && plannerCard !== undefined ? plannerCard.id : null, onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, guideHost: setGuideHost, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+    { defaultRowId: center !== undefined && plannerCard !== undefined ? plannerCard.id : null, onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, footerPrefix: center.footerPrefix, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
       onRemove={(id) => cardDeletion.request(id, { kind: 'surface-center' })} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
@@ -1610,7 +1609,7 @@ function TrackRouteBody({
       }}
       report={<>
         {center !== undefined && <div className={mobileChatStyles.embeddedSlot} hidden={!centerActive}>
-          {center.render(<div ref={setCenterHost} className={mobileChatStyles.embeddedSlot} />, guideHost)}
+          {center.render(<div ref={setCenterHost} className={mobileChatStyles.embeddedSlot} />)}
         </div>}
         {!centerActive && <>{reportHeader}<TrackReportRegion
         presentation={reportPresentation}

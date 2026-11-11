@@ -59,6 +59,29 @@ it('reads a daily plan and yesterday’s report evidence in a real browser', asy
   await page.screenshot({ path: './__screenshots__/daily-planner-desktop.png' });
 });
 
+it.each([
+  ['/', 390, /昨天的更新/],
+  ['/?day=2026-10-04', 1440, /Report changes/],
+] as const)('closes %s report evidence with keyboard activation and restores focus to its summary', async (initial, width, heading) => {
+  await page.viewport(width, 844);
+  renderDailyFixture({ initial });
+  const headingNode = await page.getByRole('heading', { name: heading }).findElement();
+  const summary = headingNode.closest('summary')!;
+  const details = summary.closest('details')!;
+  expect(details.open).toBe(false);
+  summary.focus();
+  await expect.element(summary).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => details.open).toBe(true);
+  const back = await page.getByRole('button', { name: 'Back to Today', exact: true }).findElement();
+  back.focus();
+  await expect.element(back).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => details.open).toBe(false);
+  expect(page.getByRole('button', { name: 'Back to Today', exact: true }).query()).toBeNull();
+  await expect.element(summary).toHaveFocus();
+});
+
 
 it.each([1000, 768, 600])('shares one right sidebar card between calendar and inventory at height %s', async (height) => {
   await page.viewport(1440, height);

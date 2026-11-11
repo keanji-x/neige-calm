@@ -508,8 +508,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
   conversationSpan?: number;
 }) {
   const navigation = useRef<HTMLDivElement>(null);
-  const overlay = useRef<HTMLDivElement>(null);
-  const ports = useMemo(() => ({ key: 'drawer', navigation, overlay }), []);
+  const ports = useMemo(() => ({ key: 'drawer', navigation }), []);
   const hostRef = useReadingHostRef<HTMLElement>(ports);
   return (
     <><button type="button" style={{ position: 'fixed', insetBlockStart: 0, insetInlineEnd: 0 }}>Outside navigation</button><div

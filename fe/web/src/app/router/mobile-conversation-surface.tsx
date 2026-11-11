@@ -3,7 +3,7 @@ import { useVisibleViewport } from '../../ui/viewport/public.ts';
 import { useState } from '../../ui/state/public.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
-import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Sheet } from '../../ui/sheet/public.tsx';
@@ -14,7 +14,7 @@ import styles from './mobile-chat.module.css';
 export type EmbeddedConversationPresentation = Readonly<{
   active: boolean;
   host: HTMLDivElement | null;
-  guideHost: (host: HTMLDivElement | null) => void;
+  footerPrefix?: ReactNode;
   label: string;
 }>;
 
@@ -76,7 +76,7 @@ export function ConversationSurface({ embedded, mobileSheet, contextTitle, focus
   // moving the one footer and retaining its caret. Only the active host paints history.
   return <>
     {embedded?.host != null && createPortal(<EmbeddedReadingHost id={props.id} label={embedded.label} hidden={!embedded.active}
-      footer={<><div ref={embedded.guideHost} /><div ref={setEmbeddedNode} /></>}>{embedded.active ? props.children : null}</EmbeddedReadingHost>, embedded.host)}
+      footer={<>{embedded.footerPrefix}<div ref={setEmbeddedNode} /></>}>{embedded.active ? props.children : null}</EmbeddedReadingHost>, embedded.host)}
     <Drawer {...props} open={!embedded?.active && !mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
       footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet || embedded?.active ? null : props.children}</Drawer>
     <Sheet enabled={mobileSheet} open={props.open} label={props.title || '对话'} frame={{ heightPx: sheetHeight, bottomInsetPx: visibleViewport.bottomInset }}
