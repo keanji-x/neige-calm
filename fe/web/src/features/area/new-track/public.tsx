@@ -260,7 +260,7 @@ export function NewTrackForm({
         </div>
 
         <p className={styles.introduction}>
-          Choose a Template for a guided workflow and a Folder for your repository.
+          Choose a Template for a guided workflow and a Repo for your repository.
           An Area groups a project&apos;s work; a Track keeps one request, its conversation and report.
         </p>
 

@@ -3,7 +3,7 @@ import { TrackTitle } from '../title/public.tsx';
 // The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads track predicates, which `ui/` may not.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
-import { useId, useRef } from 'react';
+import { useId, useRef, type Ref } from 'react';
 import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
   isClosed, trackActivityState, trackDisplayTitle, type Track,
@@ -38,6 +38,7 @@ export type TrackRowProps = Readonly<{
     onSetAreaPinned: (id: string, pinned: boolean) => void;
     onMarkUnread: (id: string) => void;
   }>;
+  rowRef?: Ref<HTMLButtonElement>;
 } & ({ variant: 'rail'; presentation: NavigationEntrySpec } | { variant?: Exclude<TrackRowVariant, 'rail'>; presentation?: never })>;
 
 function variantClass(variant: TrackRowVariant): string {
@@ -69,7 +70,7 @@ export function relativeTime(atMs: number, nowMs: number): string {
 /** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. Sidebar pin actions appear on hover/focus or touch; other variants keep the pinned mark visible. */
 export function TrackRow(props: TrackRowProps) {
   const { track, variant = 'default', areaName, hourLabel, active = false, nowMs,
-    onOpen, onSetPinned, onDelete, actions, unread = false } = props;
+    onOpen, onSetPinned, onDelete, actions, rowRef, unread = false } = props;
   const presentation = props.variant === 'rail' ? navigationRowPresentation(props.presentation) : undefined;
   const removeRef = useRef<HTMLSpanElement | null>(null);
   const descriptionId = useId();
@@ -85,8 +86,8 @@ export function TrackRow(props: TrackRowProps) {
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
-  /* Rail status uses the leading gutter; panel status shares the trailing delete slot. */
-  const trailingStatus = variant === 'rail' || variant === 'panel';
+  /* Rail and panel status sit in detached trailing slots outside the row button. */
+  const detachedStatus = variant === 'rail' || variant === 'panel';
 
   return (
     <div className={[
@@ -95,10 +96,12 @@ export function TrackRow(props: TrackRowProps) {
       variant === 'panel' ? styles.wrapperPanel : '',
     ].filter(Boolean).join(' ')}>
       <button
+        ref={rowRef}
         type="button"
         data-nc-role="row"
         className={[
           styles.row, variantClass(variant), variant === 'rail' ? rowLayout('content') : '',
+          variant === 'rail' && activity !== 'quiet' ? rowLayout('oneAction') : '',
           variant === 'rail' && hasPin ? rowLayout('twoActions') : '',
           active ? styles.rowActive : '',
           hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '', actions !== undefined ? styles.hasMenu : '',
@@ -108,21 +111,21 @@ export function TrackRow(props: TrackRowProps) {
         aria-describedby={activity === 'unread' ? descriptionId : undefined}
         onClick={() => onOpen(track.id)}
       >
-        {!trailingStatus && (
+        {!detachedStatus && (
           <span className={styles.leadingStatus} aria-hidden="true"><ActivityIndicator state={activity} /></span>
         )}
         <span className={styles.titleRow}>
           {hourLabel !== undefined && <span className={styles.hour}>{hourLabel}</span>}
           <ListText tone={presentation?.tone ?? "primary"} emphasis={active ? 'selected' : variant === 'default' ? 'medium' : undefined}
-            className={styles.title} title={title} fadeOverflow={variant === 'rail' && actions !== undefined}><TrackTitle track={track} /></ListText>
+            className={styles.title} title={title} fadeOverflow={variant === 'rail' && (actions !== undefined || activity !== 'quiet')}><TrackTitle track={track} /></ListText>
         </span>
-        {!trailingStatus && (
+        {!detachedStatus && (
           <span className={styles.age}>{relativeTime(track.updatedAt, now)}</span>
         )}
       </button>
 
       {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
-      {trailingStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('leading') : ''}`} aria-hidden="true">
+      {detachedStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('outer') : ''}`} aria-hidden="true">
         <ActivityIndicator state={activity} />
       </span>}
       {hasPin && onSetPinned !== undefined && (

@@ -1,8 +1,108 @@
 @layer features {
   .reportIntro { display: none; }
+  .subviewHeader {
+    display: flex;
+    align-items: center;
+    margin-block-end: var(--space-2);
+  }
+  .backToToday {
+    font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-block-size: var(--control-h-sm);
+    margin-inline-start: calc(-1 * var(--space-2));
+    padding-block: var(--space-1);
+    padding-inline: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-highlight);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
+  }
+  .backToToday:hover,
+  .backToToday:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
   @media (width < 60rem) {
     .reportIntro { display: block; margin-block: 0 var(--space-6); }
     .reportIntro h2 { font: var(--type-empty-heading); letter-spacing: var(--type-empty-heading-tracking); }
     .reportIntro p { font-size: var(--font-step-3-size); line-height: var(--font-step-3-line); margin-block-start: var(--space-2); color: var(--text-3); }
+  }
+  .center, .assistant { display: flex; flex-direction: column; flex: 1; min-block-size: 0; min-inline-size: 0; }
+  .assistant[hidden] { display: none; }
+  .guide {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    margin-inline-start: calc(-1 * var(--space-2));
+    padding-block: 0 var(--space-2);
+    color: var(--text-3);
+    font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
+  }
+  .guideSep {
+    color: var(--text-4);
+    user-select: none;
+  }
+  .guide button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-half);
+    min-block-size: var(--control-h-sm);
+    padding-block: var(--space-half);
+    padding-inline: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-highlight);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
+  }
+  .guide button svg {
+    inline-size: var(--glyph-meta);
+    block-size: var(--glyph-meta);
+    color: currentcolor;
+    opacity: 0.7;
+  }
+  .guide button:hover,
+  .guide button:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+  .subview {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-block-size: 0;
+    overflow: auto;
+    padding-block: var(--space-1) var(--space-6);
+  }
+  .subviewColumn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    inline-size: 100%;
+    max-inline-size: min(var(--document-measure, 100%), calc(100% - var(--space-5)));
+    margin-inline-start: var(--document-start, 0px);
+    min-inline-size: 0;
+  }
+  .subviewColumn > * {
+    --document-start: 0px;
+    --document-measure: 100%;
+  }
+  .subviewColumn > :not(.backToToday) { align-self: stretch; }
+  .subviewTitle {
+    font: var(--type-subheading);
+    letter-spacing: var(--type-subheading-tracking);
+    color: var(--text);
+    margin: 0;
   }
 }

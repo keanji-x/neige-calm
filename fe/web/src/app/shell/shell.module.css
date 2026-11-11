@@ -241,15 +241,11 @@
       min-block-size: 0;
       overflow: clip;
     }
-
   }
 
   /* 44 − 2×10 = 24px cannot hold a 28px control, so the collapsed strip drops
      the inline padding entirely and each child centres itself in the full 44. */
-  .railCollapsed {
-    padding-inline: var(--space-0);
-    align-items: center;
-  }
+  .railCollapsed { padding-inline: var(--space-0); align-items: center; }
 
   .brandRow {
     display: flex;
@@ -263,10 +259,10 @@
     align-items: center;
     min-inline-size: 0;
     /* A full line box keeps clipped labels' ascenders and descenders visible. */
-    color: var(--text-2);
+    color: var(--text);
     cursor: pointer;
-      font: var(--type-page-title);
-      letter-spacing: var(--type-page-title-tracking);
+    font: var(--type-page-title);
+    letter-spacing: var(--type-page-title-tracking);
   }
 
   /*
@@ -293,12 +289,9 @@
   }
 
   .brand:hover,
-  .brand:focus-visible {
-    color: var(--text);
-  }
+  .brand:focus-visible { color: var(--text); }
 
   .iconButton {
-
     line-height: 1;
     display: grid;
     place-items: center;
@@ -319,61 +312,49 @@
   }
 
   .brandActions { margin-inline-start: auto; }
+  .brandActions > :first-child { opacity: 0; transition: opacity var(--motion-quick) var(--ease-feedback); }
+  .brandActions > :first-child:has([aria-expanded='true']),
+  .brandRow:hover .brandActions > :first-child,
+  .brandRow:focus-within .brandActions > :first-child { opacity: 1; }
+  @media (hover: none) { .brandActions > :first-child { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .brandActions > :first-child { transition: none; } }
 
-  /*
-   * THE VERTICAL SCALE.
-   *
-   * The rule is about *optical* distance, not about DOM depth, and it is one
-   * line:
-   *
-   *     every Area/Track row uses one cadence; section breaks alone increase.
-   *
-   * Two Gestalt consequences it has to satisfy, and both are checkable:
-   *   - an Area label and its Tracks share one cadence; the label is already
-   *     distinguished by tone and by its disclosure control;
-   *   - a muted Area disclosure carries grouping without extra whitespace.
-   *
-   * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
-   * a 24px label slot:
-   *
-   *   area name  -> its first track    --space-1    2px   -> 11.6px
-   *   row        -> row               --space-1    2px   -> 11.6px
-   *   section lb -> its first row     --space-2    4px   -> 15.3px
-   *   section    -> section           --space-8   16px   -> 27.3px
-   *
-   * 11.6 = 11.6 < 15.3 < 27.3. Area and Track rows are even; section-level
-   * breaks remain clear jumps rather than nudges.
-   *
-   * The Area used to get a zero gap to make parent/child proximity carry the
-   * hierarchy by itself. Its deliberately quieter type, position and chevron
-   * already say “group”, so the special-case rhythm was only visual noise,
-   * including between Areas.
-   *
-   * Every step is a `gap` on the container that owns the relationship, never a
-   * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
-   * margin" (margin collapses, gap does not, and a margin-made rhythm cannot be
-   * verified by measuring one container) and "同一个组件不能在同一轴上既写 gap
-   * 又给子元素写 margin".
-   */
+  .primaryNav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-half);
+    padding-block-end: 0;
+    border-block-end: 0;
+  }
+
+  .primaryNavRow { color: var(--text-2); }
+
+  .primaryNavIcon {
+    line-height: 1;
+    color: var(--text-3);
+    pointer-events: none;
+  }
+
+  .primaryNavActive .primaryNavIcon,
+  .primaryNavRow:hover .primaryNavIcon { color: var(--text); }
+
+  /* Every Area/Track row uses one cadence; section breaks alone increase (§2.3). */
   .sidebarSections {
     display: flex;
     flex-direction: column;
-    gap: var(--navigation-section-gap);
+    gap: var(--space-4);
+    padding-block-start: var(--space-4);
   }
 
-  .section {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-  }
-
+  .section,
   .areaGroup {
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 1px;
   }
 
   .trackList {
+    --navigation-guide-color: color-mix(in srgb, var(--hairline-strong) 48%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -382,24 +363,18 @@
   .areaGroups {
     display: flex;
     flex-direction: column;
-    gap: var(--navigation-group-gap);
+    gap: var(--space-4);
   }
 
-  .areaRowWrap {
-    position: relative;
-    display: grid;
-  }
+  .areaRowWrap { position: relative; display: grid; }
 
   /* Navigation-row owns icon/text/action columns; the shell owns appearance. */
   .areaRow {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: center;
-
-    /* The disclosure shares the Track row's 28px slot. */
-    min-block-size: var(--row-h);
+    min-block-size: var(--navigation-entry-height);
     padding-block: 0;
-
     border-radius: var(--radius-highlight);
     text-align: start;
     cursor: pointer;
@@ -407,36 +382,52 @@
       color var(--motion-quick) var(--ease-feedback);
   }
 
-  .groupHeading {
-    display: grid;
+  .groupHeading,
+  .newAreaAnchor { display: grid; min-inline-size: 0; margin: 0; }
+
+  .folderIcon,
+  .newAreaIcon { line-height: 1; color: var(--text-3); pointer-events: none; }
+
+  .folderRow:hover .folderIcon,
+  .folderRow:focus-visible .folderIcon,
+  .newAreaRow:hover .newAreaIcon,
+  .newAreaRow:focus-visible .newAreaIcon { color: var(--text); }
+
+  .folderTitleWrap {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-half);
     min-inline-size: 0;
+    max-inline-size: 100%;
   }
 
-  .areaRow:hover {
-    background: var(--overlay-hover);
-  }
-
-  .areaRow:focus-visible {
-    outline-offset: -2px;
-  }
-
-  .chevron {
+  .inlineChevron {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
     line-height: 1;
-    border-radius: var(--radius-sm);
     color: var(--text-3);
+    opacity: 0.72;
+    scale: 0.8;
     pointer-events: none;
     transition: none;
   }
 
-  .chevronOpen {
-    rotate: 90deg;
+  .folderRow:hover .inlineChevron,
+  .folderRow:focus-visible .inlineChevron { color: var(--text-2); opacity: 1; }
+
+  .areaRow:hover { background: var(--overlay-hover); }
+  .areaRow:focus-visible { outline-offset: -2px; }
+
+  .primaryNavActive {
+    background: var(--navigation-active-bg);
+    box-shadow: var(--navigation-active-shadow);
+    color: var(--text);
   }
 
-  /* Category captions have no leading glyph; Area rows own their disclosure. */
-  .groupHeading .areaRow {
-    min-block-size: var(--navigation-module-row-height);
-    display: flex;
-    gap: var(--space-1);
+  .primaryNavActive:hover {
+    background: var(--navigation-active-hover-bg);
   }
 
   /* Category captions stay quiet; actual Area names retain the group text role. */
@@ -450,10 +441,12 @@
     text-overflow: clip;
   }
 
+  .primaryNavRow .areaName,
+  .folderRow .areaName { color: var(--text-2); }
+  .newAreaRow .areaName { color: var(--text-3); }
+  .primaryNavActive .areaName,
   .areaRow:hover .areaName,
-  .areaRow:focus-visible .areaName {
-    color: var(--text);
-  }
+  .areaRow:focus-visible .areaName { color: var(--text); }
 
   /* Hosts retain hit-target styling; shared slots position their centres. */
   .areaActionsButton,
@@ -523,22 +516,7 @@
 
   .emptyArea { padding-inline: var(--space-6); }
 
-  /*
-   * Pinned to the bottom of `.rail`'s scrollport, so a long Areas list scrolls
-   * underneath it instead of pushing the account menu out of view. `auto`
-   * still parks it at the bottom when the list is short.
-   *
-   * Sticky insets are resolved against the scrollport minus the rail's own
-   * padding, so `0` would park the row one rail padding above the bottom edge
-   * with rows showing through beneath it. The row instead takes that padding
-   * over: a negative inset and margin of the same size, and its own padding
-   * in their place, so its fill reaches the edge and the avatar stays where it
-   * sat before. The rail fill hides rows scrolling behind it. The z-index
-   * makes this row a stacking context that also holds
-   * `.menu`, which overhangs `.main` (always so in the collapsed 44px strip),
-   * so it is the menu's own `--z-overlay`: the menu keeps the rank it had
-   * before, and the row still clears the `--z-raised` area action buttons.
-   */
+  /* Sticky insets resolve against the scrollport minus the rail's padding. */
   .userRow {
     position: sticky;
     inset-block-end: calc(-1 * var(--account-bottom-gutter));
@@ -546,8 +524,32 @@
     margin-block: auto calc(-1 * var(--account-bottom-gutter));
     display: flex;
     align-items: center;
+    gap: var(--space-1);
     padding-block: var(--space-2) var(--account-bottom-gutter);
+    padding-inline-start: var(--navigation-label-inset);
     background: var(--surface-rail);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--hairline) 55%, transparent);
+  }
+
+  .railCollapsed .userRow {
+    padding-inline-start: 0;
+  }
+
+  .userName {
+    font: var(--type-content);
+    letter-spacing: var(--type-content-tracking);
+    font-weight: var(--weight-medium);
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text);
+    pointer-events: none;
+  }
+
+  .userSettingsButton {
+    margin-inline-start: auto;
+    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
   }
 
   .menuWrap {
@@ -555,29 +557,27 @@
   }
 
   .avatar {
-    font-size: var(--font-step-1-size);
+    font-size: var(--type-metadata-size);
     font-weight: var(--weight-medium);
     line-height: 1;
     display: grid;
     place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    border-radius: var(--radius-pill);
+    background: var(--surface-card);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hairline) 85%, transparent),
+      0 1px 2px oklch(0% 0 0 / 0.04);
+    /* Keep the pinned row treated as in-view when keyboard focus returns. */
+    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .railCollapsed .avatar {
+    font-size: var(--font-step-1-size);
     inline-size: var(--control-h);
     block-size: var(--control-h);
-    border-radius: var(--radius-pill);
-
-    /* The card fill, not `--surface-chip`: the chip sits one small step off
-       the rail and the avatar barely separated from it. `--surface-card` is
-       the far end of the surface ladder from `--surface-rail` in both themes. */
-    background: var(--surface-card);
-
-    /* The avatar sits inside the pinned row, i.e. inside the rail's own
-       `scroll-padding-block-end`, only the rail’s bottom gutter off the bottom. Focusing it
-       (Tab, or the menu handing focus back) would otherwise scroll the Areas
-       list to clear that padding while the avatar itself never moves. This
-       margin takes back the rest of the padding, so where it is pinned already
-       counts as in view. */
-    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
-    color: var(--text-2);
-    cursor: pointer;
   }
 
   .avatar:hover,
@@ -586,7 +586,6 @@
   }
 
   .menu {
-    /* Fixed escapes `.rail`'s scroll/clipping box in the 44px icon strip. */
     position: fixed;
     inset-block-end: calc(var(--control-h) + var(--account-bottom-gutter));
     inset-inline-start: 10px;
@@ -595,9 +594,6 @@
     flex-direction: column;
     min-inline-size: var(--menu-w-min);
     max-inline-size: var(--menu-w-max);
-
-    /* Menu items use the shared highlight radius; the inset keeps them
-       comfortably inside the rounded menu surface. */
     padding: var(--space-3);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
@@ -611,12 +607,6 @@
     line-height: 1;
     display: flex;
     align-items: center;
-
-    /* A `<button>` shrinks to fit even at `display: flex`, so without this the
-       hover fill was the width of the *word* rather than of the row it sits in
-       — "Settings" lit a 60px box inside a 154px menu. Found while fixing the
-       same defect in the track panel's add menu (#1231), which has since moved
-       onto astryx's `DropdownMenu` and gets the row for free. */
     inline-size: 100%;
     block-size: var(--row-h-sm);
     padding-inline: var(--space-2);
@@ -631,9 +621,7 @@
     background: var(--overlay-hover);
   }
 
-  /* Collapsed strip: "where am I", not "what is there". No section labels (11px
-     uppercase does not fit in 44px), no track rows, and zero-row sections still
-     do not render. */
+  /* Collapsed strip: compact landmark icons and initials only. */
   .stripItem {
     display: grid;
     place-items: center;
@@ -673,8 +661,7 @@
     .areaRow,
     .areaActions,
     .areaNew,
-    .iconButton,
-    .chevron {
+    .iconButton {
       transition: none;
     }
   }
@@ -692,15 +679,11 @@
     .rail,
     .userRow,
     .brandRow {
-      background: var(--surface-navigation);
-    }
-
-    .sidebarSections {
-      padding-block-start: 0;
+      background: color-mix(in srgb, var(--surface-rail) 52%, var(--bg));
     }
 
     .rail {
-      border-inline-end: 1px solid var(--hairline);
+      border-inline-end: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);
       padding-block-start: 0;
       scroll-padding-block-start: var(--navigation-header-height);
     }

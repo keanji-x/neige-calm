@@ -5,6 +5,12 @@
     letter-spacing: var(--type-content-tracking);
     color: var(--text);
   }
+  .compact {
+    font: var(--type-content);
+    font-size: 0.8125rem;
+    letter-spacing: var(--type-content-tracking);
+    color: var(--text);
+  }
   .group {
     font: var(--type-ui);
     letter-spacing: var(--type-ui-tracking);
@@ -35,6 +41,7 @@
     font-weight: var(--weight-medium);
   }
   .selected {
+    font-weight: var(--weight-medium);
     color: var(--text);
   }
 }

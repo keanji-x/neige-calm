@@ -4,7 +4,8 @@ Shared presentation roles for the workspace sidebar and context panels.
 
 | Role | Size | Weight | Line height | Use |
 | --- | --- | --- | --- | --- |
-| primary | 14px | 400 | 20px | Track and expanded card/task names |
+| primary | 14px | 400 | 20px | Top-level navigation, folder disclosures, and expanded card/task names |
+| compact | 13px | 400 | 20px | Nested sidebar Track and reveal entries |
 | group | 14px | 400 | 20px | Inventory, status-group and conversation names |
 | section | 12px | 500 | 16px | Module headings, normal tracking |
 | secondary | 12px | 400 | 16px | Status and resource kind |
@@ -16,10 +17,9 @@ and actions. The colocated CSS Module defines typography;
 host components retain positioning, truncation and selection backgrounds.
 Text emphasis also belongs here: `emphasis="medium"` preserves the two-line
 Track row's 500 weight, and `emphasis="selected"` gives both Track and
-conversation names the same primary color without changing their weight. Hosts pass state;
+conversation names medium weight (`500`) and primary color (`--text`). Hosts pass state;
 they do not override the name's size, family or weight in local CSS.
-Tools, Tasks and Conversations are module headings. Their status groups and conversation names retain the group tone; sidebar Areas and Tracks
-share the primary entry tone. Expanded items correspond to Tracks. Panel entries use a 28px row cadence; sidebar Track entries use 32px,
+Tools, Tasks and Conversations are module headings. Their status groups and conversation names retain the group tone; top-level sidebar entries and folder disclosures use `primary`, while nested sidebar Tracks use `compact`. Expanded items correspond to Tracks. Panel entries use a 28px row cadence; sidebar entries use 30px,
 with no extra gap between collapsed groups and a 12px surface inset. Expanded
 groups keep their heading in place: no added top padding, 4px before the list
 and 8px below it. Rows stay 28px apart; both insets count toward the bounded
@@ -42,4 +42,4 @@ disconnect when fading is disabled, the host tag changes or the element unmounts
 
 Named tones own a complete font/tracking pair. Hosts choose a tone rather than overriding
 font and tracking independently. Navigation-row's required content schema selects
-`secondary` for captions and `primary` for entries; Inventory and Calendar keep `group`.
+`secondary` for captions, `primary` for top-level entries, and `compact` for nested entries; Inventory and Calendar keep `group`.

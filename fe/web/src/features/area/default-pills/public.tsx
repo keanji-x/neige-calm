@@ -73,7 +73,7 @@ export function TemplatePill({
 /** The shared compact starting-point control; New Track supplies recipes and its manage action. */
 export function StartingPointPill({
   templates, templatesLoaded, recipes = [], value, onChange, placement,
-  onManageRecipes, controlLabel = 'Template', triggerId, isDisabled = false,
+  onManageRecipes, controlLabel = 'Template', triggerId, isDisabled = false, showLabel = false,
 }: Readonly<{
   templates: readonly TrackTemplate[];
   templatesLoaded: boolean;
@@ -81,6 +81,7 @@ export function StartingPointPill({
   value: StartingPoint;
   onChange: (value: StartingPoint) => void;
   placement: 'above' | 'below';
+  showLabel?: boolean;
   onManageRecipes?: () => void;
   controlLabel?: string;
   triggerId?: string;
@@ -120,7 +121,7 @@ export function StartingPointPill({
         button={{
           id: triggerId,
           label: controlName,
-          children: selectedLabel,
+          children: showLabel ? controlName : selectedLabel,
           variant: 'secondary',
           size: 'sm',
           isDisabled,
@@ -177,10 +178,11 @@ export function StartingPointPill({
 }
 
 export function FolderPill({
-  value, emptyLabel = 'Neige workspace', controlLabel = 'Folder', clearLabel,
+  value, emptyLabel = 'Neige workspace', controlLabel = 'Folder', clearLabel, showLabel = false,
   buttonId, onBrowse, onClear, isDisabled = false,
 }: Readonly<{
   value: string;
+  showLabel?: boolean;
   emptyLabel?: string;
   controlLabel?: string;
   clearLabel: string;
@@ -189,7 +191,9 @@ export function FolderPill({
   onBrowse: () => void;
   onClear: () => void;
 }>) {
-  const accessibleName = value === '' ? `${controlLabel}: ${emptyLabel}` : `${controlLabel}: ${value}`;
+  const visibleLabel = `${showLabel ? `${controlLabel}: ` : ''}${value === '' ? emptyLabel : basenameOf(value)}`;
+  const accessibleName = value === '' ? `${controlLabel}: ${emptyLabel}`
+    : showLabel ? `${visibleLabel} (${value})` : `${controlLabel}: ${value}`;
   return (
     <>
       <Button
@@ -202,7 +206,7 @@ export function FolderPill({
         aria-haspopup="dialog"
         aria-label={accessibleName}
         icon={<Icon name="folder" size="sm" />}
-        label={value === '' ? emptyLabel : basenameOf(value)}
+        label={visibleLabel}
         onClick={onBrowse}
         {...{ title: accessibleName }}
       />
@@ -281,7 +285,8 @@ function TemplateChoice({
 }
 
 /** Managed folders display None, but never opt into the attached-folder wire contract. */
-export function IsolationPill({ hasFolder, value, onChange, isDisabled }: Readonly<{
+export function IsolationPill({ hasFolder, value, onChange, isDisabled, showLabel = false }: Readonly<{
+  showLabel?: boolean;
   hasFolder: boolean;
   value: 'worktree' | 'none';
   onChange: (value: 'worktree' | 'none') => void;
@@ -292,7 +297,7 @@ export function IsolationPill({ hasFolder, value, onChange, isDisabled }: Readon
   return <>
     <DropdownMenu placement="above" button={{
       label: `${WORKSPACE_ISOLATION_LABEL}: ${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
-      children: selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL,
+      children: `${showLabel ? `${WORKSPACE_ISOLATION_LABEL}: ` : ''}${selected === 'worktree' ? WORKTREE_LABEL : NONE_LABEL}`,
       variant: 'secondary', size: 'sm', className: styles.trigger, isDisabled,
     }}>
       <DropdownMenuItem label={WORKTREE_LABEL} isDisabled={!hasFolder}

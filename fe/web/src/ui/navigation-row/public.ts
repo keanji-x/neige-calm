@@ -1,22 +1,27 @@
 import type { ListTextRole } from '../list-typography/public.tsx';
 import styles from './public.module.css';
 
-export type NavigationRowPart = 'row' | 'content' | 'labelStart' | 'twoActions'
+export type NavigationRowPart = 'row' | 'guide' | 'content' | 'labelStart' | 'oneAction' | 'twoActions'
   | 'leading' | 'inner' | 'outer' | 'chromeOuter' | 'inlineActions' | 'revealActions';
 export type NavigationRowSpec = Readonly<
   { kind: 'caption'; depth: 0 } | { kind: 'entry'; depth: 0 | 1 }
 >;
 export type NavigationEntrySpec = Extract<NavigationRowSpec, { kind: 'entry' }>;
 
-const kinds = Object.freeze({
-  caption: Object.freeze({ tone: 'secondary' as const }),
-  entry: Object.freeze({ tone: 'primary' as const }),
-});
+const entryTones = Object.freeze({
+  0: 'primary',
+  1: 'compact',
+} as const satisfies Record<NavigationEntrySpec['depth'], ListTextRole>);
 
-/** Required content-region schema. CSS alone owns columns and the single depth relationship. */
+/** Required content-region schema. CSS alone owns the shared leading-gutter and label columns. */
 export function navigationRowPresentation(presentation: NavigationRowSpec): Readonly<{ className: string; tone: ListTextRole }> {
-  return { className: [styles.row, presentation.kind === 'caption' ? styles.caption : '', presentation.depth === 1 ? styles.nested : ''].filter(Boolean).join(' '),
-    tone: kinds[presentation.kind].tone };
+  return {
+    className: [
+      styles.row,
+      presentation.depth === 1 ? styles.nested : '',
+    ].filter(Boolean).join(' '),
+    tone: presentation.kind === 'caption' ? 'secondary' : entryTones[presentation.depth],
+  };
 }
 
 /** Geometry-only slots remain available for surrounding chrome. */

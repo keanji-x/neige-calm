@@ -61,10 +61,14 @@
     --track-row-background: var(--selection-bg);
   }
 
-  /* Every rail state paints the same inset surface. The hit target and global
-     status gutter remain full width; navigation-row owns the depth geometry. */
+  /* Selection retains its own paint while sharing hover geometry with idle rows. */
+  .rowActive:hover {
+    --track-row-background: var(--selection-hover-bg);
+  }
+
+  /* Every rail state paints the same inset surface; navigation-row owns depth geometry. */
   .variantRail {
-    min-block-size: var(--row-h);
+    min-block-size: var(--navigation-entry-height, 1.875rem);
     grid-template-columns: minmax(0, 1fr);
     position: relative;
     isolation: isolate;
@@ -79,13 +83,21 @@
     inset-inline: var(--navigation-selection-inset, 0px) 0;
     border-radius: inherit;
     background: var(--track-row-background);
-    transition: inherit;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      box-shadow var(--motion-quick) var(--ease-feedback);
     pointer-events: none;
   }
 
-  /* Selection retains its own paint while sharing hover geometry with idle rows. */
-  .rowActive:hover {
-    --track-row-background: var(--selection-hover-bg);
+  .variantRail.rowActive {
+    --track-row-background: var(--navigation-active-bg);
+  }
+
+  .variantRail.rowActive::before {
+    box-shadow: var(--navigation-active-shadow);
+  }
+
+  .variantRail.rowActive:hover {
+    --track-row-background: var(--navigation-active-hover-bg);
   }
 
   /* The leading 6px column. It spans both lines and centres against the row,
@@ -112,6 +124,16 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .variantRail .title {
+    color: var(--text-2);
+  }
+
+  .variantRail:hover .title,
+  .variantRail:focus-visible .title,
+  .variantRail.rowActive .title {
+    color: var(--text);
   }
 
   /* Right edge means status. A fixed column, never `margin-inline-start: auto`,
@@ -230,20 +252,10 @@
   }
 
   /*
-   * Two sides, two meanings — **left is state, right is action** — but only
-   * where a left column actually exists.
-   *
-   * In the rail it does: every area row carries a disclosure chevron there, so
-   * a track's pin joins an established column and the whole rail reads down two
-   * clean icon rules. In the main column there is no chevron and nothing else
-   * to join, so a leading gutter would indent the entire list 28px away from
-   * the page title it belongs to — to reserve room for a control that is
-   * invisible until you hover. There the pin stays trailing, outboard of the
-   * delete for the reason §4.5 gives: pin is the one of the two that persists
-   * at rest, so putting it outermost means a pinned row shows one control flush
-   * to its edge rather than one floating beside an empty slot.
-   *
-   * The rail consumes ui/navigation-row slots instead of mirroring shell offsets.
+   * Non-rail surfaces have no leading icon gutter, so pin stays trailing and
+   * outboard of delete: pin persists at rest on non-rail surfaces, so putting
+   * it outermost shows one control flush to the edge rather than beside an
+   * empty slot. Rail rows consume ui/navigation-row trailing slots instead.
    */
   .wrapper:where(:not(.wrapperRail)) .pin {
     inset-inline-end: var(--space-1);
@@ -278,7 +290,15 @@
     inset-block-start: 50%;
     align-self: auto;
     translate: 0 -50%;
+    z-index: 1;
+    color: var(--text-3);
     transition: opacity var(--motion-quick) var(--ease-feedback);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .statusSlot {
+      transition: none;
+    }
   }
 
   .wrapper:where(:not(.wrapperRail)) .statusSlot { inset-inline-end: var(--space-1); }
@@ -289,16 +309,14 @@
 
   .wrapperPanel:hover .statusSlot,
   .wrapperPanel:focus-within .statusSlot,
-  .wrapperPanel:has(.menuButton[aria-expanded='true']) .statusSlot {
+  .wrapperRail:hover .statusSlot,
+  .wrapperRail:focus-within .statusSlot,
+  .wrapperPanel:has(.menuButton[aria-expanded='true']) .statusSlot,
+  .wrapperRail:has(.menuButton[aria-expanded='true']) .statusSlot {
     opacity: 0;
   }
 
-  /* One tone step distinguishes the active pin action. The rail's colours
-     belong only to the indicator
-     vocabulary (`ui/activity-indicator`: warn = waiting on you, error =
-     broken, accent = unread, grey = in motion) and to the current location
-     (`--selection-bg`); titles never carry a state colour; area identity does
-     not enter the rail. */
+  /* One tone step distinguishes the active pin action. */
   .pinOn {
     color: var(--text-2);
   }
@@ -329,10 +347,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .statusSlot {
-      transition: none;
-    }
-
     .row,
     .action {
       transition: none;

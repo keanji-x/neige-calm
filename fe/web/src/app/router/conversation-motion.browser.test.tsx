@@ -18,7 +18,7 @@ it('keeps the composer and message bubble in place through queue acknowledgement
   const prior = [{ id: 1, card_id: 'daily-planner', worker_session_id: 'runtime', track_id: 'daily', thread_id: 'thread',
     turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: 'An existing conversation before this message.' }, completedAtMs: sentAt - 3600000 }), created_at_ms: 1 }];
-  const { client } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: async request => {
+  const { client } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: async request => {
     const url = new URL(request.path, 'http://fixture');
     if (request.path.endsWith('/planner/input')) {
       await new Promise<void>(resolve => { answer = resolve; });
@@ -79,7 +79,7 @@ it('keeps a middle edit stable while an earlier input is revoked and the reply k
   await page.viewport(1400, 900);
   let pending = ['First waiting message', 'Middle waiting message', 'Last waiting message'].map((text, index) => ({ entry_id: `queued-${index}`, text, rev: 0, queued_at_ms: Date.now() + index }));
   let liveText = 'The current reply is still streaming.';
-  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
     const url = new URL(request.path, 'http://fixture');
     if (request.method === 'DELETE' && request.path.endsWith('/planner/input/queued-0')) {
       expect(request.body).toEqual({ if_entry_rev: 0 });
@@ -213,7 +213,7 @@ it('processes locally queued edits in order without leaving their old outbox tex
   let pending: Array<{ entry_id: string; text: string; rev: number; queued_at_ms: number }> = [];
   let drained = false;
   const ok = (body: unknown) => ({ status: 200, statusText: 'OK', body });
-  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
     const url = new URL(request.path, 'http://fixture');
     if (request.path.endsWith('/planner/input') && request.method === 'POST') {
       const body = request.body as { text: string };
@@ -266,7 +266,7 @@ it('processes locally queued edits in order without leaving their old outbox tex
 it('keeps a queued edit mounted when the first reply creates the transcript', async () => {
   await page.viewport(1400, 900);
   let text = '';
-  const { client } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+  const { client } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/harness/items') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationPage(conversationCardId(request.path), [], null) };
     if (url.pathname.endsWith('/harness/live') && url.search === '') return { status: 200, statusText: 'OK', body: { turn_id: 'first', items: text === '' ? [] : [{ item_id: 'first-reply', text }] } };
@@ -292,7 +292,7 @@ it('keeps a queued edit mounted when the first reply creates the transcript', as
 it('saves from the original queued revision and keeps the main-composer draft after a conflict', async () => {
   await page.viewport(1400, 900);
   let pending = { entry_id: 'changing', text: 'Original queued words', rev: 2, queued_at_ms: 1 };
-  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,
@@ -330,7 +330,7 @@ it('saves from the original queued revision and keeps the main-composer draft af
 it('retains unsaved main-composer words when the edited queue entry disappears and Escape cancels edit mode', async () => {
   await page.viewport(1400, 900);
   let pending = [{ entry_id: 'draining-edit', text: 'Queued original', rev: 0, queued_at_ms: 1 }];
-  const { client, requests } = renderDailyFixture({ identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
+  const { client, requests } = renderDailyFixture({ initial: '/track/daily', identity: { userId: 'motion-user', displayName: 'Motion User', role: 'owner', sessionId: 'motion-session' }, reply: request => {
     const url = new URL(request.path, 'http://fixture');
     if (url.pathname.endsWith('/planner/run') && url.searchParams.get('contract') === 'conversation_v1') return { status: 200, statusText: 'OK', body: historicalConversationRun({
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null,

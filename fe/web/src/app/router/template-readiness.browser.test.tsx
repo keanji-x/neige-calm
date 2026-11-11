@@ -77,7 +77,7 @@ it.each([1280, 390, 320])('repairs a template prerequisite and returns to the sa
   await expect.element(page.getByRole('button', { name: 'Create track' })).toBeEnabled();
   if (width < 600) await page.getByRole('button', { name: 'Track options' }).click();
   await expect.element(page.getByRole('button', { name: 'Template: Review a change' })).toBeVisible();
-  await expect.element(page.getByRole('button', { name: 'Folder: /work/example' })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Repo: example (/work/example)' })).toBeVisible();
   if (width < 600) await page.getByRole('button', { name: 'Track options' }).click();
   expect(requests.some(request => request.path === '/api/tracks' && request.method === 'POST')).toBe(false);
   expect(document.documentElement.scrollWidth).toBe(window.innerWidth);

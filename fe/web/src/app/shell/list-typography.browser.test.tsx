@@ -70,10 +70,12 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
       expect(getComputedStyle(node)).toMatchObject(expected);
     });
   };
-  assertRole(name, '--type-content');
+  expect(getComputedStyle(name).fontFamily).toBe(getComputedStyle(primary[0]).fontFamily);
+  expect(getComputedStyle(name).fontSize).toBe('13px');
   for (const node of primary) assertRole(node, '--type-content');
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
   assertRole(group, '--type-content');
+  assertRole(element(document.querySelector<HTMLElement>('[title="Today"]')), '--type-content');
   const inventoryGroup = element(document.querySelector<HTMLElement>('[data-nc-work-inventory] h2'));
   assertRole(inventoryGroup, '--type-metadata');
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(primary[0]));
@@ -83,12 +85,13 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   expect(progressTitle.textContent).toBe('Progress');
   assertRole(workbenchTitle, '--type-metadata');
   assertRole(progressTitle, '--type-metadata');
-  assertRole(element(document.querySelector<HTMLElement>('[title="Areas"]')), '--type-metadata');
 
 });
 
 it('uses configured sidebar density and uses compact single-line contextual tool entries', async () => {
   await page.viewport(1400, 900); draw();
+  const today = element(document.querySelector<HTMLElement>('[aria-current="page"]'));
+  const recipes = element(document.querySelector<HTMLElement>('[title="Recipes"]')).closest('button')!;
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
     element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')),
@@ -97,10 +100,10 @@ it('uses configured sidebar density and uses compact single-line contextual tool
     element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')),
     element(document.querySelector<HTMLElement>('[data-nc-work-inventory] button[aria-expanded]')),
   ];
-  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : 28, 0);
-  expect(area.getBoundingClientRect().height).toBeCloseTo(32, 0);
-  const sidebarHeader = element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2')).parentElement!;
-  expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
+  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 30 : 28, 0);
+  expect(today.getBoundingClientRect().height).toBeCloseTo(30, 0);
+  expect(recipes.getBoundingClientRect().height).toBeCloseTo(30, 0);
+  expect(area.getBoundingClientRect().height).toBeCloseTo(30, 0);
   const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] section[aria-label="Workbench"] h2')).parentElement!;
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-card-inventory]')).getBoundingClientRect().top
     - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
@@ -112,12 +115,12 @@ it('uses configured sidebar density and uses compact single-line contextual tool
     [element(document.querySelector<HTMLElement>('[data-nc-row="task:task-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="task:task-1"]'))],
     [element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')), element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat second"]'))],
   ];
-  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : 28, 0);
+  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 30 : 28, 0);
 
 });
 
-// The same selected state must paint identically over navigation and card surfaces.
-it.each(['light', 'dark'])('shares opaque selection colours across both lists (%s)', async theme => {
+// Rail selection lifts onto the card material while in-card lists use selection tokens; both stay opaque.
+it.each(['light', 'dark'])('uses opaque elevated selection on the rail and opaque selection tokens on lists (%s)', async theme => {
   document.documentElement.dataset.theme = theme;
   await page.viewport(1280, 900);
   const { tracks } = draw(true);
@@ -128,22 +131,33 @@ it.each(['light', 'dark'])('shares opaque selection colours across both lists (%
   const rail = element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]'));
   const chat = element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]'));
   const probe = render(<div />).container.firstElementChild as HTMLDivElement;
-  const expected = (token: string) => { probe.style.background = `var(${token})`; return getComputedStyle(probe).backgroundColor; };
+  const expected = (value: string) => { probe.style.background = value; return getComputedStyle(probe).backgroundColor; };
   const paint = (node: HTMLElement, pseudo?: string) => getComputedStyle(node, pseudo).backgroundColor;
   await page.elementLocator(document.body).hover();
-  const selected = expected('--selection-bg');
-  await expect.poll(() => paint(rail, '::before')).toBe(selected);
+  const railSelected = expected('var(--surface-card)');
+  const selected = expected('var(--selection-bg)');
+  await expect.poll(() => paint(rail, '::before')).toBe(railSelected);
   await expect.poll(() => paint(chat)).toBe(selected);
   expect(paint(mobileRow)).toBe(selected);
-  expect(selected).not.toBe('rgba(0, 0, 0, 0)');
-  expect(selected).not.toMatch(/rgba\(|\//);
-  const selectedHover = expected('--selection-hover-bg');
+  for (const color of [railSelected, selected]) {
+    expect(color).not.toBe('rgba(0, 0, 0, 0)');
+    expect(color).not.toMatch(/rgba\(|\//);
+  }
+  const railSelectedHover = expected('color-mix(in srgb, var(--text) 2.5%, var(--surface-card))');
+  const selectedHover = expected('var(--selection-hover-bg)');
   await page.elementLocator(rail).hover();
-  await expect.poll(() => paint(rail, '::before')).toBe(selectedHover);
+  await expect.poll(() => paint(rail, '::before')).toBe(railSelectedHover);
   await page.elementLocator(chat).hover();
   await expect.poll(() => paint(chat)).toBe(selectedHover);
   expect(getComputedStyle(chat).backgroundImage).toBe('none');
   await page.elementLocator(mobile).hover();
   await expect.poll(() => paint(mobileRow)).toBe(selectedHover);
   expect(paint(mobile)).toBe('rgba(0, 0, 0, 0)');
+  cleanup();
+  draw(false);
+  const today = element(document.querySelector<HTMLElement>('[aria-current="page"]'));
+  await page.elementLocator(document.body).hover();
+  await expect.poll(() => paint(today)).toBe(railSelected);
+  await page.elementLocator(today).hover();
+  await expect.poll(() => paint(today)).toBe(railSelectedHover);
 });

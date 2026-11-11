@@ -1,3 +1,8 @@
+import '../../styles/entry.css';
+import { transcript } from '../../../../core/events/query-keys.ts';
+import { renderWorkingDailySideFixture } from './daily-planner-fixture.tsx';
+import { useConversationCommands, type ConversationRegistry } from '../conversations/public.tsx';
+import { createUiPreferences } from '../providers/ui-preferences.tsx';
 import { historicalConversationPage, conversationCardId, historicalConversationRun } from './conversation-read-data.ts';
 import { drawerSeamAround } from '../../ui/drawer/public.tsx';
 import { initialReceiptFor } from './initial-input-fixture.ts';
@@ -15,7 +20,6 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import '../../styles/entry.css';
 import { queryKeys } from '../providers/queries.ts';
 import { Profiler } from 'react';
 import { readingPlaceIn } from '../../ui/drawer/reading-place.ts';
@@ -272,3 +276,281 @@ it('removes a portalled composer menu when its mobile conversation closes', asyn
   await expect.poll(() => document.querySelector('[popover]:popover-open')).toBeNull();
   await expect.element(field).not.toBeInTheDocument();
 });
+
+async function openEmptySide(field: ReturnType<typeof page.getByRole>) {
+  await field.fill('/side');
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => field.element().textContent).toBe('/side ');
+  await userEvent.keyboard('{Enter}');
+}
+
+async function configureHeldSide(side: ReturnType<typeof page.getByRole>) {
+  await side.getByRole('combobox', { name: 'Message', exact: true }).fill('Original unsent side words');
+  await side.getByRole('button', { name: /^Model:/ }).click();
+  await page.getByRole('menuitem', { name: /^Probe Model/ }).click();
+  await side.getByRole('button', { name: /^Reasoning effort:/ }).click();
+  await page.getByRole('menuitem', { name: /^high/ }).click();
+  await expect.element(side.getByRole('button', { name: 'Model: codex Probe Model', exact: true })).toBeVisible();
+  await expect.element(side.getByRole('button', { name: 'Reasoning effort: high', exact: true })).toBeVisible();
+}
+
+it.each([false, true])('preserves complete held Today side through presentation roundtrips (explicit: %s)', async explicit => {
+  await page.viewport(1440, 900);
+  let registry: ConversationRegistry | undefined;
+  function Observe() { registry = useConversationCommands(); return null; }
+  const preferences = createUiPreferences();
+  const fixture = renderWorkingDailySideFixture({ routeProbe: <Observe />, uiPreferences: preferences });
+  const main = page.getByRole('region', { name: 'Today Assistant', exact: true });
+  const mainField = main.getByRole('combobox', { name: 'Message', exact: true });
+  await expect.element(main.getByRole('link', { name: 'Side evidence', exact: true })).toBeVisible();
+  if (explicit) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+  await openEmptySide(mainField);
+  const side = page.getByRole('region', { name: 'Side conversation · Codex', exact: true });
+  await configureHeldSide(side);
+  const key = registry!.draftOf('daily:side:daily-planner')!.key;
+  // Refresh the source after freezing; the wire body must retain its original context.
+  fixture.advanceHistory();
+  await act(async () => { await fixture.client.invalidateQueries({ queryKey: transcript('daily-planner') }); });
+  await expect.element(main.getByText('Updated source after first snapshot.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Report changes', exact: true }).click();
+  await expect.element(side).toBeVisible();
+  await page.viewport(390, 844);
+  if (explicit) await expect.element(page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true })).toBeVisible();
+  else {
+    await expect.element(page.getByRole('button', { name: 'Open conversation history', exact: true })).toBeVisible();
+    expect(page.getByRole('dialog').query()).toBeNull();
+    expect(preferences.conversation('daily')).toBeNull();
+  }
+  await page.viewport(1440, 900);
+  // No reopen: words alone would conceal a discarded key/model/snapshot.
+  await expect.element(side.getByRole('combobox', { name: 'Message', exact: true })).toHaveTextContent('Original unsent side words');
+  await expect.element(side.getByRole('button', { name: 'Model: codex Probe Model', exact: true })).toBeVisible();
+  await expect.element(side.getByRole('button', { name: 'Reasoning effort: high', exact: true })).toBeVisible();
+  const sideElement = side.element();
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: 'Hide terminal', exact: true })).toBeVisible();
+  await expect.element(sideElement).not.toBeVisible();
+  await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+  await expect.element(side.getByRole('button', { name: 'Model: codex Probe Model', exact: true })).toBeVisible();
+  expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations'))).toEqual([]);
+  await page.screenshot({ path: `../../../../test-results/owner-held-${explicit ? 'explicit' : 'default'}.png` });
+  await side.getByRole('combobox', { name: 'Message', exact: true }).click();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).length).toBe(1);
+  const post = fixture.requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))!;
+  expect(post.headers?.['Idempotency-Key']).toBe(key);
+  expect(post.body).toEqual({ text: 'Original unsent side words', provider: 'codex', model: 'probe-model', reasoning_effort: 'high',
+    side: { source_card_id: 'daily-planner', context: 'Assistant: Working on [Side evidence](mailto:side@example.test).' } });
+});
+
+/** Hold only the real HTTP boundary; no selection, scope or adoption policy. */
+function heldCreateTransport() {
+  const posts: ApiRequest[] = [];
+  let finish: ((lost: boolean) => void) | undefined;
+  return {
+    posts,
+    release: (lost = false) => { finish?.(lost); finish = undefined; },
+    withTransport: (transport: ApiTransportPort): ApiTransportPort => ({ send: async request => {
+      if (request.method === 'POST' && request.path.endsWith('/conversations')) {
+        posts.push(request);
+        if (posts.length === 1 && await new Promise<boolean>(resolve => { finish = resolve; })) throw new Error('Create response lost');
+      }
+      return transport.send(request);
+    } }),
+  };
+}
+
+it.each([false, true].flatMap(explicit => ['hidden', 'returned', 'retry'].map(settlement => ({ explicit, settlement }))))(
+  'settles the original Today side across presentation changes ($explicit, $settlement)', async ({ explicit, settlement }) => {
+    await page.viewport(1440, 900);
+    const boundary = heldCreateTransport();
+    const fixture = renderWorkingDailySideFixture({ withTransport: boundary.withTransport });
+    try {
+      const main = page.getByRole('region', { name: 'Today Assistant', exact: true });
+      const mainField = main.getByRole('combobox', { name: 'Message', exact: true });
+      await expect.element(main.getByRole('link', { name: 'Side evidence', exact: true })).toBeVisible();
+      if (explicit) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+      await openEmptySide(mainField);
+      const side = page.getByRole('region', { name: 'Side conversation · Codex', exact: true });
+      await configureHeldSide(side);
+      await side.getByRole('combobox', { name: 'Message', exact: true }).click();
+      await userEvent.keyboard('{Enter}');
+      await expect.poll(() => boundary.posts.length).toBe(1);
+      const original = structuredClone(boundary.posts[0]);
+      expect(original.headers?.['Idempotency-Key']).toBeTruthy();
+      expect(original.body).toEqual({ text: 'Original unsent side words', provider: 'codex', model: 'probe-model', reasoning_effort: 'high',
+        side: { source_card_id: 'daily-planner', context: 'Assistant: Working on [Side evidence](mailto:side@example.test).' } });
+      const heldSideElement = side.element();
+      await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+      await expect.element(page.getByRole('button', { name: 'Hide terminal', exact: true })).toBeVisible();
+      await expect.element(heldSideElement).not.toBeVisible();
+      expect(boundary.posts).toEqual([original]);
+      await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+      await expect.element(side.getByText('Sending…', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Daily Supervisor', exact: true }).click();
+      await expect.element(side.getByText('Sending…', { exact: true })).toBeVisible();
+      await page.viewport(390, 844);
+      const focus = explicit
+        ? page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true }).getByRole('button', { name: 'Expand conversation', exact: true })
+        : page.getByRole('button', { name: 'Open conversation history', exact: true });
+      await focus.click();
+      // History is a deliberate later user choice on default compact; close it
+      // before returning. Explicit compact keeps its existing main Sheet.
+      const chosenFocus = document.activeElement;
+      if (settlement !== 'returned') {
+        boundary.release(settlement === 'retry');
+        if (settlement === 'hidden') await expect.poll(() => fixture.rows.length).toBe(1);
+        else await expect.poll(() => fixture.requests.some(request => request.path === '/api/tracks/daily/conversations' && request.method === 'GET')).toBe(true);
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        expect(document.activeElement).toBe(chosenFocus);
+        const hiddenId = trackConversationCardId('daily', original.headers!['Idempotency-Key']);
+        expect(fixture.receipts.requests.filter(request => request.method === 'POST' && request.path.includes(hiddenId))).toEqual([]);
+        // Unknown-create recovery must inspect its receipt even while hidden;
+        // this is correctness work, distinct from visible-row observation.
+        if (settlement === 'hidden') expect(fixture.requests.filter(request => request.path.includes(hiddenId) && request.path.endsWith('/initial-input'))).toEqual([]);
+      }
+      // Dismiss a history popover via its real close control before viewport return.
+      if (!explicit) await userEvent.keyboard('{Escape}');
+      await page.viewport(1440, 900);
+      if (settlement === 'returned') {
+        const back = page.getByRole('button', { name: 'Back to Today Assistant', exact: true });
+        back.element().focus();
+        boundary.release();
+        await expect.poll(() => fixture.rows.length).toBe(1);
+        await expect.element(back).toHaveFocus();
+      } else if (settlement === 'retry') {
+        await side.getByRole('button', { name: 'Try again', exact: true }).click();
+      }
+      await expect.element(side.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+      const id = fixture.rows[0].id;
+      expect(id).toBe(trackConversationCardId('daily', original.headers!['Idempotency-Key']));
+      expect(boundary.posts).toEqual(settlement === 'retry' ? [original, original] : [original]);
+      await expect.element(side.getByRole('button', { name: 'Model: Probe Model', exact: true })).toBeVisible();
+      await expect.element(side.getByRole('button', { name: 'Reasoning effort: high', exact: true })).toBeVisible();
+      // A is reached by the production create receipt and list publication above.
+      // Its continuation draft and address survive the same host projections.
+      const sideField = side.getByRole('combobox', { name: 'Message', exact: true });
+      await sideField.fill('Adopted continuation');
+      const sideElement = side.element();
+      await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+      await expect.element(page.getByRole('button', { name: 'Hide terminal', exact: true })).toBeVisible();
+      await expect.element(sideElement).not.toBeVisible();
+      await page.viewport(390, 844);
+      await page.viewport(1440, 900);
+      await page.getByRole('button', { name: 'Discussion', exact: true }).click();
+      await expect.element(sideField).toHaveTextContent('Adopted continuation');
+      expect(side.element().id).toBe(`conversation-${id}`);
+      if (settlement === 'hidden') await page.screenshot({ path: `../../../../test-results/owner-adopted-${explicit ? 'explicit' : 'default'}.png` });
+      await page.getByRole('button', { name: 'Back to Today Assistant', exact: true }).click();
+      await expect.element(sideField).toHaveTextContent('Adopted continuation');
+      await sideField.click();
+      await userEvent.keyboard('{Enter}');
+      await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))
+        .map(request => ({ path: request.path, body: request.body }))).toEqual([
+        { path: `/api/cards/${id}/planner/input`, body: { text: 'Adopted continuation' } },
+      ]);
+      expect(boundary.posts).toEqual(settlement === 'retry' ? [original, original] : [original]);
+    } finally { boundary.release(); }
+  },
+);
+
+it.each(['held', 'submitted'].flatMap(state => ['parent', 'draft', 'close', 'track', 'date'].map(destination => ({ state, destination }))))(
+  'keeps real owner departure cleanup and late acceptance isolated ($state, $destination)', async ({ state, destination }) => {
+    await page.viewport(1440, 900);
+    let registry: ConversationRegistry | undefined;
+    function Observe() { registry = useConversationCommands(); return null; }
+    const boundary = heldCreateTransport();
+    const fixture = renderWorkingDailySideFixture({ extraPlanner: true, routeProbe: <Observe />, withTransport: transport => {
+      const held = boundary.withTransport(transport);
+      return { send: request => request.path.startsWith('/api/today/daily?') && request.path.includes('date=2026-10-03')
+        ? Promise.resolve({ status: 200, statusText: 'OK', body: { date: '2026-10-03', time_zone: 'Asia/Shanghai', track_id: 'project' } })
+        : held.send(request) };
+    } });
+    try {
+      const main = page.getByRole('region', { name: 'Today Assistant', exact: true });
+      const mainField = main.getByRole('combobox', { name: 'Message', exact: true });
+      await expect.element(main.getByRole('link', { name: 'Side evidence', exact: true })).toBeVisible();
+      await openEmptySide(mainField);
+      const side = page.getByRole('region', { name: 'Side conversation · Codex', exact: true });
+      await configureHeldSide(side);
+      const key = registry!.draftOf('daily:side:daily-planner')!.key;
+      if (state === 'submitted') {
+        await side.getByRole('combobox', { name: 'Message', exact: true }).click();
+        await userEvent.keyboard('{Enter}');
+        await expect.poll(() => boundary.posts.length).toBe(1);
+      }
+      if (destination === 'parent') await selectTodayParent('Other conversation');
+      else if (destination === 'draft') {
+        await mainField.fill('/new');
+        await userEvent.keyboard('{Enter}');
+        await expect.poll(() => mainField.element().textContent).toBe('/new');
+        await userEvent.keyboard('{Enter}');
+      }
+      else if (destination === 'close') await side.getByRole('button', { name: 'Close side conversation', exact: true }).click();
+      else await act(async () => { await fixture.router.navigate(destination === 'track' ? { to: '/track/project' } : { to: '/', search: { day: '2026-10-03' } }); });
+      await expect.element(side).not.toBeInTheDocument();
+      if (state === 'held') {
+        await expect.poll(() => registry!.draftOf('daily:side:daily-planner')).toBeNull();
+        expect(boundary.posts).toHaveLength(0);
+      } else {
+        expect(registry!.draftOf('daily:side:daily-planner')?.key).toBe(key);
+        const laterFocus = document.activeElement;
+        boundary.release();
+        await expect.poll(() => fixture.rows.length).toBe(1);
+        await expect.poll(() => registry!.draftOf('daily:side:daily-planner')).toBeNull();
+        expect(document.activeElement).toBe(laterFocus);
+        expect(side.query()).toBeNull();
+        expect(boundary.posts).toHaveLength(1);
+        expect(boundary.posts[0].headers?.['Idempotency-Key']).toBe(key);
+      }
+      // Return to P. A real departure deliberately requires reopening; it must
+      // never silently restore H or let P's completion open Q or the main draft.
+      if (destination === 'track' || destination === 'date') await act(async () => { await fixture.router.navigate({ to: '/' }); });
+      if (destination !== 'close') await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
+      await expect.element(mainField).toBeVisible();
+      fixture.advanceHistory();
+      await act(async () => { await fixture.client.invalidateQueries({ queryKey: transcript('daily-planner') }); });
+      await expect.element(main.getByText('Updated source after first snapshot.', { exact: false })).toBeVisible();
+      await openEmptySide(mainField);
+      if (state === 'held') {
+        await expect.element(side.getByRole('combobox', { name: 'Message', exact: true })).toHaveTextContent('Original unsent side words');
+        await expect.element(side.getByRole('button', { name: /^Model: codex installation-default/ })).toBeVisible();
+        expect(registry!.draftOf('daily:side:daily-planner')?.key).not.toBe(key);
+        await side.getByRole('combobox', { name: 'Message', exact: true }).click();
+        await userEvent.keyboard('{Enter}');
+        await expect.poll(() => boundary.posts.length).toBe(1);
+        expect(boundary.posts[0].body).toEqual({ text: 'Original unsent side words', provider: 'codex',
+          side: { source_card_id: 'daily-planner', context: 'Assistant: Updated source after first snapshot. Working on [Side evidence](mailto:side@example.test).' } });
+        boundary.release();
+      } else {
+        await expect.element(side.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
+        expect(side.element().id).toBe(`conversation-${trackConversationCardId('daily', key)}`);
+        expect(boundary.posts).toHaveLength(1);
+      }
+      if (destination === 'parent') {
+        await selectTodayParent('Other conversation');
+        await expect.element(main.getByRole('link', { name: 'Side evidence', exact: true })).toBeVisible();
+        await openEmptySide(mainField);
+        await side.getByRole('combobox', { name: 'Message', exact: true }).fill('Q independent message');
+        await userEvent.keyboard('{Enter}');
+        await expect.poll(() => boundary.posts.length).toBe(2);
+        expect(boundary.posts[1].body).toMatchObject({ text: 'Q independent message', side: { source_card_id: 'second-planner' } });
+        expect(boundary.posts[1].headers?.['Idempotency-Key']).not.toBe(key);
+      }
+    } finally { boundary.release(); }
+  },
+);
+
+
+async function selectTodayParent(title: string) {
+  // The side companion occupies the desktop inventory. Use the real compact
+  // history to change parent without closing the side or bypassing selection.
+  await page.viewport(390, 844);
+  const mainSheet = page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true });
+  if (mainSheet.query() !== null) await mainSheet.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
+  await page.getByRole('button', { name: `${title} 2026-10-04`, exact: true }).click();
+  await expect.element(page.getByRole('dialog', { name: title, exact: true })).toBeVisible();
+  await page.viewport(1440, 900);
+  await expect.element(page.getByRole('region', { name: 'Today Assistant', exact: true }).getByRole('combobox', { name: 'Message', exact: true })).toHaveFocus();
+}

@@ -33,7 +33,7 @@ it('hands compact Folder touch ownership to the directory modal and restores rea
   for (const select of [false, true]) {
     await commands.tap('button[aria-label="Track options"]');
     await expect.element(page.getByRole('dialog', { name: 'Track options', exact: true })).toBeVisible();
-    await commands.tap('button[aria-label^="Folder:"]');
+    await commands.tap('button[aria-label^="Repo:"]');
     const dialog = page.getByRole('dialog', { name: 'Choose a directory' });
     await expect.element(dialog).toBeVisible();
     await expect.poll(() => document.querySelectorAll(':popover-open').length).toBe(0);

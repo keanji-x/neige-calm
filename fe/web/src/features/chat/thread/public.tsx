@@ -33,7 +33,7 @@ import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { LoadingIndicator } from '../../../ui/activity-indicator/loading-indicator.tsx';
 import { ExchangeNavigation } from './exchange-navigation.tsx';
 import { createScrollFollower } from '../../../ui/drawer/follow-scroll.ts';
-import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
+import { readingHostAround } from '../../../ui/drawer/reading-host.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
 import { useState } from '../../../ui/state/public.ts';
@@ -194,14 +194,16 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
     : tailQuiet !== null ? tailQuiet.entries.some((entry) => entry === lastTurn)
     : tail.activities === null ? false
     : toolCallGroupShowsRunning(tail.activities.map(activity => toolCallOf(activity)), groupUi.get(tail.key)?.expanded ?? false);
-  /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
+  // The host owns navigation and overlay geometry; the reader supplies content.
+  // Portal nodes are read after the host's refs have committed.
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
   const [scrollOverlay, setScrollOverlay] = useState<HTMLElement | null>(null);
   /* Keep one frame across the empty-to-streaming boundary so queued edits retain their owner. */
   const hasTranscript = turns.length > 0;
-  useLayoutEffect(() => {
-    setRailSeam(drawerSeamAround(frameRef.current));
-    setScrollOverlay(frameRef.current?.closest('[data-nc-drawer]')?.querySelector<HTMLElement>('[data-nc-chat-scroll-overlay]') ?? null);
+  useEffect(() => {
+    const readingHost = readingHostAround(frameRef.current);
+    setRailSeam(readingHost?.navigation?.current ?? null);
+    setScrollOverlay(readingHost?.overlay?.current ?? null);
   }, [hasTranscript, compactViewport]);
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -229,13 +231,28 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const followedNotice = useRef<string | null>(null);
   const noticeKind = statusUnconfirmed ? 'status-unconfirmed' : stalled ? 'paused' : stopFeedback?.kind ?? null;
 
-  // Attach once per pane/conversation. Input intent survives streaming renders.
+  // The controller retains this conversation's reading state while presentation
+  // replaces the transcript. Width-keyed offsets keep a responsive CSS reflow
+  // before React's host switch from overwriting the original reading position.
   useEffect(() => {
     const content = frameRef.current;
+    const readingHost = readingHostAround(content);
     const scroller = content?.closest<HTMLElement>('[data-nc-drawer-scroll]');
     if (content == null || scroller == null) return;
-    return scrollFollower.attach(scroller, content);
-  }, [scrollFollower, hasTranscript, conversation.id]);
+    const detach = scrollFollower.attach(scroller, content);
+    const saved = readingHost === null ? undefined : reading.positions.get(readingHost.key)?.get(scroller.clientWidth);
+    if (saved !== undefined && !saved.atEnd) scrollFollower.navigate(() => { scroller.scrollTop = saved.top; });
+    const save = () => {
+      if (readingHost === null || scroller.clientHeight === 0 || !content.isConnected) return;
+      let positions = reading.positions.get(readingHost.key);
+      if (positions === undefined) { positions = new Map(); reading.positions.set(readingHost.key, positions); }
+      positions.set(scroller.clientWidth, {
+        top: scroller.scrollTop, atEnd: scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1,
+      });
+    };
+    scroller.addEventListener('scroll', save, { passive: true });
+    return () => { save(); scroller.removeEventListener('scroll', save); detach(); };
+  }, [scrollFollower, hasTranscript, conversation.id, compactViewport, reading.positions]);
 
   // Tail arrivals are distinct from older history being prepended. Content
   // resize also follows late image loads, rewraps and disclosure growth.

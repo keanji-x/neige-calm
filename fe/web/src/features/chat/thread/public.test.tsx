@@ -1,3 +1,4 @@
+import { registerReadingHost } from '../../../ui/drawer/reading-host.tsx';
 import { conversationCommands } from './composer-command.ts';
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -910,6 +911,8 @@ function drawerPane() {
   panelFrame.append(card);
   seamFrame.append(seam);
   card.append(pane);
+  const ports = { key: 'drawer', navigation: { current: seam }, overlay: { current: null } };
+  registerReadingHost(card, ports);
   return { outer, pane, seam, setOuterScroll, setPaneScroll };
 }
 

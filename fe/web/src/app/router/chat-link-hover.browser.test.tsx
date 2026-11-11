@@ -1,3 +1,4 @@
+import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider, type AnyRoute } from '@tanstack/react-router';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -15,7 +16,6 @@ import { queryKeys } from '../providers/queries.ts';
 import { Profiler } from 'react';
 import { useConversationCommands, type ConversationRegistry } from '../conversations/public.tsx';
 import { conversationCardId, historicalConversationPage, historicalConversationRun } from './conversation-read-data.ts';
-import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
@@ -134,7 +134,10 @@ it.each(['history', 'incremental'])('rejects malformed navigation hrefs without 
   expect(requests.filter(request => request.path.includes('/workspace/readfile'))).toHaveLength(0);
   await page.getByRole('button', { name: 'Chat file', exact: true }).hover();
   await expect.element(page.getByRole('heading', { name: 'Chat file contents', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Today', exact: true }).click();
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => page.getByRole('dialog', { name: 'Preview: Chat file' }).query()).toBeNull();
+  const drawer = page.getByRole('complementary', { name: 'Link chat', exact: true });
+  await drawer.getByRole('button', { name: 'Today', exact: true }).click();
   await expect.poll(() => router.state.location.pathname).toBe('/');
 });
 
@@ -164,7 +167,8 @@ it('renders incremental links and keeps external loading explicit', async () => 
 
 it.each([['Today', '/'], ['Legacy Today', '/today']])('preserves application navigation without admitting rejected workspace paths: %s', async (label, path) => {
   const { router } = await setup();
-  await expect.element(page.getByRole('button', { name: 'Today', exact: true })).toBeVisible();
+  const drawer = page.getByRole('complementary', { name: 'Link chat', exact: true });
+  await expect.element(drawer.getByRole('button', { name: 'Today', exact: true })).toBeVisible();
   for (const text of ['Outside', 'Escape']) {
     expect(document.querySelector('[data-nc-thread]')?.textContent).toContain(text);
     expect(page.getByRole('link', { name: text, exact: true }).query()).toBeNull();
@@ -174,7 +178,7 @@ it.each([['Today', '/'], ['Legacy Today', '/today']])('preserves application nav
   expect(page.getByRole('link', { name: 'Phone', exact: true }).element().getAttribute('href')).toBe('tel:+123');
   expect(page.getByRole('link', { name: 'Section', exact: true }).element().getAttribute('href')).toBe('#part');
   // /next/today retains the existing router's treatment, even though main moved Today to /next/.
-  await page.getByRole('button', { name: label, exact: true }).click();
+  await drawer.getByRole('button', { name: label, exact: true }).click();
   await expect.poll(() => router.state.location.pathname).toBe(path);
   expect(router.history.location.pathname).toBe(`${APP_BASEPATH}${path}`);
 });

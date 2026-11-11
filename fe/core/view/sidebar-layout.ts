@@ -1,10 +1,10 @@
 // Browser-independent sidebar presentation order. Membership stays with each owner.
-export type SidebarSectionId = 'waiting' | 'pinned' | 'unread' | 'running' | 'areas';
+export type SidebarSectionId = 'focus' | 'pinned' | 'areas';
 export type SidebarGroupId = SidebarSectionId | `area:${string}`;
 export type SidebarOrderScope = 'sections' | 'areas';
 export type SidebarMove = 'up' | 'down';
 
-export const SIDEBAR_SECTION_IDS: readonly SidebarSectionId[] = Object.freeze(['waiting', 'pinned', 'unread', 'running', 'areas']);
+export const SIDEBAR_SECTION_IDS: readonly SidebarSectionId[] = Object.freeze(['focus', 'pinned', 'areas']);
 
 /** Retain saved positions, drop stale/duplicate IDs and append newly registered groups. */
 export function sidebarOrder<T extends string>(available: readonly T[], saved: unknown): T[] {

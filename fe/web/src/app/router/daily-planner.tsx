@@ -3,7 +3,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './daily-planner.module.css';
 // Reuse the Track route body; this composition only resolves dates and report evidence.
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -23,11 +23,37 @@ import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 
+type DailyCenterView = 'assistant' | 'changes' | 'supervisor';
+
+export type DailyCenterPresentation = Readonly<{
+  title: string;
+  presented: boolean;
+  onOpenAssistant: () => void;
+  footerPrefix: ReactNode;
+  render: (assistant: ReactNode) => ReactNode;
+}>;
+
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode, supervisor: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode, supervisor: ReactNode, center?: DailyCenterPresentation) => ReactNode;
 }>) {
+  const [view, setView] = useState<DailyCenterView>('assistant');
+  const previousView = useRef(view);
+  const restoreGuide = useRef(false);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const changesGuide = useRef<HTMLButtonElement>(null);
+  const supervisorGuide = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (previousView.current === view) return;
+    const from = previousView.current;
+    previousView.current = view;
+    if (view !== 'assistant') backRef.current?.focus();
+    else if (restoreGuide.current) (from === 'changes' ? changesGuide.current : supervisorGuide.current)?.focus();
+    restoreGuide.current = false;
+  }, [view]);
+  const user = useCurrentUser();
+  const showSupervisor = user?.userId === DEPLOYMENT_OWNER_USER_ID;
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
   const trackId = daily.data?.track_id;
@@ -45,7 +71,43 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
       transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
     <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
     <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>,
-    supervisor);
+    supervisor,
+    selectedDate === undefined ? {
+      title: 'Today Assistant',
+      presented: view === 'assistant',
+      onOpenAssistant: () => setView('assistant'),
+      footerPrefix: <nav className={styles.guide} aria-label="Today views">
+        <button ref={changesGuide} type="button" onClick={() => setView('changes')}><span>Report changes</span><Icon name="chevron-right" size="sm" /></button>
+        {showSupervisor && <>
+          <span className={styles.guideSep} aria-hidden="true">·</span>
+          <button ref={supervisorGuide} type="button" onClick={() => setView('supervisor')}><span>Daily Supervisor</span><Icon name="chevron-right" size="sm" /></button>
+        </>}
+      </nav>,
+      render: (assistant) => <TodayCenter view={view} backRef={backRef} onBack={() => { restoreGuide.current = true; setView('assistant'); }} assistant={assistant}
+        changes={<DailyReportChanges key={date} standalone isToday date={shiftDailyDate(date, -1)} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />}
+        supervisor={showSupervisor ? supervisor : undefined} />,
+    } : undefined);
+}
+
+/** View state is visit-local; keep the live conversation mounted so its draft and history survive. */
+function TodayCenter({ assistant, changes, supervisor, view, backRef, onBack }: Readonly<{
+  view: DailyCenterView;
+  backRef: RefObject<HTMLButtonElement | null>;
+  onBack: () => void;
+  assistant: ReactNode;
+  changes: ReactNode;
+  supervisor?: ReactNode;
+}>) {
+  const compact = useCompactViewport();
+  return <div className={styles.center}>
+    <div className={styles.assistant} hidden={view !== 'assistant'}>{assistant}</div>
+    {!compact && view !== 'assistant' && <section className={styles.subview} aria-label={view === 'changes' ? 'Report changes' : 'Daily Supervisor view'}>
+      <div className={styles.subviewColumn}>
+        <button ref={backRef} type="button" className={styles.backToToday} onClick={onBack}><Icon name="arrow-left" size="sm" />Back to Today Assistant</button>
+        {view === 'changes' ? changes : supervisor}
+      </div>
+    </section>}
+  </div>;
 }
 
 function DailySupervisor({ transport, unauthorized }: Readonly<{ transport: ApiTransportPort; unauthorized: UnauthorizedChannel }>) {
@@ -83,28 +145,40 @@ function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<
     onOpenTrack={onOpenTrack} />;
 }
 
-function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrack }: Readonly<{
-  date: string; isToday: boolean; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onOpenTrack: (trackId: string) => void;
+function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrack, standalone = false }: Readonly<{
+  date: string; isToday: boolean; standalone?: boolean; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onOpenTrack: (trackId: string) => void;
 }>) {
   const compactViewport = useCompactViewport();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(standalone);
   const changes = useInfiniteQuery({ queryKey: ['daily-report-changes', date], enabled: open,
     initialPageParam: undefined as Readonly<{ cursor: string; through: number }> | undefined,
     queryFn: ({ pageParam }) => runOperation(transport, reportChangesOperation(date, pageParam), unauthorized),
     getNextPageParam: (last) => last.next_cursor === null ? undefined : { cursor: last.next_cursor, through: last.through_event_id },
   });
-  return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
+  const content = <>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={readErrorText(changes.error, 'Report changes could not be loaded.')} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <EmptyState variant="compact" icon={<Icon name="file" />} title="No report changes recorded for visible Tracks on this day." description="这一天的报告更新会显示在这里。" />}
-    {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} change={change}
+    {changes.data?.pages.flatMap((page) => page.changes.map((change) => <ReportChangeItem key={change.track_id} card={standalone} change={change}
       date={date} timeZone={page.timezone} through={page.through_event_id} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />))}
     {changes.hasNextPage && <button type="button" disabled={changes.isFetchingNextPage} onClick={() => { void changes.fetchNextPage(); }}>Load more reports</button>}
+  </>;
+  if (standalone) return <><h2 className={styles.subviewTitle}>Report changes · {date}</h2>{content}</>;
+  return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
+    {(close) => <>
+      {open && <div className={styles.subviewHeader}>
+        <button type="button" className={styles.backToToday} onClick={close}>
+          <Icon name="arrow-left" size="sm" />
+          <span>Back to Today</span>
+        </button>
+      </div>}
+      {content}
+    </>}
   </ReportDetails>;
 }
 
-function ReportChangeItem({ change, date, timeZone, through, transport, unauthorized, onOpenTrack }: Readonly<{
-  change: ReportChange; date: string; timeZone: string; through: number; transport: ApiTransportPort;
+function ReportChangeItem({ card, change, date, timeZone, through, transport, unauthorized, onOpenTrack }: Readonly<{
+  card?: boolean; change: ReportChange; date: string; timeZone: string; through: number; transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel; onOpenTrack: (trackId: string) => void;
 }>) {
   const [open, setOpen] = useState(false);
@@ -113,7 +187,7 @@ function ReportChangeItem({ change, date, timeZone, through, transport, unauthor
     queryFn: ({ pageParam }) => runOperation(transport, reportEditsOperation(date, change.track_id, through, pageParam), unauthorized),
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
-  return <ReportChangeDetails change={change} onOpenTrack={onOpenTrack} onToggleEdits={setOpen}>
+  return <ReportChangeDetails card={card} change={change} onOpenTrack={onOpenTrack} onToggleEdits={setOpen}>
     {edits.isPending && open && <p role="status">Loading edits…</p>}
     {edits.isError && <ErrorBox message={readErrorText(edits.error, 'Edits could not be loaded.')} onRetry={() => { void edits.refetch(); }} />}
     {edits.data?.pages.flatMap((page) => page.edits.map((entry) => <ReportEditDetails key={entry.event_id}

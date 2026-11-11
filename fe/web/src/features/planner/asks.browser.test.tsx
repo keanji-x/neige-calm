@@ -33,3 +33,27 @@ for (const options of [["合并", "暂不合并"], []]) {
     expect(label.innerText).toBe(TITLE);
   });
 }
+
+it('scopes softened handle icon tokens to the drawer chrome while keeping ask content icon tokens intact', async () => {
+  await page.viewport(800, 600);
+  render(
+    <PlannerAskDrawer
+      asks={[{ askId: 1, questions: [{ title: 'Approve?', options: ['Yes', 'No'] }], delivery: 'wake' }]}
+      onAnswer={vi.fn<AnswerAsk>()}
+    />,
+  );
+  const resolveColor = (host: HTMLElement, variable: string) => {
+    const probe = document.createElement('span');
+    probe.style.color = `var(${variable})`;
+    host.appendChild(probe);
+    const computed = getComputedStyle(probe).color;
+    probe.remove();
+    return computed;
+  };
+  const toggle = screen.getByRole('button', { name: 'Collapse Questions' });
+  const asks = document.querySelector<HTMLElement>('[data-nc-asks]')!;
+  expect(resolveColor(toggle, '--color-icon-secondary')).toBe(resolveColor(document.documentElement, '--hairline-strong'));
+  expect(resolveColor(toggle, '--color-icon-primary')).toBe(resolveColor(document.documentElement, '--text-3'));
+  expect(resolveColor(asks, '--color-icon-secondary')).toBe(resolveColor(document.documentElement, '--text-2'));
+  expect(resolveColor(asks, '--color-icon-primary')).toBe(resolveColor(document.documentElement, '--text'));
+});

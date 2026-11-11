@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { ChartColumn, Search, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { ChartColumn, Search, Star, ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, CalendarDays, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, PanelLeft, Paperclip, Pin, Plus, SquareTerminal, Settings, Wrench, Trash2, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
 import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
@@ -10,6 +10,7 @@ function SvgGlyph({ nodes, ...props }: LucideProps & { nodes: readonly GlyphNode
 const glyphs = Object.freeze({
   'chevron-left': (props: LucideProps) => <ChevronLeft {...props} />,
   'chevron-right': (props: LucideProps) => <ChevronRight {...props} />,
+  'panel-left': (props: LucideProps) => <PanelLeft {...props} />,
   'arrow-left': (props: LucideProps) => <ArrowLeft {...props} />,
   'arrow-up': (props: LucideProps) => <ArrowUp {...props} />,
   'plus': (props: LucideProps) => <Plus {...props} />,
@@ -19,6 +20,7 @@ const glyphs = Object.freeze({
   'chat': (props: LucideProps) => <MessageSquare {...props} />,
   'notification': (props: LucideProps) => <Bell {...props} />,
   'folder': (props: LucideProps) => <Folder {...props} />,
+  'star': (props: LucideProps) => <Star {...props} />,
   'search': (props: LucideProps) => <Search {...props} />,
   'chart': (props: LucideProps) => <ChartColumn {...props} />,
   'file': (props: LucideProps) => <File {...props} />,
@@ -26,6 +28,7 @@ const glyphs = Object.freeze({
   'link': (props: LucideProps) => <Link2 {...props} />,
   'agent': (props: LucideProps) => <Bot {...props} />,
   'terminal': (props: LucideProps) => <SquareTerminal {...props} />,
+  'settings': (props: LucideProps) => <Settings {...props} />,
   'tools': (props: LucideProps) => <Wrench {...props} />,
   'tasks': (props: LucideProps) => <ListChecks {...props} />,
   'pin': (props: LucideProps) => <Pin {...props} />,

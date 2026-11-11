@@ -119,10 +119,10 @@ import {
   trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
-import { DailyTodayRoute } from './daily-planner.tsx';
+import { DailyTodayRoute, type DailyCenterPresentation } from './daily-planner.tsx';
 import { ConversationComposer, ConversationDock } from './conversation-composer.tsx';
 import mobileChatStyles from './mobile-chat.module.css';
-import { ConversationSurface } from './mobile-conversation-surface.tsx';
+import { ConversationSurface, type EmbeddedConversationPresentation } from './mobile-conversation-surface.tsx';
 import { trackConversationRows } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
@@ -214,7 +214,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent, intro, supervisor) => <TrackRouteBody reportHeader={supervisor} reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro, supervisor, center) => <TrackRouteBody center={center} reportHeader={supervisor} reportEmpty={<TodayReportEmpty />} mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} prepareReport={prepareReport} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
@@ -333,22 +333,40 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
  * not a `Conversation`: the card is minted by the first message, so until one is
  * sent there is no card id and nothing to fetch.
  */
+type ConversationPanelOptions = Readonly<{
+  defaultRowId: string | null;
+  onPresent?: () => void;
+  embedded?: EmbeddedConversationPresentation;
+  presented?: boolean;
+  onArchive?: (cardId: string, archived: boolean) => Promise<void>;
+  terminal?: { workbench: TerminalWorkbench; render: () => ReactNode };
+  showTrack?: boolean;
+  resizable?: boolean;
+  reportComposer?: Readonly<{ ready: boolean; returnLabel: string }>;
+}>;
+
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; terminal?: { workbench: TerminalWorkbench; render: () => ReactNode }; showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
+  options: ConversationPanelOptions,
 ) {
   const registry = useConversationCommands();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
-  const mainTarget = useConversationPaneTarget(source.scopeId, source.rows);
-  const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
+  const savedTarget = useConversationPaneTarget(source.scopeId, source.rows);
+  // The declared default owns resources even when its surface is absent. Keep
+  // that fallback out of preferences: only an explicit selection opens a Sheet.
+  const declaredDefault = options.defaultRowId === null ? null : { kind: 'row' as const, id: options.defaultRowId };
+  const logicalTarget = savedTarget[0] ?? declaredDefault;
+  const surfaceTarget = savedTarget[0] ?? (options.embedded?.active ? logicalTarget : null);
+  const mainTarget = [surfaceTarget, savedTarget[1]] as const;
+  const parentId = logicalTarget?.kind === 'row' ? logicalTarget.id : null;
   const lastMainRow = useRef<string | null>(null);
   useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
-  const dockOwnerId = parentId ?? (compact && options?.reportComposer !== undefined
+  const dockOwnerId = parentId ?? (compact && options.reportComposer !== undefined
     ? source.rows.find((row) => row.id === lastMainRow.current)?.id ?? source.planner?.cardId ?? source.rows[0]?.id ?? null
     : null);
-  const mainReportComposer = options?.reportComposer === undefined ? undefined : { ...options.reportComposer, conversationId: dockOwnerId };
+  const mainReportComposer = options.reportComposer === undefined ? undefined : { ...options.reportComposer, conversationId: dockOwnerId };
   const capabilities = useQuery({ queryKey: ['server-version'],
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
   const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
@@ -356,19 +374,28 @@ function useConversationPanel(
   const sideDraft = useConversationDraft(sideSlot);
   const childId = sideTarget[0]?.kind === 'row' ? sideTarget[0].id : null;
   const child = source.rows.find((row) => row.id === childId);
-  const belongsToParent = !compact && parentId !== null && (sideTarget[0]?.kind === 'draft'
+  const sideOwnerMatches = parentId !== null && (sideTarget[0]?.kind === 'draft'
     ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
-  const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
-    .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
+  // Selection defines the side parent, but the compact dock can still read a
+  // different resource (including with no main selection or a main draft).
+  // Every pane's list writes must yield to all of these resource owners.
+  const ownedCardIds = useMemo(() => [parentId, dockOwnerId, sideOwnerMatches ? childId : null]
+    .filter((id): id is string => id !== null), [parentId, dockOwnerId, sideOwnerMatches, childId]);
+  // The companion is a sibling of the main surface. Its presentation follows
+  // its own desktop/parent/terminal host, independently of the main subview.
+  const companionVisible = !compact;
+  const terminalVisible = companionVisible && options.terminal?.workbench.open === true;
+  const sideAvailable = sideOwnerMatches && !compact;
+  const sidePresented = sideAvailable && !terminalVisible;
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, reportComposer: undefined, ownedCardIds, onTerminal: options?.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: belongsToParent, presented: belongsToParent && options?.terminal?.workbench.open !== true });
+    { ...options, embedded: undefined, reportComposer: undefined, ownedCardIds, onTerminal: options.terminal?.workbench.reveal, inline: true, slotId: sideSlot, enabled: sideAvailable, presented: sidePresented });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options?.terminal !== undefined, onTerminal: options?.terminal?.workbench.reveal,
-      companionVisible: (!compact && options?.terminal?.workbench.open === true) || (belongsToParent && side.isOpen),
-      companion: options?.terminal !== undefined
-        ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={!compact}
-            sideOpen={belongsToParent && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
-        : belongsToParent && side.isOpen ? side.drawerFor : undefined,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, retainCompanion: options.terminal !== undefined, onTerminal: options.terminal?.workbench.reveal,
+      companionVisible: terminalVisible || (sidePresented && side.isOpen),
+      companion: options.terminal !== undefined
+        ? (group) => <TerminalCompanion workbench={options.terminal!.workbench} visible={companionVisible}
+            sideOpen={sideAvailable && side.isOpen} side={side.drawerFor(group)} terminal={options.terminal!.render()} />
+        : sideAvailable && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {
@@ -376,7 +403,7 @@ function useConversationPanel(
           return false;
         }
         setSideError(null);
-        options?.terminal?.workbench.suspend();
+        options.terminal?.workbench.suspend();
         if (sideDraft !== null && sideDraft.submitted !== null) {
           sideTarget[1]({ kind: 'draft' });
           if (question !== '') { setSideError('This side draft still has an unsettled delivery. Continue or retry it before starting another.'); return false; }
@@ -401,7 +428,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationPaneTarget>,
-  options?: { onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
+  options?: { onPresent?: () => void; embedded?: EmbeddedConversationPresentation; onArchive?: (cardId: string, archived: boolean) => Promise<void>; onTerminal?: () => void; retainCompanion?: boolean; companionVisible?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean; presented?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -484,6 +511,10 @@ function useConversationPane(
   }), [heldAttachments, editComposer, editUpload, uploadState]);
   const attachments = usePlannerAttachments(store.uploadAttachment, composerId ?? '', attachmentStore);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const requestComposerFocus = useCallback((id: string) => {
+    setComposerFocusFor(id);
+    setComposerFocusRequest(count => count + 1);
+  }, [setComposerFocusFor, setComposerFocusRequest]);
   const shownComposer = useRef(composerId);
   shownComposer.current = composerId;
   const focusComposer = useCommittedCallback(sourceScopeId, (conversationId: string) => {
@@ -569,13 +600,13 @@ function useConversationPane(
     recheckManagedProviders: managed.recheck,
     supportsAssistantProviders: managed.supportsAssistantProviders,
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
-    openDraft: () => setOpenTarget({ kind: 'draft' }), closeView: () => setOpenTarget(null),
+    openDraft: () => { options?.onPresent?.(); setComposerFocusRequest(count => count + 1); setOpenTarget({ kind: 'draft' }); }, closeView: () => setOpenTarget(null),
     onGone: () => go({ name: 'today' }),
     onAdopt: onAdoptDraft,
   });
   const startAnother = start;
 
-  useRequestedConversationOpen({ registry, rows, setOpenTarget, setComposerFocusFor, inline: options?.inline });
+  useRequestedConversationOpen({ registry, rows, setOpenTarget, requestComposerFocus, inline: options?.inline });
 
   useConversationEscape({ open: panePresented ? open : null, store });
 
@@ -773,6 +804,7 @@ function useConversationPane(
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <ConversationSurface
+        embedded={options?.embedded}
         mobileSheet={compactComposer}
         focusInput={panePresented && (draftOpen || (open !== null && composerFocusFor === open.id))}
         contextTitle={scope?.title}
@@ -809,7 +841,7 @@ function useConversationPane(
             )}
             {/* Initial submit hands words to the held draft, including refusal; only recovery uses the takeover boolean. */}
             <ConversationComposer commands={conversationCommands({ terminal: onTerminal, compactViewport: compactComposer, newConversation: options?.inline === true ? undefined : startAnother })} target={{ kind: 'scope', id: sourceScopeId }} layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} sendWaiting={creating} onSend={text => { sendDraft(text); }}
-              focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
+              focusOnMount={panePresented} focusRequest={composerFocusRequest} focusHandle={draftFocus.handle}
               mentionTrigger={mentionTrigger}
               changeText={setNewConversationText}
               /* Menu membership and readiness come from the managed backend declarations. */
@@ -954,6 +986,8 @@ function useConversationPane(
   );
 
   const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
+    options?.onPresent?.();
+    requestComposerFocus(conversation.id);
     setOpenTarget({ kind: 'row', id: conversation.id });
   });
   const receipts = useReadReceipts();
@@ -972,7 +1006,7 @@ function useConversationPane(
   const dockViewId = JSON.stringify([sourceScopeId, dockRowId]);
   const openDockHistory = useCommittedCallback(dockViewId, () => {
     if (dockRowId !== null) {
-      setComposerFocusFor(dockRowId);
+      requestComposerFocus(dockRowId);
       setOpenTarget({ kind: 'row', id: dockRowId });
     } else start();
   });
@@ -1085,7 +1119,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportHeader, reportEmpty, panelContent, mobileReportIntro, prepareReport,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, reportHeader, reportEmpty, panelContent, mobileReportIntro, prepareReport, center,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1098,6 +1132,7 @@ function TrackRouteBody({
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
+  center?: DailyCenterPresentation;
   reportEvidence?: ReactNode;
   reportHeader?: ReactNode;
   panelContent?: ReactNode;
@@ -1105,6 +1140,7 @@ function TrackRouteBody({
   prepareReport: ReportPreparationPort;
   reportEmpty?: ReactNode;
 }) {
+  const [centerHost, setCenterHost] = useState<HTMLDivElement | null>(null);
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
   const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -1153,6 +1189,7 @@ function TrackRouteBody({
   const routePanel = useRoutePanel();
   /* Whether `?panel=` describes anything at all on this viewport. */
   const compactViewport = useCompactViewport();
+  const centerActive = center !== undefined && !compactViewport;
   /* `?from=` is a property of this visit, so every same-track move hands it back
    * explicitly (`go` clears what it is not given); crossing tracks drops it. */
   const routeFrom = useRouteFrom() ?? undefined;
@@ -1273,7 +1310,7 @@ function TrackRouteBody({
         commands: plannerCommands,
       },
     },
-    { onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
+    { defaultRowId: center !== undefined && plannerCard !== undefined ? plannerCard.id : null, onPresent: center?.onOpenAssistant, presented: centerActive ? center?.presented : undefined, embedded: center === undefined ? undefined : { active: centerActive, host: centerHost, footerPrefix: center.footerPrefix, label: center.title }, onArchive: conversationMutations.archive, terminal: { workbench, render: () => <TerminalWorkbenchView workbench={workbench} host={cardRuntime.host}
       items={workbench.ordinaryHost ? [] : gridItems.filter(item => workbench.cardIds.has(item.card.id))} visible={!compactViewport && workbench.open}
       onRemove={(id) => cardDeletion.request(id, { kind: 'surface-center' })} /> }, showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
@@ -1497,10 +1534,11 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
+      fillReading={centerActive}
       progressDisclosure={progressDisclosure}
       panelContent={panelContent}
       mobileReportIntro={mobileReportIntro}
-      mobilePanelObscured={chat.isOpen || sourceOpen}
+      mobilePanelObscured={(!centerActive && chat.isOpen) || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
       mobileTitleReadView={(controls) => <TrackSelector track={track} controls={controls}
@@ -1569,7 +1607,11 @@ function TrackRouteBody({
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
-      report={<>{reportHeader}<TrackReportRegion
+      report={<>
+        {center !== undefined && <div className={mobileChatStyles.embeddedSlot} hidden={!centerActive}>
+          {center.render(<div ref={setCenterHost} className={mobileChatStyles.embeddedSlot} />)}
+        </div>}
+        {!centerActive && <>{reportHeader}<TrackReportRegion
         presentation={reportPresentation}
         trackId={track.id}
         activityAt={track.activityAt}
@@ -1598,6 +1640,7 @@ function TrackRouteBody({
         outlineEmpty={reportEmpty}
         empty={reportEmpty ?? <ReportEmpty />}
       >{reportEvidence}</TrackReportRegion></>}
+      </>}
       backlinks={backlinks !== undefined && (backlinks.backlinks.length > 0 || backlinks.truncated || backlinks.skipped_sources > 0)
         ? (
           <ReportBacklinks inline
@@ -1615,11 +1658,13 @@ function TrackRouteBody({
       conversationContextList={chat.contextList}
       conversationList={chat.list}
       onStartConversation={chat.startConversation}
-      conversationOpen={chat.isOpen}
+      showConversationAction={!centerActive}
+      conversationOpen={!centerActive && chat.isOpen}
       inputNotifications={inputNotifications}
       /* Both kinds of item are the Planner's, so both reply to it: sending it a message is what
          answers an ask and what makes a stopped Planner continue. */
       onReply={plannerCard === undefined ? undefined : () => {
+        center?.onOpenAssistant();
         registry.requestOpen(plannerCard.id, { focusComposer: true });
       }}
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}

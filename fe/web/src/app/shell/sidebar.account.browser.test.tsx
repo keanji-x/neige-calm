@@ -119,12 +119,15 @@ it('keeps the account avatar pinned where it sat, with the row fill reaching the
   // the rail's bottom edge. Pinning must not move it.
   const railPadding = parseFloat(getComputedStyle(rail).paddingBlockEnd);
   expect(railPadding).toBeGreaterThan(0);
+  const settings = document.querySelector<HTMLElement>('[aria-label="Open settings"]')!;
+  const initialAvatarOffset = rail.getBoundingClientRect().bottom - avatar.getBoundingClientRect().bottom;
 
   for (const top of [0, Math.round((rail.scrollHeight - rail.clientHeight) / 2), rail.scrollHeight]) {
     await scrollRail(rail, top);
     const railBottom = rail.getBoundingClientRect().bottom;
     // Within a pixel: the rail's top inset is fractional, so layout snaps.
-    expect(Math.abs(railBottom - avatar.getBoundingClientRect().bottom - railPadding)).toBeLessThanOrEqual(1);
+    expect(Math.abs(railBottom - settings.getBoundingClientRect().bottom - railPadding)).toBeLessThanOrEqual(1);
+    expect(Math.abs((railBottom - avatar.getBoundingClientRect().bottom) - initialAvatarOffset)).toBeLessThanOrEqual(1);
     expect(Math.abs(userRow.getBoundingClientRect().bottom - railBottom)).toBeLessThanOrEqual(1);
     expectUncovered(avatar);
   }
@@ -204,8 +207,11 @@ it('parks the account row at the bottom when the Areas list is short', async () 
   const { rail, avatar } = await renderRail({ areaCount: 2 });
   expect(rail.scrollHeight).toBe(rail.clientHeight);
   const railPadding = parseFloat(getComputedStyle(rail).paddingBlockEnd);
-  expect(Math.abs(rail.getBoundingClientRect().bottom - avatar.getBoundingClientRect().bottom - railPadding))
+  const settings = document.querySelector<HTMLElement>('[aria-label="Open settings"]')!;
+  expect(Math.abs(rail.getBoundingClientRect().bottom - settings.getBoundingClientRect().bottom - railPadding))
     .toBeLessThanOrEqual(1);
+  expect(Math.abs((avatar.getBoundingClientRect().top + avatar.getBoundingClientRect().bottom) / 2
+    - (settings.getBoundingClientRect().top + settings.getBoundingClientRect().bottom) / 2)).toBeLessThanOrEqual(1);
 });
 
 it('reveals the current track above the account row, not behind it', async () => {
@@ -218,7 +224,7 @@ it('reveals the current track above the account row, not behind it', async () =>
 
 it('keeps every control reached by Tab clear of the account row', async () => {
   const { avatar } = await renderRail();
-  document.querySelector<HTMLElement>('[aria-label="New area"]')!.focus();
+  document.querySelector<HTMLElement>('[title="Recipes"]')!.closest('button')!.focus();
   let checked = 0;
   for (let step = 0; step < 400 && document.activeElement !== avatar; step += 1) {
     await userEvent.tab();

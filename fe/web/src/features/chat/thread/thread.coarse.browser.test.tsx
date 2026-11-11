@@ -1,6 +1,7 @@
 /* The exchange rail as a finger gets it, in a browser context of its own (`vitest.config.ts`): `pointer: coarse` is a
    media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
 import { act, cleanup, render } from '@testing-library/react';
+import { useMemo, useRef } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commands, userEvent } from 'vitest/browser';
 
@@ -9,6 +10,7 @@ declare module 'vitest/browser' { interface BrowserCommands { tap(selector: stri
 /* The whole cascade before the component: a CSS Module imported first registers `@layer features` ahead of everything. */
 import '../../../styles/entry.css';
 import { CardFrame } from '../../../ui/card-frame/public.tsx';
+import { useReadingHostRef } from '../../../ui/drawer/reading-host.tsx';
 
 import { ChatThread } from './public.tsx';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
@@ -40,6 +42,9 @@ function RailPane({ turns, paneHeight = 400 }: {
   turns: readonly ConversationTurn[];
   paneHeight?: number;
 }) {
+  const navigation = useRef<HTMLDivElement>(null);
+  const ports = useMemo(() => ({ key: 'drawer', navigation }), []);
+  const hostRef = useReadingHostRef<HTMLElement>(ports);
   return (
     <div
       data-nc-rail-host=""
@@ -52,7 +57,7 @@ function RailPane({ turns, paneHeight = 400 }: {
       }}
     >
       <div className={drawerStyles.positioner} data-nc-drawer-frame="">
-        <CardFrame className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
+        <CardFrame ref={hostRef} className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
           <div
             className={drawerStyles.scroll}
             data-nc-drawer-scroll=""
@@ -65,7 +70,7 @@ function RailPane({ turns, paneHeight = 400 }: {
         </CardFrame>
       </div>
       <div className={drawerStyles.seamPositioner} data-nc-drawer-frame="">
-        <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
+        <div ref={navigation} className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
       </div>
     </div>
   );

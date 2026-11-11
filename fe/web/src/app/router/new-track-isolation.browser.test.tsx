@@ -13,7 +13,7 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import '../../styles/entry.css';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 
 function mount() {
   const creates: ApiRequest[] = [];
@@ -35,7 +35,10 @@ function mount() {
   const router = createAppRouter({ prepareReport: prepareReportDocument, transport, client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/area/a/new'] }) });
-  render(<><DepthFeedback /><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></>);
+  const container = document.createElement('div');
+  container.id = 'root';
+  document.body.append(container);
+  render(<><DepthFeedback /><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></>, { container });
   return { creates, router };
 }
 
@@ -44,6 +47,7 @@ it.each([1280, 390])('composer isolation option, badge, explanation and admissio
   const { creates } = mount();
   const trigger = page.getByRole('button', { name: 'Workspace isolation: Worktree' });
   await expect.element(trigger).toBeVisible();
+  await page.screenshot({ path: `../../../../test-results/v10-new-track-${width}.png` });
   expect(trigger.element().closest('[data-nc-composer-preferences]')).toBeTruthy();
   await trigger.click();
   await expect.element(page.getByRole('menuitem', { name: /Worktree.*Selected/ })).toBeVisible();
@@ -94,7 +98,7 @@ it.each([
     await page.viewport(width, 844);
     mount();
     const more = page.getByRole('button', { name: 'Track options', exact: true });
-    const folder = page.getByRole('button', { name: /^Folder:/ });
+    const folder = page.getByRole('button', { name: /^Repo:/ });
     const dialog = page.getByRole('dialog', { name: 'Choose a directory' });
     const field = page.getByRole('combobox', { name: 'Directory path' });
     await page.getByRole('combobox', { name: 'What this track should do' }).fill('Keep my draft');
@@ -187,7 +191,7 @@ it.each([1440, 390].flatMap(width => ['Cancel', 'Select this directory'].flatMap
   const more = page.getByRole('button', { name: 'Track options', exact: true });
   await expect.element(editor).toHaveFocus();
   if (width === 390) await more.click();
-  await page.getByRole('button', { name: /^Folder:/ }).click();
+  await page.getByRole('button', { name: /^Repo:/ }).click();
   await expect.element(page.getByRole('combobox', { name: 'Directory path' })).toHaveValue('/repo/');
   await expect.element(page.getByRole('combobox', { name: 'Directory path' })).toHaveFocus();
   await new Promise(requestAnimationFrame);
@@ -216,7 +220,7 @@ it.each([1440, 390].flatMap(width => ['refold', 'reopen', 'route', 'modal', 'unm
     await page.viewport(width, 844);
     const { router } = mount();
     const more = page.getByRole('button', { name: 'Track options', exact: true });
-    const folder = page.getByRole('button', { name: /^Folder:/ });
+    const folder = page.getByRole('button', { name: /^Repo:/ });
     const field = page.getByRole('combobox', { name: 'Directory path' });
     if (width === 390) await more.click();
     await folder.click();

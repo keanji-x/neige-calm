@@ -12,17 +12,21 @@
   .showMore {
     display: flex;
     align-items: center;
-    inline-size: 100%;
-    min-block-size: var(--row-h);
+    margin-inline-start: var(--navigation-selection-inset, 0px);
+    inline-size: calc(100% - var(--navigation-selection-inset, 0px));
+    min-block-size: var(--navigation-entry-height, 1.875rem);
     padding-block: 0;
+    padding-inline-start: calc(var(--navigation-label-start) - var(--navigation-selection-inset, 0px));
     padding-inline-end: var(--space-2);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-highlight);
     color: var(--text-3);
     text-align: start;
     cursor: pointer;
   }
 
-  .showMoreLabel { color: inherit; }
+  .showMoreLabel {
+    color: inherit;
+  }
 
   .showMore:hover,
   .showMore:focus-visible {

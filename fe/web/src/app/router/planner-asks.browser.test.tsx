@@ -97,13 +97,14 @@ it.each([
   await expect.element(ask).toBeVisible();
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
   const questionElement = await ask.findElement();
-  const answerLine = await ask.getByRole('group', { name: 'Your answer' }).findElement();
-  expect(getComputedStyle(answerLine).borderBottomWidth).toBe('1px');
+  await expect.element(ask.getByRole('button', { name: 'Other…' })).toBeVisible();
   expect(getComputedStyle(questionElement.querySelector('h3')!).fontSize).toBe('16px');
   expect(getComputedStyle(await ask.getByRole('button', { name: 'release/2.0' }).findElement()).fontSize).toBe('14px');
 
   await ask.getByRole('button', { name: 'release/2.0' }).click();
   expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);
+  const answerLine = await ask.getByRole('group', { name: 'Your answer' }).findElement();
+  expect(getComputedStyle(answerLine).borderBottomWidth).toBe('1px');
   const own = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
   await expect.element(own).toHaveFocus();
   await own.fill('Tag it after the docs land.');
@@ -125,6 +126,7 @@ it.each([1280, 390])('answers custom questions with Enter inside the real conver
   const message = page.getByRole('combobox', { name: 'Message' });
   await message.fill('Keep this message draft');
   const ask = page.getByRole('group', { name: 'The Planner asks' });
+  await ask.getByRole('button', { name: 'Other…' }).click();
   const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
   await branch.fill('hotfix');
   await branch.click();
@@ -154,6 +156,7 @@ it('answers with Enter while keeping an image-only message draft unsent', async 
   const image = page.getByRole('button', { name: 'Remove Image 1', exact: true });
   await expect.element(image).toBeVisible();
   const ask = page.getByRole('group', { name: 'The Planner asks' });
+  await ask.getByRole('button', { name: 'Other…' }).click();
   const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
   await branch.fill('hotfix');
   await branch.click();
@@ -216,6 +219,7 @@ it.each([
   expect(field.bottom).toBeLessThanOrEqual(window.innerHeight);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
+  if (count === 4 && width === 1280) await page.screenshot({ path: '../../../../test-results/v10-track-asks.png' });
   for (let index = 0; index < count; index++) {
     await expect.element(ask.getByRole('heading', { name: new RegExp(`^Question ${index + 1}:`) })).toBeVisible();
     await ask.getByRole('button', { name: new RegExp(`^Plan ${index + 1}\\.1(?: |$)`) }).click();

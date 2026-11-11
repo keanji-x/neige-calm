@@ -375,7 +375,7 @@ describe('collapse toggle', () => {
     const onGo = vi.fn();
     renderSidebar({ onGo });
     const today = screen.getByRole('button', { name: 'Go to Today' });
-    expect(today.textContent).toBe('Today');
+    expect(today.textContent).toBe('Neige');
     expect(today.querySelector('[aria-hidden="true"]')).toBeTruthy();
     await userEvent.click(today);
     expect(onGo).toHaveBeenCalledWith({ name: 'today' });
@@ -390,7 +390,7 @@ describe('collapse toggle', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     await userEvent.click(toggle);
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
   it('drops to an icon strip when told it is collapsed, and stays navigable', () => {
@@ -410,7 +410,7 @@ describe('collapse toggle', () => {
     expect(expand.querySelector('[aria-hidden="true"]')).toBeTruthy();
 
     update({ collapsed: false });
-    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
   it('uses a collapsed Area initial to reveal its group, never to navigate', async () => {
@@ -505,67 +505,61 @@ it('restores Area disclosure after the shell is remounted', async () => {
 
 
 describe('shared sidebar groups', () => {
-  const headings = () => screen.getAllByRole('heading', { level: 2 }).map((node) => node.textContent);
+  const headings = () => screen.queryAllByRole('heading', { level: 2 }).map((node) => node.textContent);
   async function openOptions() {
     await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
   }
 
-  it('toggles Unread and Running independently and remembers both choices', async () => {
+  it('hides and restores Focus and Pinned independently and remembers both choices', async () => {
     const storage = memoryStorage();
     const preferences = createUiPreferences(storage);
-    const props = { tracks: [track({ activityAt: 10, working: true, attention: 'input', pinnedAt: 5 })] };
+    const props = {
+      tracks: [
+        track({ id: 'f1', title: 'Needs input', attention: 'input', pinnedAt: null }),
+        track({ id: 'p1', title: 'Pinned work', pinnedAt: 5 }),
+      ],
+    };
     renderSidebar(props, preferences);
-    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Areas']);
-    await openOptions();
-    expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Show Unread' }));
-    expect(screen.queryByRole('menu')).toBeNull();
-    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Areas']);
-    await openOptions();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
-    expect(screen.queryByRole('menuitem', { name: 'Show Unread' })).toBeNull();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Show Running' }));
-    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
-    expect(screen.queryByRole('menu')).toBeNull();
+    expect(headings()).toEqual(['Focus', 'Pinned']);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
+    expect(headings()).toEqual(['Pinned']);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
     cleanup();
     const restored = createUiPreferences(storage);
     renderSidebar(props, restored);
-    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
-    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Unread' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
-    expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Running', 'Areas']);
+    expect(headings()).toEqual(['Pinned']);
+    await openOptions();
+    expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Show Focus' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(headings()).toEqual(['Focus', 'Pinned']);
   });
 
-  it('uses completion receipts for Unread and live working state for Running independently of attention', async () => {
-    const preferences = createUiPreferences();
-    preferences.setSidebarGroupVisible('unread', true);
-    preferences.setSidebarGroupVisible('running', true);
+  it('orders Focus by failed, waiting, then running while excluding pinned tracks', () => {
     const tracks = [
-      track({ id: 'both', title: 'Both', activityAt: 10, working: true, attention: 'input', closedAt: 5 }),
-      track({ id: 'read', title: 'Read', activityAt: 8, updatedAt: 99 }),
-      track({ id: 'quiet', title: 'Renamed', activityAt: null, updatedAt: 100 }),
-      track({ id: 'fresh', title: 'Fresh', activityAt: 12 }),
+      track({ id: 'run', title: 'Running job', working: true, updatedAt: 30 }),
+      track({ id: 'wait', title: 'Waiting ask', attention: 'input', updatedAt: 10 }),
+      track({ id: 'fail', title: 'Failed gate', attention: 'failed', updatedAt: 20 }),
+      track({ id: 'pin-fail', title: 'Pinned failure', attention: 'failed', pinnedAt: 5, updatedAt: 40 }),
+      track({ id: 'quiet', title: 'Quiet note' }),
     ];
-    const kernel = createReadReceiptsKernel({ baselineMs: 1, receipts: [
-      { kind: 'track', targetId: 'read', readThroughMs: 8, manualUnread: false },
-      { kind: 'track', targetId: 'both', readThroughMs: 10, manualUnread: false },
-    ] });
-    const { update } = renderSidebar({ tracks }, preferences, kernel);
-    const unreadGroup = screen.getByRole('group', { name: 'Unread' });
-    const runningGroup = screen.getByRole('group', { name: 'Running' });
-    await waitFor(() => expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })
-      .map((row) => row.getAttribute('aria-label'))).toEqual(['Track Fresh, in area Work']));
-    expect(within(runningGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
-    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
-    update({ tracks: tracks.filter((row) => row.id !== 'fresh').map((row) => ({ ...row, working: false })) });
-    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
-    expect(within(runningGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
-    update({ tracks: tracks.filter((row) => row.id !== 'fresh')
-      .map((row) => row.id === 'both' ? { ...row, working: false, activityAt: 11 } : row) });
-    expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
-    expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
+    const { update } = renderSidebar({ tracks });
+    const focusGroup = screen.getByRole('group', { name: 'Focus' });
+    const pinnedGroup = screen.getByRole('group', { name: 'Pinned' });
+    expect(within(focusGroup).getAllByRole('button', { name: /^Track / })
+      .map((row) => row.getAttribute('aria-label'))).toEqual([
+      'Track Failed gate, needs attention, in area Work',
+      'Track Waiting ask, waiting on you, in area Work',
+      'Track Running job, working, in area Work',
+    ]);
+    expect(within(pinnedGroup).getAllByRole('button', { name: /^Track / })
+      .map((row) => row.getAttribute('aria-label'))).toEqual([
+      'Track Pinned failure, needs attention, in area Work',
+    ]);
+    update({ tracks: [track({ id: 'quiet', title: 'Quiet note' })] });
+    expect(headings()).toEqual([]);
   });
 
   it('shares disclosure and the five-row reveal across shortcut and Area groups', async () => {
@@ -582,20 +576,18 @@ describe('shared sidebar groups', () => {
     expect(screen.getByRole('button', { name: 'Expand Pinned' }).getAttribute('aria-expanded')).toBe('false');
     await userEvent.click(screen.getByRole('button', { name: 'Expand Pinned' }));
     expect(within(group).getAllByRole('button', { name: /^Track / })).toHaveLength(7);
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse Areas' }));
-    expect(screen.queryByRole('button', { name: 'Collapse area Work' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Expand Areas' }));
-    expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
+    const areaGroup = screen.getByRole('group', { name: 'area Work' });
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+    expect(within(areaGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Expand area Work' }));
+    expect(within(areaGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(5);
   });
 
-  it('never surfaces system Tracks in enabled shortcut groups', async () => {
-    const preferences = createUiPreferences();
-    preferences.setSidebarGroupVisible('unread', true);
-    preferences.setSidebarGroupVisible('running', true);
+  it('never surfaces system Tracks in shortcut groups', async () => {
     const kernel = createReadReceiptsKernel({ baselineMs: 1 });
-    renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences, kernel);
+    renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true, pinnedAt: 5 })] }, createUiPreferences(), kernel);
     await waitFor(() => expect(kernel.requests).toHaveLength(1));
-    expect(headings()).toEqual(['Unread', 'Running', 'Areas']);
+    expect(headings()).toEqual([]);
     expect(screen.getByRole('heading', { name: '还没有 Area' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
   });
@@ -603,7 +595,7 @@ describe('shared sidebar groups', () => {
 
 
 describe('sidebar group management', () => {
-  const headings = () => screen.getAllByRole('heading', { level: 2 }).map((node) => node.textContent);
+  const headings = () => screen.queryAllByRole('heading', { level: 2 }).map((node) => node.textContent);
   async function action(menu: string, item: string) {
     await userEvent.click(screen.getByRole('button', { name: menu }));
     await userEvent.click(screen.getByRole('menuitem', { name: item }));
@@ -616,24 +608,31 @@ describe('sidebar group management', () => {
 
   it('moves visible top-level siblings, disables boundaries and restores hidden groups in their saved slots', async () => {
     const preferences = createUiPreferences();
-    preferences.setSidebarGroupVisible('unread', true);
-    preferences.setSidebarGroupVisible('running', true);
-    renderSidebar({ tracks: [track({ pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })] }, preferences);
-    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Waiting on you' }));
+    renderSidebar({
+      tracks: [
+        track({ id: 'f1', title: 'Focus task', attention: 'input', pinnedAt: null }),
+        track({ id: 'p1', title: 'Pinned task', pinnedAt: 5 }),
+      ],
+    }, preferences);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
     expect(screen.getByRole('menuitem', { name: 'Move up' }).getAttribute('aria-disabled')).toBe('true');
     await userEvent.click(screen.getByRole('menuitem', { name: 'Move down' }));
-    expect(headings()).toEqual(['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas']);
-    await action('Group actions for Waiting on you', 'Hide group');
-    expect(headings()).toEqual(['Pinned', 'Unread', 'Running', 'Areas']);
+    expect(headings()).toEqual(['Pinned', 'Focus']);
+    await action('Group actions for Focus', 'Hide group');
+    expect(headings()).toEqual(['Pinned']);
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
-    await restore('Waiting on you');
-    expect(headings()).toEqual(['Pinned', 'Waiting on you', 'Unread', 'Running', 'Areas']);
-    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Areas' }));
+    await restore('Focus');
+    expect(headings()).toEqual(['Pinned', 'Focus']);
+    await action('Group actions for Focus', 'Move down');
+    const areaGroup = screen.getByRole('group', { name: 'area Work' });
+    const focusGroup = screen.getByRole('group', { name: 'Focus' });
+    expect(Boolean(areaGroup.compareDocumentPosition(focusGroup) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
     expect(screen.getByRole('menuitem', { name: 'Move down' }).getAttribute('aria-disabled')).toBe('true');
     await userEvent.keyboard('{Escape}');
   });
 
-  it('keeps Area movement personal, restores a hidden Area even when its parent is hidden, and remembers layout', async () => {
+  it('keeps Area movement personal, restores a hidden Area even when its parent slot is hidden, and remembers layout', async () => {
     const storage = memoryStorage();
     const preferences = createUiPreferences(storage);
     const areas = [area(), area({ id: 'c2', name: 'Reading', sort: 2 })];
@@ -644,8 +643,7 @@ describe('sidebar group management', () => {
     expect(areas.map((row) => [row.id, row.sort])).toEqual([['c1', 1], ['c2', 2]]);
     await action('Area actions for Work', 'Hide group');
     expect(screen.queryByRole('button', { name: 'Collapse area Work' })).toBeNull();
-    await action('Group actions for Areas', 'Hide group');
-    expect(screen.queryByRole('heading', { name: 'Areas' })).toBeNull();
+    preferences.setSidebarGroupVisible('areas', false);
     await restore('Work', true);
     expect(screen.getAllByRole('button', { name: /^Collapse area / }).map((node) => node.textContent)).toEqual(['Reading', 'Work']);
     await action('Area actions for Reading', 'Hide group');
@@ -680,44 +678,52 @@ describe('sidebar group management', () => {
 
 
 it('distinguishes hidden Areas from workspace groups with the same title', async () => {
-  renderSidebar({ areas: [area({ name: 'Unread' })] });
-  await userEvent.click(screen.getByRole('button', { name: 'Area actions for Unread' }));
+  const kernel = createReadReceiptsKernel({ baselineMs: 1 });
+  renderSidebar({ areas: [area({ name: 'Pinned' })], tracks: [track({ pinnedAt: 5 })] }, undefined, kernel);
+  await waitFor(() => expect(kernel.requests).toHaveLength(1));
+  await userEvent.click(screen.getByRole('button', { name: 'Group actions for Pinned' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Area actions for Pinned' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
   await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
-  await userEvent.click(screen.getByRole('menuitem', { name: 'Hidden groups' }));
-  expect(screen.getByRole('menuitem', { name: 'Show Unread' })).toBeTruthy();
-  expect(screen.getByRole('menuitem', { name: 'Show area Unread' })).toBeTruthy();
+  await userEvent.keyboard('{ArrowDown}{ArrowRight}');
+  expect(await screen.findByRole('menuitem', { name: 'Show Pinned' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Show area Pinned' })).toBeTruthy();
 });
 
 
 it('keeps Show recovery for every built-in group after all groups are hidden', async () => {
   const preferences = createUiPreferences();
-  preferences.setSidebarGroupVisible('unread', true);
-  preferences.setSidebarGroupVisible('running', true);
+  const kernel = createReadReceiptsKernel({ baselineMs: 1 });
   const onGo = vi.fn();
-  const rows = [track({ title: 'Recoverable', pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })];
-  renderSidebar({ tracks: rows, onGo }, preferences);
-  // The receipts land before any menu opens: the row joins Unread once they are read.
-  await waitFor(() => expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(5));
-  const titles = ['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas'];
-  for (const title of titles) {
-    await userEvent.click(screen.getByRole('button', { name: `Group actions for ${title}` }));
+  const rows = [
+    track({ id: 'f1', title: 'Recoverable focus', attention: 'input', pinnedAt: null }),
+    track({ id: 'p1', title: 'Recoverable pin', pinnedAt: 5 }),
+  ];
+  renderSidebar({ tracks: rows, onGo }, preferences, kernel);
+  // Let the initial receipt query settle before opening transient menus.
+  await waitFor(() => expect(kernel.requests).toHaveLength(1));
+  expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(4);
+  for (const menu of ['Group actions for Focus', 'Group actions for Pinned', 'Area actions for Work']) {
+    await userEvent.click(screen.getByRole('button', { name: menu }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Hide group' }));
   }
   expect(screen.queryAllByRole('heading')).toHaveLength(0);
+  expect(screen.queryByRole('group', { name: 'area Work' })).toBeNull();
+  const labels = ['Focus', 'Pinned', 'area Work'];
   await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
   await userEvent.keyboard('{ArrowDown}{ArrowRight}');
-  await screen.findByRole('menuitem', { name: 'Show Waiting on you' });
-  for (const title of titles) expect(screen.getByRole('menuitem', { name: `Show ${title}` })).toBeTruthy();
+  await screen.findByRole('menuitem', { name: 'Show Focus' });
+  for (const label of labels) expect(screen.getByRole('menuitem', { name: `Show ${label}` })).toBeTruthy();
   await userEvent.keyboard('{Escape}{Escape}');
-  for (const title of titles) {
+  for (const label of labels) {
     await userEvent.click(screen.getByRole('button', { name: 'Sidebar view options' }));
     await userEvent.keyboard('{ArrowDown}{ArrowRight}');
-    await userEvent.click(await screen.findByRole('menuitem', { name: `Show ${title}` }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: `Show ${label}` }));
   }
-  expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(titles);
-  expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(5);
-  expect(rows[0]?.pinnedAt).toBe(5);
+  expect(screen.getAllByRole('heading').map(node => node.textContent)).toEqual(['Focus', 'Pinned']);
+  expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(4);
+  expect(rows[1]?.pinnedAt).toBe(5);
   expect(onGo).not.toHaveBeenCalled();
 });
 
@@ -762,13 +768,11 @@ it('keeps manually unread until the selected Track view acknowledges it', async 
 
 it('does not claim an empty activity shortcut after its read fails', () => {
   const preferences = createUiPreferences();
-  preferences.setSidebarGroupVisible('waiting', true);
-  preferences.setSidebarGroupVisible('running', true);
-  preferences.setSidebarGroupVisible('unread', true);
+  preferences.setSidebarGroupVisible('focus', true);
+  preferences.setSidebarGroupVisible('pinned', true);
   renderSidebar({ tracks: [], activityError: 'Activity is unavailable.' }, preferences);
-  for (const name of ['没有运行中的 Track。', '没有需要处理的 Track。', '没有未读的 Track。']) {
-    expect(screen.queryByRole('heading', { name })).toBeNull();
-  }
+  expect(screen.queryByRole('group', { name: 'Focus' })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull();
 });
 
 

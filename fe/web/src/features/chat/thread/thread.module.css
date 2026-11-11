@@ -233,6 +233,12 @@
     color: var(--text);
   }
 
+  /* On the page ground (`EmbeddedReadingHost`), `--bg` matches the surface behind
+     it; step to `--surface-chip` so your turn keeps a visible well. */
+  [data-nc-embedded-reading] .said {
+    background: var(--surface-chip);
+  }
+
   /*
    * The message an open Edit would replace: still here, quieter, and edged.
    * `--text-3` on the bubble's `--bg` is a pair already measured for
@@ -503,11 +509,19 @@
     min-block-size: calc(1lh + var(--space-2) * 2);
   }
 
+  [data-nc-embedded-reading] .input [contenteditable] {
+    min-block-size: calc(1.5lh + var(--space-2) * 2);
+  }
+
   .composer {
     flex: none;
     padding: 0 var(--nc-card-inset, var(--space-2)) var(--nc-card-inset, var(--space-2));
-    /* Astryx ChatSendButton is primary/blue; send is a routine control here. */
-    --color-accent: var(--text-3);
+    /* Astryx ChatComposer (`elevation="none"`) reads `--color-accent` +
+       `--color-accent-muted` on `:focus-within`; keep focus on the warm
+       hairline ramp without an inner tint halo, and scope `--text-3` to
+       child buttons (`ChatSendButton` Stop). */
+    --color-accent: var(--hairline-strong);
+    --color-accent-muted: transparent;
     /*
      * Astryx paints the well with `--color-background-popover` (= `--paper`),
      * which is the same rank as the card. Recess it one step to `--bg`, the
@@ -532,6 +546,26 @@
     /* Published for the `/` menu, which is anchored to this box rather than to
        the caret Astryx would otherwise use — see the command menu block. */
     anchor-name: --nc-composer-menu;
+  }
+
+  .composer button {
+    --color-accent: var(--text-3);
+  }
+
+  /* Ground-polarity inversion for `EmbeddedReadingHost` on `--bg`: lift the well
+     to `--paper` with a quiet `--hairline` edge, flush with the document column. */
+  [data-nc-embedded-reading] .composer {
+    --nc-card-inset: 0px;
+    --color-background-popover: var(--paper);
+    --color-background-muted: var(--surface-chip);
+    --color-background-surface: var(--paper);
+    --color-border-emphasized: var(--hairline);
+  }
+
+  /* Share the same hairline contour when a Questions drawer is open above the well. */
+  .composer:has([data-nc-asks]) {
+    --color-border-emphasized: var(--hairline);
+    --color-accent: var(--hairline);
   }
 
   /*

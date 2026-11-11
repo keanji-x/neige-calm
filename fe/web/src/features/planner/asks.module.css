@@ -1,10 +1,22 @@
 @layer features {
   .drawer {
+    --color-icon-primary: var(--text-3);
+    --color-icon-secondary: var(--hairline-strong);
     padding-inline: var(--space-2);
     padding-block-start: var(--space-1);
     padding-block-end: calc(var(--space-2) + var(--radius-chat));
+    border: 1px solid var(--hairline);
+    border-block-end: 0;
+    background-image: none;
+  }
+  [data-nc-embedded-reading] .drawer {
+    --color-background-surface: color-mix(in oklab, var(--paper) 60%, var(--bg));
   }
   .asks {
+    --color-accent: var(--accent);
+    --color-accent-muted: var(--accent-soft);
+    --color-icon-primary: var(--text);
+    --color-icon-secondary: var(--text-2);
     font-family: var(--font-sans);
     font-size: var(--font-step-2-size);
     line-height: var(--font-step-2-line);
@@ -13,11 +25,11 @@
     max-block-size: min(26dvh, 18rem);
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: var(--space-2) 0;
+    padding: var(--space-1) 0;
   }
 
   .ask {
-    padding: var(--space-1) var(--space-2);
+    padding: 0 var(--space-2) var(--space-1);
     min-inline-size: 0;
   }
 
@@ -25,6 +37,17 @@
     font-size: var(--font-step-1-size);
     color: var(--text-3);
     margin-block-end: var(--space-1);
+  }
+
+  .stepBadge {
+    display: inline-flex;
+    align-items: center;
+    padding-block: 1px;
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
   }
 
   /* A paused turn (#2348): what is waiting, said before the question, quiet like `.meta`. */
@@ -36,7 +59,7 @@
 
   .title {
     font-size: var(--font-step-3-size);
-    font-weight: var(--weight-semibold);
+    font-weight: var(--weight-medium);
     line-height: var(--font-step-3-line);
     margin: 0 0 var(--space-2);
     white-space: pre-line;
@@ -59,6 +82,16 @@
     min-inline-size: 0;
   }
 
+  .optionList {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    max-block-size: min(18dvh, 8.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
   /* Buttons own activation, focus and pending state. These classes only arrange the option rows. */
   .option {
     font-weight: var(--weight-normal);
@@ -68,27 +101,34 @@
     min-inline-size: 0;
     block-size: auto;
     height: auto;
-    padding: var(--space-2) var(--space-2);
-    border: 0;
-    background: transparent;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-highlight);
+    background: var(--surface-card);
     box-shadow: none;
     justify-content: start;
     text-align: start;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      border-color var(--motion-quick) var(--ease-feedback);
   }
 
   .option:hover {
     background: var(--overlay-hover);
+    border-color: var(--hairline-strong);
   }
 
   .optionSelected {
+    font-weight: var(--weight-medium);
     background: var(--selection-bg);
-    color: var(--accent);
+    border-color: var(--hairline-strong);
+    color: var(--text);
   }
 
   .optionSelected:hover { background: var(--selection-hover-bg); }
 
   .optionContent {
     display: flex;
+    flex: 1 1 auto;
     align-items: center;
     justify-content: space-between;
     inline-size: 100%;
@@ -100,6 +140,50 @@
     line-height: var(--type-ui-leading);
     white-space: pre-line;
     overflow-wrap: anywhere;
+  }
+
+  .optionHint {
+    flex: none;
+    color: var(--text-3);
+    font-size: var(--font-step-1-size);
+    opacity: 0;
+    transition: opacity var(--motion-quick) var(--ease-feedback),
+      translate var(--motion-quick) var(--ease-feedback);
+  }
+
+  .option:hover .optionHint,
+  .option:focus-visible .optionHint {
+    opacity: 1;
+    translate: 1px 0;
+  }
+
+  .customToggle {
+    font: var(--type-metadata);
+    letter-spacing: var(--type-metadata-tracking);
+    align-self: flex-start;
+    min-block-size: var(--control-h-sm);
+    margin-block-start: var(--space-half);
+    margin-inline-start: var(--space-1);
+    padding-block: var(--space-half);
+    padding-inline: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-highlight);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
+  }
+
+  .customToggle:disabled {
+    color: var(--text-4);
+    cursor: default;
+  }
+
+  .customToggle:hover:not(:disabled),
+  .customToggle:focus-visible:not(:disabled) {
+    background: var(--overlay-hover);
+    color: var(--text);
   }
 
   .back,
@@ -118,8 +202,8 @@
     display: flex;
     align-items: end;
     gap: var(--space-2);
-    margin-block-start: var(--space-2);
-    border-block-end: 1px solid var(--hairline-strong);
+    margin-block-start: var(--space-1);
+    border-block-end: 1px solid var(--hairline);
   }
 
   .own:focus-within {

@@ -68,8 +68,9 @@ it.each([1440, 390])('catalog main report and sidebar %i', async width => {
 it.each([1440, 390])('catalog Today and conversation %i', async width => {
   await page.viewport(width, 900);
   renderDailyFixture({ reportBody: '', emptyWorkspace: true });
-  await expect.element(page.getByRole('heading', { name: '今天还没有记录' })).toBeVisible();
-  await shot('02-today-' + width, ["今天还没有记录"]);
+  const emptyTitle = width >= 960 ? '聊聊你想做什么' : '今天还没有记录';
+  await expect.element(page.getByRole('heading', { name: emptyTitle })).toBeVisible();
+  await shot('02-today-' + width, [emptyTitle]);
   if (width === 1440) await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   else {
     await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
@@ -189,13 +190,15 @@ it('catalog body patch without net changes', async () => {
 it('catalog confirmed empty desktop shortcut groups', async () => {
   await page.viewport(1440,1000);
   const preferences = createUiPreferences();
-  for (const id of ['pinned','unread','waiting','running'] as const) {
+  for (const id of ['focus','pinned'] as const) {
     preferences.setSidebarGroupVisible(id,true);
     preferences.setSidebarGroupExpanded(id,true);
   }
   renderDailyFixture({emptyWorkspace:true,reportBody:'',uiPreferences:preferences});
-  await expect.element(page.getByRole('heading',{name:'没有运行中的 Track。',exact:true})).toBeVisible();
-  await shot('34-desktop-empty-shortcuts', ["没有未读的 Track。", "没有运行中的 Track。"]);
+  await expect.element(page.getByRole('heading',{name:'聊聊你想做什么',exact:true})).toBeVisible();
+  expect(page.getByRole('group',{name:'Focus',exact:true}).query()).toBeNull();
+  expect(page.getByRole('group',{name:'Pinned',exact:true}).query()).toBeNull();
+  await shot('34-desktop-empty-shortcuts', ["聊聊你想做什么"]);
 });
 
 it('catalog a surface without live previews', async () => {

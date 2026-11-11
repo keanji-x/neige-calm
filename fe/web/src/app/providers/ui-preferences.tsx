@@ -108,7 +108,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     setSidebarGroupExpanded: (id: string, value: boolean) => write(`browser:sidebar-group:${id}`, value, true),
     sidebarGroupVisible(id: SidebarGroupId): boolean {
       const value = read(`browser:sidebar-visible:${id}`);
-      return typeof value === 'boolean' ? value : id !== 'unread' && id !== 'running';
+      return typeof value === 'boolean' ? value : true;
     },
     setSidebarGroupVisible: (id: SidebarGroupId, value: boolean) => write(`browser:sidebar-visible:${id}`, value, true),
     sidebarOrder<T extends string>(scope: SidebarOrderScope, ids: readonly T[]): T[] {

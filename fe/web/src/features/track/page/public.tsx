@@ -95,6 +95,8 @@ function notificationGist(text: string): string {
 
 export type TrackPageProps = Readonly<{
   track: Track;
+  /** Fill the reading column with an app-owned interactive surface. */
+  fillReading?: boolean;
   /** Visit-scoped choice supplied by the route owner, independently for each Track. */
   progressDisclosure?: DesktopPainterDeps['progressDisclosure'];
   /** App-composed panel module: shares the desktop card, precedes the report on compact screens. */
@@ -134,6 +136,8 @@ export type TrackPageProps = Readonly<{
   mobilePanelObscured: boolean;
   /** Starts Chat from the desktop header or the mobile Report action. */
   onStartConversation?: () => void;
+  /** Hide the redundant header action when the conversation is already in the reading column. */
+  showConversationAction?: boolean;
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
   /** Browser-local file history, composed by the report feature through app. */
@@ -178,9 +182,9 @@ function rowModule(view: TrackPageView, key: RowModuleView['key']): RowModuleVie
   return found;
 }
 
-export function TrackPage({ mobileReportIntro, mobileChatComposer,
+export function TrackPage({ fillReading = false, mobileReportIntro, mobileChatComposer,
   panelContent, progressDisclosure, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationContextList,
-  onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
+  onStartConversation, showConversationAction = true, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onSetWorkbench, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
@@ -348,7 +352,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
 
   return (
     <section
-      className={`${styles.page} ${boardOpen ? styles.pageBoard : ''}`}
+      className={`${styles.page} ${fillReading ? styles.fillReading : ''} ${boardOpen ? styles.pageBoard : ''}`}
       data-nc-track-page=""
     >
       {dismissalLayer}
@@ -374,7 +378,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         }
         actions={(
           <span className={styles.headerActions}>
-            {!boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
+            {showConversationAction && !boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
               <AstryxButton
                 className={styles.desktopChatAction}
                 label="讨论这项工作"

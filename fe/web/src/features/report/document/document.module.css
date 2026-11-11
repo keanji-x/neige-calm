@@ -672,4 +672,16 @@
   /* Inline evidence keeps its intrinsic ratio within the reading column. */
   .image { max-width: 100%; height: auto; vertical-align: middle; }
   .imageButton { display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+  .detailCard {
+    padding: var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-highlight);
+    background: var(--surface-card);
+  }
+  .detailCard > .referenceSummary > .referenceHead {
+    font: var(--type-ui);
+    letter-spacing: var(--type-ui-tracking);
+    margin: 0;
+    align-items: center;
+  }
 }

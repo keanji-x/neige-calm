@@ -2,7 +2,7 @@ import { useCallback, useLayoutEffect, useRef, type HTMLAttributes } from 'react
 import { useState } from '../state/public.ts';
 import styles from './list-typography.module.css';
 
-export type ListTextRole = 'primary' | 'group' | 'section' | 'secondary' | 'count';
+export type ListTextRole = 'primary' | 'compact' | 'group' | 'section' | 'secondary' | 'count';
 
 /** Shared list text, including emphasis. Hosts retain truncation and actions. */
 export function ListText({ as: Tag = 'span', tone, emphasis, className, fadeOverflow = false, ...attributes }: Readonly<

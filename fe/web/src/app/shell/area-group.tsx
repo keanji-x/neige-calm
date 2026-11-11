@@ -34,6 +34,7 @@ export function AreaGroup({
     emptyState={readReady ? { icon: <Icon name="file" />, title: '没有可显示的 Track', description: '此 Area 中符合当前筛选的 Track 会显示在这里。' } : null}
     title={area.name}
     label={`area ${area.name}`}
+    icon="folder"
     level="area"
     tracks={railAreaTracks(ordered, activeTrackId, rowProps.isUnread, showClosed)}
     activeTrackId={activeTrackId}

@@ -1,15 +1,24 @@
+import { EmbeddedReadingHost, useReadingHostRef } from '../../ui/drawer/reading-host.tsx';
 import { useVisibleViewport } from '../../ui/viewport/public.ts';
 import { useState } from '../../ui/state/public.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
-import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, type ComponentProps, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Sheet } from '../../ui/sheet/public.tsx';
 import styles from './mobile-chat.module.css';
 
 /** Conversation assembly: viewport-derived layout and business intent. Sheet
  * owns native presentation, motion, portal migration and focus timing. */
-export function ConversationSurface({ mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
+export type EmbeddedConversationPresentation = Readonly<{
+  active: boolean;
+  host: HTMLDivElement | null;
+  footerPrefix?: ReactNode;
+  label: string;
+}>;
+
+export function ConversationSurface({ embedded, mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ embedded?: EmbeddedConversationPresentation; mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
   const [editing, setEditing] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const previousOpen = useRef(props.open);
@@ -21,8 +30,13 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   if (!props.open) restingViewportHeight.current = visibleViewport.height;
   const expandedForInput = (focusInput || editing) && visibleViewport.height < restingViewportHeight.current;
   const [desktopNode, setDesktopNode] = useState<HTMLDivElement | null>(null);
-  const desktopSlot = useMemo(() => ({ current: desktopNode }), [desktopNode]);
+  const [embeddedNode, setEmbeddedNode] = useState<HTMLDivElement | null>(null);
+  const footerNode = embedded?.active ? embeddedNode : desktopNode;
+  const desktopSlot = useMemo(() => ({ current: footerNode }), [footerNode]);
   const dialog = useRef<HTMLDialogElement | null>(null);
+  const mobileOverlay = useRef<HTMLDivElement>(null);
+  const mobileReadingPorts = useMemo(() => ({ key: 'sheet', overlay: mobileOverlay }), []);
+  const mobileReadingHost = useReadingHostRef<HTMLElement>(mobileReadingPorts);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Preserve the application's public surface marker on the observed panel;
   // this ref never writes geometry or paint.
@@ -58,14 +72,19 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const requestedHeight = visibleViewport.height * (fullscreen ? 1 : expandedForInput ? 0.92 : 0.8);
   const sheetHeight = fullscreen ? requestedHeight : Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   const frame = { title: props.title, contextTitle, children: props.children };
-  return <><Drawer {...props} open={!mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
-    footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet ? null : props.children}</Drawer>
+  // Keep the embedded targets mounted through compact presentation: Sheet owns
+  // moving the one footer and retaining its caret. Only the active host paints history.
+  return <>
+    {embedded?.host != null && createPortal(<EmbeddedReadingHost id={props.id} label={embedded.label} hidden={!embedded.active}
+      footer={<>{embedded.footerPrefix}<div ref={setEmbeddedNode} /></>}>{embedded.active ? props.children : null}</EmbeddedReadingHost>, embedded.host)}
+    <Drawer {...props} open={!embedded?.active && !mobileSheet && props.open} companionVisible={!mobileSheet && props.companionVisible}
+      footer={mobileSheet ? undefined : <div ref={setDesktopNode} />}>{mobileSheet || embedded?.active ? null : props.children}</Drawer>
     <Sheet enabled={mobileSheet} open={props.open} label={props.title || '对话'} frame={{ heightPx: sheetHeight, bottomInsetPx: visibleViewport.bottomInset }}
       desktopFooterRef={desktopSlot} dialogRef={dialog} panelRef={capturePanel} finalFocusRef={finalFocus}
       focusInput={focusInput} resolveInitialFocus={resolveInitialFocus} onCloseRequest={props.onClose} onFooterHeight={setFooterHeight}
       footer={<div className={mobileSheet ? `${styles.footerContent} ${mobileFontClassName}` : undefined} data-nc-chat-footer={mobileSheet ? '' : undefined} data-nc-conversation-region={props.id}
         onFocusCapture={event => { if (event.target instanceof HTMLElement && event.target.matches('[contenteditable="true"], textarea')) setEditing(true); }}>{props.footer}</div>}>
-      <section className={`${styles.content} ${mobileFontClassName}`} data-nc-fullscreen={fullscreen} id={props.id}>
+      <section ref={mobileReadingHost} className={`${styles.content} ${mobileFontClassName}`} data-nc-fullscreen={fullscreen} id={props.id}>
       <header className={styles.conversationHeader}>
         <h2 className={styles.conversationHeading}>{frame.contextTitle ?? frame.title}</h2>
         <button type="button" className={styles.close} aria-label={fullscreen ? 'Collapse conversation' : 'Expand conversation'} aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}><Icon name={fullscreen ? 'compact' : 'fullscreen'} /></button>
@@ -73,7 +92,7 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
       </header>
       <div className={styles.messageViewport}>
         <div className={styles.messages} style={{ paddingBottom: `calc(${footerHeight}px + var(--space-4))`, scrollPaddingBottom: footerHeight }} data-nc-drawer-scroll="">{frame.children}</div>
-        <div className={styles.scrollOverlay} style={{ bottom: footerHeight }} data-nc-chat-scroll-overlay="" />
+        <div ref={mobileOverlay} className={styles.scrollOverlay} style={{ bottom: footerHeight }} data-nc-chat-scroll-overlay="" />
       </div>
       </section>
     </Sheet></>;

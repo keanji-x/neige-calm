@@ -64,10 +64,14 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
 }) {
   const feedback = useOperationFeedback();
   const [busy, setBusy] = useState(false);
+  const [ownExpandedPage, setOwnExpandedPage] = useState<number | null>(null);
   const lock = useRef(false);
   const { drafts, page } = state;
   const question = ask.questions[page];
   const draft = drafts[page];
+  const showOwnInput = !takesOptionsOnly(ask)
+    && (question.options.length === 0 || draft.own !== '' || ownExpandedPage === page);
+  const showOwnToggle = !takesOptionsOnly(ask) && question.options.length > 0 && !showOwnInput;
   const firstOption = useRef<HTMLButtonElement | null>(null);
   const ownInput = useRef<HTMLInputElement | null>(null);
   const previousPage = useRef(page);
@@ -76,6 +80,9 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     previousPage.current = page;
     (question.options.length === 0 ? ownInput.current : firstOption.current)?.focus();
   }, [page, question.options.length]);
+  useLayoutEffect(() => {
+    if (ownExpandedPage === page) ownInput.current?.focus();
+  }, [ownExpandedPage, page]);
   const send = async (next: readonly AskDraft[]) => {
     const answers = askAnswers(ask.questions, next);
     if (answers === null || lock.current) return;
@@ -109,23 +116,31 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     {/* A `hold` ask is a provider request the running turn waits on (#2348). */}
     {ask.delivery === 'hold' && <p className={styles.paused} data-nc-ask-paused="">Turn paused, waiting for your approval</p>}
     {ask.questions.length > 1 && <HStack justify="between" align="center" className={styles.meta}>
-      <span>{page + 1} / {ask.questions.length}</span>
+      <span className={styles.stepBadge}>{page + 1} / {ask.questions.length}</span>
       {page > 0 && <Button label="Previous question" tooltip="Previous question" icon={<Icon name="arrow-left" size="sm" />} isIconOnly size="sm" variant="secondary" className={styles.back}
         isDisabled={busy} onClick={() => { feedback.clear(); onChange({ drafts, page: page - 1 }); }} />}
     </HStack>}
     <h3 className={styles.title}>{question.title}</h3>
     {question.detail !== undefined && <pre className={styles.detail} aria-label="Question details">{question.detail}</pre>}
     <div className={styles.questions} data-nc-ask-questions="">
-      {question.options.map((option, index) => <Button key={index} ref={index === 0 ? firstOption : undefined} label={option} variant="secondary"
-        className={`${styles.option} ${draft.choice === index && draft.own.trim() === '' ? styles.optionSelected : ''}`}
-        aria-pressed={draft.choice === index && draft.own.trim() === ''} isDisabled={busy}
-        onClick={() => { void advance(drafts.map((item, at) => at === page ? { choice: index, own: '' } : item)); }}>
-        <span className={styles.optionContent}>
-          <span className={styles.optionLabel}>{option}</span>
-          {draft.choice === index && draft.own.trim() === '' && <AstryxIcon icon="check" size="sm" color="accent" />}
-        </span>
-      </Button>)}
-      {!takesOptionsOnly(ask) && <div className={styles.own} role="group" aria-label="Your answer">
+      {question.options.length > 0 && <div className={styles.optionList} data-nc-ask-options="">
+        {question.options.map((option, index) => <Button key={index} ref={index === 0 ? firstOption : undefined} label={option} variant="secondary"
+          className={`${styles.option} ${draft.choice === index && draft.own.trim() === '' ? styles.optionSelected : ''}`}
+          aria-pressed={draft.choice === index && draft.own.trim() === ''} isDisabled={busy}
+          onClick={() => { setOwnExpandedPage(null); void advance(drafts.map((item, at) => at === page ? { choice: index, own: '' } : item)); }}>
+          <span className={styles.optionContent}>
+            <span className={styles.optionLabel}>{option}</span>
+            {draft.choice === index && draft.own.trim() === ''
+              ? <AstryxIcon icon="check" size="sm" color="secondary" />
+              : <span className={styles.optionHint} aria-hidden="true">↵</span>}
+          </span>
+        </Button>)}
+      </div>}
+      {showOwnToggle && <button type="button" className={styles.customToggle} disabled={busy}
+        onClick={() => setOwnExpandedPage(page)}>
+        Other…
+      </button>}
+      {showOwnInput && <div className={styles.own} role="group" aria-label="Your answer">
         <TextInput ref={ownInput} label={question.title} isLabelHidden
           className={styles.answerInput} placeholder={question.options.length > 0 ? 'Or your own answer…' : 'Your answer…'} size="sm"
           value={draft.own} isDisabled={busy}

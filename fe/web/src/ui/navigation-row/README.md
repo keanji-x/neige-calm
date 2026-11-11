@@ -1,24 +1,25 @@
 # Navigation row regions
 
 `navigationRowPresentation` accepts a required presentation: `{ kind: 'caption', depth: 0 }`
-or `{ kind: 'entry', depth: 0 | 1 }`. A frozen kind table selects the actual ListText
-tone: captions use secondary metadata, entries use primary content. Hosts apply that
-tone to their label, not merely the outer container. Captions begin at the leading
-slot; entry names retain the separate label column. Domain membership, disclosure,
-menus, state and callbacks remain with their existing hosts.
+or `{ kind: 'entry', depth: 0 | 1 }`. A frozen presentation table selects the actual ListText
+tone: captions use secondary metadata, top-level (`depth: 0`) entries use primary content,
+and nested (`depth: 1`) entries use compact content. Hosts apply that tone to their label,
+not merely the outer container. All interactive Level 1 and Level 2 entries share one
+leading icon/guide axis, one label spine, and one entry height (`--navigation-entry-height`);
+nested (`depth: 1`) child entries indent their highlight pill clear of the vertical tree
+guide while keeping labels on that shared spine.
 
-The CSS owner defines one status/disclosure slot, one label column and two trailing
-action slots. Depth shifts only the label and selected background by the same
-relationship. Indicators remain on the global leading axis; captions do not shift
-trailing actions. There are no host font,
-tracking or arbitrary label-offset overrides.
+The CSS owner defines one leading icon/guide slot, the shared label start, and one- or
+two-slot trailing gutters (`oneAction`, `twoActions`).
 
 `navigationRowClass` remains the geometry-only entry for brand and surrounding
 chrome. Apply `content` to the navigation button and keep controls as siblings.
-`leading`, `inner`, `outer`, `chromeOuter` and `inlineActions` share the same column
-centres. `revealActions` reserves the second action slot on hover, focus, expanded
-menu or touch; hosts retain visibility and hit-target behavior.
+`leading`, `guide`, `inner`, `outer`, `chromeOuter` and `inlineActions` share the same
+column centres (`guide` aligns a child list's vertical rail to the leading slot axis while
+hosts supply `--navigation-guide-color`). `oneAction` reserves room for a resting trailing
+status indicator; `revealActions` reserves the two trailing action slots on hover, focus,
+expanded menu or touch; hosts retain visibility and hit-target behavior.
 
 Production browser tests compare actual label Range bounds, complete typography,
-nested selected-fill indentation and global status positions in narrow and wide
-rails, retaining keyboard, menu, hover and touch coverage.
+selected-fill alignment and status positions in narrow and wide rails, retaining
+keyboard, menu, hover and touch coverage.
