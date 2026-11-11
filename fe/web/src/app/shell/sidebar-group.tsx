@@ -25,6 +25,7 @@ export type RowProps = Readonly<{
   onSetPinned: (trackId: string, pinned: boolean) => void;
   onDelete: (trackId: string, origin: DialogOrigin) => void;
   trackActions?: (track: Track) => NonNullable<Parameters<typeof TrackRow>[0]['actions']>;
+  trackRowRef?: (trackId: string, element: HTMLButtonElement | null) => void;
 }>;
 
 export type GroupManagement = Readonly<{
@@ -99,7 +100,7 @@ export function SidebarGroup({ title, label, icon, expanded, onToggle, level, ma
 }
 
 /** One list implementation: retain the active row, limit/reveal, navigate, pin and delete. */
-export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, markCurrent = true, onGo, nowMs, onSetPinned, onDelete, isUnread, trackActions, ...group }: GroupProps & RowProps & {
+export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, markCurrent = true, onGo, nowMs, onSetPinned, onDelete, isUnread, trackActions, trackRowRef, ...group }: GroupProps & RowProps & {
   emptyState: EmptyStateSchema | null;
   tracks: readonly Track[];
   activeTrackId: string | null;
@@ -137,6 +138,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
         onSetPinned={onSetPinned}
         onDelete={onDelete}
         actions={trackActions?.(track)}
+        rowRef={trackRowRef === undefined ? undefined : (element) => trackRowRef(track.id, element)}
       />)}
       {limited.hiddenCount > 0 && <button
         ref={toggleRef}

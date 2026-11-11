@@ -349,17 +349,6 @@
 
   .primaryNavRow { color: var(--text-2); }
 
-  .primaryNavActive {
-    background: var(--surface-card);
-    box-shadow: 0 1px 2px oklch(0% 0 0 / 0.045),
-      inset 0 0 0 1px color-mix(in srgb, var(--hairline) 75%, transparent);
-    color: var(--text);
-  }
-
-  .primaryNavActive:hover {
-    background: color-mix(in srgb, var(--text) 2.5%, var(--surface-card));
-  }
-
   .primaryNavIcon {
     line-height: 1;
     color: var(--text-3);
@@ -414,7 +403,7 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     align-items: center;
-    min-block-size: var(--row-h);
+    min-block-size: var(--navigation-entry-height);
     padding-block: 0;
     border-radius: var(--radius-highlight);
     text-align: start;
@@ -422,9 +411,6 @@
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback);
   }
-
-  .folderRow,
-  .newAreaRow { min-block-size: var(--navigation-entry-height); }
 
   .groupHeading,
   .newAreaAnchor { display: grid; min-inline-size: 0; margin: 0; }
@@ -463,6 +449,17 @@
 
   .areaRow:hover { background: var(--overlay-hover); }
   .areaRow:focus-visible { outline-offset: -2px; }
+
+  .primaryNavActive {
+    background: var(--surface-card);
+    box-shadow: 0 1px 2px oklch(0% 0 0 / 0.045),
+      inset 0 0 0 1px color-mix(in srgb, var(--hairline) 75%, transparent);
+    color: var(--text);
+  }
+
+  .primaryNavActive:hover {
+    background: color-mix(in srgb, var(--text) 2.5%, var(--surface-card));
+  }
 
   /* Category captions stay quiet; actual Area names retain the group text role. */
   .areaName {

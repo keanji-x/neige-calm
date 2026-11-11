@@ -331,6 +331,45 @@ it('keeps pin controls usable and updates live group membership', async () => {
   await expect.element(page.getByRole('group', { name: 'Pinned', exact: true })).toBeVisible();
 });
 
+it('preserves keyboard focus when pinning from Focus or unpinning from Pinned removes the shortcut row', async () => {
+  const { onSetPinned, tracks, sidebar, view } = await scene();
+  let current = tracks;
+  onSetPinned.mockImplementation((trackId: string, next: boolean) => {
+    current = current.map((track) => track.id === trackId ? { ...track, pinnedAt: next ? 20 : null } : track);
+    view.rerender(sidebar(current));
+  });
+
+  const focusMenu = page.getByRole('group', { name: 'Focus', exact: true })
+    .getByRole('button', { name: 'Actions for track Review result', exact: true });
+  focusMenu.element().focus();
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('menuitem', { name: 'Pin globally', exact: true })).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('group', { name: 'Focus', exact: true })).not.toBeInTheDocument();
+  const pinnedGroup = page.getByRole('group', { name: 'Pinned', exact: true });
+  await expect.element(pinnedGroup.getByRole('button', { name: /^Track Review result/ })).toHaveFocus();
+
+  const pinnedReviewMenu = pinnedGroup.getByRole('button', { name: 'Actions for track Review result', exact: true });
+  pinnedReviewMenu.element().focus();
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('menuitem', { name: 'Unpin globally', exact: true })).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
+  const focusGroup = page.getByRole('group', { name: 'Focus', exact: true });
+  await expect.element(focusGroup.getByRole('button', { name: /^Track Review result/ })).toHaveFocus();
+
+  current = current.map((track) => track.id === 'running' ? { ...track, working: false, activityAt: null } : track);
+  view.rerender(sidebar(current));
+  const pinnedRunningMenu = page.getByRole('group', { name: 'Pinned', exact: true })
+    .getByRole('button', { name: 'Actions for track Build frontend', exact: true });
+  pinnedRunningMenu.element().focus();
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('menuitem', { name: 'Unpin globally', exact: true })).toHaveFocus();
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('group', { name: 'Pinned', exact: true })).not.toBeInTheDocument();
+  const workGroup = page.getByRole('group', { name: 'area Work', exact: true });
+  await expect.element(workGroup.getByRole('button', { name: /^Track Build frontend/ })).toHaveFocus();
+});
+
 it('recovers hidden groups through the full pointer list and Escape layers', async () => {
   const { options } = await scene();
   // Pointer recovery remains usable even after inspecting and closing the full hidden list.

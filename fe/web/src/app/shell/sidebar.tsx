@@ -84,8 +84,15 @@ export function Sidebar({
   const createRef = useRef<HTMLSpanElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const areaDisclosureRefs = useRef(new Map<string, HTMLButtonElement>());
+  const shortcutDisclosureRefs = useRef(new Map<Exclude<SidebarSectionId, 'areas'>, HTMLButtonElement>());
+  const groupTrackRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingAreaFocusRef = useRef<string | null>(null);
   const pendingOptionsFocusRef = useRef(false);
+  const pendingPinFocusRef = useRef<Readonly<{
+    from: Exclude<SidebarSectionId, 'areas'>;
+    trackId: string;
+    expectedPinned: boolean;
+  }> | null>(null);
   const trackConfirm = useDeleteConfirm(onDeleteTrack, writeFailureText(DELETE_FAILURES, DELETE_TEXT));
   const areaConfirm = useDeleteConfirm(onDeleteArea, writeFailureText(DELETE_FAILURES, DELETE_TEXT), () => onGo({ name: 'today' }));
   const writeFeedback = useOperationFeedback();
@@ -132,10 +139,11 @@ export function Sidebar({
       onHide: () => { pendingOptionsFocusRef.current = true; preferences.setSidebarGroupVisible(id, false); },
     };
   };
+  const optionsButton = () => railRef.current?.querySelector<HTMLButtonElement>('[aria-label="Sidebar view options"]');
   useEffect(() => {
     if (!pendingOptionsFocusRef.current) return;
     pendingOptionsFocusRef.current = false;
-    railRef.current?.querySelector<HTMLButtonElement>('[aria-label="Sidebar view options"]')?.focus();
+    optionsButton()?.focus();
   });
 
   const activeTrackId = routeParamFromPath(currentPath, '/track/') ?? null;
@@ -172,23 +180,66 @@ export function Sidebar({
     disclosure?.scrollIntoView?.({ block: 'nearest' });
   }, [collapsed]);
 
-  const setPinned = (trackId: string, next: boolean) => {
-    void writeFeedback.run(Promise.resolve(onSetPinned(trackId, next)), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin));
+  /* Pinning from Focus or unpinning from Pinned removes that shortcut row (and its
+     group when empty); transfer dropped focus to the Track's surviving row or group. */
+  useEffect(() => {
+    if (collapsed || pendingPinFocusRef.current === null) return;
+    const pending = pendingPinFocusRef.current;
+    const track = userTracks.find((item) => item.id === pending.trackId);
+    if (track !== undefined && (track.pinnedAt !== null) !== pending.expectedPinned) return;
+    pendingPinFocusRef.current = null;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && active !== document.documentElement) return;
+    const targetShortcut = pending.from === 'focus' ? 'pinned' : 'focus';
+    const target = (track === undefined ? undefined : (
+      groupTrackRefs.current.get(`${targetShortcut}:${track.id}`)
+      ?? groupTrackRefs.current.get(`area:${track.areaId}:${track.id}`)
+      ?? shortcutDisclosureRefs.current.get(targetShortcut)
+      ?? areaDisclosureRefs.current.get(track.areaId)
+    ))
+      ?? shortcutDisclosureRefs.current.get(pending.from)
+      ?? optionsButton();
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  });
+
+  const setTrackRef = (groupKey: string, trackId: string, element: HTMLButtonElement | null) => {
+    const key = `${groupKey}:${trackId}`;
+    if (element === null) groupTrackRefs.current.delete(key);
+    else groupTrackRefs.current.set(key, element);
   };
-  const rowProps = {
-    // The receipt compares the overlay's completion high-water mark, not `updatedAt`
-    // (which moves on every rename and pin); `null` is never unread.
-    isUnread,
-    onGo,
-    nowMs,
-    onSetPinned: setPinned,
-    onDelete: trackConfirm.request,
-    trackActions: (track: Track) => ({
-      areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
-      onSetPinned: setPinned,
-      onSetAreaPinned: (id: string, next: boolean) => preferences.setAreaTrackPinned(track.areaId, id, next),
-      onMarkUnread: (id: string) => { void writeFeedback.run(receipts.markUnread('track', id), writeFailureText(READ_RECEIPT_FAILURES, MARK_UNREAD_TEXT)); },
-    }),
+  const setPinnedFrom = (origin?: Exclude<SidebarSectionId, 'areas'>) => (trackId: string, next: boolean) => {
+    const pending = (origin === 'focus' && next) || (origin === 'pinned' && !next)
+      ? { from: origin, trackId, expectedPinned: next }
+      : null;
+    if (pending !== null) pendingPinFocusRef.current = pending;
+    void writeFeedback.run(
+      Promise.resolve(onSetPinned(trackId, next)),
+      writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin),
+    ).then((ok) => {
+      if (!ok && pending !== null && pendingPinFocusRef.current === pending) {
+        pendingPinFocusRef.current = null;
+      }
+    });
+  };
+  const rowPropsFor = (groupKey: string, origin?: Exclude<SidebarSectionId, 'areas'>) => {
+    const handleSetPinned = setPinnedFrom(origin);
+    return {
+      // The receipt compares the overlay's completion high-water mark, not `updatedAt`
+      // (which moves on every rename and pin); `null` is never unread.
+      isUnread,
+      onGo,
+      nowMs,
+      onSetPinned: handleSetPinned,
+      onDelete: trackConfirm.request,
+      trackRowRef: (trackId: string, element: HTMLButtonElement | null) => setTrackRef(groupKey, trackId, element),
+      trackActions: (track: Track) => ({
+        areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
+        onSetPinned: handleSetPinned,
+        onSetAreaPinned: (id: string, next: boolean) => preferences.setAreaTrackPinned(track.areaId, id, next),
+        onMarkUnread: (id: string) => { void writeFeedback.run(receipts.markUnread('track', id), writeFailureText(READ_RECEIPT_FAILURES, MARK_UNREAD_TEXT)); },
+      }),
+    };
   };
 
   return (
@@ -313,7 +364,11 @@ export function Sidebar({
                 emptyState={null} tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
                 expanded={preferences.sidebarGroupExpanded(id)}
                 onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)}
-                {...rowProps} />;
+                disclosureRef={(element) => {
+                  if (element === null) shortcutDisclosureRefs.current.delete(id);
+                  else shortcutDisclosureRefs.current.set(id, element);
+                }}
+                {...rowPropsFor(id, id)} />;
             }
             return <div key={id} className={styles.areaGroups}>
               {readError === null && !readLoading && userAreas.length === 0 && (
@@ -341,7 +396,7 @@ export function Sidebar({
                   onEdit={(origin) => onRequestEditArea(area, origin)}
                   onRequestDelete={areaConfirm.request}
                   onNewTrack={onNewTrack}
-                  {...rowProps}
+                  {...rowPropsFor(`area:${area.id}`)}
                 />
               ))}
 

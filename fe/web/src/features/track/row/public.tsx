@@ -3,7 +3,7 @@ import { TrackTitle } from '../title/public.tsx';
 // The one track row, rendered by the sidebar rail and Today. It stays under `features/track` because it reads track predicates, which `ui/` may not.
 
 import { ListText } from '../../../ui/list-typography/public.tsx';
-import { useId, useRef } from 'react';
+import { useId, useRef, type Ref } from 'react';
 import { activityLabelOf, activityNameBit } from '../../../../../core/domain/activity.ts';
 import {
   isClosed, trackActivityState, trackDisplayTitle, type Track,
@@ -38,6 +38,7 @@ export type TrackRowProps = Readonly<{
     onSetAreaPinned: (id: string, pinned: boolean) => void;
     onMarkUnread: (id: string) => void;
   }>;
+  rowRef?: Ref<HTMLButtonElement>;
 } & ({ variant: 'rail'; presentation: NavigationEntrySpec } | { variant?: Exclude<TrackRowVariant, 'rail'>; presentation?: never })>;
 
 function variantClass(variant: TrackRowVariant): string {
@@ -69,7 +70,7 @@ export function relativeTime(atMs: number, nowMs: number): string {
 /** The row is a `<button>` and the pin/delete affordances are siblings, not children: nesting interactive elements is invalid HTML. Sidebar pin actions appear on hover/focus or touch; other variants keep the pinned mark visible. */
 export function TrackRow(props: TrackRowProps) {
   const { track, variant = 'default', areaName, hourLabel, active = false, nowMs,
-    onOpen, onSetPinned, onDelete, actions, unread = false } = props;
+    onOpen, onSetPinned, onDelete, actions, rowRef, unread = false } = props;
   const presentation = props.variant === 'rail' ? navigationRowPresentation(props.presentation) : undefined;
   const removeRef = useRef<HTMLSpanElement | null>(null);
   const descriptionId = useId();
@@ -95,6 +96,7 @@ export function TrackRow(props: TrackRowProps) {
       variant === 'panel' ? styles.wrapperPanel : '',
     ].filter(Boolean).join(' ')}>
       <button
+        ref={rowRef}
         type="button"
         data-nc-role="row"
         className={[

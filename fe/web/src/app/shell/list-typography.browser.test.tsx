@@ -90,6 +90,8 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
 
 it('uses configured sidebar density and uses compact single-line contextual tool entries', async () => {
   await page.viewport(1400, 900); draw();
+  const today = element(document.querySelector<HTMLElement>('[aria-current="page"]'));
+  const recipes = element(document.querySelector<HTMLElement>('[title="Recipes"]')).closest('button')!;
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
     element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')),
@@ -99,6 +101,8 @@ it('uses configured sidebar density and uses compact single-line contextual tool
     element(document.querySelector<HTMLElement>('[data-nc-work-inventory] button[aria-expanded]')),
   ];
   for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 30 : 28, 0);
+  expect(today.getBoundingClientRect().height).toBeCloseTo(30, 0);
+  expect(recipes.getBoundingClientRect().height).toBeCloseTo(30, 0);
   expect(area.getBoundingClientRect().height).toBeCloseTo(30, 0);
   const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] section[aria-label="Workbench"] h2')).parentElement!;
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-card-inventory]')).getBoundingClientRect().top
@@ -149,4 +153,11 @@ it.each(['light', 'dark'])('uses opaque elevated selection on the rail and opaqu
   await page.elementLocator(mobile).hover();
   await expect.poll(() => paint(mobileRow)).toBe(selectedHover);
   expect(paint(mobile)).toBe('rgba(0, 0, 0, 0)');
+  cleanup();
+  draw(false);
+  const today = element(document.querySelector<HTMLElement>('[aria-current="page"]'));
+  await page.elementLocator(document.body).hover();
+  await expect.poll(() => paint(today)).toBe(railSelected);
+  await page.elementLocator(today).hover();
+  await expect.poll(() => paint(today)).toBe(railSelectedHover);
 });

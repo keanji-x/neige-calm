@@ -1,5 +1,7 @@
 @layer features {
   .drawer {
+    --color-icon-primary: var(--text-3);
+    --color-icon-secondary: var(--hairline-strong);
     padding-inline: var(--space-2);
     padding-block-start: var(--space-1);
     padding-block-end: calc(var(--space-2) + var(--radius-chat));
@@ -7,18 +9,14 @@
     border-block-end: 0;
     background-image: none;
   }
-  .drawer > [role='button'][aria-controls] {
-    --color-icon-secondary: var(--hairline-strong);
-  }
-  .drawer > [role='button'][aria-controls]:hover {
-    --color-icon-secondary: var(--text-3);
-  }
   [data-nc-embedded-reading] .drawer {
     --color-background-surface: color-mix(in oklab, var(--paper) 60%, var(--bg));
   }
   .asks {
     --color-accent: var(--accent);
     --color-accent-muted: var(--accent-soft);
+    --color-icon-primary: var(--text);
+    --color-icon-secondary: var(--text-2);
     font-family: var(--font-sans);
     font-size: var(--font-step-2-size);
     line-height: var(--font-step-2-line);
