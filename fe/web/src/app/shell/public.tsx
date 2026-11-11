@@ -12,7 +12,7 @@ import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 // route's outlet. The shell owns the workspace read and the area/track mutations;
 // `Sidebar` stays presentational.
 
-import { Outlet } from '@tanstack/react-router';
+import { Outlet, useRouter, type RouterHistory } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef, useCallback, useLayoutEffect, useMemo, type ReactNode } from 'react';
 
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
@@ -150,6 +150,7 @@ export function useOpenMobileSection(): OpenMobileSection {
 export function AppShell({
   transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
 }: AppShellProps) {
+  const router = useRouter();
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
   const prepareNewTrack = usePrepareNewTrack();
@@ -344,6 +345,7 @@ export function AppShell({
   const submitAreaEditor = (values: AreaEditorValues) => {
     const target = areaEditorTarget;
     if (target === null || areaEditorPending) return;
+    const originEntryKey = (router.history as RouterHistory).location.state.__TSR_key;
     const patch: AreaEditorPatch | null = target.kind === 'create' ? null : {
       ...(values.name === target.area.name ? {} : { name: values.name }),
       ...(values.defaultTemplateId === target.area.defaultTemplateId
@@ -377,7 +379,9 @@ export function AppShell({
     void write.then((saved) => {
       if (creation !== null) areaIntent.release(creation);
       setAreaEditorTarget(null);
-      if (target.kind === 'create') {
+      // A successful write must not take navigation back from a newer history entry.
+      if (target.kind === 'create' && originEntryKey !== undefined
+        && (router.history as RouterHistory).location.state.__TSR_key === originEntryKey) {
         prepareNewTrack(saved);
         requestNewTrack(saved.id);
       }

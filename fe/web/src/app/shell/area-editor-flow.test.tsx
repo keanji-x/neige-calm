@@ -37,12 +37,16 @@ const harness = vi.hoisted(() => ({
   go: vi.fn(),
 }));
 
-vi.mock('@tanstack/react-router', () => ({
-  Outlet: () => <div>route</div>,
-  useNavigate: () => vi.fn(),
-  useRouter: () => ({}),
-  useRouterState: () => undefined,
-}));
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const { createMemoryHistory } = await importOriginal<typeof import('@tanstack/react-router')>();
+  const history = createMemoryHistory({ initialEntries: ['/'] });
+  return {
+    Outlet: () => <div>route</div>,
+    useNavigate: () => vi.fn(),
+    useRouter: () => ({ history }),
+    useRouterState: () => undefined,
+  };
+});
 
 vi.mock('../providers/queries.ts', async (importOriginal) => {
   const original = await importOriginal<typeof import('../providers/queries.ts')>();

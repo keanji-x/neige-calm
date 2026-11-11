@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
+import { RouterProvider, createMemoryHistory, type RouterHistory } from '@tanstack/react-router';
 import { render } from '@testing-library/react';
 import { vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -12,7 +12,7 @@ import { DepthFeedback } from '../../ui/motion/depth-feedback.tsx';
 import { prepareReportDocument } from '../../features/report/document/preparation.ts';
 
 export const AREA = Object.freeze({ id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 });
-export function setup(path: string, areaName: string = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, receipts?: ReadReceiptsKernel) {
+export function setup(path: string, areaName: string = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, receipts?: ReadReceiptsKernel, history?: RouterHistory) {
   const OTHER_AREA = { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
   const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null },
     id: 'w1', area_id: 'c1', title: 'Responsive mobile UI', sort: 1, cwd: '/tmp',
@@ -118,7 +118,7 @@ export function setup(path: string, areaName: string = AREA.name, onRequest: (re
     cards: bootTestCardRuntime(),
     onSignOut: vi.fn(),
   });
-  router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
+  router.update({ history: history ?? createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <DepthFeedback />
     <RouterProvider router={router} />

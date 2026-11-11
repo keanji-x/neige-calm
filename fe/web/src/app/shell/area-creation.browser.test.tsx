@@ -2,11 +2,67 @@ import '../../styles/entry.css';
 import { AREA, setup } from './mobile-browser-fixture.tsx';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { cleanup } from '@testing-library/react';
+import { createBrowserHistory } from '@tanstack/react-router';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import type { ApiRequest } from '../../../../core/api/types.ts';
 
 afterEach(cleanup);
+
+describe('creating an Area after navigation changes', () => {
+  it.each(['Back', 'same-URL push', 'same-URL replace'] as const)('keeps the current history entry after %s during creation', async (navigation) => {
+    await page.viewport(390, 844);
+    // Native Back must not traverse the browser runner's own history.
+    const host = window.open(new URL('../router/native-history-fixture.html', import.meta.url).href, '_blank');
+    if (host === null) throw new Error('Native history test requires an independent window');
+    let releaseCreate!: () => void;
+    const createHeld = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    try {
+      await expect.poll(() => host.location.href.includes('native-history-fixture.html') && host.document.readyState === 'complete').toBe(true);
+      host.history.replaceState({}, '', '/next/track/w1');
+      const history = createBrowserHistory({ window: host });
+      const receipts = createReadReceiptsKernel();
+      const reply = receipts.reply;
+      let creating = false;
+      let areaReads = 0;
+      receipts.reply = async (request) => {
+        if (request.path === '/api/areas' && request.method === 'POST') {
+          creating = true;
+          await createHeld;
+        }
+        return reply(request);
+      };
+      const router = setup('/track/w1', AREA.name, (request) => {
+        if (request.path === '/api/areas' && request.method === 'GET') areaReads++;
+      }, receipts, history);
+      try {
+        await page.getByRole('button', { name: 'Switch track, Responsive mobile UI', exact: true }).click();
+        await page.getByRole('button', { name: 'New track', exact: true }).click();
+        await expect.poll(() => router.state.location.pathname).toBe('/area/c1/new');
+        await page.getByRole('button', { name: 'Switch area, Product', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'New area', exact: true }).click();
+        await page.getByRole('textbox', { name: /^Name/ }).fill('Research');
+        await page.getByRole('button', { name: 'Create area', exact: true }).click();
+        await expect.poll(() => creating).toBe(true);
+        const readsBeforeSuccess = areaReads;
+        if (navigation === 'Back') host.history.back();
+        else if (navigation === 'same-URL push') history.push(history.location.href);
+        else history.replace(history.location.href);
+        const destination = navigation === 'Back' ? '/track/w1' : '/area/c1/new';
+        await expect.poll(() => router.state.status === 'idle' && router.state.location.pathname === destination).toBe(true);
+        history.flush();
+        const entry = history.location.state.__TSR_key;
+        releaseCreate();
+        await expect.element(page.getByRole('dialog', { name: 'New area', exact: true })).not.toBeInTheDocument();
+        await expect.poll(() => areaReads).toBeGreaterThan(readsBeforeSuccess);
+        expect(router.state.location.pathname).toBe(destination);
+        expect(history.location.state.__TSR_key).toBe(entry);
+        await page.getByRole('button', { name: 'Open workspace' }).click();
+        await expect.element(page.getByRole('button', { name: 'Research', exact: true })).toBeVisible();
+      } finally { releaseCreate(); cleanup(); history.destroy(); }
+    } finally { releaseCreate(); host.close(); }
+  });
+});
 
 describe('creating an Area before its list is available', () => {
   it('opens an editable created Area draft before either Area list read settles', async () => {
