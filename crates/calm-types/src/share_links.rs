@@ -66,3 +66,30 @@ pub struct ShareLinkCreated {
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CreateShareLink {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct SharedTrack {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct SharedTarget {
+    pub scope: ShareScope,
+    pub tracks: Vec<SharedTrack>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct SharedRun {
+    pub card_id: String,
+    #[schema(required = true, nullable = true)]
+    pub phase: Option<crate::harness::HarnessPhaseTag>,
+    #[schema(required = true, nullable = true)]
+    pub runtime_state: Option<crate::worker::WorkerSessionState>,
+}

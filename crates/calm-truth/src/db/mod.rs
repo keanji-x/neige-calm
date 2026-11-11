@@ -160,6 +160,20 @@ pub struct CurrentConversationRuntime {
     pub state: calm_types::worker::WorkerSessionState,
 }
 
+/// Facts, not an access lease. The application owner interprets scope and purpose
+/// and reloads these facts at publication. No writer lock is acquired.
+pub struct ShareReadFacts {
+    pub link: calm_types::share_links::ShareLink,
+    pub area: crate::ids::AreaId,
+    pub requested_track: Option<ShareTrackFacts>,
+}
+
+/// Only the containment fields needed before a share authorization decision.
+pub struct ShareTrackFacts {
+    pub area_id: crate::ids::AreaId,
+    pub purpose: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingHumanMessage {
     pub reference: calm_types::conversation::MessageRevisionRef,
@@ -190,9 +204,25 @@ pub trait RepoRead: Send + Sync + 'static {
         track_id: &str,
         user_id: &str,
     ) -> Result<Option<TrackAreaMembership>>;
+    /// Active link, actual target parent and requested Track from one autocommit snapshot.
+    /// The supplied issuer must currently have Delete access to the User Area.
+    async fn share_link_read_facts(
+        &self,
+        token_hash: &str,
+        owner: &str,
+        track: Option<&str>,
+    ) -> Result<ShareReadFacts>;
     async fn card_track_id(&self, card_id: &str) -> Result<Option<String>>;
     async fn conversation_read_frame(&self, card_id: &str) -> Result<ConversationReadFrame>;
     async fn conversation_presentation_page(
+        &self,
+        card_id: &str,
+        after: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<calm_types::conversation_display::ConversationPage>;
+    /// Published conversation content only: unclaimed private revisions/observations stay private.
+    async fn conversation_published_page(
         &self,
         card_id: &str,
         after: i64,

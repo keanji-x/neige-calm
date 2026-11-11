@@ -206,6 +206,27 @@ pub(super) async fn page_on_connection(
     limit: i64,
     descending: bool,
 ) -> Result<ConversationPage> {
+    read_page_on_connection(connection, card, after, limit, descending, false).await
+}
+
+pub(super) async fn published_page_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    card: &str,
+    after: i64,
+    limit: i64,
+    descending: bool,
+) -> Result<ConversationPage> {
+    read_page_on_connection(connection, card, after, limit, descending, true).await
+}
+
+async fn read_page_on_connection(
+    connection: &mut sqlx::SqliteConnection,
+    card: &str,
+    after: i64,
+    limit: i64,
+    descending: bool,
+    published: bool,
+) -> Result<ConversationPage> {
     let (comparison, order, position) = if descending {
         ("<", "DESC", if after == 0 { i64::MAX } else { after })
     } else {
@@ -257,6 +278,13 @@ pub(super) async fn page_on_connection(
          {human_joins}
          LEFT JOIN harness_items i ON i.id=p.native_item_row_id AND i.card_id=p.card_id
          WHERE p.card_id=?1 AND p.sequence {comparison} ?2
+           AND (NOT ?4 OR (
+             (p.source_kind!='human_message' OR EXISTS (
+               SELECT 1 FROM conversation_submission_inputs published_input
+               JOIN conversation_input_submissions published_submission ON published_submission.id=published_input.submission_id
+               WHERE published_submission.card_id=p.card_id AND published_input.message_id=m.id
+                 AND published_input.revision=m.current_revision AND published_input.effective=1))
+             AND (p.source_kind!='system_observation' OR (system_input.effective=1 AND system_claim.value IS NOT NULL))))
            AND (p.source_kind!='imported_item' OR p.erased_by_operation_id IS NOT NULL OR NOT EXISTS (
              SELECT 1 FROM conversation_presentations native WHERE native.card_id=p.card_id
              AND native.source_kind='native_item' AND native.source_identity=p.imported_native_identity))
@@ -274,6 +302,7 @@ pub(super) async fn page_on_connection(
         .bind(card)
         .bind(position)
         .bind(limit)
+        .bind(published)
         .fetch_all(&mut *connection)
         .await?;
     let next_cursor = (rows.len() == limit as usize && limit > 0).then(|| {

@@ -118,3 +118,68 @@ pub(crate) async fn revoke(
     })
     .await
 }
+
+/// A finite read fence. The parent is retained so moving a Track cannot publish
+/// bytes assembled under a different Area, even when both Areas have links.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShareRead {
+    pub link: ShareLink,
+    pub area: crate::ids::AreaId,
+}
+
+pub(crate) async fn resolve(
+    repo: &dyn RouteRepo,
+    config: &crate::auth::AuthConfig,
+    token: &str,
+    track_id: Option<&str>,
+) -> Result<ShareRead> {
+    let owner = crate::auth::current_deployment_owner(config)?;
+    let facts = repo
+        .share_link_read_facts(
+            &hex::encode(Sha256::digest(token.as_bytes())),
+            &owner,
+            track_id,
+        )
+        .await?;
+    let link = facts.link;
+    if link.delegation.approver_user_id != owner
+        || link.delegation.purpose != SharePurpose::Conversation
+        || link.delegation.resource_policy != ShareResourcePolicy::CurrentDeployment
+    {
+        return Err(CalmError::Forbidden(
+            "share approval is no longer current".into(),
+        ));
+    }
+    match &link.delegation.scope {
+        ShareScope::Track(id) if track_id.is_some_and(|requested| requested != id) => {
+            return Err(CalmError::NotFound("shared Track".into()));
+        }
+        ShareScope::Area(id)
+            if facts.requested_track.as_ref().is_some_and(|track| {
+                track.area_id.as_str() != id
+                    || track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
+            }) =>
+        {
+            return Err(CalmError::NotFound("shared Track".into()));
+        }
+        ShareScope::Track(_) | ShareScope::Area(_) => {}
+    }
+    let area = facts.area;
+    crate::auth::current_deployment_owner(config)?;
+    Ok(ShareRead { link, area })
+}
+
+pub(crate) async fn require_publication(
+    repo: &dyn RouteRepo,
+    config: &crate::auth::AuthConfig,
+    token: &str,
+    track: Option<&str>,
+    expected: &ShareRead,
+) -> Result<()> {
+    if resolve(repo, config, token, track).await? != *expected {
+        return Err(CalmError::Forbidden(
+            "share scope changed while reading".into(),
+        ));
+    }
+    Ok(())
+}

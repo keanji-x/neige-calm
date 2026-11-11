@@ -112,7 +112,7 @@ pub(super) async fn user_released(boot: &Boot, id: Option<&str>, mut payload: Va
 
 pub(super) fn principal() -> Principal {
     Principal {
-        user_id: "owner".into(),
+        user_id: LEGACY_OWNER_USER_ID.into(),
         display_name: "owner".into(),
         role: "owner".into(),
         session_id: "test".into(),

@@ -4,6 +4,7 @@
 
 mod deployment;
 mod input_source;
+pub(crate) use deployment::current_deployment_owner;
 pub(crate) use deployment::{LegacyPrivateExecution, ValidatedApplicationAuth};
 pub mod login_throttle;
 mod session;

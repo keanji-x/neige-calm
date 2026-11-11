@@ -3316,7 +3316,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/HarnessItemsDirection"
+              "$ref": "#/components/schemas/ConversationItemsDirection"
             }
           }
         ],
@@ -9215,7 +9215,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Access revoke_share_linkd; delegation retained",
+            "description": "Access revoked; delegation retained",
             "content": {
               "application/json": {
                 "schema": {
@@ -9275,6 +9275,1041 @@
             }
           }
         }
+      }
+    },
+    "/api/share/{token}": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "resolve",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedTarget"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/events": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "upgrade",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Share access token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Scope-only invalidation WebSocket"
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/conversations": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "conversations",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrackConversationSummary"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/items": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "items",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "after_id",
+            "in": "query",
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ConversationItemsDirection"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationItemsReadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/live": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "live",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/ConversationReadContract"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HarnessLiveReadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/conversations/{card_id}/run": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "run",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/report": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "report",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackReportReadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/report/series": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "series",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rev",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "detail",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReportSeriesDetail"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSeriesResolved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Block revision changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSeriesRevConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/sources": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "sources",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackSourceList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/api/share/{token}/tracks/{track_id}/sources/{source_id}": {
+      "get": {
+        "tags": [
+          "share_links"
+        ],
+        "operationId": "source",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "track_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source_id",
+            "in": "path",
+            "description": "Shared resource identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Shared resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackSourceDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Share authority no longer current",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Active share or resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource revision or read contract changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
       }
     },
     "/api/threads/{thread_id}/card": {
@@ -11856,6 +12891,16 @@
               }
             }
           },
+          "403": {
+            "description": "Current Area access refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
             "content": {
@@ -12628,6 +13673,16 @@
               }
             }
           },
+          "403": {
+            "description": "Current Area access refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track, block, or a block that is not `chart.series`",
             "content": {
@@ -12912,6 +13967,16 @@
               }
             }
           },
+          "403": {
+            "description": "Current Area access refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Track not found",
             "content": {
@@ -12984,6 +14049,16 @@
           },
           "401": {
             "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Current Area access refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -16228,6 +17303,53 @@
           }
         }
       },
+      "ConversationItemsDirection": {
+        "type": "string",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
+      "ConversationItemsQuery": {
+        "type": "object",
+        "properties": {
+          "after_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Legacy physical item cursor. Accepted only without contract on V1 history."
+          },
+          "contract": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConversationReadContract"
+              }
+            ]
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id."
+          },
+          "direction": {
+            "$ref": "#/components/schemas/ConversationItemsDirection"
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "ConversationItemsReadResponse": {
         "oneOf": [
           {
@@ -17673,53 +18795,6 @@
           },
           "worker_session_id": {
             "type": "string"
-          }
-        }
-      },
-      "HarnessItemsDirection": {
-        "type": "string",
-        "enum": [
-          "asc",
-          "desc"
-        ]
-      },
-      "HarnessItemsQuery": {
-        "type": "object",
-        "properties": {
-          "after_id": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Legacy physical item cursor. Accepted only without contract on V1 history."
-          },
-          "contract": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ConversationReadContract"
-              }
-            ]
-          },
-          "cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "URL-encoded strict ConversationCursor JSON; exclusive with after_id."
-          },
-          "direction": {
-            "$ref": "#/components/schemas/HarnessItemsDirection"
-          },
-          "limit": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
           }
         }
       },
@@ -20879,6 +21954,75 @@
             }
           }
         ]
+      },
+      "SharedRun": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "phase",
+          "runtime_state"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "phase": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HarnessPhaseTag"
+              }
+            ]
+          },
+          "runtime_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerSessionState"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedTarget": {
+        "type": "object",
+        "required": [
+          "scope",
+          "tracks"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/ShareScope"
+          },
+          "tracks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedTrack"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedTrack": {
+        "type": "object",
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "SideConversation": {
         "type": "object",

@@ -41,9 +41,24 @@ pub(crate) async fn get_harness_live(
     Path(id): Path<String>,
     Query(query): Query<super::conversation_run::RunReadQuery>,
 ) -> Result<Response> {
+    read(
+        &s,
+        crate::read_access::Audience::Owner(&principal),
+        id,
+        query,
+    )
+    .await
+}
+
+pub(crate) async fn read(
+    s: &RouteState,
+    audience: crate::read_access::Audience<'_>,
+    id: String,
+    query: super::conversation_run::RunReadQuery,
+) -> Result<Response> {
     let scope =
-        super::conversation_read::ReadScope::check(s.repo.as_ref(), &id, &principal).await?;
-    let card = harness_card(&s, &id).await?;
+        super::conversation_read::ReadScope::check_audience(s.repo.as_ref(), &id, audience).await?;
+    let card = harness_card(s, &id).await?;
     let frame = super::conversation_read::current_frame(s.repo.as_ref(), &id).await?;
     let replies = if query.contract.is_some() {
         HarnessLiveReadResponse::Conversation(match frame.runtime.as_ref() {
@@ -65,6 +80,6 @@ pub(crate) async fn get_harness_live(
         }
         HarnessLiveReadResponse::Historical(s.harness.live_replies().read(&card.id))
     };
-    scope.publish(s.repo.as_ref(), &principal).await?;
+    scope.publish_audience(s.repo.as_ref(), audience).await?;
     Ok(Json(replies).into_response())
 }

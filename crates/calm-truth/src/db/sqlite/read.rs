@@ -81,6 +81,15 @@ impl RepoRead for SqlxRepo {
     ) -> Result<crate::conversation_title::ConversationTitleContext> {
         super::conversation_title::context(self, ids).await
     }
+    async fn share_link_read_facts(
+        &self,
+        token_hash: &str,
+        owner: &str,
+        track: Option<&str>,
+    ) -> Result<crate::db::ShareReadFacts> {
+        super::share_links::read_facts(self.db.read_pool(), token_hash, owner, track).await
+    }
+
     async fn card_track_id(&self, card_id: &str) -> Result<Option<String>> {
         Ok(sqlx::query_scalar("SELECT track_id FROM cards WHERE id=?1")
             .bind(card_id)
@@ -101,6 +110,24 @@ impl RepoRead for SqlxRepo {
         descending: bool,
     ) -> Result<calm_types::conversation_display::ConversationPage> {
         super::conversation_read::page(self.db.read_pool(), card_id, after, limit, descending).await
+    }
+
+    async fn conversation_published_page(
+        &self,
+        card_id: &str,
+        after: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<calm_types::conversation_display::ConversationPage> {
+        let mut connection = self.db.read_pool().acquire().await?;
+        super::conversation_read::published_page_on_connection(
+            &mut connection,
+            card_id,
+            after,
+            limit,
+            descending,
+        )
+        .await
     }
 
     async fn track_area_membership(

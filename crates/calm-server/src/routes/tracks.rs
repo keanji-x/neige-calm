@@ -43,12 +43,11 @@ use crate::track_creation::{
 };
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsView};
 use crate::track_report::{
-    self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx, resolve_report_for_track,
+    self, ReportBlock, TrackReportPayload, report_blocks_snapshot_tx,
     tasks_rebuild_tree_after_member_removal_tx, tasks_rebuild_tree_tx, tasks_rebuild_tx,
     validate_task_rebuild_source_tx,
 };
 use crate::track_report_doc::ReportDoc;
-use crate::track_report_read::load_report_read_snapshot;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
     Router,
@@ -3421,29 +3420,22 @@ pub struct TrackReportReadResponse {
     responses(
         (status = 200, description = "Current report with derived task diagnostics", body = TrackReportReadResponse),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 403, description = "Current Area access refused", body = ErrorBody),
         (status = 404, description = "Track not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn get_track_report(
     State(s): State<RouteState>,
-    _principal: Principal,
+    principal: Principal,
     Path(id): Path<String>,
 ) -> Result<Response> {
-    let (_, report_card, _) = resolve_report_for_track(s.repo.as_ref(), &id).await?;
-    let snapshot = load_report_read_snapshot(s.repo.as_ref(), report_card.id.as_str()).await?;
-    Ok((
-        StatusCode::OK,
-        Json(TrackReportReadResponse {
-            schema_version: snapshot.schema_version,
-            doc_rev: snapshot.doc_rev,
-            summary: snapshot.summary,
-            body: snapshot.body,
-            blocks: snapshot.blocks,
-            task_diagnostics: snapshot.task_diagnostics,
-        }),
+    crate::report_resource::get_track_report(
+        &s,
+        crate::read_access::Audience::Owner(&principal),
+        id,
     )
-        .into_response())
+    .await
 }
 
 /// `POST /api/tracks/:id/report` — user-driven track-report edit; only `ActorId::User`

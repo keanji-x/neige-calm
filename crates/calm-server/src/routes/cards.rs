@@ -168,7 +168,7 @@ pub(crate) async fn list_cards_by_track(
 }
 
 pub(crate) use super::conversation_items::get_harness_items;
-pub use super::conversation_items::{HarnessItemsDirection, HarnessItemsQuery};
+pub use super::conversation_items::{ConversationItemsDirection, ConversationItemsQuery};
 
 /// The card a `harness/*` read names, refused unless it runs a headless Planner harness.
 pub(crate) async fn harness_card(s: &RouteState, id: &str) -> Result<Card> {

@@ -27,11 +27,7 @@ pub async fn track_area_membership(
     .bind(user_id)
     .fetch_one(pool)
     .await?;
-    if !row.try_get::<bool, _>("registered")? {
-        return Err(CalmError::Forbidden(
-            "application user is not registered".into(),
-        ));
-    }
+    require_registered(row.try_get("registered")?)?;
     if row.try_get::<Option<String>, _>("track_id")?.is_none() {
         return Ok(None);
     }
@@ -44,7 +40,7 @@ pub async fn track_area_membership(
     }))
 }
 
-fn decode_member_role(role: Option<String>) -> Result<Option<AreaMemberRole>> {
+pub(super) fn decode_member_role(role: Option<String>) -> Result<Option<AreaMemberRole>> {
     match role.as_deref() {
         Some("owner") => Ok(Some(AreaMemberRole::Owner)),
         Some("member") => Ok(Some(AreaMemberRole::Member)),
@@ -94,12 +90,31 @@ pub async fn application_user_require_registered(
             .bind(user_id)
             .fetch_one(connection)
             .await?;
-    if !exists {
+    require_registered(exists)
+}
+
+/// Interpret registry facts from either a snapshot query or a protected transaction.
+pub(super) fn require_registered(registered: bool) -> Result<()> {
+    if !registered {
         return Err(CalmError::Forbidden(
             "application user is not registered".into(),
         ));
     }
     Ok(())
+}
+
+/// The User Area decision shared by joined factual reads and transactional ingress.
+pub(super) fn require_user_area_access(
+    kind: AreaKind,
+    role: Option<AreaMemberRole>,
+    access: AreaAccess,
+) -> Result<()> {
+    if kind == AreaKind::System {
+        return Err(CalmError::Forbidden(
+            "system Area requires deployment authority".into(),
+        ));
+    }
+    require_member_access(role, access)
 }
 
 /// System Areas deliberately have no membership. Their access is an explicit
@@ -112,12 +127,8 @@ pub async fn area_require_access(
 ) -> Result<Area> {
     application_user_require_registered(connection, user_id).await?;
     let area = area_get(connection, area_id).await?;
-    if area.kind == AreaKind::System {
-        return Err(CalmError::Forbidden(
-            "system Area requires deployment authority".into(),
-        ));
-    }
-    require_member_access(
+    require_user_area_access(
+        area.kind,
         area_member_role(connection, area_id, user_id).await?,
         access,
     )?;

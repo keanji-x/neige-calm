@@ -751,6 +751,12 @@ export type ShareResourcePolicy = "current_deployment";
 
 export type ShareScope = { "kind": "track", "id": string } | { "kind": "area", "id": string };
 
+export type SharedRun = { card_id: string, phase: HarnessPhaseTag | null, runtime_state: WorkerSessionState | null, };
+
+export type SharedTarget = { scope: ShareScope, tracks: Array<SharedTrack>, };
+
+export type SharedTrack = { id: string, title: string, };
+
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.
  */

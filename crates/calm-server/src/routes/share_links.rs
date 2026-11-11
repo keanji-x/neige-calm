@@ -111,7 +111,7 @@ pub(crate) async fn list_area_share_links(
     delete, path = "/api/share-links/{id}", tag = "share_links",
     params(("id" = String, Path, description = "Share link id")),
     responses(
-        (status = 200, description = "Access revoke_share_linkd; delegation retained", body = ShareLink),
+        (status = 200, description = "Access revoked; delegation retained", body = ShareLink),
         (status = 403, description = "Current deployment and Area owner required", body = ErrorBody),
         (status = 404, description = "Share or target not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -122,7 +122,7 @@ pub(crate) async fn revoke_share_link(
     source: HumanInputSource,
     Path(id): Path<String>,
 ) -> Result<Json<ShareLink>> {
-    Ok(Json(
-        crate::share_access::revoke(s.repo.as_ref(), source, id).await?,
-    ))
+    let link = crate::share_access::revoke(s.repo.as_ref(), source, id).await?;
+    s.events.wake_access_readers();
+    Ok(Json(link))
 }
