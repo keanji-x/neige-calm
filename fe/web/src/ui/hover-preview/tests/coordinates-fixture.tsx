@@ -1,8 +1,8 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
-import { placePreview } from './placement.ts';
-import { HoverPreview } from './public.tsx';
+import { placePreview } from '../placement.ts';
+import { HoverPreview } from '../public.tsx';
 
 const physical = ({ left, top, right, bottom, width, height }: DOMRectReadOnly) => ({ left, top, right, bottom, width, height });
 const frames = async (count: number) => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame); };
