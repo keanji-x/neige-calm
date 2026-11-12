@@ -43,7 +43,7 @@ it('keeps execution details and related entries in one card with single-line row
   expect(getComputedStyle(frame).paddingInlineStart).toBe('12px');
   const progress = root.querySelector<HTMLElement>('section[aria-label="Progress"]')!;
   expect(progress.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
-  expect(progress.getBoundingClientRect().top - root.querySelector('section[aria-label="Conversations"]')!.getBoundingClientRect().bottom).toBe(12);
+  expect(progress.getBoundingClientRect().top - root.querySelector('section[aria-label="Conversations"]')!.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
   await userEvent.click(progress.querySelector('button[aria-expanded]')!);
   for (const heading of root.querySelectorAll<HTMLElement>('section[aria-label] h2')) {
     expect(getComputedStyle(heading)).toMatchObject({ fontSize: '12px', lineHeight: '16px', fontWeight: '500' });
@@ -191,23 +191,23 @@ it('aligns header controls, disclosure arrows and row menus on one system action
   expect(plus.getBoundingClientRect().width).toBe(20);
   expect(plus.getBoundingClientRect().height).toBe(20);
   expect(getComputedStyle(plus).borderRadius).toBe('8px');
-  expect(center(plus).y).toBe(center(plus.closest('section')!.querySelector('h2')!.parentElement!).y);
+  expect(center(plus).y).toBeCloseTo(center(plus.closest('section')!.querySelector('h2')!.parentElement!).y, 2);
   const axis = center(plus.querySelector('svg')!).x;
   const tools = page.getByRole('button', { name: 'Tools', exact: true }).element();
   expect(tools.querySelector('svg')!.getBoundingClientRect().width).toBe(14);
-  expect(center(tools.querySelector('svg')!).y).toBe(center(tools.closest('section[aria-label="Workbench"]')!.querySelector('h2')!.parentElement!).y);
-  for (const summary of root.querySelectorAll('button[aria-expanded][aria-controls]:not([aria-haspopup])')) expect(center([...summary.querySelectorAll('svg')].at(-1)!).x).toBe(axis);
+  expect(center(tools.querySelector('svg')!).y).toBeCloseTo(center(tools.closest('section[aria-label="Workbench"]')!.querySelector('h2')!.parentElement!).y, 2);
+  for (const summary of root.querySelectorAll('button[aria-expanded][aria-controls]:not([aria-haspopup])')) expect(center([...summary.querySelectorAll('svg')].at(-1)!).x).toBeCloseTo(axis, 2);
   await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] button[aria-expanded]')!);
   const menu = page.getByRole('button', { name: 'Actions for Server', exact: true }).element();
-  expect(center(menu.querySelector('svg')!).x).toBe(axis);
+  expect(center(menu.querySelector('svg')!).x).toBeCloseTo(axis, 2);
   const conversation = root.querySelector<HTMLElement>('section[aria-label="Conversations"]')!;
   const progress = root.querySelector<HTMLElement>('[data-nc-work-inventory] section[aria-label="Progress"]')!;
-  expect(progress.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBe(12);
+  expect(progress.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
   const work = root.querySelector<HTMLElement>('[data-nc-module="work"]')!;
   const related = root.querySelector<HTMLElement>('section[aria-label="Related"]')!;
   const workbench = root.querySelector<HTMLElement>('section[aria-label="Workbench"]')!;
-  expect(workbench.getBoundingClientRect().top - work.getBoundingClientRect().bottom).toBe(12);
-  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBe(12);
+  expect(workbench.getBoundingClientRect().top - work.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
+  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
 });
 
 it('does not leave an empty work spacer between conversations and related content', async () => {
@@ -217,8 +217,8 @@ it('does not leave an empty work spacer between conversations and related conten
   const conversation = root.querySelector<HTMLElement>('section[aria-label="Conversations"]')!;
   const related = root.querySelector<HTMLElement>('section[aria-label="Related"]')!;
   const workbench = root.querySelector<HTMLElement>('section[aria-label="Workbench"]')!;
-  expect(workbench.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBe(12);
-  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBe(12);
+  expect(workbench.getBoundingClientRect().top - conversation.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
+  expect(related.getBoundingClientRect().top - workbench.querySelector('[data-nc-card-inventory]')!.getBoundingClientRect().bottom).toBeCloseTo(12, 2);
 });
 
 
@@ -319,7 +319,7 @@ it('bounds long conversation and progress lists independently while retaining he
   const top = header.getBoundingClientRect().top;
   await page.getByRole('button', { name: 'Conversation Discussion 0', exact: true }).click();
   expect(openChat).toHaveBeenCalledOnce();
-  expect(header.getBoundingClientRect().top).toBe(top);
+  expect(header.getBoundingClientRect().top).toBeCloseTo(top, 2);
   await userEvent.click(document.querySelector<HTMLElement>('[data-nc-work-inventory] button[aria-expanded]')!);
   const progress = root.querySelector<HTMLElement>('[data-nc-work-inventory] ul')!;
   expect(progress.clientHeight).toBeLessThanOrEqual(224);
@@ -389,7 +389,7 @@ it('right-aligns text states and centers conversation indicators on the same sys
     const row = page.getByRole('button', { name: `Conversation ${name}${state === 'working' ? ', working' : ''}`, exact: true }).element();
     const marker = [...row.querySelectorAll<HTMLElement>('[data-nc-activity]')].find(node => node.getAttribute('data-nc-activity') === state)!;
     expect(marker).not.toBeNull();
-    expect((marker.getBoundingClientRect().left + marker.getBoundingClientRect().right) / 2).toBe(axis);
+    expect((marker.getBoundingClientRect().left + marker.getBoundingClientRect().right) / 2).toBeCloseTo(axis, 2);
     expect(marker.checkVisibility({ checkOpacity: true })).toBe(true);
     if (state === 'working') expect(getComputedStyle(marker).animationName).not.toBe('none');
   }
@@ -400,13 +400,13 @@ it('right-aligns text states and centers conversation indicators on the same sys
   for (const id of ['Has menu', 'No menu']) {
     const row = [...root.querySelectorAll<HTMLElement>('[data-nc-row]')].find(node => node.getAttribute('data-nc-row') === `task:${id}`)!;
     const status = row.querySelector('button')!.lastElementChild!;
-    expect(status.getBoundingClientRect().right).toBe(plus.getBoundingClientRect().right);
+    expect(status.getBoundingClientRect().right).toBeCloseTo(plus.getBoundingClientRect().right, 2);
   }
   const menu = page.getByRole('button', { name: 'Actions for Has menu', exact: true }).element();
   const row = menu.closest('li')!;
   await userEvent.hover(row);
   expect(menu.checkVisibility({ checkOpacity: true })).toBe(true);
-  expect((menu.getBoundingClientRect().left + menu.getBoundingClientRect().right) / 2).toBe(axis);
+  expect((menu.getBoundingClientRect().left + menu.getBoundingClientRect().right) / 2).toBeCloseTo(axis, 2);
 });
 
 

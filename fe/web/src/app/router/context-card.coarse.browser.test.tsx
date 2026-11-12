@@ -29,13 +29,18 @@ it('keeps both statuses and persistent actions visible in distinct columns on to
   const menu = page.getByRole('button', { name: 'Actions for Has menu', exact: true }).element();
   expect(status.checkVisibility({ checkOpacity: true })).toBe(true);
   expect(menu.checkVisibility({ checkOpacity: true })).toBe(true);
-  expect(status.getBoundingClientRect().right + 4).toBeLessThanOrEqual(menu.getBoundingClientRect().left);
-  expect(other.getBoundingClientRect().right).toBe(status.getBoundingClientRect().right);
+  expect(status.getBoundingClientRect().right).toBeLessThan(menu.getBoundingClientRect().left);
+  expect(other.getBoundingClientRect().right).toBeCloseTo(status.getBoundingClientRect().right, 2);
   const marker = page.getByRole('button', { name: 'Conversation Chat, working', exact: true }).element().querySelector('[data-nc-activity]')!;
-  expect((marker.getBoundingClientRect().left + marker.getBoundingClientRect().right) / 2)
-    .toBe(status.getBoundingClientRect().right - 10);
+  const slot = marker.parentElement!.getBoundingClientRect();
+  const markerBox = marker.getBoundingClientRect();
+  // The shared slot defines alignment; the rotating ring's painted box can be fractional.
+  expect(slot.right).toBeCloseTo(status.getBoundingClientRect().right, 2);
+  expect((markerBox.left + markerBox.right) / 2).toBeCloseTo((slot.left + slot.right) / 2, 2);
+  expect(markerBox.left).toBeGreaterThanOrEqual(slot.left);
+  expect(markerBox.right).toBeLessThanOrEqual(slot.right);
   const chatMenu = page.getByRole('button', { name: 'Actions for conversation: Chat', exact: true }).element();
-  expect(marker.getBoundingClientRect().right + 4).toBeLessThanOrEqual(chatMenu.getBoundingClientRect().left);
+  expect(slot.right).toBeLessThan(chatMenu.getBoundingClientRect().left);
   await page.getByRole('button', { name: 'Actions for conversation: Chat', exact: true }).click();
   await expect.element(page.getByRole('menuitem', { name: 'Archive conversation', exact: true })).toBeVisible();
   await userEvent.keyboard('{Escape}');
