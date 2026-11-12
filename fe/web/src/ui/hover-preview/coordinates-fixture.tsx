@@ -1,7 +1,6 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
-import '../../styles/entry.css';
 import { placePreview } from './placement.ts';
 import { HoverPreview } from './public.tsx';
 

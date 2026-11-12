@@ -1,3 +1,4 @@
+import '../../styles/entry.css';
 import { it } from 'vitest';
 import { checkCoordinates } from './coordinates-fixture.tsx';
 
