@@ -184,8 +184,10 @@ source-freeze policy instead of freezing a source merely because its ancestor
 port is temporarily pending. A closed historical exit keeps its legal frame,
 so ancestor revocation does not strand retained paint.
 
-The [coordinate browser target](coordinates.browser.test.tsx) checks each slot
-against the same physical visual inputs through the sole placePreview and an
+The coordinate browser [core target](coordinates.browser.test.tsx) and
+[transforms target](coordinates-transforms.browser.test.tsx) use the
+[shared fixture](coordinates-fixture.tsx) to check each slot against the same
+physical visual inputs through the sole placePreview and an
 independent empty fixed CSS ruler, with ≤1/64 CSS px per committed edge. It never
 writes a production slot or suppresses a transform. Same complete input/phase
 revisits are exact; a second held sample at every phase and 20 idle frames require
