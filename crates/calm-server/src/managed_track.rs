@@ -99,9 +99,6 @@ pub(crate) async fn bind_tx(
     Ok(())
 }
 
-/// Workspace reports are read-only for these live, bound roles.
-pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
-
 struct WorkspaceReportReader {
     zone: Tz,
     role: CardRole,
@@ -124,9 +121,6 @@ async fn workspace_report_reader(
     let Some(role) = repo.card_role_get(card_id).await? else {
         return Ok(None);
     };
-    if !WORKSPACE_REPORT_ROLES.contains(&role) {
-        return Ok(None);
-    }
     let Some(pool) = pool else {
         return Ok(None);
     };
@@ -166,7 +160,10 @@ pub(crate) async fn workspace_report_instructions(
     Ok(
         workspace_report_reader(repo, repo.sqlite_db(), card_id, track_id)
             .await?
-            .filter(|reader| reader.managed_context)
+            .filter(|reader| {
+                reader.managed_context
+                    && matches!(reader.role, CardRole::Planner | CardRole::Assistant)
+            })
             .map(|reader| match reader.role {
                 CardRole::Planner => PLANNER_REPORTS,
                 _ => REPORTS,
@@ -174,49 +171,35 @@ pub(crate) async fn workspace_report_instructions(
     )
 }
 
-/// Check the live bound card and role on every call. No write ledger entry.
-pub(crate) async fn require_workspace_reports(
+/// Validate the live binding once; metadata supplies calendar, never read authority.
+pub(crate) async fn report_browse_context(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
-) -> std::result::Result<Tz, RpcError> {
-    let denied =
-        || RpcError::forbidden("workspace report reads require a live bound Planner or Assistant");
-    let card = ctx
-        .repo
-        .card_get(&identity.card_id)
-        .await
-        .map_err(|e| RpcError::internal(e.to_string()))?
-        .ok_or_else(denied)?;
-    if identity.track_id.as_deref() != Some(card.track_id.as_str())
-        || ctx
-            .repo
-            .card_role_get(&identity.card_id)
-            .await
-            .map_err(|e| RpcError::internal(e.to_string()))?
-            != Some(identity.role)
-        || !WORKSPACE_REPORT_ROLES.contains(&identity.role)
-    {
-        return Err(denied());
-    }
+) -> std::result::Result<(crate::model::Track, Tz), RpcError> {
+    let denied = || RpcError::forbidden("report browsing requires a live bound identity");
+    let track_id = identity.track_id.as_deref().ok_or_else(denied)?;
     let track = ctx
         .repo
-        .track_get(card.track_id.as_str())
+        .track_get(track_id)
         .await
         .map_err(|e| RpcError::internal(e.to_string()))?
         .ok_or_else(denied)?;
     if track.area_id.as_str() != identity.area_id {
         return Err(denied());
     }
-    workspace_report_reader(
+    let reader = workspace_report_reader(
         ctx.repo.as_ref(),
         ctx.sqlite_db.clone(),
         &identity.card_id,
-        card.track_id.as_str(),
+        track_id,
     )
     .await
     .map_err(crate::mcp_server::framing::calm_error)?
-    .map(|reader| reader.zone)
-    .ok_or_else(denied)
+    .ok_or_else(denied)?;
+    if reader.role != identity.role {
+        return Err(denied());
+    }
+    Ok((track, reader.zone))
 }
 
 /// The one read of whether a Track has a kernel-owned creation identity.
@@ -248,7 +231,6 @@ pub(crate) async fn refuse_track_delete(
 pub(crate) fn report_planning_tool(name: &str) -> bool {
     use crate::mcp_server::tools::{
         track_file, track_history, track_report, track_report_blocks, track_state,
-        workspace_reports,
     };
     matches!(
         name,
@@ -257,15 +239,11 @@ pub(crate) fn report_planning_tool(name: &str) -> bool {
             | track_report_blocks::TOOL_REPORT_WRITE
             | track_report_blocks::TOOL_REPORT_DESCRIBE
             | track_state::TOOL_TRACK_STATUS
-            | track_file::TOOL_TRACK_LS
-            | track_file::TOOL_TRACK_CAT
+            | track_file::TOOL_LS
+            | track_file::TOOL_CAT
             | track_history::TOOL_TRACK_LOG
             | track_history::TOOL_TRACK_DIFF
             | track_history::TOOL_TRACK_SHOW
-            | workspace_reports::TOOL_WORKSPACE_LS
-            | workspace_reports::TOOL_WORKSPACE_CAT
-            | workspace_reports::TOOL_WORKSPACE_DIFF
-            | workspace_reports::TOOL_WORKSPACE_LOG
     )
 }
 

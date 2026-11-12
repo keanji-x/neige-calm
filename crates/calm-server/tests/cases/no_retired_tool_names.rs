@@ -265,7 +265,7 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige_track_show",
         "neige_task_ls",
         "neige_track_status",
-        "neige_workspace_ls",
+        "neige_ls",
         "neige_report_read",
         "neige_plan_list2",
         "xneige_plan_list",

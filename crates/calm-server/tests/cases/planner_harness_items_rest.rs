@@ -444,7 +444,7 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
                     "type": "mcpToolCall",
                     "status": "inProgress",
                     "server": "neige",
-                    "tool": "neige_track_cat"
+                    "tool": "neige_cat"
                 }
             })
             .to_string(),
@@ -469,7 +469,7 @@ async fn transcript_route_preserves_mcp_tool_call_camelcase() {
                     "type": "mcpToolCall",
                     "status": "completed",
                     "server": "neige",
-                    "tool": "neige_track_cat",
+                    "tool": "neige_cat",
                     "result": { "content": [{ "type": "text", "text": "ok" }] }
                 }
             })

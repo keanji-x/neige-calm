@@ -61,10 +61,10 @@ async fn cli_output_equals_direct_tool_call() {
 
     // (argv without --json, tool, direct args, render)
     let cases: Vec<(Vec<&str>, &str, Value, Render)> = vec![
-        (vec!["track", "ls"], "neige_track_ls", json!({}), LS),
+        (vec!["ls"], "neige_ls", json!({}), LS),
         (
-            vec!["track", "ls", "cards"],
-            "neige_track_ls",
+            vec!["ls", "cards"],
+            "neige_ls",
             json!({ "path": "cards" }),
             LS,
         ),
@@ -99,8 +99,8 @@ async fn cli_output_equals_direct_tool_call() {
             Render::Log,
         ),
         (
-            vec!["track", "cat", "track.json"],
-            "neige_track_cat",
+            vec!["cat", "track.json"],
+            "neige_cat",
             json!({ "path": "track.json" }),
             Render::Content,
         ),
@@ -131,7 +131,7 @@ async fn cli_output_equals_direct_tool_call() {
     }
 
     // The rendered shapes themselves, end to end.
-    let (ls, _, _) = cli(&boot, &["track", "ls"]).await;
+    let (ls, _, _) = cli(&boot, &["ls"]).await;
     assert!(
         ls.lines().any(|l| l == "- track.json") && ls.lines().any(|l| l == "d cards/"),
         "{ls}"
@@ -143,7 +143,7 @@ async fn cli_output_equals_direct_tool_call() {
     );
     let (log, _, _) = cli(&boot, &["track", "log"]).await;
     assert!(log.contains(" event=3 commit 2\n"), "{log}");
-    let (cat, _, _) = cli(&boot, &["track", "cat", "track.json"]).await;
+    let (cat, _, _) = cli(&boot, &["cat", "track.json"]).await;
     assert!(
         cat.starts_with("{\n  \""),
         "track.json is pretty-printed: {cat}"
@@ -806,9 +806,9 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         root.contains("--version  (only argument): print the forwarder version"),
         "{root}"
     );
-    let cat = help::render(HelpRequest::Command("track", "cat")).unwrap();
+    let cat = help::render(HelpRequest::Object("cat")).unwrap();
     assert!(
-        cat.contains("`track cat` is a view; a report write needs `neige_report_read` first."),
+        cat.contains("`cat` is a view; a report write needs `neige_report_read` first."),
         "{cat}"
     );
     let track = help::render(HelpRequest::Object("track")).unwrap();
@@ -817,9 +817,9 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         (&["--help"][..], root.clone()),
         (&["-h"][..], root.clone()),
         (&["help"][..], root.clone()),
-        (&["help", "track", "cat"][..], cat.clone()),
-        (&["track", "cat", "--help"][..], cat.clone()),
-        (&["track", "cat", "report.md", "-h"][..], cat.clone()),
+        (&["help", "cat"][..], cat.clone()),
+        (&["cat", "--help"][..], cat.clone()),
+        (&["cat", "report.md", "-h"][..], cat.clone()),
         (&["help", "track"][..], track.clone()),
         (&["track", "--help"][..], track.clone()),
         (&["--json", "admin", "gc", "-h"][..], gc.clone()),
@@ -832,7 +832,7 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     }
     assert!(gc.contains("--keep <count>"), "{gc}");
     assert!(!gc.contains("[default:"), "{gc}");
-    for action in ["ls", "cat", "show", "diff", "log", "status", "close"] {
+    for action in ["add", "show", "diff", "log", "status", "close"] {
         assert!(track.contains(&format!("\n  {action} ")), "{track}");
     }
 
@@ -865,8 +865,6 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         ("snow", &["snow"][..]),
         ("snow", &["snow", "--help"][..]),
         ("snow", &["help", "snow"][..]),
-        ("cat", &["cat", "report.md"][..]),
-        ("cat", &["cat", "report.md", "--help"][..]),
         ("cat-at", &["help", "cat-at"][..]),
         (
             "task-report-success",
@@ -897,7 +895,7 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         );
         assert!(
             stderr.contains(
-                "Objects: catalog, track, report, mail, task, message, op, admin, tool\n"
+                "Objects: catalog, track, ls, cat, report, mail, task, message, op, admin, tool\n"
             ),
             "{stderr}"
         );
@@ -908,17 +906,14 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
         (
             concat!(
                 "neige: unknown action `cat-at` for `neige track`; expected one of: ",
-                "add, ls, cat, show, diff, log, status, close\n"
+                "add, show, diff, log, status, close\n"
             ),
             1
         )
     );
     let (_, stderr, exit) = cli(&boot, &["help", "track", "cat-at"]).await;
     assert_eq!(exit, 1);
-    assert!(
-        stderr.contains("expected one of: add, ls, cat, show"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("expected one of: add, show"), "{stderr}");
     let (_, stderr, exit) = cli(&boot, &["--json", "snow"]).await;
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");
@@ -929,7 +924,7 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(parsed["error"]["detail"]["kind"], json!("usage"));
     assert_eq!(
         parsed["error"]["detail"]["usage"],
-        json!("neige [--json] <object> <action> [options]")
+        json!(help::usage_line(None))
     );
     let (_, stderr, exit) = cli(
         &boot,
@@ -939,16 +934,13 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("removed command usage error");
     assert_eq!(parsed["error"]["detail"]["kind"], json!("usage"));
-    let (_, stderr, exit) = cli(&boot, &["--json", "track", "cat"]).await;
+    let (_, stderr, exit) = cli(&boot, &["--json", "cat"]).await;
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");
-    assert_eq!(
-        parsed["error"]["message"],
-        json!("track cat requires <path>")
-    );
+    assert_eq!(parsed["error"]["message"], json!("cat requires <path>"));
     assert_eq!(
         parsed["error"]["detail"]["usage"],
-        json!(help::usage_line(Some("neige_track_cat")))
+        json!(help::usage_line(Some("neige_cat")))
     );
     let (_, stderr, exit) = cli(&boot, &[]).await;
     assert_eq!(exit, 1);

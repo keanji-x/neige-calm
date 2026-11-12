@@ -1,9 +1,9 @@
-//! `neige_track_cat { blocks }` (#1874, `neige track cat <report> --blocks`): chosen blocks of a report,
+//! `neige_cat { blocks }` (#1874, `neige cat <report> --blocks`): chosen blocks of a report,
 //! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige_report_read`'s
-//! `blocks` text. Block ids come from `neige_area_ls`, the Planner's id source.
+//! `blocks` text. Block ids come from `neige_ls`, the Planner's id source.
 
 use super::*;
-use calm_server::mcp_server::tools::report_links::TOOL_AREA_LS;
+use calm_server::mcp_server::tools::track_file::TOOL_LS;
 
 /// A maintenance contract before the first heading (block 0), then three sections.
 const BODY: &str = "<!-- contract: keep the conclusion first -->\nContract intro.\n\n# Goal\n\nalpha\n\n# Findings\n\nbeta\n\n# Next\n\ngamma\n";
@@ -16,7 +16,7 @@ async fn cat_blocks(
 ) -> Result<String, RpcError> {
     let value = call(
         boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         who,
         json!({ "path": path, "blocks": blocks }),
     )
@@ -25,12 +25,17 @@ async fn cat_blocks(
     Ok(value["content"].as_str().expect("content").to_string())
 }
 
-/// `side`'s block ids in document order, as `neige_area_ls` lists them to `reader`.
+/// `side`'s block ids in document order, as `neige_ls` lists them to `reader`.
 async fn outline_ids(boot: &Boot, reader: &Side, side: &Side) -> Vec<String> {
-    let outline = call(boot, TOOL_AREA_LS, planner(reader), json!({}))
-        .await
-        .expect("neige_area_ls");
-    let track = outline["tracks"]
+    let outline = call(
+        boot,
+        TOOL_LS,
+        planner(reader),
+        json!({"path":format!("/areas/{}/tracks/",reader.area_id)}),
+    )
+    .await
+    .expect("neige_ls");
+    let track = outline["entries"]
         .as_array()
         .expect("tracks")
         .iter()
@@ -125,9 +130,14 @@ async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
         want
     );
     assert_eq!(
-        cat_blocks(&boot, planner(own), "/report.md", &chosen)
-            .await
-            .unwrap(),
+        cat_blocks(
+            &boot,
+            planner(own),
+            &format!("/areas/{}/tracks/{}/report.md", own.area_id, own.track_id),
+            &chosen
+        )
+        .await
+        .unwrap(),
         want
     );
     assert_eq!(
@@ -136,7 +146,7 @@ async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
             .unwrap(),
         want
     );
-    // A Worker reads its own report's blocks too; only `area/` is the Planner's.
+    // A Worker reads both its own Report and same-user-Area content addresses.
     assert_eq!(
         cat_blocks(&boot, who(own, CardRole::Worker), "report.md", &chosen)
             .await
@@ -201,10 +211,13 @@ async fn blocks_on_a_path_that_names_no_report_is_refused() {
         "area/reports/a/b.md",
         "area/other",
     ] {
-        assert_refused(
-            cat_blocks(&boot, planner(side), path, &["b_1"]).await,
+        assert_eq!(
+            cat_blocks(&boot, planner(side), path, &["b_1"])
+                .await
+                .unwrap_err()
+                .code,
             INVALID_PARAMS,
-            "is not a report; --blocks reads blocks of `report.md` or `area/reports/<name>.md` only",
+            "{path}"
         );
     }
     let worker = || who(side, CardRole::Worker);
@@ -214,17 +227,20 @@ async fn blocks_on_a_path_that_names_no_report_is_refused() {
         "is not a report",
     );
     for path in ["area/reports/登录 排查.md", "area/reports/"] {
-        assert_refused(
-            cat_blocks(&boot, worker(), path, &["b_1"]).await,
-            FORBIDDEN,
-            "Planner's view",
+        assert_eq!(
+            cat_blocks(&boot, worker(), path, &["b_1"])
+                .await
+                .unwrap_err()
+                .code,
+            INVALID_PARAMS,
+            "{path}"
         );
     }
     for blocks in [json!([]), json!("b_1"), json!([1]), json!({})] {
         assert_refused(
             call(
                 &boot,
-                TOOL_TRACK_CAT,
+                TOOL_CAT,
                 planner(side),
                 json!({ "path": "report.md", "blocks": blocks }),
             )
@@ -274,7 +290,7 @@ async fn ambiguous_and_cross_area_names_are_still_refused_with_blocks() {
     }
 }
 
-/// #1877: `sections` (`neige track cat <report> --sections`) prints whole H1 sections, byte-equal to
+/// #1877: `sections` (`neige cat <report> --sections`) prints whole H1 sections, byte-equal to
 /// `neige_report_read { sections }` on every report path, with one shared refusal.
 #[tokio::test]
 async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
@@ -307,7 +323,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
     for path in ["report.md", "area/reports/认证 方案.md"] {
         let value = call(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner(own),
             json!({ "path": path, "sections": sections }),
         )
@@ -316,7 +332,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
         assert_eq!(value["content"].as_str(), Some(want.as_str()), "{path}");
         let err = call(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner(own),
             json!({ "path": path, "sections": ["Goal", "Nope"] }),
         )
@@ -325,7 +341,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
         assert_eq!(err.code, INVALID_PARAMS, "{path}: {err:?}");
         assert_eq!(
             err.message,
-            "neige_track_cat: unknown section `Nope`; this report's sections are:\n  # Goal\n  \
+            "neige_cat: unknown section `Nope`; this report's sections are:\n  # Goal\n  \
              # Findings\n  # Next",
             "{path}"
         );
@@ -333,7 +349,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
     assert_refused(
         call(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner(own),
             json!({ "path": "index.md", "sections": ["Goal"] }),
         )
@@ -344,7 +360,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
     assert_refused(
         call(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner(own),
             json!({ "path": "report.md", "sections": ["Goal"], "blocks": [&ids[1]] }),
         )

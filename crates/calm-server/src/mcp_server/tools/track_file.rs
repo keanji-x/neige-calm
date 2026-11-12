@@ -1,7 +1,8 @@
-//! Read-only MCP file views (`neige_track_ls`, `neige_track_cat`) rooted at the track bound to the caller's MCP connection.
-//! A path under `area/` is the Planner's `area/reports/` view instead (#1838, [`super::area_reports`]);
+//! Read-only MCP file views (`neige_ls`, `neige_cat`) rooted at the track bound to the caller's MCP connection.
+//! Paths under `area/` retain the bound Area's Report content addresses ([`super::area_reports`]);
 //! `guide/` serves the Planner's on-demand guides, [`GUIDES`] (#1893).
 
+use super::unified_browse::{self, Scope};
 use crate::area_reports;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -9,19 +10,18 @@ use crate::mcp_server::registry::{
     read_only_annotations,
 };
 use crate::mcp_server::tools::report_links::{unknown_block, unknown_section};
-use crate::mcp_server::tools::track_report::load_report_for_track;
 use crate::model::{Card, CardRole, Track};
 use crate::report_sections::section_block_ids;
 use crate::track_fs_view::{
     TrackFsContent, TrackFsEntry, TrackFsError, TrackFsView, normalize_path,
 };
 use crate::track_report::ReportBlock;
-use crate::track_report_read::{load_report_doc_snapshot, selected_blocks_text};
+use crate::track_report_read::selected_blocks_text;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub const TOOL_TRACK_LS: &str = "neige_track_ls";
-pub const TOOL_TRACK_CAT: &str = "neige_track_cat";
+pub const TOOL_LS: &str = "neige_ls";
+pub const TOOL_CAT: &str = "neige_cat";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(ls_descriptor(), wrap(track_ls));
@@ -47,27 +47,28 @@ where
 /// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns `{ entries }` (`{ reports }` on `area/reports/`); `cat` returns `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TRACK_LS.into(),
-        description: include_str!("../../../prompts/tools/neige_track_ls.md")
+        name: TOOL_LS.into(),
+        description: include_str!("../../../prompts/tools/neige_ls.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "path": { "type": "string" }
+                "path": { "type": "string" },
+                "cursor": { "type": "string" }
             }
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
     }
 }
 
 fn cat_descriptor() -> ToolDescriptor {
     ToolDescriptor {
-        name: TOOL_TRACK_CAT.into(),
-        description: include_str!("../../../prompts/tools/neige_track_cat.md")
+        name: TOOL_CAT.into(),
+        description: include_str!("../../../prompts/tools/neige_cat.md")
             .trim_end()
             .to_string(),
         input_schema: json!({
@@ -76,6 +77,9 @@ fn cat_descriptor() -> ToolDescriptor {
             "required": ["path"],
             "properties": {
                 "path": { "type": "string" },
+                "detail": {"type":"string","enum":["full","index"]},
+                "cursor": {"type":"string"},
+                "through_event_id": {"type":"integer","minimum":0},
                 "step": { "type": "string", "minLength": 1, "description": "Gate logs only: select one displayed step." },
                 "blocks": {
                     "type": "array",
@@ -93,7 +97,7 @@ fn cat_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
-        listed_for: &[CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Worker, CardRole::Assistant],
     }
 }
 
@@ -102,14 +106,21 @@ async fn track_ls(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    let path = parse_path_arg(&args, false)?;
-    if let Some(area_path) = area_reports::classify(&path) {
-        return super::area_reports::ls(&ctx, &identity, area_path).await;
-    }
+    let raw = parse_path_arg(&args, false)?;
+    let (track, _) = crate::managed_track::report_browse_context(&ctx, &identity).await?;
+    let path = match unified_browse::resolve(&raw)? {
+        Scope::Bound(path) => normalize_path(path),
+        Scope::OwnReport => return Err(RpcError::invalid_params("report.md is not a directory")),
+        Scope::Legacy(path) => {
+            unified_browse::reject(&args, &["cursor"])?;
+            return super::area_reports::ls(&ctx, &track, path).await;
+        }
+        scope => return unified_browse::ls(&ctx, scope, &args).await,
+    };
+    unified_browse::reject(&args, &["cursor"])?;
     if path == GUIDE_DIR {
         return guide_ls();
     }
-    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write);
     let entries = view
         .ls(&track, Some(path.as_str()))
@@ -144,7 +155,21 @@ async fn track_cat(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    let path = parse_path_arg(&args, true)?;
+    let raw = parse_path_arg(&args, true)?;
+    let (track, zone) = crate::managed_track::report_browse_context(&ctx, &identity).await?;
+    let path = match unified_browse::resolve(&raw)? {
+        Scope::Bound(path) => normalize_path(path),
+        Scope::OwnReport => {
+            unified_browse::reject(&args, &["step", "cursor", "through_event_id"])?;
+            return unified_browse::report(&ctx, &track, &args).await;
+        }
+        Scope::Legacy(path) => {
+            unified_browse::reject(&args, &["step", "cursor", "through_event_id"])?;
+            return super::area_reports::cat(&ctx, &track, &raw, path, &args).await;
+        }
+        scope => return unified_browse::cat(&ctx, scope, &args, zone).await,
+    };
+    unified_browse::reject(&args, &["cursor", "through_event_id"])?;
     let selection = parse_selection_arg(&args)?;
     let step = args
         .get("step")
@@ -162,13 +187,7 @@ async fn track_cat(
             "step selects gate logs only, without report selectors",
         ));
     }
-    if let Some(area_path) = area_reports::classify(&path) {
-        return super::area_reports::cat(&ctx, &identity, &path, area_path, selection.as_ref())
-            .await;
-    }
-    if path == OWN_REPORT {
-        return own_report(&ctx, &identity, selection.as_ref()).await;
-    }
+    unified_browse::reject(&args, &["detail"])?;
     if let Some(name) = path
         .strip_prefix(GUIDE_DIR)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -181,7 +200,6 @@ async fn track_cat(
     if let Some(selection) = selection {
         return Err(not_a_report(&path, &selection));
     }
-    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     // Gate logs are enabled only here (MCP carries a card identity, so the track is the caller's own); the gate-logs dir is the configured one, never recomputed from env.
     let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
         .with_gate_log_access(ctx.gate_logs_dir.clone());
@@ -220,7 +238,7 @@ fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     let Some(raw) = obj.get("path") else {
         if required {
             return Err(RpcError::invalid_params(
-                "neige_track_cat: missing `path` (string)",
+                "neige_cat: missing `path` (string)",
             ));
         }
         return Ok(String::new());
@@ -228,7 +246,7 @@ fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     let path = raw
         .as_str()
         .ok_or_else(|| RpcError::invalid_params("`path` must be a string"))?;
-    Ok(normalize_path(path))
+    Ok(path.trim().to_string())
 }
 
 /// The caller's own report in the track view.
@@ -350,10 +368,10 @@ impl Selection {
     }
 }
 
-/// `blocks` / `sections` (`neige track cat --blocks b_x,b_y`, `--sections A,B`): absent reads the whole file.
+/// `blocks` / `sections` (`neige cat --blocks b_x,b_y`, `--sections A,B`): absent reads the whole file.
 fn parse_selection_arg(args: &Value) -> Result<Option<Selection>, RpcError> {
     match args.as_object() {
-        Some(map) => Selection::parse(map, TOOL_TRACK_CAT),
+        Some(map) => Selection::parse(map, TOOL_CAT),
         None => Ok(None),
     }
 }
@@ -365,31 +383,10 @@ pub(crate) fn not_a_report(path: &str, selection: &Selection) -> RpcError {
         Selection::Sections(_) => ("--sections", "sections"),
     };
     RpcError::invalid_params(format!(
-        "`{path}` is not a report; {flag} reads {unit} of `{OWN_REPORT}` or `{}/<name>.md` \
-         only",
+        "`{path}` is not a report; {flag} reads {unit} of `{OWN_REPORT}`, `{}/<name>.md`, \
+         or a listed absolute Report path",
         area_reports::REPORTS_DIR
     ))
-}
-
-/// The caller's own `report.md`, whole or narrowed, from one snapshot. A view only: it anchors no
-/// report write (#1883).
-async fn own_report(
-    ctx: &Arc<AppContext>,
-    identity: &ToolCallIdentity,
-    selection: Option<&Selection>,
-) -> Result<Value, RpcError> {
-    let (_, track) = resolve_track_for_identity(ctx, identity).await?;
-    let (report_card, _) = load_report_for_track(ctx, &track).await?;
-    let snapshot = load_report_doc_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("{e}")))?;
-    match selection {
-        Some(selection) => {
-            let ids = selection.block_ids(&snapshot.blocks)?;
-            report_blocks_content(&snapshot.blocks, &ids)
-        }
-        None => markdown_content(snapshot.body),
-    }
 }
 
 /// A report narrowed to `ids`: the exact `text` of `neige_report_read { blocks: ids }`.

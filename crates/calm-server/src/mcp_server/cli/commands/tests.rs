@@ -26,17 +26,14 @@ fn refusal(args: &[&str]) -> String {
 
 #[test]
 fn ls_without_a_path_sends_no_path() {
-    let parsed = parse_args(&["track", "ls"]).expect("parse");
-    assert_eq!(parsed.tool, "neige_track_ls");
+    let parsed = parse_args(&["ls"]).expect("parse");
+    assert_eq!(parsed.tool, "neige_ls");
     assert_eq!(parsed.args, json!({}));
     assert!(!parsed.json);
+    assert_eq!(tool_args(&["ls", "runs/"]), json!({ "path": "runs/" }));
     assert_eq!(
-        tool_args(&["track", "ls", "runs/"]),
-        json!({ "path": "runs/" })
-    );
-    assert_eq!(
-        refusal(&["track", "ls", "a", "b"]),
-        "unexpected argument `b`; usage: neige track ls [path] [-l] [--json]"
+        refusal(&["ls", "a", "b"]),
+        "unexpected argument `b`; usage: neige ls [path] [-l] [--cursor CURSOR] [--json]"
     );
 }
 
@@ -44,25 +41,25 @@ fn ls_without_a_path_sends_no_path() {
 #[test]
 fn ls_long_is_a_view_flag_and_area_reports_selects_the_report_listing() {
     for (argv, long, reports) in [
-        (&["track", "ls"][..], false, false),
-        (&["track", "ls", "-l"][..], true, false),
-        (&["track", "ls", "-l", "area/reports/"][..], true, true),
-        (&["track", "ls", "/area/reports", "-l"][..], true, true),
-        (&["track", "ls", "area/reports"][..], false, true),
-        (&["track", "ls", "-l", "area/"][..], true, false),
-        (&["track", "ls", "area/reports/x.md"][..], false, false),
+        (&["ls"][..], false, false),
+        (&["ls", "-l"][..], true, false),
+        (&["ls", "-l", "area/reports/"][..], true, true),
+        (&["ls", "area/reports", "-l"][..], true, true),
+        (&["ls", "area/reports"][..], false, true),
+        (&["ls", "-l", "area/"][..], true, false),
+        (&["ls", "area/reports/x.md"][..], false, false),
     ] {
         let parsed = parse_args(argv).expect("parse");
         assert_eq!(parsed.render, Render::Ls { long, reports }, "{argv:?}");
         assert!(parsed.args.get("long").is_none(), "{argv:?}");
     }
     assert_eq!(
-        tool_args(&["track", "ls", "-l", "runs/"]),
+        tool_args(&["ls", "-l", "runs/"]),
         json!({ "path": "runs/" })
     );
     assert_eq!(
-        refusal(&["track", "ls", "-a"]),
-        "unknown option `-a` for `neige track ls`; expected one of: -l, --path, --json"
+        refusal(&["ls", "-a"]),
+        "unknown option `-a` for `neige ls`; expected one of: -l, --cursor, --path, --json"
     );
 }
 
@@ -128,56 +125,36 @@ fn find_maps_path_name_and_tag_each_at_most_once() {
 /// tool verbatim (an empty piece is the tool's to refuse).
 #[test]
 fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {
-    let parsed = parse_args(&[
-        "track",
-        "cat",
-        "area/reports/认证 方案.md",
-        "--blocks",
-        "b_1,b_2",
-    ])
-    .expect("parse");
-    assert_eq!(parsed.tool, "neige_track_cat");
+    let parsed =
+        parse_args(&["cat", "area/reports/认证 方案.md", "--blocks", "b_1,b_2"]).expect("parse");
+    assert_eq!(parsed.tool, "neige_cat");
     assert_eq!(parsed.render, Render::Content);
     assert_eq!(
         parsed.args,
         json!({ "path": "area/reports/认证 方案.md", "blocks": ["b_1", "b_2"] })
     );
     assert_eq!(
-        tool_args(&["track", "cat", "--blocks", "b_1", "report.md"]),
+        tool_args(&["cat", "--blocks", "b_1", "report.md"]),
         json!({ "path": "report.md", "blocks": ["b_1"] })
     );
     assert_eq!(
-        tool_args(&["track", "cat", "report.md", "--blocks", "b_1,,"]),
+        tool_args(&["cat", "report.md", "--blocks", "b_1,,"]),
         json!({ "path": "report.md", "blocks": ["b_1", "", ""] })
     );
     assert_eq!(
-        tool_args(&["track", "cat", "report.md"]),
+        tool_args(&["cat", "report.md"]),
         json!({ "path": "report.md" })
     );
     assert_eq!(
-        refusal(&["track", "cat", "report.md", "--blocks"]),
-        "track cat requires a value after --blocks"
+        refusal(&["cat", "report.md", "--blocks"]),
+        "cat requires a value after --blocks"
     );
     assert_eq!(
-        refusal(&[
-            "track",
-            "cat",
-            "report.md",
-            "--blocks",
-            "b_1",
-            "--blocks",
-            "b_2"
-        ]),
-        "track cat accepts --blocks once"
+        refusal(&["cat", "report.md", "--blocks", "b_1", "--blocks", "b_2"]),
+        "cat accepts --blocks once"
     );
     assert_eq!(
-        tool_args(&[
-            "track",
-            "cat",
-            "report.md",
-            "--sections",
-            "已完成,Next steps"
-        ]),
+        tool_args(&["cat", "report.md", "--sections", "已完成,Next steps"]),
         json!({ "path": "report.md", "sections": ["已完成", "Next steps"] })
     );
 }
@@ -194,12 +171,12 @@ fn state_takes_no_arguments() {
 #[test]
 fn token_option_is_not_accepted() {
     assert_eq!(
-        refusal(&["--token", "secret", "track", "ls"]),
+        refusal(&["--token", "secret", "ls"]),
         help::unknown_command_message("--token")
     );
     assert_eq!(
-        refusal(&["track", "ls", "--token", "secret"]),
-        "unknown option `--token` for `neige track ls`; expected one of: -l, --path, --json"
+        refusal(&["ls", "--token", "secret"]),
+        "unknown option `--token` for `neige ls`; expected one of: -l, --cursor, --path, --json"
     );
 }
 
@@ -258,10 +235,9 @@ fn cat_at_maps_commit_and_path() {
         refusal(&["track", "show", "a", "b", "c"]),
         "unexpected argument `c`; usage: neige track show <commit> <path> [--json]"
     );
-    assert_eq!(refusal(&["track", "cat"]), "track cat requires <path>");
+    assert_eq!(refusal(&["cat"]), "cat requires <path>");
     assert!(
-        refusal(&["track", "cat", "a", "b"])
-            .starts_with("unexpected argument `b`; usage: neige track cat <path>")
+        refusal(&["cat", "a", "b"]).starts_with("unexpected argument `b`; usage: neige cat <path>")
     );
 }
 
@@ -538,7 +514,7 @@ fn json_flag_is_accepted_before_and_after_the_command() {
         refusal(&[]),
         concat!(
             "missing command; expected `neige <object> <action>` with an object of: ",
-            "catalog, track, report, mail, task, message, op, admin, tool"
+            "catalog, track, ls, cat, report, mail, task, message, op, admin, tool"
         )
     );
 }
@@ -547,8 +523,6 @@ fn json_flag_is_accepted_before_and_after_the_command() {
 #[test]
 fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     for old in [
-        "cat",
-        "ls",
         "state",
         "find",
         "tag",
@@ -564,20 +538,15 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
         assert_eq!(err.message, help::unknown_command_message(old), "{old}");
     }
     assert_eq!(
-        help::unknown_command_message("cat"),
-        "unknown command `cat`; a command is `neige <object> <action>`\n\n\
-         Objects: catalog, track, report, mail, task, message, op, admin, tool\nRun `neige --help` for usage."
-    );
-    assert_eq!(
         refusal(&["track", "cat-at", "c", "p"]),
         concat!(
             "unknown action `cat-at` for `neige track`; expected one of: ",
-            "add, ls, cat, show, diff, log, status, close"
+            "add, show, diff, log, status, close"
         )
     );
     assert_eq!(
         refusal(&["track"]),
-        "`neige track` needs an action: add, ls, cat, show, diff, log, status, close"
+        "`neige track` needs an action: add, show, diff, log, status, close"
     );
 }
 
@@ -591,7 +560,6 @@ fn a_kernel_tool_without_a_command_is_refused_as_mcp_only() {
             &["report", "read", "--path", "report.md"][..],
             "neige_report_read",
         ),
-        (&["--json", "workspace", "ls"][..], "neige_workspace_ls"),
         (&["track", "rename"][..], "neige_track_rename"),
     ] {
         let err = parse_args(args).expect_err("no CLI command");
@@ -627,7 +595,7 @@ fn a_kernel_tool_without_a_command_is_refused_as_mcp_only() {
 #[test]
 fn every_positional_is_also_its_option() {
     assert_eq!(
-        tool_args(&["track", "cat", "--path", "report.md", "--blocks", "b_1"]),
+        tool_args(&["cat", "--path", "report.md", "--blocks", "b_1"]),
         json!({ "path": "report.md", "blocks": ["b_1"] })
     );
     assert_eq!(
@@ -663,9 +631,9 @@ fn every_positional_is_also_its_option() {
         json!({ "from": "a", "to": "b", "path": "p" })
     );
     assert_eq!(
-        refusal(&["track", "cat", "a", "--path", "b"]),
+        refusal(&["cat", "a", "--path", "b"]),
         concat!(
-            "unexpected argument `a`; usage: neige track cat <path> ",
+            "unexpected argument `a`; usage: neige cat <path> ",
             "[--blocks <id,...> | --sections <heading,...>] [--step NAME] [--json]"
         )
     );
@@ -690,7 +658,7 @@ fn every_positional_is_also_its_option() {
 
 /// #2003 §4.4 (H5): every option is `--<key>` with `_` written `-`, and every option and positional
 /// key is a property of the tool's input schema; a slot the CLI requires is one the schema requires.
-/// Only a view flag (`track ls -l`) has its own spelling, and it never reaches the tool.
+/// Only a view flag (`ls -l`) has its own spelling, and it never reaches the tool.
 #[test]
 fn every_option_is_its_schema_key() {
     let descriptors = build_default_registry().descriptors();
@@ -755,11 +723,13 @@ fn every_option_is_its_schema_key() {
 fn every_command_is_spelled_from_its_tool() {
     let mut tools: Vec<&str> = COMMANDS.iter().map(|c| c.tool).collect();
     for command in COMMANDS {
-        let (object, action) = command.words();
-        assert_eq!(command.tool, format!("neige_{object}_{action}"));
+        assert_eq!(
+            command.tool,
+            format!("neige_{}", command.spelling().replace(' ', "_"))
+        );
         assert_eq!(
             cli_spelling(command.tool),
-            Some(format!("neige {object} {action}"))
+            Some(format!("neige {}", command.spelling()))
         );
     }
     tools.sort();
@@ -794,7 +764,8 @@ fn help_documents_exactly_the_served_commands() {
         let (object, action) = command.words();
         let text = help::render(help::HelpRequest::Command(object, action)).expect("help");
         assert!(
-            help::usage_line(Some(command.tool)).starts_with(&format!("neige {object} {action}")),
+            help::usage_line(Some(command.tool))
+                .starts_with(&format!("neige {}", command.spelling())),
             "{text}"
         );
         for flag in accepted_flags(command) {
@@ -805,12 +776,14 @@ fn help_documents_exactly_the_served_commands() {
             );
         }
         let object_help = help::render(help::HelpRequest::Object(object)).expect("object help");
-        assert!(
-            object_help.contains(&format!("  {action} ")),
-            "{object_help}"
-        );
+        if !action.is_empty() {
+            assert!(
+                object_help.contains(&format!("  {action} ")),
+                "{object_help}"
+            );
+        }
     }
-    assert!(help::render(help::HelpRequest::Object("cat")).is_none());
+    assert!(help::render(help::HelpRequest::Object("cat")).is_some());
     assert!(help::render(help::HelpRequest::Command("track", "cat-at")).is_none());
 }
 
@@ -865,10 +838,14 @@ fn prompt_neige_mentions_name_served_commands() {
                 continue;
             }
             mentions += 1;
-            let action = rest[object.len()..]
-                .strip_prefix(' ')
-                .map(word)
-                .unwrap_or_default();
+            let action = if COMMANDS.iter().any(|c| c.is(&object, "")) {
+                String::new()
+            } else {
+                rest[object.len()..]
+                    .strip_prefix(' ')
+                    .map(word)
+                    .unwrap_or_default()
+            };
             assert!(
                 objects().contains(&object.as_str()) && actions(&object).contains(&action),
                 "{} mentions `neige {object} {action}`, which the kernel does not serve",
@@ -995,6 +972,6 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
 
 #[test]
 fn gate_step_reaches_track_cat() {
-    let parsed = parse_args(&["track", "cat", "runs/a/gates/1.log", "--step", "test"]).unwrap();
+    let parsed = parse_args(&["cat", "runs/a/gates/1.log", "--step", "test"]).unwrap();
     assert_eq!(parsed.args["step"], "test");
 }

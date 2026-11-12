@@ -1,5 +1,5 @@
-//! The Planner's on-demand guides (#1893): every `neige track cat guide/<name>.md` the rendered Planner
-//! prompt names is served by `neige_track_cat` with the shared task guidance rendered, and `guide/` lists
+//! The Planner's on-demand guides (#1893): every `neige cat guide/<name>.md` the rendered Planner
+//! prompt names is served by `neige_cat` with the shared task guidance rendered, and `guide/` lists
 //! exactly the named set.
 
 use std::collections::BTreeSet;
@@ -9,9 +9,9 @@ use calm_server::operation::planner_harness_start_adapter::render_planner_develo
 
 use super::*;
 
-/// The `<name>` of every `` `neige track cat guide/<name>` `` in `prompt`, in order.
+/// The `<name>` of every `` `neige cat guide/<name>` `` in `prompt`, in order.
 fn named_guides(prompt: &str) -> Vec<String> {
-    const MARK: &str = "`neige track cat guide/";
+    const MARK: &str = "`neige cat guide/";
     prompt
         .match_indices(MARK)
         .map(|(at, _)| {
@@ -39,7 +39,7 @@ async fn planner_diagnostics_regression_guides_render_shared_task_rules() {
         for identity in [planner_identity(&boot), worker_identity(&boot)] {
             let served = call_tool(
                 &boot,
-                TOOL_TRACK_CAT,
+                TOOL_CAT,
                 identity,
                 json!({ "path": format!("guide/{name}") }),
             )
@@ -57,7 +57,7 @@ async fn planner_diagnostics_regression_guides_render_shared_task_rules() {
     let named: BTreeSet<String> = named.into_iter().collect();
     let listed = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": "guide/" }),
     )

@@ -19,8 +19,8 @@ grammar, mechanical CLI) and #2053 (Worker report actions). Issue: #2087.
    `diff`, `rm`). Otherwise use a plain imperative English verb. Never use a noun as an action.
 4. **The object is the thing acted on,** as one singular lowercase noun (`track`, `task`, `report`).
 5. **Names derive mechanically.** Tool name ↔ CLI command ↔ CLI options are computed from each
-   other, and the name a model sees is the tool name itself. There are no aliases and no
-   hand-written spellings.
+   other, and the name a model sees is the tool name itself. The root browsing rows declare
+   `ls` / `cat` in the same CLI command table; they have no aliases.
 6. **Fewest words.** Add a verb or parameter name only when no listed word has the meaning.
 7. **Errors teach.** Every refusal names the tool, the cause and the valid choices.
 
@@ -28,12 +28,13 @@ grammar, mechanical CLI) and #2053 (Worker report actions). Issue: #2087.
 
 ```
 word          := [a-z0-9]+                             one word; never contains "_"
-kernel tool   := "neige_" object "_" action            object: a word; action: a §3 verb
-CLI command   := "neige" SP object SP action           the tool name split at "_"
+root verb     := "ls" | "cat"                         unified Report browsing (#3665)
+kernel tool   := "neige_" object "_" action | "neige_" root verb
+CLI command   := "neige" SP object SP action | "neige" SP root verb
 CLI option    := "--" key, "_" → "-"                   key = the input_schema key
 CLI positional:= a required key listed in the command; also accepted as "--" key
 plugin tool   := "plugin_" plugin_id "_" tool          plugin_id: a word; tool: §6
-model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_track_cat
+model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_cat
 ```
 
 - **`_` separates and nothing else.** Every segment is one word, so a name splits at `_` without
@@ -49,8 +50,8 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
 - The kernel mints every name it serves, plugin tools included (§6), in this alphabet. No adapter
   respells a name; the only provider rule left is Codex's 128-byte cap on
   `mcp__<server>__<name>` (§9).
-- MCP is the complete surface. A CLI row exists only for a shell-native view (`track
-  ls/cat/show/diff/log/status`, `catalog ls/cat`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
+- MCP is the complete surface. A CLI row exists only for a shell-native view (`ls`, `cat`, `track
+  show/diff/log/status`, `catalog ls/cat`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
   attempt tool in CLI mode (`task done/fail/gate`, `message read`), the Admin Planner's ordinary Track creation (`track add`, #2777), the Track's close
   (`track close --message`, no `--force`), or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
   is the one view that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
@@ -194,7 +195,7 @@ Decisions, one line each:
   page): the last row's sort key, so a page has a fixed row count and may end early at a byte
   budget, never dropping a row (`mcp_server::tools::paging`). An unpaged list over its cap is
   refused with a hint to narrow it, worded in input keys, and never truncated silently.
-  `<field>_truncated` marks content clipped inside one row (`neige_area_ls`'s `blocks_truncated`
+  `<field>_truncated` marks content clipped inside one row (`neige_ls`'s `blocks_truncated`
   counts the blocks past 40).
 
 Report mutation results (`neige_report_commit`, `neige_report_write`) carry a final
@@ -413,15 +414,15 @@ Added by the slices (registry-driven, Appendix B):
   so it keeps its unit suffix; `observed_at`, `exited_at` and a signal's `received_at` are times.
 - `neige_track_status` returns the REST card's `runtime` with `updated_at_ms` and
   `last_turn_completed_ms` respelled `updated_at` and `last_turn_completed_at`, and
-  `neige_workspace_log` names a REST edit's `at` `edited_at`. The series route keeps
+  `neige_cat` names a REST edit's `at` `edited_at`. The series route keeps
   `resolved_at` in UTC seconds; `neige_report_read` gives the same instant at the server offset.
 - A full `resolve` read's `data` and `table` carry the plugin's unit as stored (`observedAt` in
-  ms), like `payload`. `neige_track_cat` file contents (`track.json`, `runs/<id>.json`, …) are
+  ms), like `payload`. `neige_cat` file contents (`track.json`, `runs/<id>.json`, …) are
   file views and keep the REST representation (unix ms).
 - `neige_report_read` gives every hydrated series, table and view cell both `resolved_at` and
   `observed_at`, `null` on a branch without that time (pending, unavailable, no snapshot); the
   REST series route omits an absent one.
-- A `neige_track_ls` `runs/` row's `verdict.at` is a time named `at`, as in the REST entry; its
+- A `neige_ls` `runs/` row's `verdict.at` is a time named `at`, as in the REST entry; its
   value is RFC 3339 like every other time.
 - C2 swept for the class by instrumenting `ToolResult` over the whole `calm-server` suite: the
   only integers left under an `_at` or `_ms` key are the terminal durations `wait.waited_ms`,

@@ -1,18 +1,17 @@
 ## Workspace report reads
 
-Planner and Assistant have read-only report access across all user-visible Areas,
-including existing conversations regardless of template snapshot. No managed-Track grant is required.
-Use these tools directly when the user's request needs other Areas' reports.
-Discover them if deferred: `neige_workspace_ls` lists reports/track_id;
-`neige_workspace_cat` reads a selected track_id's summary, body and blocks;
-`neige_workspace_diff` lists changes for date (YYYY-MM-DD); `neige_workspace_log`
-reads a track_id's edits for date with the diff's through_event_id watermark.
-Follow next_cursor as cursor until null; retain through_event_id on diff/log pages.
-Failed or incomplete reads do not mean no activity. Cite source Tracks; distinguish evidence from suggestions.
+Planner, Assistant and Worker have read-only report access across all user-visible Areas.
+No managed-Track grant is required. Discover `neige_ls` and `neige_cat` if deferred.
+Use `neige ls /areas/`, then `neige ls /areas/<area-id>/tracks/` to discover stable
+Track IDs and Report paths. `neige cat <report-path>` reads the full body;
+`--detail index` gives every block ID, and `--blocks` / `--sections` select text.
+Read `/report-changes/YYYY-MM-DD.json` for changes across user Areas and
+`/areas/<area-id>/tracks/<track-id>/report-edits/YYYY-MM-DD.json` for edit events.
+Keep through_event_id on all date continuation pages and every edits request.
+Follow cursor until next_cursor is null. Failed or incomplete reads do not mean no activity.
+Cite source Tracks; distinguish evidence from suggestions.
 
-These reads authorize no writes or operations on other Tracks and do not anchor
-report writes: first read your own Report with `neige_report_read` before editing.
-For your own Track, use `neige_track_ls` / `neige_track_cat` for files and
-`neige_track_log` / `neige_track_diff` / `neige_track_show` for history. These reads
-are bound to your Track; use the four workspace tools above for cross-Area reports.
-Assistant cannot schedule workers, change task blocks, or close Tracks.
+These reads grant no write authority over other Tracks and do not anchor report writes:
+first read your own Report with `neige_report_read` before editing. Relative paths
+and omitted ls paths retain your own Track view. Git track log/diff/show remain bound
+history tools. Assistant cannot schedule workers, change task blocks, or close Tracks.

@@ -312,7 +312,7 @@ pub(super) enum ReadSelect {
     Part(Selection),
 }
 
-/// Top-level `blocks` / `sections` (the names `neige_track_cat` uses) choose the parts, and
+/// Top-level `blocks` / `sections` (the names `neige_cat` uses) choose the parts, and
 /// `detail` how much: `full` (the default) returns text, `index` only the anchors and no text.
 pub(super) fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
     let Some(map) = args.as_object() else {

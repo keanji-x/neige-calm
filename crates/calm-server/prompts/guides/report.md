@@ -13,7 +13,7 @@ Before reply/delivery, Planner/Assistant add workspace-relative Report links for
 
 ## Links
 
-`neige_area_ls`: block ids/link syntax. Read: `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls`: backlinks. Follow both cursors to null; pages may end early at 32 KiB.
+`neige cat <report-path> --detail index`: all block ids, no paging. Read with `--blocks <id>,<id>`. `neige_link_ls`: backlinks. Directory/backlink pages use next_cursor until null; pages may end early at 32 KiB.
 
 Save diagrams/screenshots as workspace images; use `![alt](path)` inline.
 

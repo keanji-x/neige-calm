@@ -31,11 +31,11 @@ const CLI_COVERED: [(&str, &str); 21] = [
     ("neige_task_done", "neige task done"),
     ("neige_task_gate", "neige task gate"),
     ("neige_track_add", "neige track add"),
-    ("neige_track_cat", "neige track cat"),
+    ("neige_cat", "neige cat"),
     ("neige_track_close", "neige track close"),
     ("neige_track_diff", "neige track diff"),
     ("neige_track_log", "neige track log"),
-    ("neige_track_ls", "neige track ls"),
+    ("neige_ls", "neige ls"),
     ("neige_track_show", "neige track show"),
     ("neige_track_status", "neige track status"),
 ];
@@ -324,20 +324,20 @@ async fn a_planner_sees_hidden_cli_tools_and_is_told_which_tools_are_mcp_only() 
     let boot = boot_with_role(CardRole::Planner).await;
     let rows = all_rows(&boot).await;
     assert_eq!(
-        row(&rows, "neige_track_cat"),
+        row(&rows, "neige_cat"),
         Some(&json!({
-            "name": "neige_track_cat",
+            "name": "neige_cat",
             "surfaces": ["mcp", "cli"],
-            "cli": "neige track cat",
-            "listed": false,
+            "cli": "neige cat",
+            "listed": true,
             "plugin": null,
             "kind": null,
         }))
     );
-    let (text, _, exit) = cli(&boot, &["tool", "ls", "--prefix", "neige_track_cat"]).await;
+    let (text, _, exit) = cli(&boot, &["tool", "ls", "--prefix", "neige_cat"]).await;
     assert_eq!(exit, 0);
     assert!(
-        text.starts_with("neige_track_cat  mcp+cli  neige track cat  hidden  kernel  —\n"),
+        text.starts_with("neige_cat  mcp+cli  neige cat  listed  kernel  —\n"),
         "{text}"
     );
     let (text, _, exit) = cli(&boot, &["tool", "ls", "--prefix", "neige_report_read"]).await;
@@ -347,13 +347,10 @@ async fn a_planner_sees_hidden_cli_tools_and_is_told_which_tools_are_mcp_only() 
         "{text}"
     );
 
-    for (argv, tool) in [
-        (
-            &["report", "read", "--path", "report.md"][..],
-            "neige_report_read",
-        ),
-        (&["workspace", "ls"][..], "neige_workspace_ls"),
-    ] {
+    for (argv, tool) in [(
+        &["report", "read", "--path", "report.md"][..],
+        "neige_report_read",
+    )] {
         let (stdout, stderr, exit) = cli(&boot, argv).await;
         assert_eq!(
             (stdout.as_str(), stderr, exit),

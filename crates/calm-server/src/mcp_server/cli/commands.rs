@@ -36,15 +36,23 @@ impl Command {
         own_object == object && own_action == action
     }
 
-    /// `track cat` for `neige_track_cat`.
+    /// `cat` for `neige_cat`.
     pub(crate) fn spelling(&self) -> String {
         let (object, action) = self.words();
-        format!("{object} {action}")
+        if action.is_empty() {
+            object.into()
+        } else {
+            format!("{object} {action}")
+        }
     }
 }
 
 fn tool_words(tool: &str) -> Option<(&str, &str)> {
-    tool.strip_prefix("neige_")?.split_once('_')
+    match tool {
+        "neige_ls" => Some(("ls", "")),
+        "neige_cat" => Some(("cat", "")),
+        _ => tool.strip_prefix("neige_")?.split_once('_'),
+    }
 }
 
 /// The command that serves `tool`, if any.
@@ -52,7 +60,7 @@ pub(crate) fn command_for_tool(tool: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|command| command.tool == tool)
 }
 
-/// `neige track cat` for a CLI-covered tool, `None` for every other tool.
+/// `neige cat` for a CLI-covered tool, `None` for every other tool.
 pub(crate) fn cli_spelling(tool: &str) -> Option<String> {
     command_for_tool(tool).map(|command| format!("neige {}", command.spelling()))
 }
@@ -193,9 +201,12 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Raw,
     },
     Command {
-        tool: track_file::TOOL_TRACK_LS,
+        tool: track_file::TOOL_LS,
         positionals: &[pos("path", false)],
-        options: &[opt("-l", "long", OptValue::View, false)],
+        options: &[
+            opt("-l", "long", OptValue::View, false),
+            opt("--cursor", "cursor", OptValue::Text, false),
+        ],
         confirm: None,
         render: Render::Ls {
             long: false,
@@ -203,10 +214,18 @@ pub(crate) const COMMANDS: &[Command] = &[
         },
     },
     Command {
-        tool: track_file::TOOL_TRACK_CAT,
+        tool: track_file::TOOL_CAT,
         positionals: &[pos("path", true)],
         options: &[
             opt("--step", "step", OptValue::Text, false),
+            opt("--detail", "detail", OptValue::Text, false),
+            opt("--cursor", "cursor", OptValue::Text, false),
+            opt(
+                "--through-event-id",
+                "through_event_id",
+                OptValue::Integer,
+                false,
+            ),
             opt("--blocks", "blocks", OptValue::CommaList, false),
             opt("--sections", "sections", OptValue::CommaList, false),
         ],
@@ -395,28 +414,29 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
     let Some(object) = next_word(&mut json) else {
         return Err(usage(missing_command(), json, None));
     };
-    let known_object = objects().contains(&object);
-    let action = next_word(&mut json);
-    if let Some(action) = action
-        && !COMMANDS.iter().any(|c| c.is(object, action))
-    {
-        let tool = format!("neige_{object}_{action}");
-        if registry.lookup(&tool).is_some() {
-            return Err(usage(mcp_only(&tool), json, None));
+    let root = COMMANDS.iter().find(|c| c.is(object, ""));
+    let command = if let Some(command) = root {
+        command
+    } else {
+        let action = next_word(&mut json);
+        if let Some(action) = action
+            && !COMMANDS.iter().any(|c| c.is(object, action))
+        {
+            let tool = format!("neige_{object}_{action}");
+            if registry.lookup(&tool).is_some() {
+                return Err(usage(mcp_only(&tool), json, None));
+            }
         }
-    }
-    if !known_object {
-        return Err(usage(help::unknown_command_message(object), json, None));
-    }
-    let Some(action) = action else {
-        return Err(usage(missing_action(object), json, None));
-    };
-    let Some(command) = COMMANDS.iter().find(|c| c.is(object, action)) else {
-        return Err(usage(
-            help::unknown_action_message(object, action),
-            json,
-            None,
-        ));
+        if !objects().contains(&object) {
+            return Err(usage(help::unknown_command_message(object), json, None));
+        }
+        let Some(action) = action else {
+            return Err(usage(missing_action(object), json, None));
+        };
+        COMMANDS
+            .iter()
+            .find(|c| c.is(object, action))
+            .ok_or_else(|| usage(help::unknown_action_message(object, action), json, None))?
     };
     let fail = |message: String, json: bool| usage(message, json, Some(command.tool));
     let cmd = command.spelling();
@@ -531,10 +551,11 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
                 .get("path")
                 .and_then(Value::as_str)
                 .is_some_and(|path| {
-                    matches!(
-                        area_reports::classify(&normalize_path(path)),
-                        Some(Ok(AreaPath::Reports))
-                    )
+                    !path.starts_with('/')
+                        && matches!(
+                            area_reports::classify(&normalize_path(path)),
+                            Some(Ok(AreaPath::Reports))
+                        )
                 }),
         },
         Render::MailLs { .. } => Render::MailLs {

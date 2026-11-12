@@ -13,7 +13,7 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{Event, EventScope};
 use calm_server::harness::{HarnessState, Observation, PlannerHarness};
 use calm_server::ids::{ActorId, TrackId};
-use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
+use calm_server::mcp_server::tools::track_file::TOOL_CAT;
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
@@ -113,10 +113,7 @@ pub(super) async fn seed_completed_task_pair(
         .await
         .expect("log seeded task.completed");
 
-    let handler = fx
-        .registry
-        .lookup(TOOL_TRACK_CAT)
-        .expect("track cat registered");
+    let handler = fx.registry.lookup(TOOL_CAT).expect("track cat registered");
     let json_path = format!("runs/{task_id}.json");
     let json_read = handler(
         fx.ctx.clone(),

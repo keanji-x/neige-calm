@@ -1,5 +1,5 @@
 //! #2058: a running Track worker canceled through `neige_task_cancel` reads `canceled` in the
-//! runs views, both the live `neige_track_cat` projection and the track VCS head, as `neige state`
+//! runs views, both the live `neige_cat` projection and the track VCS head, as `neige state`
 //! does.
 
 use super::*;
@@ -8,7 +8,7 @@ use calm_server::db::sqlite::card_create_with_id_tx;
 use calm_server::db::write_with_event_typed;
 use calm_server::event::EventScope;
 use calm_server::mcp_server::tools::plan::TOOL_TASK_CANCEL;
-use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
+use calm_server::mcp_server::tools::track_file::TOOL_CAT;
 use calm_server::track_vcs;
 
 /// A worker card as the codex adapter mints one: its payload names the attempt and a `card.added`
@@ -53,7 +53,7 @@ async fn announce_worker_card(boot: &Boot, attempt_id: &str) -> String {
 async fn live_json(boot: &Boot, path: &str) -> Value {
     let out = call_tool(
         boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(boot),
         json!({ "path": path }),
     )

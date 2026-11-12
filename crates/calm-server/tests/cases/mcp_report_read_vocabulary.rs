@@ -1,5 +1,5 @@
 //! `neige_report_read` selects with the §4 vocabulary (#2087 B2): top-level `blocks` / `sections`
-//! (the names `neige_track_cat` uses) and `detail: full | index`. Each retired `select` shape maps
+//! (the names `neige_cat` uses) and `detail: full | index`. Each retired `select` shape maps
 //! to one of them with the same text and the same write anchors:
 //!
 //! | retired `select`             | now                    |

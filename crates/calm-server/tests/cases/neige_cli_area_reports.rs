@@ -1,6 +1,6 @@
 //! #1838 S2 end to end through the real `neige` path (kernel socket, `neige/cli`): the issue's
 //! `tag -> ls / ls -l / --json / find -> cat` loop over `area/reports/`, the ambiguous-name refusal,
-//! and the Worker's Forbidden. Run with `--no-capture` to see the transcript it prints.
+//! and the Worker's read access. Run with `--no-capture` to see the transcript it prints.
 
 #![cfg(unix)]
 
@@ -202,13 +202,13 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     set_report_time(&boot, &own_report, local_ms(14, 30)).await;
     set_report_time(&boot, &login_report, local_ms(10, 15)).await;
 
-    assert_eq!(ok(&boot, &["track", "ls", "area/"]).await, "d reports/\n");
+    assert_eq!(ok(&boot, &["ls", "area/"]).await, "d reports/\n");
     assert_eq!(
-        ok(&boot, &["track", "ls", "area/reports/"]).await,
+        ok(&boot, &["ls", "area/reports/"]).await,
         "认证 方案.md\n登录 排查.md\n"
     );
     assert_eq!(
-        ok(&boot, &["track", "ls", "-l", "area/reports/"]).await,
+        ok(&boot, &["ls", "-l", "area/reports/"]).await,
         "UPDATED_AT        TAGS       NAME\n\
          2026-09-28 14:30  认证,架构  认证 方案.md\n\
          2026-09-28 10:15  认证,排障  登录 排查.md\n"
@@ -221,8 +221,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
             .to_rfc3339_opts(SecondsFormat::Millis, false)
     };
     let listed: Value =
-        serde_json::from_str(&ok(&boot, &["--json", "track", "ls", "area/reports/"]).await)
-            .unwrap();
+        serde_json::from_str(&ok(&boot, &["--json", "ls", "area/reports/"]).await).unwrap();
     assert_eq!(
         listed,
         json!({ "reports": [
@@ -286,22 +285,22 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     );
 
     assert_eq!(
-        ok(&boot, &["track", "cat", "area/reports/登录 排查.md"]).await,
+        ok(&boot, &["cat", "area/reports/登录 排查.md"]).await,
         LOGIN_BODY
     );
     assert_eq!(
-        ok(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
         AUTH_BODY
     );
     assert_eq!(
-        ok(&boot, &["track", "cat", "report.md"]).await,
+        ok(&boot, &["cat", "report.md"]).await,
         AUTH_BODY,
         "report.md is unchanged"
     );
 
     // A tag change is a report change: the listing's time moves off 14:30.
     ok(&boot, &["report", "tag", "report.md", "--add", "排障"]).await;
-    let long = ok(&boot, &["track", "ls", "-l", "area/reports/"]).await;
+    let long = ok(&boot, &["ls", "-l", "area/reports/"]).await;
     let own_line = long.lines().find(|l| l.ends_with("认证 方案.md")).unwrap();
     assert!(own_line.contains("  认证,架构,排障  "), "{long}");
     assert!(!own_line.starts_with("2026-09-28 14:30"), "{long}");
@@ -309,17 +308,17 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     // A second track with the same title: both list suffixed, the bare name is refused with both.
     let twin = add_track(&boot, &area, "认证 方案").await;
     add_report(&boot, &twin, "# 认证 方案\n\n第二份 结论。\n").await;
-    let names = ok(&boot, &["track", "ls", "area/reports/"]).await;
+    let names = ok(&boot, &["ls", "area/reports/"]).await;
     let suffixed: Vec<String> = names
         .lines()
         .filter(|name| name.starts_with("认证 方案~"))
         .map(|name| format!("area/reports/{name}"))
         .collect();
     assert_eq!(suffixed.len(), 2, "{names}");
-    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["cat", "area/reports/认证 方案.md"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(
-        stderr.starts_with("neige: neige_track_cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
+        stderr.starts_with("neige: neige_cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
         "{stderr}"
     );
     assert!(stderr.ends_with(" (code -32602)\n"), "{stderr}");
@@ -331,7 +330,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
         .find(|path| path.contains(&twin.as_str()[..8]))
         .unwrap();
     assert_eq!(
-        ok(&boot, &["track", "cat", twin_path]).await,
+        ok(&boot, &["cat", twin_path]).await,
         "# 认证 方案\n\n第二份 结论。\n"
     );
 
@@ -347,48 +346,31 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
         .await
         .unwrap();
     assert_eq!(
-        ok(&boot, &["track", "cat", "area/reports/认证 方案 第二版.md"]).await,
+        ok(&boot, &["cat", "area/reports/认证 方案 第二版.md"]).await,
         "# 认证 方案\n\n第二份 结论。\n"
     );
     assert_eq!(
-        ok(&boot, &["track", "cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
         AUTH_BODY
     );
 }
 
 #[tokio::test]
-async fn a_worker_is_refused_area_reports_through_neige() {
+async fn a_worker_reads_area_reports_through_neige() {
     let boot = boot_with_role(CardRole::Worker).await;
     add_report(&boot, &boot.track_id, "own\n").await;
-    for (argv, refusal) in [
-        (
-            &["track", "ls", "area/reports/"][..],
-            "area/reports/ is the Planner's view",
-        ),
-        (
-            &["track", "cat", "area/reports/mcp-test.md"][..],
-            "area/reports/ is the Planner's view",
-        ),
-        // A Planner-only tool: its declared roles refuse the Worker before the handler.
-        (
-            &["report", "find", "area/reports/", "--tag", "x"][..],
-            "tool requires role in [Planner] got=Worker",
-        ),
-    ] {
-        let (stdout, stderr, exit) = neige(&boot, argv).await;
-        assert_eq!((exit, stdout.as_str()), (4, ""), "{argv:?}");
-        assert!(
-            stderr.contains(refusal) && stderr.ends_with("(code -32403)\n"),
-            "{argv:?}: {stderr}"
-        );
-    }
-    assert_eq!(ok(&boot, &["track", "cat", "report.md"]).await, "own\n");
+    ok(&boot, &["ls", "area/reports/"]).await;
+    assert_eq!(
+        ok(&boot, &["cat", "area/reports/mcp-test.md"]).await,
+        "own\n"
+    );
+    assert_eq!(ok(&boot, &["cat", "report.md"]).await, "own\n");
 }
 
 const BLOCKS_BODY: &str =
     "Contract intro.\n\n# Goal\n\nalpha\n\n# Findings\n\nbeta\n\n# Next\n\ngamma\n";
 
-/// The report's block ids in document order, from the snapshot `neige_area_ls` also reads.
+/// The report's block ids in document order, from the snapshot `neige_ls` also reads.
 async fn block_ids(boot: &CardBoot, report_card: &str) -> Vec<String> {
     calm_server::track_report_read::load_report_doc_snapshot(boot.repo.as_ref(), report_card)
         .await
@@ -415,31 +397,185 @@ async fn planner_reads_chosen_report_blocks_through_neige() {
         "<!-- neige:{} -->\n# Goal\n\nalpha\n\n<!-- neige:{} -->\n# Next\n\ngamma\n",
         ids[1], ids[3]
     );
+    assert_eq!(ok(&boot, &["cat", path, "--blocks", &chosen]).await, want);
     assert_eq!(
-        ok(&boot, &["track", "cat", path, "--blocks", &chosen]).await,
+        ok(&boot, &["--json", "cat", "--blocks", &chosen, path]).await,
         want
     );
-    assert_eq!(
-        ok(
-            &boot,
-            &["--json", "track", "cat", "--blocks", &chosen, path]
-        )
-        .await,
-        want
-    );
-    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", path, "--blocks", "b_nope"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["cat", path, "--blocks", "b_nope"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(stderr.contains("unknown block id `b_nope`"), "{stderr}");
 
     // #1877: --sections names whole H1 sections and prints the same bytes.
     assert_eq!(
-        ok(&boot, &["track", "cat", path, "--sections", "Next,Goal"]).await,
+        ok(&boot, &["cat", path, "--sections", "Next,Goal"]).await,
         want
     );
-    let (stdout, stderr, exit) = neige(&boot, &["track", "cat", path, "--sections", "Nope"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["cat", path, "--sections", "Nope"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
     assert!(
         stderr.contains("unknown section `Nope`; this report's sections are:\n  # Goal"),
         "{stderr}"
     );
+}
+
+#[tokio::test]
+async fn unified_browse_cli_foreign_report_and_refusal() {
+    for role in [CardRole::Planner, CardRole::Assistant, CardRole::Worker] {
+        let boot = boot_with_role(role).await;
+        let area = boot
+            .repo
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "foreign".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
+            .await
+            .unwrap();
+        let track = add_track(&boot, &area.id, "Foreign report").await;
+        let body = format!(
+            "{}{}",
+            BLOCKS_BODY,
+            (0..45)
+                .map(|i| format!("\n# More {i}\n\ntext\n"))
+                .collect::<String>()
+        );
+        let report_card = add_report(&boot, &track, &body).await;
+        let path = format!("/areas/{}/tracks/{}/report.md", area.id, track);
+        assert_eq!(ok(&boot, &["cat", &path]).await, body);
+        let index: Value =
+            serde_json::from_str(&ok(&boot, &["cat", &path, "--detail", "index"]).await).unwrap();
+        assert_eq!(index["track_id"], track.as_str());
+        assert_eq!(
+            index["blocks"].as_array().unwrap().len(),
+            49,
+            "index includes every block"
+        );
+        let listed: Value = serde_json::from_str(
+            &ok(
+                &boot,
+                &["ls", &format!("/areas/{}/tracks/", area.id), "--json"],
+            )
+            .await,
+        )
+        .unwrap();
+        assert_eq!(listed["entries"][0]["track_id"], track.as_str());
+        let text = ok(&boot, &["ls", &format!("/areas/{}/tracks/", area.id)]).await;
+        assert!(
+            text.contains(track.as_str())
+                && text.contains("Foreign report")
+                && text.contains(path.strip_suffix("report.md").unwrap())
+        );
+        let json_index: Value =
+            serde_json::from_str(&ok(&boot, &["cat", &path, "--detail", "index", "--json"]).await)
+                .unwrap();
+        assert_eq!(json_index, index);
+        boot.repo
+            .track_update(
+                track.as_str(),
+                TrackPatch {
+                    title: Some("Renamed".into()),
+                    ..TrackPatch::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            ok(&boot, &["cat", &path]).await,
+            body,
+            "ID paths survive title changes"
+        );
+        let id = index["blocks"][1]["id"].as_str().unwrap();
+        let selected = ok(&boot, &["cat", &path, "--blocks", id]).await;
+        assert!(selected.contains("# Goal") && !selected.contains("# Next"));
+        assert_eq!(
+            ok(&boot, &["cat", &path, "--sections", "Goal", "--json"]).await,
+            selected
+        );
+        let changes: Value =
+            serde_json::from_str(&ok(&boot, &["cat", "/report-changes/1970-01-01.json"]).await)
+                .unwrap();
+        assert_eq!(changes["timezone"], "Asia/Shanghai");
+        let edits = format!(
+            "/areas/{}/tracks/{}/report-edits/1970-01-01.json",
+            area.id, track
+        );
+        let edits: Value =
+            serde_json::from_str(&ok(&boot, &["cat", &edits, "--through-event-id", "0"]).await)
+                .unwrap();
+        assert_eq!(edits["edits"], json!([]));
+        for (tool, args) in [
+            (
+                "neige_ls",
+                json!({"path":format!("/areas/{}/tracks/",area.id)}),
+            ),
+            ("neige_cat", json!({"path":path})),
+            ("neige_cat", json!({"path":path,"detail":"index"})),
+            ("neige_cat", json!({"path":path,"blocks":[id]})),
+            ("neige_cat", json!({"path":path,"sections":["Goal"]})),
+            (
+                "neige_cat",
+                json!({"path":"/report-changes/1970-01-01.json"}),
+            ),
+            (
+                "neige_cat",
+                json!({"path":format!("/areas/{}/tracks/{}/report-edits/1970-01-01.json",area.id,track),"through_event_id":0}),
+            ),
+        ] {
+            let response = support::mcp::call_tool_via_socket(
+                &boot.socket_path,
+                &boot.raw_token,
+                &boot.thread_id,
+                99,
+                tool,
+                args.clone(),
+            )
+            .await;
+            assert!(
+                response.get("error").is_none(),
+                "{role:?} {args}: {response}"
+            );
+            let result = &response["result"]["structuredContent"];
+            if tool == "neige_ls" {
+                assert_eq!(result["entries"][0]["track_id"], track.as_str());
+            } else if args.get("blocks").is_some() || args.get("sections").is_some() {
+                assert_eq!(result["content"], selected);
+            } else if args["detail"] == "index" {
+                let index: Value =
+                    serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+                assert_eq!(index["blocks"].as_array().unwrap().len(), 49);
+            } else if args["path"] == path {
+                assert_eq!(result["content"], body);
+            } else {
+                assert_eq!(result["content_type"], "application/json");
+            }
+        }
+        let knowledge = calm_truth::db::sqlite::report_knowledge::load(
+            boot.repo.as_ref(),
+            &boot.session_id,
+            &report_card,
+        )
+        .await
+        .unwrap();
+        assert!(knowledge.is_none(), "browsing never anchors a write");
+        let (out, _, exit) = neige(
+            &boot,
+            &["cat", &path.replace("report.md", "conversation.md")],
+        )
+        .await;
+        assert_eq!((exit, out.as_str()), (4, ""));
+        let refused = support::mcp::call_tool_via_socket(
+            &boot.socket_path,
+            &boot.raw_token,
+            &boot.thread_id,
+            100,
+            "neige_cat",
+            json!({"path":path.replace("report.md","conversation.md")}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], -32602);
+    }
 }

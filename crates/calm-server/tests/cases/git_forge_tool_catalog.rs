@@ -69,11 +69,7 @@ async fn tool_rows_name_the_git_forge_plugin_and_its_forge_action_kind() {
     );
 
     let kernel: Value = serde_json::from_str(
-        &cli(
-            &fx,
-            &["tool", "describe", "--name", "neige_track_ls", "--json"],
-        )
-        .await,
+        &cli(&fx, &["tool", "describe", "--name", "neige_ls", "--json"]).await,
     )
     .unwrap();
     assert_eq!(

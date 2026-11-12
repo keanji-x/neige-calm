@@ -4,12 +4,10 @@
 Planner、Assistant、Worker 获得相同的跨用户 Area Report 只读能力。
 沿用[既有读权限设计](assistant-read-access.md)，本设计取代其 workspace 工具命名，
 不改变 HTTP 查询契约，不引入数据库迁移或前端改动。实施为 **L2**：涉及跨角色、
-跨 Track 的 authority/isolation 边界。本轮只交付设计，不执行下列实施检查。
-Issue 创建 op `0794741ebde04955bf3ea8f0baf8bb78` 尚 pending，编号未知。
+跨 Track 的 authority/isolation 边界。关联 [#3665](https://github.com/keanji-x/neige-calm/issues/3665)。
 
 证据：本 Track 调查结果 `runs/962955a9f18a4018aba502aac9c643cb:inspect-unified-report-reads/result`
-（`neige track cat` 可读）；以下链接指向已核对的当前源码，描述的是目标契约，
-不代表新入口已经存在。
+（`neige cat` 可读）；以下链接指向实现 owner。
 
 ## 路径与授权
 
@@ -37,7 +35,7 @@ Issue 创建 op `0794741ebde04955bf3ea8f0baf8bb78` 尚 pending，编号未知。
 拒绝；相对自身 system 视图（含 Today/launchpad Report）照旧。全局目录隐藏退休
 Area-conversation 容器，复用并下沉 HTTP 的 `user_visible_track` 规则，不在 CLI
 复制 purpose 特例；日期查询保持原始 user-kind 事件集合，不因目录隐藏容器而丢历史。
-仍保留该隐藏容器的直接 user Report 读取。历史容器的实际数据分布尚未逐项核实。
+仍保留该隐藏容器的直接 user Report 读取。
 
 不新增人类 membership 推断：HTTP Principal 与 agent ToolCallIdentity 不是同一身份；
 这里延续已有 workspace 的跨 user Area 范围。所有浏览（含 own Report/index/history）
@@ -51,12 +49,12 @@ selector 不得进入写 API。`link_ls`、mail 的 same-area 权限不随目录
 
 ## 返回值、分页与水位
 
-`ls` 统一 `{entries, next_cursor}`；目录行有 `id,title,path,kind`，Area/Track 行再给
+绝对目录的 `ls` 统一 `{entries, next_cursor}`；相对路径保留既有绑定 view 的投影。全局目录行有 `id,title,path,kind`，Area/Track 行再给
 `area_id`/`track_id`，不得返回 `default_cwd` 等完整内部 model。Track 行复用旧
 area outline 的 `closed_at,creator_track_id,doc_rev,updated_at,active_tasks_count,blocks,
 blocks_truncated`；heading 预览仍最多 40 blocks，明确不是完整 index。
-目录按稳定 ID 升序 keyset，用现有 `Page`（50 行、32 KiB，可提前结束，超大首行独占页），
-`next_cursor` 为末行 key，末页 null；空页不得漏行，foreign/已消失 cursor 拒绝。
+目录按稳定 ID 升序 keyset，cursor 为该行绝对路径以绑定所属目录，用现有 `Page`（50 行、32 KiB，可提前结束，超大首行独占页），
+`next_cursor` 为末行路径 key，末页 null；空页不得漏行，foreign/已消失 cursor 拒绝。
 续页固定同一目录；cursor 不跨 Area/目录使用，helper 与 owner 校验本目录 key，
 客户端视其为 opaque。目录不是数据库快照，新插入的较小 key 需重新开始查看。
 CLI 文本必须显示 ID、标题、路径及续页提示，`--json` 输出完整结构。
@@ -85,9 +83,9 @@ edit_count、compact payload decode/scope 校验均保留。changes 每页 20、
 edits 每页 20、event ID 升序、cursor 为十进制 event ID，保持原水位/keyset 语义，
 不改用目录 cursor、Git hash 或目录字节预算，不引入 HTTP cursor 格式变化。
 证据：[分页 helper](../../crates/calm-server/src/mcp_server/tools/paging.rs)、
-[outline](../../crates/calm-server/src/mcp_server/tools/report_links.rs)、
+[目录投影](../../crates/calm-server/src/mcp_server/tools/unified_browse.rs)、
 [现有日期 owner](../../crates/calm-server/src/workspace_reports.rs)、
-[旧 MCP 投影](../../crates/calm-server/src/mcp_server/tools/workspace_reports.rs)、
+[统一浏览投影](../../crates/calm-server/src/mcp_server/tools/unified_browse.rs)、
 [HTTP DTO](../../crates/calm-types/src/daily_planner.rs)。
 
 ## 实施清单与删除边界
@@ -107,7 +105,7 @@ edits 每页 20、event ID 升序、cursor 为十进制 event ID，保持原水�
    删除重复 SQL handler、角色 policy 和 capability 列表，managed reports-only policy
    改认新入口，仍限制写工具。Git `track diff/log/show` 不在退役范围，仍绑定自身 Track，
    不把日期 events 混入 Git history。
-4. 迁移完整调用链：`tools/{track_file,workspace_reports,report_links,area_reports}.rs`、
+4. 迁移完整调用链：`tools/{track_file,unified_browse,report_links,area_reports}.rs`、
    registry/wiring、`cli/{commands,help,catalog,render}` 及 listing renderer；
    `managed_track.rs`、`daily_planner.rs`、`routes/{daily_planner,today}.rs`、
    `harness/run_loop/issuance.rs` 及 workspace_report_tests；prompts/workspace-reports、
@@ -129,14 +127,14 @@ edits 每页 20、event ID 升序、cursor 为十进制 event ID，保持原水�
 
 ## 实施验证与评审计划
 
-先在真实 CLI/MCP 生产入口加 red reproduction，再做最小 green 实现：三角色跨 Area
+真实 CLI/MCP 生产入口的边界复现与最终验证覆盖：三角色跨 Area
 目录/full/index/blocks/sections/date/edits 同等成功；system foreign、伪 binding、错配路径、
 非 Report foreign/traversal 拒绝；own system/relative/no-path 保持；foreign 不入 ledger、
 写 fence 保持；旧工具无 alias；分页每行恰一次、空/超大行/foreign cursor；午夜边界、
 late event 固水位、closed/revert、compact history；CLI 文本和 JSON 都断言可观察结果。
 将用例注册到现有 suites，不把嵌套 case 文件误作独立 `--test`。
 
-以下命令是后续实施计划，不是本次运行结果。共同前缀为
+以下为 focused 验证范围。共同前缀为
 `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server`，
 每组附 `--no-tests=fail --test-threads 8`：
 
@@ -149,7 +147,7 @@ late event 固水位、closed/revert、compact history；CLI 文本和 JSON 都�
 ```
 
 先核对实际注册与枚举，再冻结实施 gate filter；任何不存在 selector 均须报告，不能
-改 test layout 凑命令。上列是本设计证据时的旧模块名，迁移时以实际注册替换。
+改 test layout 凑命令。新浏览用例在 lib `mcp_server::tools::unified_browse::tests` 和现有 CLI/MCP suites 注册。
 Registry golden 必须用真实 generator：
 
 ```sh
@@ -171,7 +169,7 @@ Mutation 在独占可恢复 worktree 执行，先写完整预期红集，再单�
 `workspace_reports::tests::report_day_changes_include_reverts_closed_tracks_and_exact_date_edges`。
 若缺红或多红必须解释、作废预测；恢复后 green 并查 residue。新路径实现后另对唯一
 Report-only refusal 条件做 mutation，预测三角色矩阵完整红集，跑所在整个 suite/filter；
-当前尚无该实现，不能虚构其测试名或 mutation 通过证据。
+路径 mutation 将五段 Track 文件 scope 的非 Report refusal 分支临时改为 Report scope；完整预测与实际红集记在实施验证记录。
 
 实施 worker 跑 focused 与格式修复；kernel gate 独占 quick Rust（`--quick --base origin/main`）、
 text、full local-contract-gates（L2），并 replay 一个拒绝空选择的 focused filter；CI 跑 broad
@@ -180,4 +178,4 @@ suites。HTTP 集成 smoke 可用 `./e2e/run.sh --tier 1 --case 030-daily-planne
 Planner 安排两个独立隔离 review，逐项审 abstraction、duplicate logic、hardcoded assumptions、
 external contracts、permanence；行为修复后双通道 fresh review，机械 delta 按仓库规则复核。
 检查范围及成本复用[现有 contract gate](../../scripts/local-contract-gates.sh)，不新增测试名 pin。
-本次仅文档链接检查，kernel gate 独占 `scripts/local-ratchet-gates.sh`；未运行 Rust、生成器或 mutation。
+最终验证由实施记录与 kernel gate 日志提供。

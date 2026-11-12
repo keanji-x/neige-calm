@@ -12,10 +12,11 @@ use support::mcp::{
 fn expected_planner_toolset() -> Vec<&'static str> {
     vec![
         "neige_access_ask",
-        "neige_area_ls",
+        "neige_cat",
         "neige_catalog_cat",
         "neige_catalog_ls",
         "neige_link_ls",
+        "neige_ls",
         "neige_mail_cat",
         "neige_mail_ls",
         "neige_mail_send",
@@ -46,10 +47,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_track_close",
         "neige_track_rename",
         "neige_user_ask",
-        "neige_workspace_cat",
-        "neige_workspace_diff",
-        "neige_workspace_log",
-        "neige_workspace_ls",
     ]
 }
 
@@ -234,6 +231,8 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     assert_eq!(
         names,
         vec![
+            "neige_cat",
+            "neige_ls",
             "neige_message_read",
             "neige_task_done",
             "neige_task_fail",
@@ -251,6 +250,8 @@ async fn tools_list_for_assistant_role_returns_reports_and_track_reads() {
     assert_eq!(
         names,
         vec![
+            "neige_cat",
+            "neige_ls",
             "neige_report_commit",
             "neige_report_describe",
             "neige_report_read",
@@ -259,16 +260,10 @@ async fn tools_list_for_assistant_role_returns_reports_and_track_reads() {
             "neige_terminal_input",
             "neige_terminal_read",
             "neige_terminal_show",
-            "neige_track_cat",
             "neige_track_diff",
             "neige_track_log",
-            "neige_track_ls",
             "neige_track_show",
             "neige_worker_report",
-            "neige_workspace_cat",
-            "neige_workspace_diff",
-            "neige_workspace_log",
-            "neige_workspace_ls",
         ],
         "assistant tools/list includes workspace and bound-Track reads and \
          the worker watcher's terminal tools and report (#2492)",

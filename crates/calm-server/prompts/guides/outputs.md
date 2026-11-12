@@ -1,6 +1,6 @@
 # Reading outputs
 
-`neige track ls [path]` lists read-only views; `neige track cat <path>` prints. Pipe text into shell `tail`, `grep` or `jq`.
+`neige ls [path]` lists read-only views; `neige cat <path>` prints. Pipe text into shell `tail`, `grep` or `jq`.
 
 ## Own track
 
@@ -12,10 +12,10 @@
 - `cards/<card_id>/.payload.json`: payload; `runtime.json`: status or null; `conversation.md`: worker conversation and turn endings.
 - `report.md`: your report; `--blocks <id>,<id>` selects blocks after their marker lines.
 
-Forge receipts inline output within 16 KiB. Overflow gives `output_ref: ops/<op_id>/result` and bytes; read with `neige track cat` through the same own-track lookup as `neige op show`. Missing artifacts are explicit, without unreadable references. `ops/` only reads overflow; no disk paths or operation listing.
+Forge receipts inline output within 16 KiB. Overflow gives `output_ref: ops/<op_id>/result` and bytes; read with `neige cat` through the same own-track lookup as `neige op show`. Missing artifacts are explicit, without unreadable references. `ops/` only reads overflow; no disk paths or operation listing.
 
 ## Area reports and mentions
 
-`neige track ls area/reports/` lists `<title>.md` newest first; `-l` adds times/tags. `neige report find area/reports/ --name '<glob>' --tag <tag>` filters with AND. `neige track cat area/reports/<name>.md` reads; `--blocks <id>,<id>` narrows it. Use listed paths: duplicate titles get `~<id>`, special characters `%XX`; renames invalidate old paths. `--json` adds title, track_id, tags and updated_at.
+`neige ls area/reports/` lists `<title>.md` newest first; `-l` adds times/tags. `neige report find area/reports/ --name '<glob>' --tag <tag>` filters with AND. `neige cat area/reports/<name>.md` reads; `--blocks <id>,<id>` narrows it. Use listed paths: duplicate titles get `~<id>`, special characters `%XX`; renames invalidate old paths. `--json` adds title, track_id, tags and updated_at.
 
 Mentions: ``@`tag:<tag>` `` means find by tag; ``@`area/reports/<name>.md` `` means read that report; a `#<id>` suffix selects `--blocks <id>`. List again after renames. Cite other tracks' reports; run or re-declare their tasks only when this request needs it.

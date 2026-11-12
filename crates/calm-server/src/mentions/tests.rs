@@ -1,5 +1,5 @@
 //! `GET /api/areas/{area_id}/mentions` through the real router: every `insert` resolves through the
-//! `area/reports/` resolver `neige track cat` / `neige report find` use, only the caller's area is searched,
+//! `area/reports/` resolver `neige cat` / `neige report find` use, only the caller's area is searched,
 //! matching and ranking follow `rank`'s documented order, and every request reads afresh.
 
 use calm_truth::db::RepoRead;
@@ -250,7 +250,7 @@ fn code_text(insert: &str) -> String {
     code.into_iter().next().unwrap()
 }
 
-/// The `area/reports/` file a path names, through the classifier `neige track cat` routes by.
+/// The `area/reports/` file a path names, through the classifier `neige cat` routes by.
 fn report_file(path: &str) -> &str {
     match area_reports::classify(path) {
         Some(Ok(AreaPath::Report(file))) => file,

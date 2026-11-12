@@ -18,13 +18,9 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "plugin_calendar_add",
     "plugin_calendar_set",
     "plugin_calendar_rm",
-    "neige_workspace_ls",
-    "neige_workspace_cat",
-    "neige_workspace_diff",
-    "neige_workspace_log",
     "neige_report_read",
-    "neige_track_ls",
-    "neige_track_cat",
+    "neige_ls",
+    "neige_cat",
     "neige_track_diff",
     "neige_track_show",
     "neige_track_log",
@@ -43,7 +39,6 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
 const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Cross-track / cross-area report discovery reads.
-    "neige_area_ls",
     "neige_link_ls",
     "neige_report_find",
     // Captured sources are the planner's evidence.

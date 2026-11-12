@@ -94,7 +94,7 @@ async fn planner_message_is_readable_by_its_attempt_worker() {
         .unwrap();
     let audit = h
         .ok(
-            "neige_track_cat",
+            "neige_cat",
             json!({"path":format!("runs/{}/planner-messages.json", f.worker.task)}),
         )
         .await;
@@ -403,7 +403,7 @@ async fn planner_message_audit_refuses_a_foreign_attempt_from_editable_card_meta
                 );
                 let audit = h
                     .ok(
-                        "neige_track_cat",
+                        "neige_cat",
                         json!({"path":format!("runs/{}/planner-messages.json", owner.task)}),
                     )
                     .await;

@@ -509,8 +509,8 @@ async fn mail_send_refusals_follow_the_table() {
             "unknown_track",
             -32404,
             format!(
-                "{tool}: no track {} in this area; list the area's tracks with neige_area_ls",
-                foreign.track_id
+                "{tool}: no track {} in this area; list the area's tracks with neige ls /areas/{}/tracks/",
+                foreign.track_id, w.area_id
             ),
         ),
         (
@@ -518,7 +518,8 @@ async fn mail_send_refusals_follow_the_table() {
             "unknown_track",
             -32404,
             format!(
-                "{tool}: no track no-such-track in this area; list the area's tracks with neige_area_ls"
+                "{tool}: no track no-such-track in this area; list the area's tracks with neige ls /areas/{}/tracks/",
+                w.area_id
             ),
         ),
         (
@@ -724,10 +725,16 @@ async fn mail_trace_of_the_investment_case() {
     let w = World::new(&["Weekly review", "NVDA research"]).await;
     let (r, n) = (w.p(0), w.p(1));
     w.user_turn(r, "review this week").await;
-    let outline =
-        super::track_mail_fixture::structured(&w.call(r, "neige_area_ls", json!({})).await);
+    let outline = super::track_mail_fixture::structured(
+        &w.call(
+            r,
+            "neige_ls",
+            json!({"path":format!("/areas/{}/tracks/",w.area_id)}),
+        )
+        .await,
+    );
     assert!(
-        outline["tracks"]
+        outline["entries"]
             .as_array()
             .unwrap()
             .iter()

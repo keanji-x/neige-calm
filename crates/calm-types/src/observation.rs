@@ -414,7 +414,7 @@ impl Observation {
                 );
                 let paths = match failing_step.as_deref().filter(|_| !*passed) {
                     Some(step) => format!(
-                        "{paths} Failed step: `neige track cat runs/{idempotency_key}/gates/{attempt}.log --step '{}'`.",
+                        "{paths} Failed step: `neige cat runs/{idempotency_key}/gates/{attempt}.log --step '{}'`.",
                         step.replace('\'', "'\\''")
                     ),
                     None => paths,

@@ -122,7 +122,7 @@ impl EvidenceFixture {
                 &self.fx.planner_token,
                 "planner-thread",
                 id + 1000,
-                "neige_track_cat",
+                "neige_cat",
                 json!({"path": reference}),
             )
             .await;

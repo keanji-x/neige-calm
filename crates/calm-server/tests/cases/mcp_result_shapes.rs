@@ -151,13 +151,13 @@ async fn report_tool_results_are_snake_case() {
     assert_eq!(row["track_id"], json!(boot.track_id.as_str()), "{found}");
     assert!(row["updated_at"].is_string(), "{found}");
 
-    let listed = ok(&boot, "neige_track_ls", json!({"path": "area/reports/"})).await;
-    assert_snake_case("neige_track_ls", &listed);
+    let listed = ok(&boot, "neige_ls", json!({"path": "area/reports/"})).await;
+    assert_snake_case("neige_ls", &listed);
     assert_eq!(listed, found, "ls and find list the same rows");
 
     // `neige --json` prints the tool result as is.
     for (argv, mcp) in [
-        (&["--json", "track", "ls", "area/reports/"][..], &listed),
+        (&["--json", "ls", "area/reports/"][..], &listed),
         (&["--json", "report", "find", "area/reports/"][..], &found),
     ] {
         let (stdout, stderr, exit) =
@@ -192,7 +192,7 @@ async fn no_kernel_tool_returns_a_top_level_array() {
             answered.push(descriptor.name);
         }
     }
-    for tool in ["neige_track_ls", "neige_report_read", "neige_task_ls"] {
+    for tool in ["neige_ls", "neige_report_read", "neige_task_ls"] {
         assert!(
             answered.iter().any(|name| name == tool),
             "{tool} did not answer: {answered:?}"
@@ -200,8 +200,8 @@ async fn no_kernel_tool_returns_a_top_level_array() {
     }
     for (tool, args) in [
         ("neige_report_find", json!({"path": "area/reports/"})),
-        ("neige_track_ls", json!({"path": "area/"})),
-        ("neige_track_ls", json!({"path": "guide/"})),
+        ("neige_ls", json!({"path": "area/"})),
+        ("neige_ls", json!({"path": "guide/"})),
     ] {
         let value = ok(&boot, tool, args.clone()).await;
         assert!(value.is_object(), "{tool} {args}: {value}");
@@ -283,12 +283,15 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
         ),
         ("neige_source_ls", json!({})),
         ("neige_track_log", json!({})),
-        ("neige_track_ls", json!({"path": "/"})),
-        ("neige_track_ls", json!({"path": "cards/"})),
-        ("neige_track_ls", json!({"path": "runs/"})),
+        ("neige_ls", json!({})),
+        ("neige_ls", json!({"path": "cards/"})),
+        ("neige_ls", json!({"path": "runs/"})),
         ("neige_track_status", json!({})),
         ("neige_track_close", json!({"message": "done"})),
-        ("neige_area_ls", json!({})),
+        (
+            "neige_ls",
+            json!({"path":format!("/areas/{}/tracks/",boot.repo.track_get(boot.track_id.as_str()).await.unwrap().unwrap().area_id)}),
+        ),
         ("neige_track_status", json!({})),
     ] {
         results.push((tool, ok(&boot, tool, args).await));
@@ -322,11 +325,11 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
         "neige_task_ls created_at",
         "neige_source_ls captured_at",
         "neige_track_log created_at",
-        "neige_track_ls updated_at",
+        "neige_ls updated_at",
         "neige_track_status created_at",
         "neige_track_status updated_at",
         "neige_track_close closed_at",
-        "neige_area_ls closed_at",
+        "neige_ls closed_at",
         "neige_track_status closed_at",
     ] {
         assert!(
@@ -338,7 +341,7 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
     // runtime that never completed a turn, a directory entry.
     for expected in [
         "neige_task_ls finished_at",
-        "neige_track_ls updated_at",
+        "neige_ls updated_at",
         "neige_track_status pinned_at",
         "neige_track_status last_turn_completed_at",
     ] {

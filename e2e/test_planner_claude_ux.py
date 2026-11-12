@@ -846,7 +846,7 @@ class CollectorTests(unittest.TestCase):
     def test_refusal_metric_ignores_unrelated_errors_and_success_output(self):
         unrelated = row(1, "neige_terminal_input")
         unrelated["params"]["item"]["error"] = {"message": "observation renderer changed resolution"}
-        other_tool = row(2, "neige_track_cat")
+        other_tool = row(2, "neige_cat")
         other_tool["params"]["item"]["error"] = {"message": "observation expired; read again"}
         success = row(3, "neige_terminal_input")
         data = {"terminal_id": "t1", "outcome": "written", "next": "terminal changed since observation; read again"}
@@ -897,7 +897,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(observed, original)
 
     def test_no_terminal_calls_does_not_turn_prose_into_success(self):
-        for rows in ([], [row(1, "neige_track_cat")]):
+        for rows in ([], [row(1, "neige_cat")]):
             with self.subTest(rows=rows), self.assertRaisesRegex(ux.EvidenceError, "no actual Planner"):
                 ux.terminal_evidence(rows)
 

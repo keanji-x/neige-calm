@@ -189,7 +189,7 @@ impl World {
             .await
             .unwrap();
         self.area_cache.insert(track.id.clone(), area.clone());
-        // Every Track has its report card, which is what `neige_area_ls` lists.
+        // Every Track has its report card, which is what `neige_ls` lists.
         let write_db = (self.repo.db()).clone();
         write_db
             .writer()

@@ -155,8 +155,8 @@ impl SessionCatalog {
                         && matches!(
                             descriptor.name.as_str(),
                             crate::mcp_server::tools::track_state::TOOL_TRACK_STATUS
-                                | crate::mcp_server::tools::track_file::TOOL_TRACK_LS
-                                | crate::mcp_server::tools::track_file::TOOL_TRACK_CAT
+                                | crate::mcp_server::tools::track_file::TOOL_LS
+                                | crate::mcp_server::tools::track_file::TOOL_CAT
                         ))
             })
             .filter(|descriptor| {

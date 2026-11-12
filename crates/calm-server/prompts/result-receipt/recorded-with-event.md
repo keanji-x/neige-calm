@@ -1,2 +1,2 @@
 
-Recorded execution details: `neige track cat {path}`. This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file. Optional provenance: events.{kind}, event_id={event_id}. Use the full worker result reference below when supplied; no run JSON parsing is needed.
+Recorded execution details: `neige cat {path}`. This virtual JSON record contains the recorded events and any artifact claims; it is not a worker report file. Optional provenance: events.{kind}, event_id={event_id}. Use the full worker result reference below when supplied; no run JSON parsing is needed.

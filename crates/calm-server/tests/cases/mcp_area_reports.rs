@@ -1,6 +1,6 @@
-//! `area/reports/` (#1838 S2) through the registered handlers (`neige_track_ls`, `neige_track_cat`,
+//! `area/reports/` (#1838 S2) through the registered handlers (`neige_ls`, `neige_cat`,
 //! `neige_report_find`): the Planner lists, finds and reads its own area's reports; another area's
-//! reports are unreachable by any path; a Worker is Forbidden; names resolve exactly or refuse.
+//! reports are unreachable by any path; all agent roles read user Area Reports; names resolve exactly or refuse.
 
 #![cfg(unix)]
 
@@ -16,7 +16,7 @@ use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::area_reports::TOOL_REPORT_FIND;
 use calm_server::mcp_server::tools::report_tag::TOOL_REPORT_TAG;
-use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
+use calm_server::mcp_server::tools::track_file::{TOOL_CAT, TOOL_LS};
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_report_blocks::TOOL_REPORT_WRITE;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -231,11 +231,11 @@ async fn call(
 }
 
 async fn ls(boot: &Boot, who: ToolCallIdentity, path: &str) -> Result<Value, RpcError> {
-    call(boot, TOOL_TRACK_LS, who, json!({ "path": path })).await
+    call(boot, TOOL_LS, who, json!({ "path": path })).await
 }
 
 async fn cat(boot: &Boot, who: ToolCallIdentity, path: &str) -> Result<String, RpcError> {
-    let value = call(boot, TOOL_TRACK_CAT, who, json!({ "path": path })).await?;
+    let value = call(boot, TOOL_CAT, who, json!({ "path": path })).await?;
     Ok(value["content"].as_str().expect("content").to_string())
 }
 
@@ -318,7 +318,7 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
         ls(&boot, planner(own), "area/").await.unwrap(),
         json!({ "entries": [{ "name": "reports/", "kind": "dir", "updated_at": null }] })
     );
-    let listing = ls(&boot, planner(own), "/area/reports/").await.unwrap();
+    let listing = ls(&boot, planner(own), "area/reports/").await.unwrap();
     assert_eq!(
         listing,
         json!({ "reports": [
@@ -329,7 +329,7 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
         ] }),
         "own track included, newest report first"
     );
-    let root = ls(&boot, planner(own), "/").await.unwrap();
+    let root = ls(&boot, planner(own), "").await.unwrap();
     assert!(
         !root.to_string().contains("area"),
         "the track root does not list area/: {root}"
@@ -438,23 +438,19 @@ async fn another_areas_reports_are_invisible_and_unreadable() {
 }
 
 #[tokio::test]
-async fn a_worker_is_forbidden_every_area_path_and_find() {
+async fn a_worker_reads_area_reports_but_cannot_find() {
     let boot = boot(&[(0, "认证 方案"), (0, "登录 排查")]).await;
     let side = &boot.sides[0];
     let worker = || who(side, CardRole::Worker);
-    for path in [
-        "area",
-        "area/reports/",
-        "area/reports/登录 排查.md",
-        "area/reports/../x",
-    ] {
-        assert_refused(ls(&boot, worker(), path).await, FORBIDDEN, "Planner's view");
-        assert_refused(
-            cat(&boot, worker(), path).await,
-            FORBIDDEN,
-            "Planner's view",
-        );
-    }
+    ls(&boot, worker(), "area/reports/").await.unwrap();
+    assert_eq!(
+        cat(&boot, worker(), "area/reports/登录 排查.md")
+            .await
+            .unwrap(),
+        cat(&boot, planner(side), "area/reports/登录 排查.md")
+            .await
+            .unwrap()
+    );
     // `neige_report_find` is Planner-only: the registry refuses the Worker by its declared roles.
     assert_refused(
         find(

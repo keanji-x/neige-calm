@@ -69,7 +69,7 @@ fn tags_print_space_joined_and_require_a_string_array() {
 fn content_pretty_prints_json_and_otherwise_prints_raw() {
     let json_view = json!({ "content": "{\"a\":1}", "content_type": "application/json" });
     assert_eq!(
-        render(Render::Content, "neige_track_cat", true, &json_view).unwrap(),
+        render(Render::Content, "neige_cat", true, &json_view).unwrap(),
         "{\n  \"a\": 1\n}\n"
     );
     for value in [
@@ -78,7 +78,7 @@ fn content_pretty_prints_json_and_otherwise_prints_raw() {
     ] {
         let raw = value["content"].as_str().unwrap();
         assert_eq!(
-            render(Render::Content, "neige_track_cat", false, &value).unwrap(),
+            render(Render::Content, "neige_cat", false, &value).unwrap(),
             raw
         );
     }

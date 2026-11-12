@@ -1,5 +1,5 @@
-//! `area/reports/` (#1838 S2): the Planner's read-only view of the track reports of its own area,
-//! served by `neige track ls`, `neige report find` and `neige track cat`. This module lists, filters, resolves and reads
+//! `area/reports/` (#1838 S2): the content addresses of Track reports within one Area,
+//! served by `neige ls`, `neige report find` and `neige cat`. This module lists, filters, resolves and reads
 //! for all three. The area is always the caller's own; a path resolves only against that area's
 //! listing, so no name, ID suffix, duplicate title, rename or traversal reaches another area. A read
 //! returns a report's body or its blocks (#1874), tags and the report card's `updated_at` — never
@@ -27,7 +27,7 @@ pub const REPORTS_DIR: &str = "area/reports";
 pub const MAX_REPORTS_PER_LISTING: usize = 500;
 
 /// A normalized view path under `area/`.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AreaPath<'a> {
     /// `area`: holds `reports/`.
     Root,
@@ -62,7 +62,7 @@ pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
 /// One listed report: a row of `{reports: […]}`, the `--json` shape of `ls`/`find` on `area/reports/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReportEntry {
-    /// `area/reports/<name>.md`, readable with `neige track cat`.
+    /// `area/reports/<name>.md`, readable with `neige cat`.
     pub path: String,
     pub title: String,
     pub track_id: String,
@@ -221,6 +221,18 @@ pub async fn list(
         .collect()
 }
 
+/// Resolve a historical content address with the same ambiguity and Area checks as HTTP.
+pub(crate) async fn resolve_track(
+    pool: &SqlitePool,
+    area_id: &str,
+    file: &str,
+    only_track: Option<&str>,
+) -> Result<String, TrackFsError> {
+    Ok(resolve_and_read(pool, area_id, file, only_track)
+        .await?
+        .track_id)
+}
+
 /// The latest body of the report `file` names in `area_id`: resolved against the area's listing,
 /// then the body read in one statement that re-checks the track and the area. A rename after the
 /// resolution still reads the resolved report's latest body; a report that left the area is not found.
@@ -229,18 +241,18 @@ pub async fn read(
     area_id: &str,
     file: &str,
 ) -> Result<TrackFsContent, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file).await?;
+    let report = resolve_and_read(pool, area_id, file, None).await?;
     report_markdown(&report.card_id, report.payload)
 }
 
-/// The block projection of the report `file` names in `area_id` — the blocks `neige_area_ls`
+/// The block projection of the report `file` names in `area_id` — the blocks `neige_ls`
 /// indexes and `neige_report_read` selects — resolved and re-checked exactly as [`read`].
 pub async fn read_blocks(
     pool: &SqlitePool,
     area_id: &str,
     file: &str,
 ) -> Result<Vec<ReportBlock>, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file).await?;
+    let report = resolve_and_read(pool, area_id, file, None).await?;
     report_doc_snapshot(
         &report.card_id,
         report.updated_at,
@@ -253,6 +265,7 @@ pub async fn read_blocks(
 
 /// One resolved report card, read in one statement.
 struct ReadReport {
+    track_id: String,
     card_id: String,
     payload: serde_json::Value,
     body_crdt: Option<Vec<u8>>,
@@ -265,19 +278,21 @@ async fn resolve_and_read(
     pool: &SqlitePool,
     area_id: &str,
     file: &str,
+    only_track: Option<&str>,
 ) -> Result<ReadReport, TrackFsError> {
     let path = format!("{REPORTS_DIR}/{file}");
     let parsed = name::parse(file).map_err(TrackFsError::PathNotAvailable)?;
     let not_found = || {
         TrackFsError::PathNotAvailable(format!(
-            "no report at `{path}` in this area; `neige track ls {REPORTS_DIR}/` lists the current names"
+            "no report at `{path}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
         ))
     };
     let reports = named(pool, area_id).await?;
     let mut candidates: Vec<Named> = reports
         .into_iter()
         .filter(|report| {
-            report.row.title == parsed.title
+            only_track.is_none_or(|id| report.row.track_id == id)
+                && report.row.title == parsed.title
                 && parsed
                     .suffix
                     .as_deref()
@@ -310,6 +325,7 @@ async fn resolve_and_read(
         ))
     })?;
     Ok(ReadReport {
+        track_id: report.row.track_id,
         card_id,
         payload,
         body_crdt: stored.body_crdt,
