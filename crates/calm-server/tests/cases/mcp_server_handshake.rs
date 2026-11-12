@@ -881,7 +881,7 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(20, "neige_ls", &b.thread_id, json!({"path": "/"})),
+        tools_call_frame(20, "neige_ls", &b.thread_id, json!({})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;

@@ -131,12 +131,7 @@ pub(crate) async fn cat(
     let id = area_reports::resolve_track(pool(ctx)?, bound.area_id.as_str(), file, only_track)
         .await
         .map_err(track_fs_error_to_rpc)?;
-    let track = ctx
-        .repo
-        .track_get(&id)
-        .await
-        .map_err(|e| RpcError::internal(e.to_string()))?
-        .ok_or_else(|| RpcError::not_found("Track not found"))?;
+    let track = super::unified_browse::track_in_area(ctx, bound.area_id.as_str(), &id).await?;
     super::unified_browse::report(ctx, &track, args).await
 }
 

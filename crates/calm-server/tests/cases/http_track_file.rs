@@ -66,7 +66,8 @@ async fn http_ls_and_cat_match_mcp_outputs() {
             &boot,
             TOOL_LS,
             planner_identity(&boot),
-            json!({ "path": path.as_str() }),
+            // HTTP `/` remains the bound root; MCP uses an empty relative path.
+            json!({ "path": if path == "/" { "" } else { path.as_str() } }),
         )
         .await
         .unwrap_or_else(|e| panic!("MCP ls {path} failed: {e}"));

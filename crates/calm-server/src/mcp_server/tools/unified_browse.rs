@@ -79,6 +79,14 @@ pub(super) async fn user_area(ctx: &AppContext, area: &str) -> Result<(), RpcErr
 
 async fn target(ctx: &AppContext, area: &str, id: &str) -> Result<Track, RpcError> {
     user_area(ctx, area).await?;
+    track_in_area(ctx, area, id).await
+}
+
+pub(super) async fn track_in_area(
+    ctx: &AppContext,
+    area: &str,
+    id: &str,
+) -> Result<Track, RpcError> {
     let track = ctx
         .repo
         .track_get(id)

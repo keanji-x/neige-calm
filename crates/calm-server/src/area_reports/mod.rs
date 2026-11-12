@@ -228,7 +228,7 @@ pub(crate) async fn resolve_track(
     file: &str,
     only_track: Option<&str>,
 ) -> Result<String, TrackFsError> {
-    Ok(resolve_and_read(pool, area_id, file, only_track)
+    Ok(resolve_named(pool, area_id, file, only_track)
         .await?
         .track_id)
 }
@@ -241,7 +241,7 @@ pub async fn read(
     area_id: &str,
     file: &str,
 ) -> Result<TrackFsContent, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file, None).await?;
+    let report = resolve_and_read(pool, area_id, file).await?;
     report_markdown(&report.card_id, report.payload)
 }
 
@@ -252,7 +252,7 @@ pub async fn read_blocks(
     area_id: &str,
     file: &str,
 ) -> Result<Vec<ReportBlock>, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file, None).await?;
+    let report = resolve_and_read(pool, area_id, file).await?;
     report_doc_snapshot(
         &report.card_id,
         report.updated_at,
@@ -265,28 +265,21 @@ pub async fn read_blocks(
 
 /// One resolved report card, read in one statement.
 struct ReadReport {
-    track_id: String,
     card_id: String,
     payload: serde_json::Value,
     body_crdt: Option<Vec<u8>>,
     updated_at: i64,
 }
 
-/// Resolves `file` against the area's listing, then reads that report's row in one statement that
-/// re-checks the track and the area.
-async fn resolve_and_read(
+/// Resolve names, ambiguity and the optional own-Track restriction without loading report content.
+async fn resolve_named(
     pool: &SqlitePool,
     area_id: &str,
     file: &str,
     only_track: Option<&str>,
-) -> Result<ReadReport, TrackFsError> {
+) -> Result<store::Row, TrackFsError> {
     let path = format!("{REPORTS_DIR}/{file}");
     let parsed = name::parse(file).map_err(TrackFsError::PathNotAvailable)?;
-    let not_found = || {
-        TrackFsError::PathNotAvailable(format!(
-            "no report at `{path}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
-        ))
-    };
     let reports = named(pool, area_id).await?;
     let mut candidates: Vec<Named> = reports
         .into_iter()
@@ -300,7 +293,7 @@ async fn resolve_and_read(
         })
         .collect();
     let report = match candidates.len() {
-        0 => return Err(not_found()),
+        0 => return Err(report_not_found(file)),
         1 => candidates.remove(0),
         _ => {
             let paths: Vec<String> = candidates
@@ -314,18 +307,33 @@ async fn resolve_and_read(
             )));
         }
     };
-    let stored = store::report(pool, area_id, &report.row)
+    Ok(report.row)
+}
+
+fn report_not_found(file: &str) -> TrackFsError {
+    TrackFsError::PathNotAvailable(format!(
+        "no report at `{REPORTS_DIR}/{file}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
+    ))
+}
+
+/// Resolves `file`, then reads that report's row in one statement that re-checks its track and Area.
+async fn resolve_and_read(
+    pool: &SqlitePool,
+    area_id: &str,
+    file: &str,
+) -> Result<ReadReport, TrackFsError> {
+    let report = resolve_named(pool, area_id, file, None).await?;
+    let stored = store::report(pool, area_id, &report)
         .await
         .map_err(internal)?
-        .ok_or_else(not_found)?;
-    let card_id = report.row.card_id;
+        .ok_or_else(|| report_not_found(file))?;
+    let card_id = report.card_id;
     let payload = serde_json::from_str(&stored.payload).map_err(|e| {
         TrackFsError::Internal(format!(
             "track_report: malformed payload on card {card_id}: {e}"
         ))
     })?;
     Ok(ReadReport {
-        track_id: report.row.track_id,
         card_id,
         payload,
         body_crdt: stored.body_crdt,

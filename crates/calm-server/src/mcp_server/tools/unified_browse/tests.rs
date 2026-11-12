@@ -421,7 +421,15 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
     let root = call(&route, &id, "neige_ls", json!({"path":"/"}))
         .await
         .unwrap();
-    assert_eq!(root["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        root["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["/areas/", "/report-changes/"]
+    );
     repo.db()
         .writer()
         .execute(
