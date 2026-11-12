@@ -1,6 +1,6 @@
 import '../../styles/entry.css';
 import { it } from 'vitest';
-import { checkCoordinates } from './coordinates-fixture.tsx';
+import { checkCoordinates } from './tests/coordinates-fixture.tsx';
 
 it('commits three-level visual inputs and revisits phases without drift', () => checkCoordinates({ layers: 3, shift: 0 }), 45_000);
 it('commits five-level fractional visual inputs against independent CSS rulers', () => checkCoordinates({ layers: 5, shift: -1 / 2048 }), 45_000);

@@ -1,6 +1,6 @@
 import '../../styles/entry.css';
 import { it } from 'vitest';
-import { checkCoordinates } from './coordinates-fixture.tsx';
+import { checkCoordinates } from './tests/coordinates-fixture.tsx';
 
 for (const width of [390, 1440]) {
   // scale=1 and zoom=1 resolve to the same complete helper parameters.

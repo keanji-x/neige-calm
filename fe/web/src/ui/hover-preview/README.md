@@ -186,7 +186,7 @@ so ancestor revocation does not strand retained paint.
 
 The coordinate browser [core target](coordinates.browser.test.tsx) and
 [transforms target](coordinates-transforms.browser.test.tsx) use the
-[shared fixture](coordinates-fixture.tsx) to check each slot against the same
+[shared fixture](tests/coordinates-fixture.tsx) to check each slot against the same
 physical visual inputs through the sole placePreview and an
 independent empty fixed CSS ruler, with ≤1/64 CSS px per committed edge. It never
 writes a production slot or suppresses a transform. Same complete input/phase
