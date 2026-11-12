@@ -2951,10 +2951,16 @@ async fn assistant_reads_bound_track_files_and_history_but_not_foreign_commits()
         .await
         .unwrap();
     assert!(file["content"].as_str().unwrap().contains("概要"));
-    let listed = call_tool(&boot, TOOL_LS, id.clone(), json!({"path":"/"}))
+    let listed = call_tool(&boot, TOOL_LS, id.clone(), json!({}))
         .await
         .unwrap();
-    assert!(!listed["entries"].as_array().unwrap().is_empty());
+    let entries = listed["entries"].as_array().unwrap();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"index.md"), "entries = {entries:?}");
+    assert!(names.contains(&"track.json"), "entries = {entries:?}");
     let history = call_tool(&boot, TOOL_TRACK_LOG, id.clone(), json!({}))
         .await
         .unwrap();
