@@ -79,11 +79,17 @@ it('scrolls folders with the wheel while primary navigation, shortcuts and accou
   const fixed = ['Today', 'Recipes', 'Collapse Pinned', 'Collapse Focus', 'Open settings'].map(name => button(name).element());
   const before = fixed.map(top);
   const first = button('Collapse area Folder 0').element();
+  const folders = first.closest<HTMLElement>('[data-nc-sidebar-scrollport]')!;
+  const boundaryTop = top(folders);
+  expect(folders.clientTop).toBeGreaterThan(0);
+  expect(folders.clientTop).toBeLessThanOrEqual(1);
   const firstTop = top(first);
   expect(top(fixed[2])).toBeLessThan(firstTop);
   expect(top(fixed[3])).toBeLessThan(firstTop);
   await commands.wheelScroll('[aria-label="Collapse area Folder 0"]', 600);
   await expect.poll(() => top(first)).toBeLessThan(firstTop - 100);
+  expect(top(folders)).toBe(boundaryTop);
+  expect(folders.scrollTop).toBeGreaterThan(100);
   expect(fixed.map(top)).toEqual(before);
   fixed.forEach(reachable);
   for (const name of ['Pinned', 'Focus']) {
@@ -184,6 +190,7 @@ it.each([200, 250])('reveals complete operation rows through nested scrollports 
     for (const row of group.getByRole('button', { name: /^Track Task/ }).elements()) {
       row.focus();
       reachable(row);
+      expect(row.getBoundingClientRect().height).toBeGreaterThanOrEqual(button('Today').element().getBoundingClientRect().height);
     }
     const less = group.getByRole('button', { name: `Show less in ${label}` });
     less.element().focus();
@@ -219,6 +226,9 @@ it.each([200, 250])('reveals complete operation rows through nested scrollports 
 
 it.each([200, 250])('keeps folders reachable without shortcuts and after collapse at height %i', async height => {
   const { preferences } = await scene(height, false, false, true);
+  const folders = button('New area').element().closest<HTMLElement>('[data-nc-sidebar-scrollport]')!;
+  expect(folders.clientTop).toBeGreaterThan(0);
+  expect(top(folders)).toBeGreaterThan(button('Recipes').element().getBoundingClientRect().bottom);
   const newArea = button('New area');
   newArea.element().focus();
   await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
@@ -226,13 +236,17 @@ it.each([200, 250])('keeps folders reachable without shortcuts and after collaps
   await newArea.click();
   preferences.setSidebarGroupVisible('areas', false);
   await expect.element(button('New area')).not.toBeInTheDocument();
+  expect(folders.isConnected).toBe(false);
   const options = button('Sidebar view options');
   options.element().focus();
   reachable(options.element());
   await options.click();
   await userEvent.keyboard('{Escape}');
   preferences.setSidebarGroupVisible('areas', true);
+  await expect.element(button('New area')).toBeInTheDocument();
+  const restoredFolders = button('New area').element().closest('[data-nc-sidebar-scrollport]')!;
   await button('Collapse sidebar').click();
+  expect(restoredFolders.isConnected).toBe(false);
   const last = button('Show area Folder 39');
   last.element().focus();
   reachable(last.element());

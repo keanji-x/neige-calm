@@ -349,9 +349,13 @@
     padding-block-start: var(--space-4);
   }
 
+  .sidebarSections:has(.areaGroups) {
+    min-block-size: calc(var(--navigation-entry-height) + var(--space-4) + var(--space-2) + var(--space-px));
+  }
+
   /* Reserve a complete row per scrollport; an undersized rail can then scroll. */
   .sidebarSections:has(.shortcuts):has(.areaGroups) {
-    min-block-size: calc(2 * var(--navigation-entry-height) + 2 * var(--space-4));
+    min-block-size: calc(2 * var(--navigation-entry-height) + 2 * var(--space-4) + var(--space-2) + var(--space-px));
   }
 
   /* Natural shortcut height until it needs half of the available tree space.
@@ -400,7 +404,10 @@
 
   .areaGroups {
     flex: 1;
-    min-block-size: var(--navigation-entry-height);
+    /* The scrollport border stays above its scrolling folder contents. */
+    border-block-start: var(--space-px) solid var(--hairline);
+    padding-block-start: var(--space-2);
+    min-block-size: calc(var(--navigation-entry-height) + var(--space-2) + var(--space-px));
     overflow: auto;
     overscroll-behavior: contain;
     display: flex;
@@ -703,7 +710,7 @@
   }
   @media (width >= 60rem) {
     /* Composition geometry shared by the reading header, drawer and first
-       sidebar category; additional groups never add horizontal dividers. */
+       sidebar category; shortcut siblings share one undivided region. */
     .shell {
       --workspace-header-inset: var(--space-5);
       --workspace-header-row-height: calc(var(--control-h) + var(--space-4) * 2);
