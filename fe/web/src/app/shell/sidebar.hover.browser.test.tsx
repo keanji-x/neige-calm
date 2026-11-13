@@ -163,7 +163,9 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
   expect(areaRect.height).toBeCloseTo(firstRect.height, 0);
   expect(firstRect.top - areaRect.top).toBeCloseTo(31, 1);
   expect(secondRect.top - firstRect.top).toBeCloseTo(30, 1);
-  expect(nextRect.top - secondRect.bottom).toBeCloseTo(16, 2);
+  const todayRect = page.getByRole('button', { name: 'Today', exact: true }).element().getBoundingClientRect();
+  const recipesRect = page.getByRole('button', { name: 'Recipes', exact: true }).element().getBoundingClientRect();
+  expect(nextRect.top - secondRect.bottom).toBeCloseTo(recipesRect.top - todayRect.bottom, 2);
   for (const theme of ['light', 'dark']) {
     document.documentElement.dataset.theme = theme;
     const railBackground = getComputedStyle(areaRow.closest('nav')!).backgroundColor;

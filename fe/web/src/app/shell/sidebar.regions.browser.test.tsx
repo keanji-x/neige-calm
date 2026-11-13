@@ -281,3 +281,47 @@ it.each([200, 250])('keeps long shortcuts actionable with Areas hidden at height
   await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
   reachable(current);
 });
+
+
+it('uses the Today/Recipes cadence and label column for adjacent collapsed folder headings', async () => {
+  const { preferences } = await scene(900);
+  for (const label of ['Pinned', 'Focus', 'area Folder 0', 'area Folder 1']) {
+    await button(`Collapse ${label}`).click();
+  }
+  const today = button('Today').element();
+  const recipes = button('Recipes').element();
+  const stride = top(recipes) - top(today);
+  const textLeft = (row: Element) => {
+    const range = document.createRange();
+    range.selectNodeContents(row.querySelector('[title]')!);
+    return range.getBoundingClientRect().left;
+  };
+  const checkRows = () => {
+    const pinned = button('Expand Pinned').element();
+    const focus = button('Expand Focus').element();
+    const first = button('Expand area Folder 0').element();
+    const second = button('Expand area Folder 1').element();
+    for (const row of [recipes, pinned, focus, first, second]) {
+      reachable(row);
+      expect(row.getBoundingClientRect().height).toBe(today.getBoundingClientRect().height);
+      expect(textLeft(row)).toBeCloseTo(textLeft(today), 1);
+    }
+    expect(Math.min(top(pinned), top(focus)) - top(recipes)).toBeCloseTo(stride, 1);
+    expect(Math.abs(top(focus) - top(pinned))).toBeCloseTo(stride, 1);
+    expect(top(second) - top(first)).toBeCloseTo(stride, 1);
+    const folders = first.closest<HTMLElement>('[data-nc-sidebar-scrollport]')!;
+    const lastShortcut = top(focus) > top(pinned) ? focus : pinned;
+    const above = top(folders) - lastShortcut.getBoundingClientRect().bottom;
+    const below = top(first) - top(folders) - folders.clientTop;
+    expect(above).toBeGreaterThan(stride - today.getBoundingClientRect().height);
+    expect(above).toBeCloseTo(below, 1);
+  };
+  checkRows();
+  // The cadence follows visible siblings, including saved shortcut reordering.
+  preferences.setSidebarOrder('sections', ['focus', 'areas', 'pinned']);
+  await expect.poll(() => top(button('Expand Focus').element()) - top(button('Expand Pinned').element())).toBeLessThan(0);
+  checkRows();
+  preferences.setSidebarGroupVisible('focus', false);
+  await expect.element(button('Expand Focus')).not.toBeInTheDocument();
+  expect(top(button('Expand Pinned').element()) - top(recipes)).toBeCloseTo(stride, 1);
+});
