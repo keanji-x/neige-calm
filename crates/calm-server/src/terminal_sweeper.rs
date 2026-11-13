@@ -402,18 +402,6 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         ),
         None => None,
     };
-    crate::operation::terminal_disposal::require_safe(
-        state.repo.as_ref(),
-        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
-        state.daemon.proc_supervisor_sock.as_deref(),
-    )
-    .await?;
-    crate::execution_quiesce::quiesce(
-        state.repo.as_ref(),
-        state.execution.as_deref(),
-        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
-    )
-    .await?;
     crate::operation::terminal_disposal::quiesce_terminal(
         state.repo.as_ref(),
         state.execution.as_deref(),
