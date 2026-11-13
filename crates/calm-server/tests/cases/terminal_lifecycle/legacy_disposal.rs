@@ -98,11 +98,14 @@ pub(super) struct Owner {
 }
 impl Owner {
     pub(super) fn new() -> Self {
+        Self::with_grace(Duration::from_secs(60))
+    }
+    fn with_grace(grace: Duration) -> Self {
         let dir = calm_test_sockets::socket_dir("ld");
         let sock = dir.path().join("owner.sock");
         let listener = calm_proc_supervisor::bind_control_listener(&sock).unwrap();
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let registry = calm_proc_supervisor::ProcRegistry::new();
+        let registry = calm_proc_supervisor::ProcRegistry::new().with_pty_reclaim_grace(grace);
         let task = tokio::spawn(calm_proc_supervisor::serve_with_listener(
             listener,
             sock.clone(),
@@ -443,6 +446,12 @@ impl MockOwner {
                                 return;
                             }
                             ControlMsg::Signal(_) => {
+                                if !matches!(mode, Refusal::Signal) {
+                                    write_frame(&mut conn, &ControlReply::SignalOk)
+                                        .await
+                                        .unwrap();
+                                    continue;
+                                }
                                 write_frame(
                                     &mut conn,
                                     &ControlReply::Error {
@@ -695,3 +704,9 @@ async fn legacy_disposal_explicit_exited_uses_reader_persistence() {
     );
     assert!(state.repo.terminal_get(&term).await.unwrap().is_none());
 }
+
+#[path = "legacy_disposal/recovery.rs"]
+mod recovery;
+
+#[path = "legacy_disposal/signal_fault.rs"]
+mod signal_fault;

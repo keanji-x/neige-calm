@@ -14,7 +14,6 @@ pub(super) enum Establish {
 
 pub(super) struct EstablishedRenderer {
     pub(super) entry: RendererEntry,
-    pub(super) running: bool,
     pub(super) handoff: Option<(crate::operation::task_launch::TaskLaunch, u32)>,
 }
 
@@ -203,8 +202,7 @@ pub(super) async fn ensure_entry(
     let event_rx = event_tx.subscribe();
     let (supervisor_tx, supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
 
-    // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
-    // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
+    // Completion outlives the transport so failed writes can retry the exact observation.
     let (exit_persisted_tx, exit_persisted) = watch::channel(false);
     let attachment = if establish == Establish::Disposal {
         timeout(
@@ -264,6 +262,13 @@ pub(super) async fn ensure_entry(
         exit_persisted.clone(),
     );
 
+    let completion = super::legacy_completion::LegacyCompletion::new(
+        repo.clone(),
+        task_hook,
+        cfg.terminal_id.clone(),
+        output_wake.clone(),
+        exit_persisted_tx,
+    );
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
@@ -275,8 +280,7 @@ pub(super) async fn ensure_entry(
         exited_tx,
         repo,
         cfg.terminal_id.clone(),
-        task_hook,
-        exit_persisted_tx,
+        completion.clone(),
         output_capture,
         Arc::clone(&last_output_ms),
         output_wake,
@@ -284,7 +288,6 @@ pub(super) async fn ensure_entry(
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
     Ok(EstablishedRenderer {
-        running,
         entry: RendererEntry {
             terminal_id: cfg.terminal_id.clone(),
             proc_id,
@@ -308,6 +311,7 @@ pub(super) async fn ensure_entry(
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(Some(attach_task)),
             exit_persisted,
+            legacy_completion: Some(completion),
             tasks: StdMutex::new(vec![control_task, ready_task]),
         },
         handoff,

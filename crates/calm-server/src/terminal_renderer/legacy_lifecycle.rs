@@ -26,7 +26,7 @@ impl TerminalRendererRegistry {
             self.repo.is_some(),
             "legacy disposal reader requires repository"
         );
-        let (entry, running) = if let Some(entry) = self.get(&cfg.terminal_id) {
+        let entry = if let Some(entry) = self.get(&cfg.terminal_id) {
             anyhow::ensure!(
                 !entry.control_via_engine,
                 "typed renderer requires execution owner"
@@ -35,12 +35,15 @@ impl TerminalRendererRegistry {
                 entry.supervisor_sock == cfg.supervisor_sock,
                 "renderer owner endpoint changed"
             );
-            let Some((_observation, attached)) = timeout(
+            let Some((_observation, _attached)) = timeout(
                 Duration::from_secs(2),
                 open_attachment(&cfg.supervisor_sock, &entry.proc_id),
             )
             .await??
             else {
+                if let Some(completion) = &entry.legacy_completion {
+                    completion.retry().await?;
+                }
                 if entry
                     .exit
                     .lock()
@@ -55,7 +58,7 @@ impl TerminalRendererRegistry {
                 }
                 return Ok(());
             };
-            (entry, attached.running)
+            entry
         } else {
             let established = match ensure_entry(
                 cfg,
@@ -82,16 +85,20 @@ impl TerminalRendererRegistry {
                 anyhow::bail!("renderer changed during disposal");
             }
             entries.insert(entry.terminal_id.clone(), entry.clone());
-            (entry, established.running)
+            entry
         };
-        let persisted = if running {
-            self.stop_legacy(&entry, true).await? == RendererDropOutcome::ExitPersisted
+        // Leader exit is independent of the owned group-stop obligation. Even a sticky
+        // Exited alias must acknowledge both signals, including on a retry after failure.
+        let stopped = self.stop_legacy(&entry, true).await?;
+        let recovered = if let Some(completion) = &entry.legacy_completion {
+            completion.retry().await?
         } else {
-            // running=false can also mean poisoned supervisor state. Only the reader's explicit
-            // Exited arm plus every required write/callback may grant completion.
-            entry.await_exit_persisted(EXIT_PERSIST_GRACE).await == ExitPersistWait::Persisted
+            false
         };
-        anyhow::ensure!(persisted, "legacy terminal exit persistence unverified");
+        anyhow::ensure!(
+            stopped == RendererDropOutcome::ExitPersisted || recovered,
+            "legacy terminal exit persistence unverified"
+        );
         Ok(())
     }
 

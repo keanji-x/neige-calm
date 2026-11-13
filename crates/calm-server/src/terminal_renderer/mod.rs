@@ -22,6 +22,7 @@ mod attach_reader;
 mod config;
 pub(crate) use config::{INITIAL_COLS, INITIAL_ROWS, REPLAY_BYTES, parse_rgb};
 mod legacy_client;
+mod legacy_completion;
 mod legacy_lifecycle;
 pub(crate) use legacy_client::request_terminal_stop;
 use legacy_client::{Establish, EstablishedRenderer, ensure_entry, signal_child_direct};
@@ -184,9 +185,10 @@ pub struct RendererEntry {
     /// Held apart from `tasks` because teardown must let it finish its exit arm rather than abort
     /// it: this is the task that persists the terminal exit.
     attach_task: StdMutex<Option<JoinHandle<()>>>,
-    /// Flipped only when all required exit persistence and callbacks succeed. A channel closed
-    /// while false means the reader ended without establishing persistence, including write errors.
+    /// Flipped only when all required exit writes and callbacks succeed. Legacy completion
+    /// retains the sender and exact observation after the transport reader has ended.
     exit_persisted: watch::Receiver<bool>,
+    legacy_completion: Option<Arc<legacy_completion::LegacyCompletion>>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
 
@@ -195,7 +197,7 @@ pub struct RendererEntry {
 enum ExitPersistWait {
     /// The reader signalled that the exit reached the database.
     Persisted,
-    /// The reader is gone and never signalled: the terminal-exit sweep is the only remaining backstop.
+    /// The reader is gone without persistence; a retained legacy observation may still retry.
     ReaderGone,
     /// The reader is still running; the budget expired first.
     Timeout,
@@ -290,6 +292,15 @@ impl RendererEntry {
         if *rx.borrow_and_update() {
             return ExitPersistWait::Persisted;
         }
+        if self.legacy_completion.is_some()
+            && self
+                .attach_task
+                .lock()
+                .ok()
+                .is_some_and(|task| task.as_ref().is_none_or(JoinHandle::is_finished))
+        {
+            return ExitPersistWait::ReaderGone;
+        }
         let wait = async {
             while rx.changed().await.is_ok() {
                 if *rx.borrow_and_update() {
@@ -311,12 +322,21 @@ impl RendererEntry {
     }
 
     /// Observe reader completion separately from success, without confusing a timeout with
-    /// ReaderGone. Only the reader owns the sender; its last value records persistence success.
+    /// ReaderGone. Completion retains the sender for retries after the reader task ends.
     #[cfg(feature = "fixtures")]
     pub async fn wait_exit_reader_closed_for_test(&self) -> bool {
-        let mut rx = self.exit_persisted.clone();
-        while rx.changed().await.is_ok() {}
-        *rx.borrow()
+        loop {
+            let finished = self
+                .attach_task
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(JoinHandle::is_finished);
+            if finished {
+                return *self.exit_persisted.borrow();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     fn abort_tasks(&self) {
@@ -643,6 +663,7 @@ impl TerminalRendererRegistry {
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(None),
             exit_persisted,
+            legacy_completion: None,
             tasks: StdMutex::new(Vec::new()),
         });
         let mut entries = self
