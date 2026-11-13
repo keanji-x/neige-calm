@@ -618,13 +618,14 @@ describe('shared desktop primary header', () => {
     expect(getComputedStyle(header).borderBlockEndColor).toBe(dividerColor);
     const scroller = document.querySelector<HTMLElement>('[data-nc-track-page]')!;
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
-    expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight);
+    const folders = rail.querySelector('[aria-label^="area "]')!.parentElement!;
+    expect(folders.scrollHeight).toBeGreaterThan(folders.clientHeight);
     const initial = { header: header.getBoundingClientRect().top, today: today.getBoundingClientRect().top };
     scroller.scrollTop = 600;
-    rail.scrollTop = 300;
+    folders.scrollTop = 300;
     await settlePaint();
     expect(scroller.scrollTop).toBeGreaterThan(0);
-    expect(rail.scrollTop).toBeGreaterThan(0);
+    expect(folders.scrollTop).toBeGreaterThan(0);
     expect(header.getBoundingClientRect().top).toBeCloseTo(initial.header, 0);
     expect(today.getBoundingClientRect().top).toBeCloseTo(initial.today, 0);
     expect(centre(title) - centre(collapse)).toBeCloseTo(0, 0);

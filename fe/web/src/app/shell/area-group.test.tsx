@@ -200,7 +200,7 @@ describe('Area track limit', () => {
       expect(scrollIntoView).not.toHaveBeenCalled();
       await userEvent.click(button);
       expect(scrolled).toEqual([button]);
-      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest', container: 'nearest' });
     } finally {
       if (originalScrollIntoView === undefined) {
         Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');

@@ -88,7 +88,9 @@ function railParts() {
   const avatar = document.querySelector<HTMLElement>('[aria-label="Account menu for Kenji Xie"]')!;
   let userRow = avatar;
   while (userRow.parentElement !== rail) userRow = userRow.parentElement!;
-  return { rail, avatar, userRow };
+  const folders = rail.querySelector<HTMLElement>('[aria-label^="area "]')?.parentElement
+    ?? rail.querySelector<HTMLElement>('[aria-label^="Show area "]')!.parentElement!;
+  return { rail, avatar, userRow, folders };
 }
 
 async function scrollRail(rail: HTMLElement, top: number) {
@@ -112,9 +114,9 @@ function expectUncovered(element: HTMLElement) {
   expect(element.contains(hit), `${name} is covered by ${hit?.outerHTML.slice(0, 80)}`).toBe(true);
 }
 
-it('keeps the account avatar pinned where it sat, with the row fill reaching the rail bottom, at every scroll', async () => {
-  const { rail, avatar, userRow } = await renderRail();
-  expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight);
+it('keeps the account avatar fixed with the row fill reaching the rail bottom at every folder scroll', async () => {
+  const { rail, avatar, userRow, folders } = await renderRail();
+  expect(folders.scrollHeight).toBeGreaterThan(folders.clientHeight);
   // Before the row was pinned, the avatar sat one rail bottom padding above
   // the rail's bottom edge. Pinning must not move it.
   const railPadding = parseFloat(getComputedStyle(rail).paddingBlockEnd);
@@ -122,8 +124,8 @@ it('keeps the account avatar pinned where it sat, with the row fill reaching the
   const settings = document.querySelector<HTMLElement>('[aria-label="Open settings"]')!;
   const initialAvatarOffset = rail.getBoundingClientRect().bottom - avatar.getBoundingClientRect().bottom;
 
-  for (const top of [0, Math.round((rail.scrollHeight - rail.clientHeight) / 2), rail.scrollHeight]) {
-    await scrollRail(rail, top);
+  for (const top of [0, Math.round((folders.scrollHeight - folders.clientHeight) / 2), folders.scrollHeight]) {
+    await scrollRail(folders, top);
     const railBottom = rail.getBoundingClientRect().bottom;
     // Within a pixel: the rail's top inset is fractional, so layout snaps.
     expect(Math.abs(railBottom - settings.getBoundingClientRect().bottom - railPadding)).toBeLessThanOrEqual(1);
@@ -133,29 +135,24 @@ it('keeps the account avatar pinned where it sat, with the row fill reaching the
   }
 });
 
-it('covers the area rows scrolling underneath the account row, action buttons included', async () => {
-  const { rail, userRow } = await renderRail();
-
-  // Halfway down, area rows sit behind the row rather than above it.
-  await scrollRail(rail, Math.round((rail.scrollHeight - rail.clientHeight) / 2));
+it('clips scrolling folder rows and their action buttons above the account row', async () => {
+  const { rail, userRow, folders } = await renderRail();
+  await scrollRail(folders, Math.round((folders.scrollHeight - folders.clientHeight) / 2));
+  expect(folders.scrollTop).toBeGreaterThan(0);
   const row = userRow.getBoundingClientRect();
   const railBox = rail.getBoundingClientRect();
-  const under = [...rail.querySelectorAll<HTMLElement>('[aria-label^="Area actions for"]')].filter((button) => {
-    const box = button.getBoundingClientRect();
-    return box.top < row.bottom && box.bottom > row.top;
-  });
-  expect(under.length).toBeGreaterThan(0);
-
-  // Every point of the band from the row's top to the rail's bottom edge
-  // hit-tests into the row: no row shows through below or beside the avatar,
-  // and the `--z-raised` action buttons do not climb over it.
-  const xs = [railBox.left + 60, ...under.map((button) => button.getBoundingClientRect().left + 4)];
+  expect(folders.getBoundingClientRect().bottom).toBeLessThanOrEqual(row.top);
+  // Offscreen rows still exist below the scrollport, but neither their content
+  // nor their raised actions may paint or receive clicks over the account.
+  const below = [...folders.querySelectorAll<HTMLElement>('[aria-label^="Area actions for"]')]
+    .filter(button => button.getBoundingClientRect().top >= row.top);
+  expect(below.length).toBeGreaterThan(0);
+  const xs = [railBox.left + 60, ...below.map(button => button.getBoundingClientRect().left + 4)];
   for (let y = row.top + 1; y < railBox.bottom - 1; y += 2) {
     for (const x of xs) {
       expect(userRow.contains(document.elementFromPoint(x, y)), `(${x}, ${y})`).toBe(true);
     }
   }
-  // Hit-testing ignores paint, so the fill that hides the rows is read directly.
   expect(getComputedStyle(userRow).backgroundColor).toBe(getComputedStyle(rail).backgroundColor);
 });
 
@@ -186,13 +183,13 @@ it.each([false, true])('opens the account menu clear of the avatar and above the
 });
 
 it('leaves the Areas list where it is when focus lands on the pinned avatar', async () => {
-  const { rail, avatar } = await renderRail();
-  const middle = Math.round((rail.scrollHeight - rail.clientHeight) / 2);
+  const { folders, avatar } = await renderRail();
+  const middle = Math.round((folders.scrollHeight - folders.clientHeight) / 2);
 
-  await scrollRail(rail, middle);
+  await scrollRail(folders, middle);
   avatar.focus();
   await new Promise(requestAnimationFrame);
-  expect(rail.scrollTop).toBe(middle);
+  expect(folders.scrollTop).toBe(middle);
 
   // Opening the menu from the keyboard and closing it hands focus back.
   await userEvent.keyboard('{Enter}');
@@ -200,7 +197,7 @@ it('leaves the Areas list where it is when focus lands on the pinned avatar', as
   await userEvent.keyboard('{Escape}');
   await new Promise(requestAnimationFrame);
   expect(document.activeElement).toBe(avatar);
-  expect(rail.scrollTop).toBe(middle);
+  expect(folders.scrollTop).toBe(middle);
 });
 
 it('parks the account row at the bottom when the Areas list is short', async () => {
@@ -260,10 +257,10 @@ it.each(['light', 'dark'] as const)('paints the avatar with the card fill, not t
 });
 
 
-it('reveals the recovery menu when hiding an Area from a deeply scrolled rail', async () => {
-  const { rail } = await renderRail();
+it('reveals the recovery menu when hiding an Area from deeply scrolled folders', async () => {
+  const { rail, folders } = await renderRail();
   await page.getByRole('button', { name: 'Area actions for Area 39' }).click();
-  expect(rail.scrollTop).toBeGreaterThan(0);
+  expect(folders.scrollTop).toBeGreaterThan(0);
   await page.getByRole('menuitem', { name: 'Hide group', exact: true }).click();
   const options = document.querySelector<HTMLElement>('[aria-label="Sidebar view options"]')!;
   expect(document.activeElement).toBe(options);

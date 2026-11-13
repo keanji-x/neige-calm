@@ -119,7 +119,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
   useEffect(() => {
     if (!pendingRevealRef.current) return;
     pendingRevealRef.current = false;
-    toggleRef.current?.scrollIntoView?.({ block: 'nearest' });
+    toggleRef.current?.scrollIntoView?.({ block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' });
   }, [showAll]);
 
   return <SidebarGroup {...group}>
