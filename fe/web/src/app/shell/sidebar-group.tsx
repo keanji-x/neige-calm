@@ -18,6 +18,13 @@ import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation, type NavigationEntrySpec } from '../../ui/navigation-row/public.ts';
 import ownStyles from './area-group.module.css';
 
+/** Reveal both shell-owned scrollports without moving an embedding host. */
+export function revealSidebarRow(element: Element | null | undefined) {
+  const options = { block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' };
+  element?.closest('[data-nc-sidebar-scrollport]')?.scrollIntoView?.(options);
+  element?.scrollIntoView?.(options);
+}
+
 export type RowProps = Readonly<{
   isUnread: (track: Track) => boolean;
   onGo: (target: NavTarget) => void;
@@ -119,7 +126,7 @@ export function SidebarTrackGroup({ emptyState, tracks, activeTrackId, areas, ma
   useEffect(() => {
     if (!pendingRevealRef.current) return;
     pendingRevealRef.current = false;
-    toggleRef.current?.scrollIntoView?.({ block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' });
+    revealSidebarRow(toggleRef.current);
   }, [showAll]);
 
   return <SidebarGroup {...group}>

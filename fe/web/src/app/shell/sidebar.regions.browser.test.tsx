@@ -13,7 +13,7 @@ import styles from './shell.module.css';
 
 afterEach(cleanup);
 
-async function scene(height: number, longShortcuts = false, initiallyCollapsed = false) {
+async function scene(height: number, longShortcuts = false, initiallyCollapsed = false, noShortcuts = false) {
   await page.viewport(1400, height);
   const preferences = createUiPreferences();
   preferences.setSidebarOrder('sections', ['areas', 'pinned', 'focus']);
@@ -21,7 +21,7 @@ async function scene(height: number, longShortcuts = false, initiallyCollapsed =
     id: `a${i}`, name: `Folder ${i}`, color: '#5B8DEF', sort: i, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1,
   }));
-  const tracks: Track[] = Array.from({ length: longShortcuts ? 40 : 2 }, (_, i) => ({
+  const tracks: Track[] = Array.from({ length: noShortcuts ? 0 : longShortcuts ? 40 : 2 }, (_, i) => ({
     id: `t${i}`, title: `Task ${i}`, areaId: 'a39', sort: i, cwd: '/tmp', isolation: 'none', agentCwd: '/tmp',
     pinnedAt: i % 2 ? i : null, closedAt: null, createdAt: 1, updatedAt: i + 1,
     ...NEUTRAL_ACTIVITY, working: true,
@@ -52,9 +52,26 @@ const top = (element: Element) => element.getBoundingClientRect().top;
 function reachable(element: Element) {
   const box = element.getBoundingClientRect();
   expect(box.height).toBeGreaterThan(0);
-  expect(box.top).toBeGreaterThanOrEqual(0);
-  expect(box.bottom).toBeLessThanOrEqual(window.innerHeight);
-  expect(element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2))).toBe(true);
+  const visible = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const css = getComputedStyle(parent);
+    const rect = parent.getBoundingClientRect();
+    if (/(auto|scroll|hidden|clip)/.test(css.overflowY)) {
+      visible.top = Math.max(visible.top, rect.top + parent.clientTop);
+      visible.bottom = Math.min(visible.bottom, rect.top + parent.clientTop + parent.clientHeight);
+    }
+    if (/(auto|scroll|hidden|clip)/.test(css.overflowX)) {
+      visible.left = Math.max(visible.left, rect.left + parent.clientLeft);
+      visible.right = Math.min(visible.right, rect.left + parent.clientLeft + parent.clientWidth);
+    }
+  }
+  expect(box.top).toBeGreaterThanOrEqual(visible.top - 0.5);
+  expect(box.bottom).toBeLessThanOrEqual(visible.bottom + 0.5);
+  expect(box.left).toBeGreaterThanOrEqual(visible.left - 0.5);
+  expect(box.right).toBeLessThanOrEqual(visible.right + 0.5);
+  for (const y of [box.top + 1, box.top + box.height / 2, box.bottom - 1]) {
+    expect(element.contains(document.elementFromPoint(box.left + box.width / 2, y)), element.getAttribute('aria-label') ?? '').toBe(true);
+  }
 }
 
 it('scrolls folders with the wheel while primary navigation, shortcuts and account stay fixed', async () => {
@@ -154,4 +171,99 @@ it('confines current-row reveal to the folder scrollport inside an outer scrolli
   expect(current.getBoundingClientRect().bottom).toBeLessThan(button('Open settings').element().getBoundingClientRect().top);
   expect(host.scrollTop).toBe(0);
   expect(document.scrollingElement!.scrollTop).toBe(0);
+});
+
+it.each([200, 250])('reveals complete operation rows through nested scrollports at height %i', async height => {
+  await scene(height, true);
+  for (const label of ['Pinned', 'Focus']) {
+    const group = page.getByRole('group', { name: label, exact: true });
+    const more = group.getByRole('button', { name: /^Show \d+ more/ });
+    more.element().focus();
+    reachable(more.element());
+    await more.click();
+    for (const row of group.getByRole('button', { name: /^Track Task/ }).elements()) {
+      row.focus();
+      reachable(row);
+    }
+    const less = group.getByRole('button', { name: `Show less in ${label}` });
+    less.element().focus();
+    const reveal = less.element();
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
+    reachable(reveal);
+    await less.click();
+    reachable(reveal);
+    const row = group.getByRole('button', { name: /^Track Task/ }).first();
+    row.element().focus();
+    reachable(row.element());
+    await row.click();
+    await expect.poll(() => document.querySelector('[aria-current="page"]')?.getAttribute('aria-label')).toMatch(/^Track Task/);
+    reachable(document.querySelector('[aria-current="page"]')!);
+  }
+  for (const row of page.getByRole('button', { name: /^Collapse area Folder/ }).elements()) {
+    row.focus();
+    reachable(row);
+  }
+  for (const name of ['Collapse area Folder 0', 'New area', 'Today', 'Recipes', 'Open settings']) {
+    const target = button(name);
+    target.element().focus();
+    reachable(target.element());
+    await target.click();
+  }
+  const account = page.getByRole('button', { name: /^Account menu for/ });
+  account.element().focus();
+  reachable(account.element());
+  await account.click();
+  await expect.element(page.getByRole('menuitem', { name: 'Settings', exact: true })).toBeVisible();
+  await userEvent.keyboard('{Escape}');
+});
+
+it.each([200, 250])('keeps folders reachable without shortcuts and after collapse at height %i', async height => {
+  const { preferences } = await scene(height, false, false, true);
+  const newArea = button('New area');
+  newArea.element().focus();
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
+  reachable(newArea.element());
+  await newArea.click();
+  preferences.setSidebarGroupVisible('areas', false);
+  await expect.element(button('New area')).not.toBeInTheDocument();
+  const options = button('Sidebar view options');
+  options.element().focus();
+  reachable(options.element());
+  await options.click();
+  await userEvent.keyboard('{Escape}');
+  preferences.setSidebarGroupVisible('areas', true);
+  await button('Collapse sidebar').click();
+  const last = button('Show area Folder 39');
+  last.element().focus();
+  reachable(last.element());
+  await userEvent.keyboard('{Enter}');
+  const disclosure = button('Collapse area Folder 39');
+  await expect.element(disclosure).toHaveFocus();
+  reachable(disclosure.element());
+  await disclosure.click();
+});
+
+it.each([200, 250])('keeps long shortcuts actionable with Areas hidden at height %i', async height => {
+  const { preferences } = await scene(height, true);
+  preferences.setSidebarGroupVisible('areas', false);
+  await expect.element(button('New area')).not.toBeInTheDocument();
+  for (const label of ['Pinned', 'Focus']) {
+    const disclosure = button(`Collapse ${label}`);
+    disclosure.element().focus();
+    reachable(disclosure.element());
+    await disclosure.click();
+    await button(`Expand ${label}`).click();
+    const row = page.getByRole('group', { name: label, exact: true }).getByRole('button', { name: /^Track Task/ }).last();
+    row.element().focus();
+    reachable(row.element());
+    await row.click();
+  }
+  preferences.setSidebarGroupVisible('areas', true);
+  await expect.poll(() => document.querySelector('[aria-current="page"]')?.getAttribute('aria-label')).toMatch(/^Track Task/);
+  // Restoring Areas reveals its current row even when the route did not change.
+  const current = document.querySelector<HTMLButtonElement>('[aria-current="page"]')!;
+  reachable(current);
+  current.focus();
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
+  reachable(current);
 });

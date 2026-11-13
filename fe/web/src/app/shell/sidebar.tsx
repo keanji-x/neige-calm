@@ -26,7 +26,7 @@ import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
 import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
-import { SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
+import { SidebarTrackGroup, revealSidebarRow, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 
@@ -159,15 +159,14 @@ export function Sidebar({
     tracksByArea.get(areaConfirm.target ?? '')?.length,
   );
 
-  // Reveal only in the nearest region, preserving outer scroll and manual Area collapse.
-  // The intersection supplies the standard container option missing from this TS DOM lib.
+  // Reveal through both shell-owned scrollports, preserving embedding hosts and manual Area collapse.
+  const areasVisible = sectionVisible('areas');
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
-    railRef.current?.querySelector('[aria-current="page"]')
-      ?.scrollIntoView?.({ block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' });
-  }, [activeTrackId, collapsed, activeAreaExpanded]);
+    revealSidebarRow(railRef.current?.querySelector('[aria-current="page"]'));
+  }, [activeTrackId, collapsed, activeAreaExpanded, areasVisible]);
 
   /* A collapsed Area initial is an entrance into the expanded tree: restore focus
        to the disclosure it reveals, or activating the unmounted initial drops focus
@@ -179,7 +178,7 @@ export function Sidebar({
     pendingAreaFocusRef.current = null;
     const disclosure = areaDisclosureRefs.current.get(areaId);
     disclosure?.focus({ preventScroll: true });
-    disclosure?.scrollIntoView?.({ block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' });
+    revealSidebarRow(disclosure);
   }, [collapsed]);
 
   /* Pinning from Focus or unpinning from Pinned removes that shortcut row (and its
@@ -202,7 +201,7 @@ export function Sidebar({
       ?? shortcutDisclosureRefs.current.get(pending.from)
       ?? optionsButton();
     target?.focus({ preventScroll: true });
-    target?.scrollIntoView?.({ block: 'nearest', container: 'nearest' } as ScrollIntoViewOptions & { container: 'nearest' });
+    revealSidebarRow(target);
   });
 
   const setTrackRef = (groupKey: string, trackId: string, element: HTMLButtonElement | null) => {
@@ -358,7 +357,7 @@ export function Sidebar({
             </div>
           </div>
           <div className={styles.sidebarSections}>
-          {shownShortcuts.length > 0 && <div className={styles.shortcuts}>
+          {shownShortcuts.length > 0 && <div className={styles.shortcuts} data-nc-sidebar-scrollport="">
             {shownShortcuts.map((id) => {
               const group = groups.find((group) => group.id === id)!;
               return <SidebarTrackGroup key={id} title={group.title} label={group.title} icon={group.icon} level="section"
@@ -373,7 +372,7 @@ export function Sidebar({
                 {...rowPropsFor(id, id)} />;
             })}
           </div>}
-          {sectionVisible('areas') && <div className={styles.areaGroups}>
+          {sectionVisible('areas') && <div className={styles.areaGroups} data-nc-sidebar-scrollport="">
               {readError === null && !readLoading && userAreas.length === 0 && (
                 <div className={styles.emptyArea}>
                   <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
