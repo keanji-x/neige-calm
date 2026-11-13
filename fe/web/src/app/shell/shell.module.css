@@ -155,11 +155,12 @@
        in both themes, which is the unit the ladder is defined in. */
     background: var(--surface-rail);
     overflow: auto;
+  }
 
-    /* `.userRow` is pinned over the bottom of this scrollport, so a row
-       scrolled into view (the current track, a restored or tabbed-to focus)
-       has to stop above it rather than behind it. */
-    scroll-padding-block-end: calc(var(--space-2) + var(--control-h) + var(--account-bottom-gutter));
+  .brandRow,
+  .primaryNav,
+  .userRow {
+    flex-shrink: 0;
   }
 
   /* The existing compact breakpoint is also the mobile presentation boundary:
@@ -338,12 +339,55 @@
   .primaryNavActive .primaryNavIcon,
   .primaryNavRow:hover .primaryNavIcon { color: var(--text); }
 
-  /* Every Area/Track row uses one cadence; section breaks alone increase (§2.3). */
+  /* Sibling headings share the primary navigation cadence; only the fixed boundary breathes. */
   .sidebarSections {
+    flex: 1;
+    min-block-size: calc(var(--navigation-entry-height) + var(--space-half));
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding-block-start: var(--space-4);
+    gap: var(--space-2);
+    padding-block-start: var(--space-half);
+  }
+
+  .sidebarSections:has(.areaGroups) {
+    min-block-size: calc(var(--navigation-entry-height) + 2 * var(--space-2) + var(--space-px));
+    padding-block-start: var(--space-2);
+  }
+
+  /* Reserve a complete row per scrollport; an undersized rail can then scroll. */
+  .sidebarSections:has(.shortcuts):has(.areaGroups) {
+    min-block-size: calc(2 * var(--navigation-entry-height) + var(--space-half) + 2 * var(--space-2) + var(--space-px));
+    padding-block-start: var(--space-half);
+  }
+
+  /* Natural shortcut height until it needs half of the available tree space.
+     Both lists then scroll independently; the rail scrolls only below their row minima. */
+  .shortcuts {
+    flex: 0 1 auto;
+    max-block-size: 50%;
+    min-block-size: var(--navigation-entry-height);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-half);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .shortcuts > *,
+  .areaGroups > *,
+  .collapsedFolders > * {
+    flex-shrink: 0;
+  }
+
+  .collapsedFolders {
+    flex: 1;
+    min-block-size: var(--navigation-entry-height);
+    inline-size: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow: auto;
+    overscroll-behavior: contain;
   }
 
   .section,
@@ -361,9 +405,16 @@
   }
 
   .areaGroups {
+    flex: 1;
+    /* The scrollport border stays above its scrolling folder contents. */
+    border-block-start: var(--space-px) solid var(--hairline);
+    padding-block-start: var(--space-2);
+    min-block-size: calc(var(--navigation-entry-height) + var(--space-2) + var(--space-px));
+    overflow: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-half);
   }
 
   .areaRowWrap { position: relative; display: grid; }
@@ -516,10 +567,7 @@
 
   .emptyArea { padding-inline: var(--space-6); }
 
-  /* Sticky insets resolve against the scrollport minus the rail's padding. */
   .userRow {
-    position: sticky;
-    inset-block-end: calc(-1 * var(--account-bottom-gutter));
     z-index: var(--z-overlay);
     margin-block: auto calc(-1 * var(--account-bottom-gutter));
     display: flex;
@@ -549,7 +597,6 @@
 
   .userSettingsButton {
     margin-inline-start: auto;
-    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
   }
 
   .menuWrap {
@@ -568,8 +615,6 @@
     background: var(--surface-card);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hairline) 85%, transparent),
       0 1px 2px oklch(0% 0 0 / 0.04);
-    /* Keep the pinned row treated as in-view when keyboard focus returns. */
-    scroll-margin-block-end: calc(-1 * (var(--space-2) + var(--control-h)));
     color: var(--text);
     cursor: pointer;
   }
@@ -667,7 +712,7 @@
   }
   @media (width >= 60rem) {
     /* Composition geometry shared by the reading header, drawer and first
-       sidebar category; additional groups never add horizontal dividers. */
+       sidebar category; shortcut siblings share one undivided region. */
     .shell {
       --workspace-header-inset: var(--space-5);
       --workspace-header-row-height: calc(var(--control-h) + var(--space-4) * 2);
@@ -685,7 +730,7 @@
     .rail {
       border-inline-end: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);
       padding-block-start: 0;
-      scroll-padding-block-start: var(--navigation-header-height);
+      scroll-padding-block-start: var(--workspace-sidebar-brand-height);
     }
 
     .brandRow {

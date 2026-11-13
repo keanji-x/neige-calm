@@ -450,7 +450,7 @@ describe('collapse toggle', () => {
     await waitFor(() => expect(document.activeElement).toBe(disclosure));
     await waitFor(() => expect(scrolled.at(-1)).toBe(disclosure));
     expect(scrolled.some((element) => element.getAttribute('aria-current') === 'page')).toBe(true);
-    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest', container: 'nearest' });
     if (originalScrollIntoView === undefined) {
       Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
     } else {
@@ -623,12 +623,35 @@ describe('sidebar group management', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
     await restore('Focus');
     expect(headings()).toEqual(['Pinned', 'Focus']);
-    await action('Group actions for Focus', 'Move down');
     const areaGroup = screen.getByRole('group', { name: 'area Work' });
     const focusGroup = screen.getByRole('group', { name: 'Focus' });
-    expect(Boolean(areaGroup.compareDocumentPosition(focusGroup) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(focusGroup.compareDocumentPosition(areaGroup) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
     await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
     expect(screen.getByRole('menuitem', { name: 'Move down' }).getAttribute('aria-disabled')).toBe('true');
+    await userEvent.keyboard('{Escape}');
+  });
+
+  it('projects saved sections into regions without rewriting the saved order or moving across regions', async () => {
+    const preferences = createUiPreferences();
+    preferences.setSidebarOrder('sections', ['pinned', 'areas', 'focus']);
+    renderSidebar({ tracks: [
+      track({ id: 'f1', attention: 'input', pinnedAt: null }),
+      track({ id: 'p1', pinnedAt: 5 }),
+    ] }, preferences);
+    expect(headings()).toEqual(['Pinned', 'Focus']);
+    const folders = screen.getByRole('group', { name: 'area Work' });
+    expect(Boolean(screen.getByRole('group', { name: 'Focus' }).compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(preferences.sidebarOrder('sections', ['focus', 'pinned', 'areas'])).toEqual(['pinned', 'areas', 'focus']);
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
+    expect(screen.getByRole('menuitem', { name: 'Move down' }).getAttribute('aria-disabled')).toBe('true');
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Move up' }));
+    expect(headings()).toEqual(['Focus', 'Pinned']);
+    expect(preferences.sidebarOrder('sections', ['focus', 'pinned', 'areas'])).toEqual(['focus', 'areas', 'pinned']);
+    await action('Group actions for Pinned', 'Hide group');
+    await userEvent.click(screen.getByRole('button', { name: 'Group actions for Focus' }));
+    for (const name of ['Move up', 'Move down']) {
+      expect(screen.getByRole('menuitem', { name }).getAttribute('aria-disabled')).toBe('true');
+    }
     await userEvent.keyboard('{Escape}');
   });
 

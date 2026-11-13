@@ -26,7 +26,7 @@ import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
 import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type SidebarMove, type SidebarSectionId } from '../../../../core/view/sidebar-layout.ts';
 import { AreaGroup } from './area-group.tsx';
-import { SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
+import { SidebarTrackGroup, revealSidebarRow, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
 import { navigationRowClass as rowLayout, navigationRowPresentation } from '../../ui/navigation-row/public.ts';
 
@@ -107,10 +107,11 @@ export function Sidebar({
     { id: 'pinned', title: 'Pinned', icon: 'pin', tracks: memberships.pinned },
   ];
 
+  // Saved section slots remain intact; only shortcut siblings may swap within the top region.
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);
   const sectionVisible = (id: SidebarSectionId) => preferences.sidebarGroupVisible(id)
     && (id === 'areas' || groups.find((group) => group.id === id)!.tracks.length > 0);
-  const shownSections = sectionOrder.filter(sectionVisible);
+  const shownShortcuts = sectionOrder.filter((id): id is Exclude<SidebarSectionId, 'areas'> => id !== 'areas' && sectionVisible(id));
   const areaOrder = preferences.sidebarOrder('areas', userAreas.map((area) => area.id));
   const orderedAreas = areaOrder.map((id) => userAreas.find((area) => area.id === id)!);
   const shownAreas = orderedAreas.filter((area) => preferences.sidebarGroupVisible(`area:${area.id}`));
@@ -130,7 +131,7 @@ export function Sidebar({
   const management = (id: SidebarGroupId, menuLabel: string): GroupManagement => {
     const isArea = id.startsWith('area:');
     const key = isArea ? id.slice('area:'.length) : id;
-    const shown: readonly string[] = isArea ? shownAreas.map((area) => area.id) : shownSections;
+    const shown: readonly string[] = isArea ? shownAreas.map((area) => area.id) : shownShortcuts;
     const order = isArea ? areaOrder : sectionOrder;
     const index = shown.indexOf(key);
     return {
@@ -158,14 +159,14 @@ export function Sidebar({
     tracksByArea.get(areaConfirm.target ?? '')?.length,
   );
 
-  // Reveal the current row when visible without undoing manual Area collapse.
+  // Reveal through both shell-owned scrollports, preserving embedding hosts and manual Area collapse.
+  const areasVisible = sectionVisible('areas');
   const activeAreaId = userTracks.find((track) => track.id === activeTrackId)?.areaId;
   const activeAreaExpanded = activeAreaId === undefined ? true : preferences.areaExpanded(activeAreaId);
   useEffect(() => {
     if (collapsed || activeTrackId === null) return;
-    railRef.current?.querySelector('[aria-current="page"]')
-      ?.scrollIntoView?.({ block: 'nearest' });
-  }, [activeTrackId, collapsed, activeAreaExpanded]);
+    revealSidebarRow(railRef.current?.querySelector('[aria-current="page"]'));
+  }, [activeTrackId, collapsed, activeAreaExpanded, areasVisible]);
 
   /* A collapsed Area initial is an entrance into the expanded tree: restore focus
        to the disclosure it reveals, or activating the unmounted initial drops focus
@@ -177,7 +178,7 @@ export function Sidebar({
     pendingAreaFocusRef.current = null;
     const disclosure = areaDisclosureRefs.current.get(areaId);
     disclosure?.focus({ preventScroll: true });
-    disclosure?.scrollIntoView?.({ block: 'nearest' });
+    revealSidebarRow(disclosure);
   }, [collapsed]);
 
   /* Pinning from Focus or unpinning from Pinned removes that shortcut row (and its
@@ -200,7 +201,7 @@ export function Sidebar({
       ?? shortcutDisclosureRefs.current.get(pending.from)
       ?? optionsButton();
     target?.focus({ preventScroll: true });
-    target?.scrollIntoView?.({ block: 'nearest' });
+    revealSidebarRow(target);
   });
 
   const setTrackRef = (groupKey: string, trackId: string, element: HTMLButtonElement | null) => {
@@ -295,7 +296,7 @@ export function Sidebar({
       <OperationFeedback feedback={writeFeedback} />
 
       {collapsed ? (
-        <>
+        <div className={styles.collapsedFolders}>
           {/* The rail's colours belong only to the indicator vocabulary and the current
                         location; titles never carry a state colour. */}
           {preferences.sidebarGroupVisible('focus') && waiting.length > 0 && (
@@ -322,7 +323,7 @@ export function Sidebar({
               <span className={styles.stripInitial} aria-hidden="true">{initialsOf(area.name)[0]}</span>
             </button>
           ))}
-        </>
+        </div>
       ) : (
         <>
           <div className={styles.primaryNav} data-nc-primary-nav="">
@@ -356,8 +357,8 @@ export function Sidebar({
             </div>
           </div>
           <div className={styles.sidebarSections}>
-          {shownSections.map((id) => {
-            if (id !== 'areas') {
+          {shownShortcuts.length > 0 && <div className={styles.shortcuts} data-nc-sidebar-scrollport="">
+            {shownShortcuts.map((id) => {
               const group = groups.find((group) => group.id === id)!;
               return <SidebarTrackGroup key={id} title={group.title} label={group.title} icon={group.icon} level="section"
                 management={management(id, `Group actions for ${group.title}`)}
@@ -369,8 +370,9 @@ export function Sidebar({
                   else shortcutDisclosureRefs.current.set(id, element);
                 }}
                 {...rowPropsFor(id, id)} />;
-            }
-            return <div key={id} className={styles.areaGroups}>
+            })}
+          </div>}
+          {sectionVisible('areas') && <div className={styles.areaGroups} data-nc-sidebar-scrollport="">
               {readError === null && !readLoading && userAreas.length === 0 && (
                 <div className={styles.emptyArea}>
                   <EmptyState variant="compact" icon={<Icon name="folder" />} title="还没有 Area" description="项目与 Track 会按 Area 归类。" />
@@ -416,8 +418,7 @@ export function Sidebar({
                   </button>
                 </span>
               </div>
-            </div>;
-          })}
+            </div>}
           </div>
 
         </>
