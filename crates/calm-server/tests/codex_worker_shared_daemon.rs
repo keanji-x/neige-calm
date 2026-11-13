@@ -1310,7 +1310,7 @@ async fn worker_run_record_with_thread_start_env(key: &str, env: (&str, &str)) -
     let cat = |path: String| {
         let handler = boot
             .registry
-            .lookup(calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT)
+            .lookup(calm_server::mcp_server::tools::track_file::TOOL_CAT)
             .expect("track cat tool registered");
         let call = handler(
             boot.ctx.clone(),

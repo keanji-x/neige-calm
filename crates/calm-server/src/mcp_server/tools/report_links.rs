@@ -9,18 +9,14 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations,
 };
-use crate::mcp_server::tools::paging::{self, Page};
+use crate::mcp_server::tools::paging;
 use crate::model::CardRole;
-use crate::track_report_read::load_report_doc_snapshot;
 
-pub const TOOL_AREA_LS: &str = "neige_area_ls";
 pub const TOOL_LINK_LS: &str = "neige_link_ls";
 
-const TRACKS_PER_PAGE: usize = 50;
-const MAX_BLOCKS_PER_TRACK: usize = 40;
 const LINKS_PER_PAGE: usize = 100;
 
-/// The one input of both listings: the previous page's `next_cursor`.
+/// Resume backlinks after the previous page's `next_cursor`.
 fn cursor_schema() -> Value {
     json!({
         "type": "object",
@@ -30,7 +26,6 @@ fn cursor_schema() -> Value {
 }
 
 pub fn register_into(registry: &mut ToolRegistry) {
-    registry.register(outline_descriptor(), wrap(area_outline));
     registry.register(backlinks_descriptor(), wrap(report_backlinks));
 }
 
@@ -49,19 +44,6 @@ where
     })
 }
 
-fn outline_descriptor() -> ToolDescriptor {
-    ToolDescriptor {
-        name: TOOL_AREA_LS.into(),
-        description: include_str!("../../../prompts/tools/neige_area_ls.md")
-            .trim_end()
-            .to_string(),
-        input_schema: cursor_schema(),
-        annotations: Some(read_only_annotations()),
-        roles: &[CardRole::Planner],
-        listed_for: &[CardRole::Planner],
-    }
-}
-
 fn backlinks_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_LINK_LS.into(),
@@ -73,83 +55,6 @@ fn backlinks_descriptor() -> ToolDescriptor {
         roles: &[CardRole::Planner],
         listed_for: &[CardRole::Planner],
     }
-}
-
-async fn area_outline(
-    ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    let cursor = paging::cursor_arg(&args, TOOL_AREA_LS)?;
-    let pool = ctx
-        .sqlite_db
-        .as_ref()
-        .ok_or_else(|| RpcError::internal("neige_area_ls requires sqlite"))?;
-    let count_sql = format!(
-        "SELECT count(*) FROM current_tasks WHERE track_id=?1 AND status IN {}",
-        crate::db::sqlite::RUNNING_WORK_STATUSES_SQL
-    );
-    let mut cards = ctx
-        .repo
-        .track_report_cards_by_area(identity.area_id.as_str())
-        .await
-        .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
-    cards.sort_by(|left, right| left.track_id.as_str().cmp(right.track_id.as_str()));
-    if let Some(cursor) = cursor
-        && !cards.iter().any(|card| card.track_id.as_str() == cursor)
-    {
-        return Err(paging::foreign_cursor(TOOL_AREA_LS, cursor));
-    }
-
-    // Keyset on the track id: the page resumes after the last row's track.
-    let mut page = Page::new(TRACKS_PER_PAGE);
-    for card in cards
-        .into_iter()
-        .filter(|card| cursor.is_none_or(|after| card.track_id.as_str() > after))
-    {
-        let track = ctx
-            .repo
-            .track_get(card.track_id.as_str())
-            .await
-            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?
-            .ok_or_else(|| RpcError::internal("neige_area_ls: track vanished mid-read"))?;
-        let snapshot = load_report_doc_snapshot(ctx.repo.as_ref(), card.id.as_str())
-            .await
-            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
-        let active_tasks_count: i64 = sqlx::query_scalar(&count_sql)
-            .bind(track.id.as_str())
-            .fetch_one(pool.read_pool())
-            .await
-            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
-        let blocks: Vec<Value> = snapshot
-            .blocks
-            .iter()
-            .take(MAX_BLOCKS_PER_TRACK)
-            .map(|block| {
-                json!({
-                    "id": block.id,
-                    "kind": block.kind,
-                    "heading": block_heading(block),
-                })
-            })
-            .collect();
-        let row = json!({
-            "track_id": track.id,
-            "title": track.title,
-            "creator_track_id": track.creator_track_id,
-            "closed_at": crate::time_format::at_opt(track.closed_at),
-            "doc_rev": snapshot.doc_rev,
-            "updated_at": crate::time_format::at(snapshot.updated_at),
-            "active_tasks_count": active_tasks_count,
-            "blocks": blocks,
-            "blocks_truncated": snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK),
-        });
-        if !page.push(track.id.as_str().to_string(), row) {
-            break;
-        }
-    }
-    let (tracks, next_cursor) = page.finish(false);
-    Ok(json!({ "tracks": tracks, "next_cursor": next_cursor }))
 }
 
 /// The refusal of a block selection naming `id`, which is no block of `blocks`: the report's blocks

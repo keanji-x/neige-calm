@@ -315,7 +315,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
 fn read_route<'a>(prompt: &'a str, suffix: &str) -> &'a str {
     prompt
         .split('`')
-        .map(|code| code.strip_prefix("neige track cat ").unwrap_or(code))
+        .map(|code| code.strip_prefix("neige cat ").unwrap_or(code))
         .find(|path| path.starts_with("runs/") && path.ends_with(suffix))
         .expect("Planner advertises the output read route")
 }

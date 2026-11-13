@@ -78,25 +78,67 @@
     "listed_for": []
   },
   {
-    "name": "neige_area_ls",
-    "description_sha256": "9cb513a2429b66abf58b0ae740b5823b995e591ea858fdbeadbea759d6ab02f1",
+    "name": "neige_cat",
+    "description_sha256": "8bbe9c4d500095bfc77294aba3c0c701806fed57bf36269cd3bbfe3c667f313f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "blocks": {
+          "description": "Report paths only: print just these blocks, as neige_report_read blocks does.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
         "cursor": {
           "type": "string"
+        },
+        "detail": {
+          "enum": [
+            "full",
+            "index"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sections": {
+          "description": "Report paths only: print just these H1 sections, as neige_report_read sections does.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "step": {
+          "description": "Gate logs only: select one displayed step.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "through_event_id": {
+          "minimum": 0,
+          "type": "integer"
         }
       },
+      "required": [
+        "path"
+      ],
       "type": "object"
     },
     "annotations": {
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "worker",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "worker",
+      "assistant"
     ]
   },
   {
@@ -176,7 +218,7 @@
   },
   {
     "name": "neige_link_ls",
-    "description_sha256": "3575a4736e718132e74fa64044e1182b82c40210d56e48d92ff4320b2f469283",
+    "description_sha256": "bb366314916a425501c31415b5c9017323835bef6125726eb813cf31360e58fa",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -194,6 +236,35 @@
     ],
     "listed_for": [
       "planner"
+    ]
+  },
+  {
+    "name": "neige_ls",
+    "description_sha256": "2c49c6ffa8e7356d78b3a3b0790b504465c53a35cf106e9795b1e66b1268f764",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "roles": [
+      "planner",
+      "worker",
+      "assistant"
+    ],
+    "listed_for": [
+      "planner",
+      "worker",
+      "assistant"
     ]
   },
   {
@@ -256,7 +327,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "a57714e04659531b6f5ae6f2f8460440533d2b4c8ed7572f3f23c8010ccaee32",
+    "description_sha256": "5b413901ebf59a4b2a8a9181d2744a56af0d7fc56db52d09a06cbc00cb2ee9d2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -460,7 +531,7 @@
   },
   {
     "name": "neige_op_show",
-    "description_sha256": "850c244302504bf3e40d62a48bc8f40390bb45bbc914d167d89add8d29d3cb3e",
+    "description_sha256": "762cf3a43416948a81550e9871b7a7995355ed09d4b54c1ec4fbaa588b0f387b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -675,7 +746,7 @@
   },
   {
     "name": "neige_report_find",
-    "description_sha256": "2594bb5a08b001b6fd8534d67e6b63e85089443db9040760a55cd2678963c6bf",
+    "description_sha256": "f15a80de556ab7d9d4faee3365f5786766be0027af01719039280b7d73c838a7",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1774,54 +1845,6 @@
     ]
   },
   {
-    "name": "neige_track_cat",
-    "description_sha256": "67ca02b6472e903a08a0e9fb6939b11216b6370898f718b7bb3c6f00e1d81cd3",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "blocks": {
-          "description": "Report paths only: print just these blocks, as neige_report_read blocks does.",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "path": {
-          "type": "string"
-        },
-        "sections": {
-          "description": "Report paths only: print just these H1 sections, as neige_report_read sections does.",
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "step": {
-          "description": "Gate logs only: select one displayed step.",
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "worker",
-      "assistant"
-    ],
-    "listed_for": [
-      "assistant"
-    ]
-  },
-  {
     "name": "neige_track_close",
     "description_sha256": "2773eb61aacfe7ceb88f23e254e6acb611b96d7796a98ed1427761cca70c4551",
     "input_schema": {
@@ -1900,30 +1923,6 @@
           "default": false,
           "type": "boolean"
         },
-        "path": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "worker",
-      "assistant"
-    ],
-    "listed_for": [
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_track_ls",
-    "description_sha256": "7270f517ff3a8daa44bd8a92684019bd3e45f0792076e3f2ca15cafec7f7ee74",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
         "path": {
           "type": "string"
         }
@@ -2116,151 +2115,6 @@
       "assistant"
     ],
     "listed_for": [
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_workspace_cat",
-    "description_sha256": "3d7b664ba670bc41792c9db6af79b6ae786730f36dac44fc269a9b116b1b6530",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "blocks": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "detail": {
-          "enum": [
-            "full",
-            "index"
-          ],
-          "type": "string"
-        },
-        "sections": {
-          "items": {
-            "type": "string"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "track_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "track_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "assistant"
-    ],
-    "listed_for": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_workspace_diff",
-    "description_sha256": "4db380ed0ea88078e7666b0a0d824cb2d0f2e45b4a2699ffefbebd4f8f7d4104",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "type": "string"
-        },
-        "date": {
-          "type": "string"
-        },
-        "through_event_id": {
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "date"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "assistant"
-    ],
-    "listed_for": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_workspace_log",
-    "description_sha256": "47e44af57a61399f9682726858004cafdf07fa261eb14aaeb7dfc987e0c89220",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "type": "string"
-        },
-        "date": {
-          "type": "string"
-        },
-        "through_event_id": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "track_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "date",
-        "track_id",
-        "through_event_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "assistant"
-    ],
-    "listed_for": [
-      "planner",
-      "assistant"
-    ]
-  },
-  {
-    "name": "neige_workspace_ls",
-    "description_sha256": "3e33443d7fd7279c9cbb98e9ed51f1bec6dee72611d60faa5a412e4963acbe90",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
-    "annotations": {
-      "readOnlyHint": true
-    },
-    "roles": [
-      "planner",
-      "assistant"
-    ],
-    "listed_for": [
-      "planner",
       "assistant"
     ]
   },

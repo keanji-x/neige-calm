@@ -29,9 +29,9 @@ pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_sources;
 pub mod track_state;
+mod unified_browse;
 pub mod user_ask;
 pub mod worker_report;
-pub mod workspace_reports;
 pub(crate) mod write_args;
 
 /// Register every default tool onto a fresh registry.
@@ -61,7 +61,6 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     track_history::register_into(registry);
     crate::builtin_plugins::register_native_tools(registry);
     admin::register_into(registry);
-    workspace_reports::register_into(registry);
     worker_report::register_into(registry);
 }
 
@@ -419,23 +418,27 @@ mod tests {
         compiled
     }
 
-    /// #2087 §2: every kernel tool is `neige_<object>_<action>`, each segment one word, so the
-    /// CLI command is the name split at `_`. No kernel object is `plugin`, the word that starts
+    /// Kernel names split into words; a root verb must have a root row in the CLI command table.
+    /// No kernel object is `plugin`, the word that starts
     /// every minted plugin tool name (`plugin_<id>_<tool>`).
     #[test]
     fn kernel_tool_names_follow_the_grammar() {
-        let grammar = regex::Regex::new(r"^neige_([a-z0-9]+)_[a-z0-9]+$").expect("grammar regex");
+        let grammar =
+            regex::Regex::new(r"^neige_([a-z0-9]+)(?:_([a-z0-9]+))?$").expect("grammar regex");
         let off_grammar: Vec<String> = kernel_tool_names()
             .into_iter()
             .filter(|name| {
-                grammar
-                    .captures(name)
-                    .is_none_or(|words| &words[1] == "plugin")
+                grammar.captures(name).is_none_or(|words| {
+                    &words[1] == "plugin"
+                        || (words.get(2).is_none()
+                            && crate::mcp_server::cli::cli_spelling(name).as_deref()
+                                != Some(format!("neige {}", &words[1]).as_str()))
+                })
             })
             .collect();
         assert!(
             off_grammar.is_empty(),
-            "kernel tools outside `neige_<object>_<action>`: {off_grammar:?}"
+            "kernel tools outside the declared object/action or root CLI grammar: {off_grammar:?}"
         );
     }
 
@@ -627,8 +630,9 @@ mod tests {
             .into_iter()
             .filter(|name| {
                 let segments: Vec<&str> = name.split('_').collect();
-                !matches!(segments.as_slice(), ["neige", object, action]
+                !(matches!(segments.as_slice(), ["neige", object, action]
                     if word.is_match(object) && VERBS.contains(action))
+                    || matches!(segments.as_slice(), ["neige", action] if VERBS.contains(action)))
             })
             .collect();
         assert!(

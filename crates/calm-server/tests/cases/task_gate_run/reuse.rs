@@ -110,7 +110,7 @@ async fn an_unchanged_candidate_reuses_the_passing_run() {
     assert!(run_log.contains("u1-run-output"), "{run_log}");
     let cat = call_tool(
         &fx.boot,
-        "neige_track_cat",
+        "neige_cat",
         planner_identity(&fx.boot),
         json!({"path": format!("runs/{}/gates/1.log", a.task.id)}),
     )

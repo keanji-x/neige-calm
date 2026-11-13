@@ -985,7 +985,7 @@ async fn antigravity_reuses_one_server_and_revokes_card_authority_on_reset() {
         .expect("listed MCP tools");
     for (number, name, args) in [
         (10, "neige_track_status", json!({})),
-        (11, "neige_track_cat", json!({"path": "guide/report.md"})),
+        (11, "neige_cat", json!({"path": "guide/report.md"})),
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == name),

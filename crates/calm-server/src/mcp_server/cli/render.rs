@@ -18,14 +18,14 @@ mod mail;
 /// How one command prints its tool result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Render {
-    /// `track ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
+    /// `ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
     Ls {
         long: bool,
         reports: bool,
     },
     /// `report find`: one `area/reports/` path per line.
     Find,
-    /// `track cat` and `track show`: the view content; `--json` changes only the error format.
+    /// `cat` and `track show`: the view content; `--json` changes only the error format.
     Content,
     Status,
     Diff,

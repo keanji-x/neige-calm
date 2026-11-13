@@ -91,14 +91,16 @@ const HELP: &[CommandHelp] = &[
         "  -h, --help                      Print help",
     ),
     command_help!(
-        track_file::TOOL_TRACK_LS,
-        "List files and directories in the current track view",
-        "Usage: neige track ls [path] [-l] [--json]",
+        track_file::TOOL_LS,
+        "List bound views or user Area Report directories",
+        "Usage: neige ls [path] [-l] [--cursor CURSOR] [--json]",
+        "Absolute /areas/ discovers user Areas; /areas/<area-id>/tracks/ lists stable Report paths.",
+        "All three roles share Report browsing; relative and omitted paths use the bound Track.",
         "",
         "Arguments:",
         "  [path]  View path to list (also --path)",
         "",
-        "Planner: `area/reports/` lists the reports of every track in this area, own track",
+        "`area/reports/` lists the reports of every track in this area, own track",
         "included, newest report update first, one `<title>.md` per line. A title shared by",
         "several tracks lists as `<title>~<id prefix>.md`; `%`, `/`, `~`, `\\`, control characters",
         "and a leading `.` in a title are written as `%XX`. With -l: UPDATED_AT (the report's own",
@@ -112,14 +114,18 @@ const HELP: &[CommandHelp] = &[
         "  -h, --help  Print help",
     ),
     command_help!(
-        track_file::TOOL_TRACK_CAT,
-        "Print one file from the current track view",
-        "Usage: neige track cat <path> [--blocks <id,...> | --sections <heading,...>] [--step NAME] [--json]",
+        track_file::TOOL_CAT,
+        "Print a bound file or user Area Report",
+        "Usage: neige cat <path> [--blocks <id,...> | --sections <heading,...>] [--step NAME] [--json]",
         "",
         "Arguments:",
         "  <path>  View path to read (also --path)",
         "",
-        "Planner: `area/reports/<name>.md`, a name `neige track ls` or `neige report find` printed,",
+        "All roles read /areas/<area-id>/tracks/<track-id>/report.md; --detail index gives every block ID.",
+        "Date history: /report-changes/YYYY-MM-DD.json or .../report-edits/YYYY-MM-DD.json.",
+        "Retain --through-event-id on continuation pages; edits require it on the first page too.",
+        "",
+        "`area/reports/<name>.md`, a name `neige ls` or `neige report find` printed,",
         "prints that report's latest Markdown body, exactly as its track's own `report.md`. A bare",
         "title shared by several tracks is refused with the `~<id prefix>` candidates.",
         "",
@@ -130,13 +136,16 @@ const HELP: &[CommandHelp] = &[
         "--sections does the same for whole H1 sections, named by their heading text (the `# `",
         "line without `# `): the text neige_report_read gives for sections. An unknown",
         "section is refused with the report's H1 sections listed.",
-        "`track cat` is a view; a report write needs `neige_report_read` first.",
+        "`cat` is a view; a report write needs `neige_report_read` first.",
         "",
         "Options:",
+        "      --detail full|index          Report body or full block index",
+        "      --cursor CURSOR              Date continuation (ls uses directory cursors)",
+        "      --through-event-id ID        Preserve date watermark; required for edits",
         "      --blocks <id,...>            Print only these blocks of a report (comma-separated ids)",
         "      --sections <heading,...>     Print only these H1 sections of a report",
         "      --step NAME                 Select one displayed gate-log step",
-        "Pipe track cat into tail or grep to narrow text further.",
+        "Pipe cat into tail or grep to narrow text further.",
         "      --json                       Emit errors as JSON",
         "  -h, --help                       Print help",
     ),
@@ -211,7 +220,7 @@ const HELP: &[CommandHelp] = &[
         "Arguments:",
         "  <path>  area/reports/, the only searchable directory (also --path)",
         "",
-        "Prints one `area/reports/<name>.md` path per line, ready for `neige track cat`, newest",
+        "Prints one `area/reports/<name>.md` path per line, ready for `neige cat`, newest",
         "report update first; no match prints nothing and succeeds. --name globs the listed file",
         "name (`*` any run, `?` one character, everything else literal); --tag matches one tag",
         "exactly; both given means AND. At most 500 matches; more is refused, so narrow the search.",
@@ -406,7 +415,7 @@ const HELP: &[CommandHelp] = &[
 
 const HELP_SUMMARY: &str = "Print global, object or command help";
 
-/// `track cat` for a command's tool key, `tool ls|describe` for the meta command.
+/// `cat` for a command's tool key, `tool ls|describe` for the meta command.
 fn spelling(key: &str) -> String {
     match commands::command_for_tool(key) {
         Some(command) => command.spelling(),
@@ -447,13 +456,21 @@ pub fn render(request: HelpRequest<'_>) -> Option<String> {
     let text = match request {
         HelpRequest::Root => return Some(root_help()),
         HelpRequest::Object(object) if object == catalog::COMMAND_NAME => help_for(object)?.text,
-        HelpRequest::Object(object) => return object_help(object),
+        HelpRequest::Object(object) => {
+            if let Some(command) = COMMANDS.iter().find(|c| c.is(object, "")) {
+                help_for(command.tool)?.text
+            } else {
+                return object_help(object);
+            }
+        }
         HelpRequest::Command(object, action) if object == catalog::COMMAND_NAME => {
             catalog::ACTIONS.contains(&action).then_some(())?;
             help_for(object)?.text
         }
         HelpRequest::Command(object, action) => {
-            let command = COMMANDS.iter().find(|c| c.is(object, action))?;
+            let command = COMMANDS
+                .iter()
+                .find(|c| c.is(object, "") || c.is(object, action))?;
             help_for(command.tool)?.text
         }
     };
@@ -532,7 +549,7 @@ fn root_help() -> String {
     let mut output = String::from(concat!(
         "neige\n\n",
         "Read track views, inspect history, and report worker tasks.\n\n",
-        "Usage: neige [--json] <object> <action> [options]\n",
+        "Usage: neige [--json] <command> [arguments] [options]\n",
         "       neige help [<object> [<action>]]\n\n",
         "Commands:\n",
     ));
@@ -543,7 +560,7 @@ fn root_help() -> String {
     writeln!(output, "  {:<20} {HELP_SUMMARY}", "help")
         .expect("writing help to a String cannot fail");
     output.push_str(concat!(
-        "\nEach command calls the tool neige_<object>_<action>; each option is --<input key>, with\n",
+        "\nEach command calls its registered tool; each option is --<input key>, with\n",
         "`_` written `-`, and a positional argument is also accepted as its --<key> option.\n",
         "\nOptions:\n",
         "      --json     Use JSON output where supported; otherwise emit errors as JSON\n",

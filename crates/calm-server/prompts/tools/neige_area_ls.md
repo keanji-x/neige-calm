@@ -1,1 +1,0 @@
-Planner-only, same Area: up to 50 tracks with report doc_rev, updated_at, active_tasks_count (dispatched/running/verifying), and up to 40 block {id,kind,heading} entries. blocks_truncated counts the remainder. Pass next_cursor as cursor. Link as [label](neige://wave/<track_id>#<block_id>) (fragment optional; missing block opens report).

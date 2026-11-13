@@ -1,9 +1,9 @@
-//! #2087 C2 (§5): `neige_area_ls` pages over the area's tracks by `cursor` and never drops a row.
+//! #2087 C2 (§5): `neige_ls` pages over the area's tracks by `cursor` and never drops a row.
 //! A page ends at 50 tracks or early at its byte budget; a report's blocks past 40 are counted in
 //! the row's `blocks_truncated`, never silently clipped.
 
 use super::*;
-use calm_server::mcp_server::tools::report_links::TOOL_AREA_LS;
+use calm_server::mcp_server::tools::track_file::TOOL_LS;
 
 /// Track rows several kilobytes long: 45 sections whose headings are 60 three-byte characters.
 fn long_body(index: usize) -> String {
@@ -41,17 +41,18 @@ async fn area_ls_pages_end_at_the_byte_budget_and_lose_no_track() {
 
     let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
     loop {
-        let args = cursor
+        let mut args = cursor
             .as_ref()
             .map_or(json!({}), |c| json!({ "cursor": c }));
-        let page = call(&boot, TOOL_AREA_LS, planner(reader), args)
+        args["path"] = json!(format!("/areas/{}/tracks/", reader.area_id));
+        let page = call(&boot, TOOL_LS, planner(reader), args)
             .await
-            .expect("neige_area_ls");
+            .expect("neige_ls");
         assert!(
             page.get("truncated").is_none(),
             "no top-level truncated: {page}"
         );
-        let tracks = page["tracks"].as_array().expect("tracks");
+        let tracks = page["entries"].as_array().expect("tracks");
         let row_bytes: usize = tracks
             .iter()
             .map(|row| serde_json::to_vec(row).unwrap().len() + 1)
@@ -81,7 +82,7 @@ async fn area_ls_pages_end_at_the_byte_budget_and_lose_no_track() {
         }
         match &page["next_cursor"] {
             Value::String(next) => {
-                assert_eq!(Some(next.as_str()), seen.last().map(String::as_str));
+                assert!(next.starts_with(&format!("/areas/{}/tracks/", reader.area_id)));
                 cursor = Some(next.clone());
             }
             Value::Null => break,
@@ -102,9 +103,9 @@ async fn area_ls_pages_end_at_the_byte_budget_and_lose_no_track() {
 
     let refused = call(
         &boot,
-        TOOL_AREA_LS,
+        TOOL_LS,
         planner(reader),
-        json!({ "cursor": "zzzz-not-a-track" }),
+        json!({ "path":format!("/areas/{}/tracks/",reader.area_id), "cursor": "zzzz-not-a-track" }),
     )
     .await
     .expect_err("a cursor that names no track is refused");

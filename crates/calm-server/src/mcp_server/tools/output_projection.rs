@@ -77,7 +77,7 @@ mod tests {
             target: None,
         }
         .to_turn_text();
-        assert!(wake.contains("neige track cat runs/attempt/gates/1.log --step 'test'"));
+        assert!(wake.contains("neige cat runs/attempt/gates/1.log --step 'test'"));
         let log = std::fs::read_to_string(&evidence.log_path).unwrap();
         assert_eq!(step_text(&log, "test"), "::gate-step test\nboom\n");
         assert_eq!(step_text(&log, "build"), "::gate-step build\nprogress 100%");

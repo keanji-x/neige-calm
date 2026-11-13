@@ -18,4 +18,4 @@ The instance manager owns service lifecycle and upgrades. The runtime owns Track
 
 Deployment owners can open **Today → Daily Supervisor** for the scheduler boot scan, Worker cleanup candidates, retired workspaces, and SQLite write wait. Use the stall guide to investigate individual executions.
 
-Daily Planner can read `guide/operations.md`, `guide/database.md`, and `guide/stalled-work.md` with `neige_track_cat`. Links to the deployment runbooks are for operators. In reports, distinguish a merged PR, an available release, an applied upgrade, and a verified running version. Cite the observation for each claimed stage and record missing evidence as unknown.
+Daily Planner can read `guide/operations.md`, `guide/database.md`, and `guide/stalled-work.md` with `neige_cat`. Links to the deployment runbooks are for operators. In reports, distinguish a merged PR, an available release, an applied upgrade, and a verified running version. Cite the observation for each claimed stage and record missing evidence as unknown.

@@ -9,7 +9,7 @@ use crate::mcp_track_report::{
     read_then_write_markdown, seed_track_root_session, upsert_block,
 };
 use calm_server::mcp_server::ToolCallIdentity;
-use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
+use calm_server::mcp_server::tools::track_file::TOOL_CAT;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_report_blocks::{RPC_REV_CONFLICT, TOOL_REPORT_COMMIT};
 use calm_server::plugin_host::mcp::RpcError;
@@ -454,7 +454,7 @@ async fn a_section_another_writer_removed_is_a_conflict_until_the_report_is_read
     );
 }
 
-/// #1883: `neige track cat` is a view; only `neige_report_read` anchors a write.
+/// #1883: `neige cat` is a view; only `neige_report_read` anchors a write.
 #[tokio::test]
 async fn a_cat_read_anchors_no_commit() {
     let boot = boot().await;
@@ -463,7 +463,7 @@ async fn a_cat_read_anchors_no_commit() {
         json!({ "path": "report.md" }),
         json!({ "path": "report.md", "sections": ["决策"] }),
     ] {
-        call_tool(&boot, TOOL_TRACK_CAT, planner_identity(&boot), args)
+        call_tool(&boot, TOOL_CAT, planner_identity(&boot), args)
             .await
             .expect("cat");
     }

@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use calm_server::mcp_server::tools::report_links::{TOOL_AREA_LS, TOOL_LINK_LS};
+use calm_server::mcp_server::tools::{report_links::TOOL_LINK_LS, track_file::TOOL_LS};
 use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
@@ -112,10 +112,15 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         "# Outside\n".into(),
     )
     .await;
-    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let tracks = value["tracks"].as_array().unwrap();
+    let value = call_tool(
+        &boot,
+        TOOL_LS,
+        planner_identity(&boot),
+        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+    )
+    .await
+    .unwrap();
+    let tracks = value["entries"].as_array().unwrap();
     let sibling = tracks
         .iter()
         .find(|track| track["track_id"] == sibling.id.as_str())
@@ -143,10 +148,15 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
     .await;
     strip_report_cache_and_crdt(&boot, &legacy).await;
 
-    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let track = value["tracks"]
+    let value = call_tool(
+        &boot,
+        TOOL_LS,
+        planner_identity(&boot),
+        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+    )
+    .await
+    .unwrap();
+    let track = value["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -194,10 +204,15 @@ async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
     )
     .await;
 
-    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let blocks = value["tracks"]
+    let value = call_tool(
+        &boot,
+        TOOL_LS,
+        planner_identity(&boot),
+        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+    )
+    .await
+    .unwrap();
+    let blocks = value["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -226,10 +241,15 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
     let boot = boot().await;
     let track = add_track(&boot, boot.area_id.as_str(), "Carrier", contract_body()).await;
 
-    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let entry = value["tracks"]
+    let value = call_tool(
+        &boot,
+        TOOL_LS,
+        planner_identity(&boot),
+        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+    )
+    .await
+    .unwrap();
+    let entry = value["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -271,32 +291,33 @@ async fn outline_of_an_area_full_of_contract_bearing_reports_pages_at_fifty_trac
         );
     }
 
-    let value = call_tool(&boot, TOOL_AREA_LS, planner_identity(&boot), json!({}))
-        .await
-        .unwrap();
-    let bytes = serde_json::to_vec(&value).unwrap().len();
-    // Measured at 17029 bytes; the lower bound catches a fixture broken into emptiness.
-    assert!(
-        (10 * 1024..=32 * 1024).contains(&bytes),
-        "expected a real page for 50 contract-bearing tracks; got {bytes} bytes"
-    );
-    assert!(value.get("truncated").is_none(), "{value}");
-    let first = value["tracks"].as_array().unwrap();
-    assert_eq!(first.len(), 50);
-    assert_eq!(value["next_cursor"], first[49]["track_id"]);
-    let rest = call_tool(
-        &boot,
-        TOOL_AREA_LS,
-        planner_identity(&boot),
-        json!({ "cursor": value["next_cursor"] }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(rest["next_cursor"], Value::Null, "{rest}");
-    let tracks: Vec<&Value> = first
-        .iter()
-        .chain(rest["tracks"].as_array().unwrap())
-        .collect();
+    let mut tracks = Vec::new();
+    let mut cursor = None::<String>;
+    loop {
+        let mut args = json!({"path":format!("/areas/{}/tracks/",boot.area_id)});
+        if let Some(cursor) = &cursor {
+            args["cursor"] = json!(cursor);
+        }
+        let value = call_tool(&boot, TOOL_LS, planner_identity(&boot), args)
+            .await
+            .unwrap();
+        assert!(value.get("truncated").is_none());
+        let rows = value["entries"].as_array().unwrap();
+        assert!(!rows.is_empty() && rows.len() <= 50);
+        let bytes: usize = rows
+            .iter()
+            .map(|row| serde_json::to_vec(row).unwrap().len() + 1)
+            .sum();
+        assert!(bytes <= 32 * 1024 || rows.len() == 1);
+        cursor = value["next_cursor"].as_str().map(str::to_owned);
+        if let Some(cursor) = &cursor {
+            assert_eq!(rows.last().unwrap()["path"], cursor.as_str());
+        }
+        tracks.extend(rows.iter().cloned());
+        if cursor.is_none() {
+            break;
+        }
+    }
     assert_eq!(tracks.len(), 51, "50 seeded and the boot track");
 
     // The loop must also prove it looked at the seeded tracks: ids that stopped matching would
@@ -384,7 +405,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
 #[tokio::test]
 async fn report_link_reads_reject_non_planner_caller() {
     let boot = boot().await;
-    for tool in [TOOL_AREA_LS, TOOL_LINK_LS] {
+    for tool in [TOOL_LINK_LS] {
         let error = call_tool(
             &boot,
             tool,

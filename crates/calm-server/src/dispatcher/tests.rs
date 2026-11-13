@@ -1331,7 +1331,7 @@ fn turn_text_names_target_mismatch() {
             .split_once(").")
             .expect("tail starts with the gate run");
         let step_ref = step.map(|step| format!(
-            " Failed step: `neige track cat runs/track-1:impl-parser/gates/3.log --step '{step}'`."
+            " Failed step: `neige cat runs/track-1:impl-parser/gates/3.log --step '{step}'`."
         )).unwrap_or_default();
         assert_eq!(
             plain,

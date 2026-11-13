@@ -1,4 +1,4 @@
-//! `track ls` and `report find` text. A track-view listing prints `d name` / `- name` (with `-l`, each entry's
+//! `ls` and `report find` text. A track-view listing prints `d name` / `- name` (with `-l`, each entry's
 //! own update time too); an `area/reports/` listing (#1838) prints report names, or with `-l` a
 //! `UPDATED_AT  TAGS  NAME` table; `find` prints one readable `area/reports/` path per line.
 //! Times print as `YYYY-MM-DD HH:MM` in the server's local time; `--json` is the tool result as is.
@@ -26,6 +26,24 @@ pub(super) fn ls(
     let entries = rows(tool, value, if reports { "reports" } else { "entries" })?;
     if json {
         return Ok(compact(value));
+    }
+    if let Some(pattern) = value["date_pattern"].as_str() {
+        return Ok(format!("Date files: {pattern}\n"));
+    }
+    if !reports && entries.first().is_some_and(|row| row.get("path").is_some()) {
+        let mut out = String::new();
+        for entry in entries {
+            out.push_str(&format!(
+                "{}  {}  {}\n",
+                required_str(entry, "id", tool, "entry")?,
+                required_str(entry, "title", tool, "entry")?,
+                required_str(entry, "path", tool, "entry")?
+            ));
+        }
+        if let Some(cursor) = value["next_cursor"].as_str() {
+            out.push_str(&format!("next_cursor: {cursor}\n"));
+        }
+        return Ok(out);
     }
     match (reports, long) {
         (false, false) => track_entries(tool, entries, false),
@@ -182,7 +200,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn ls(long: bool, reports: bool, value: &Value) -> String {
-        render(Render::Ls { long, reports }, "neige_track_ls", false, value).unwrap()
+        render(Render::Ls { long, reports }, "neige_ls", false, value).unwrap()
     }
 
     fn local(ms: i64) -> chrono::DateTime<Local> {
@@ -200,12 +218,12 @@ mod tests {
                 long: false,
                 reports: false,
             },
-            "neige_track_ls",
+            "neige_ls",
             false,
             &json!({ "entries": [{ "name": "x" }] }),
         )
         .unwrap_err();
-        assert_eq!(err.message, "neige_track_ls entry missing string kind");
+        assert_eq!(err.message, "neige_ls entry missing string kind");
     }
 
     #[test]
@@ -230,7 +248,7 @@ mod tests {
                     long: true,
                     reports: false
                 },
-                "neige_track_ls",
+                "neige_ls",
                 false,
                 &unix_ms
             )
@@ -335,15 +353,12 @@ mod tests {
                 long: true,
                 reports: true,
             },
-            "neige_track_ls",
+            "neige_ls",
             false,
             &bad,
         )
         .unwrap_err();
-        assert_eq!(
-            err.message,
-            "neige_track_ls entry updated_at is not RFC 3339"
-        );
+        assert_eq!(err.message, "neige_ls entry updated_at is not RFC 3339");
         let mut bad = reports();
         bad["reports"][1]["path"] = json!("report.md");
         let err = render(
@@ -351,14 +366,14 @@ mod tests {
                 long: false,
                 reports: true,
             },
-            "neige_track_ls",
+            "neige_ls",
             false,
             &bad,
         )
         .unwrap_err();
         assert_eq!(
             err.message,
-            "neige_track_ls entry path is not under area/reports/"
+            "neige_ls entry path is not under area/reports/"
         );
     }
 }

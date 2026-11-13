@@ -213,7 +213,7 @@ tool `neige_<object>_<action>` it calls; each option is the tool's input key
 tools with their commands.
 
 A Planner can read other reports through the read-only `area/reports/` view,
-inspect selected blocks with `neige track cat report.md --blocks <id>`, and query
+inspect selected blocks with `neige cat report.md --blocks <id>`, and query
 report tags with `neige report tag report.md`. Report writes use `neige_report_commit`
 for targeted edits or `neige_report_write` for whole-document changes.
 Both anchor to this session's prior `neige_report_read`; CLI reads do not establish

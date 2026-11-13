@@ -2,7 +2,6 @@
 use calm_types::track_wire::TrackWire;
 use workspace_runtime::sweep::WorkspaceTrackSweep;
 
-use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
@@ -499,7 +498,7 @@ pub(crate) async fn list_tracks_by_area(
     let areas =
         crate::track_access::list_areas(s.repo.as_ref(), &principal, Some(&area_id)).await?;
     let mut tracks = s.repo.tracks_by_area(&area_id).await?;
-    tracks.retain(user_visible_track);
+    tracks.retain(crate::track_access::user_visible_track);
     crate::track_access::require_list_publication(s.repo.as_ref(), &areas, &tracks, &principal)
         .await?;
     Ok(Json(
@@ -508,15 +507,6 @@ pub(crate) async fn list_tracks_by_area(
             .map(calm_types::track_wire::TrackWire)
             .collect(),
     ))
-}
-
-/// Public track lists hide retired Area-conversation containers; repository readers such
-/// as area deletion and backlink resolution require the complete set.
-fn user_visible_track(track: &Track) -> bool {
-    match track.purpose.as_deref() {
-        None => true,
-        Some(purpose) => purpose != AREA_CHAT_PURPOSE,
-    }
 }
 
 /// Build the initial report a template instantiates to. `Internal`, not `BadRequest`:
@@ -691,7 +681,7 @@ pub(crate) async fn list_tracks_window(
             .cmp(&b.created_at)
             .then(a.id.as_str().cmp(b.id.as_str()))
     });
-    tracks.retain(user_visible_track);
+    tracks.retain(crate::track_access::user_visible_track);
     crate::track_access::require_list_publication(state.repo.as_ref(), &areas, &tracks, &principal)
         .await?;
     Ok(Json(

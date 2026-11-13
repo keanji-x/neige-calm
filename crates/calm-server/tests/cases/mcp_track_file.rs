@@ -1,4 +1,4 @@
-//! Read-only track file MCP tools (`neige_track_ls` / `neige_track_cat`); scope comes from the
+//! Read-only track file MCP tools (`neige_ls` / `neige_cat`); scope comes from the
 //! per-call `ToolCallIdentity`, no call accepts a track id.
 
 #![cfg(unix)]
@@ -13,7 +13,7 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
+use calm_server::mcp_server::tools::track_file::{TOOL_CAT, TOOL_LS};
 use calm_server::mcp_server::tools::track_history::{
     TOOL_TRACK_DIFF, TOOL_TRACK_LOG, TOOL_TRACK_SHOW,
 };
@@ -39,7 +39,7 @@ struct Boot {
     registry: Arc<ToolRegistry>,
     sqlx_repo: Arc<SqlxRepo>,
     repo: Arc<dyn Repo>,
-    /// The configured gate-logs dir wired into `AppContext`; `neige_track_cat runs/<attempt_id>/gates/<N>.log` must read this dir, never an env-recomputed default.
+    /// The configured gate-logs dir wired into `AppContext`; `neige_cat runs/<attempt_id>/gates/<N>.log` must read this dir, never an env-recomputed default.
     gate_logs_dir: std::path::PathBuf,
     area_id: AreaId,
     track_id: TrackId,
@@ -615,14 +615,9 @@ async fn seed_codex_runtime(boot: &Boot, card_id: &CardId) -> WorkerSessionProje
 #[tokio::test]
 async fn ls_root_returns_top_level_entries() {
     let boot = boot().await;
-    let out = call_tool(
-        &boot,
-        TOOL_TRACK_LS,
-        planner_identity(&boot),
-        json!({ "path": "/" }),
-    )
-    .await
-    .expect("planner can list root");
+    let out = call_tool(&boot, TOOL_LS, planner_identity(&boot), json!({}))
+        .await
+        .expect("planner can list root");
     let entries = out["entries"].as_array().expect("ls returns `entries`");
     let names: Vec<&str> = entries
         .iter()
@@ -650,7 +645,7 @@ async fn cards_index_lists_only_bound_track_cards_without_payload() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "cards/index.json" }),
     )
@@ -714,7 +709,7 @@ async fn card_events_json_returns_hook_events_in_event_order() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/events.json", card_id.as_str()) }),
     )
@@ -790,7 +785,7 @@ async fn card_conversation_md_renders_prompt_tool_and_assistant_turns() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
@@ -832,7 +827,7 @@ async fn card_conversation_md_ignores_subagent_stop_assistant_message() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
@@ -852,7 +847,7 @@ async fn card_conversation_md_reports_no_hook_events() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", boot.worker_card_id.as_str()) }),
     )
@@ -930,7 +925,7 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
@@ -967,7 +962,7 @@ async fn card_conversation_md_falls_back_to_hooks_when_no_flow_rows() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/conversation.md", card_id.as_str()) }),
     )
@@ -1005,7 +1000,7 @@ async fn ls_card_directory_includes_hook_event_views() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
@@ -1045,7 +1040,7 @@ async fn old_card_lens_paths_are_not_available() {
         let path = format!("cards/{}/{leaf}", boot.worker_card_id.as_str());
         let err = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({ "path": path }),
         )
@@ -1067,7 +1062,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
 
     let listing = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
@@ -1078,7 +1073,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
     )
@@ -1092,7 +1087,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let session_projection_row = seed_codex_runtime(&boot, &card_id).await;
     let listing = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}", card_id.as_str()) }),
     )
@@ -1109,7 +1104,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     let runtime_id = session_projection_row.id.clone();
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/runtime.json", card_id.as_str()) }),
     )
@@ -1131,7 +1126,7 @@ async fn card_hook_events_from_other_track_are_forbidden() {
     let path = format!("cards/{}/events.json", boot.worker_card_id.as_str());
     let err = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         other_planner_identity(&boot),
         json!({ "path": path }),
     )
@@ -1180,7 +1175,7 @@ async fn card_events_json_filters_out_sibling_card_hooks() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": format!("cards/{}/events.json", target_id.as_str()) }),
     )
@@ -1204,7 +1199,7 @@ async fn ls_runs_returns_projected_runs_for_bound_track() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
@@ -1254,7 +1249,7 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -1278,7 +1273,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
 
     let ls = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": "runs" }),
     )
@@ -1298,7 +1293,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -1330,7 +1325,7 @@ async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/done-md.md" }),
     )
@@ -1387,7 +1382,7 @@ async fn run_summary_keeps_outcomes_separate_and_points_to_evidence() {
     ] {
         let summary = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({"path":format!("runs/{key}/summary.json")}),
         )
@@ -1401,7 +1396,7 @@ async fn run_summary_keeps_outcomes_separate_and_points_to_evidence() {
         assert_eq!(summary["evidence"], path);
         let full = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({"path":path}),
         )
@@ -1421,7 +1416,7 @@ async fn completed_run_json_returns_structured_projection() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/done-json.json" }),
     )
@@ -1474,7 +1469,7 @@ async fn worker_completion_result_status_accepted_is_not_planner_verdict() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/worker-accepted-payload.json" }),
     )
@@ -1500,7 +1495,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/accepted-run.json" }),
     )
@@ -1521,7 +1516,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -1543,7 +1538,7 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/accepted-run.md" }),
     )
@@ -1584,7 +1579,7 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
@@ -1612,7 +1607,7 @@ async fn rejected_verdict_does_not_overwrite_worker_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/rejected-run.json" }),
     )
@@ -1634,7 +1629,7 @@ async fn rejected_verdict_does_not_overwrite_worker_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/rejected-run.md" }),
     )
@@ -1671,7 +1666,7 @@ async fn worker_failure_without_planner_verdict_stays_failed() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/worker-failed.json" }),
     )
@@ -1692,7 +1687,7 @@ async fn worker_failure_without_planner_verdict_stays_failed() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/worker-failed.md" }),
     )
@@ -1740,7 +1735,7 @@ async fn track_scoped_dispatcher_failure_is_not_planner_verdict() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/dispatcher-track-failed.json" }),
     )
@@ -1773,7 +1768,7 @@ async fn retry_recovery_uses_later_worker_completion_as_status() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/retry-recovered.json" }),
     )
@@ -1820,7 +1815,7 @@ async fn dispatcher_retry_completion_overrides_earlier_completion() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/dispatcher-retry-recovered.json" }),
     )
@@ -1846,7 +1841,7 @@ async fn retry_regression_uses_later_worker_failure_as_status() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/retry-regressed.json" }),
     )
@@ -1877,7 +1872,7 @@ async fn final_event_order_uses_event_id_not_wall_clock_at() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/retry-regressed-skew.json" }),
     )
@@ -1909,7 +1904,7 @@ async fn final_event_same_timestamp_uses_event_id() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/retry-tie.json" }),
     )
@@ -1934,7 +1929,7 @@ async fn worker_card_without_request_is_unknown_even_when_materialized() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/orphan-worker.json" }),
     )
@@ -1954,7 +1949,7 @@ async fn planner_rejection_without_worker_failure_stays_out_of_failed_pool() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/reject-only.json" }),
     )
@@ -1977,7 +1972,7 @@ async fn rejected_verdict_before_worker_completion_preserves_worker_output() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/reject-out-of-order.json" }),
     )
@@ -2016,7 +2011,7 @@ async fn verdict_before_worker_completion_still_preserves_worker_output() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/out-of-order.json" }),
     )
@@ -2058,22 +2053,22 @@ async fn assert_reserved_run_key_error(tool: &str, path: &str, expect: &str) {
 
 #[tokio::test]
 async fn reserved_run_key_returns_structured_error_for_runs_index_json() {
-    assert_reserved_run_key_error(TOOL_TRACK_CAT, "runs/index.json", "cat runs/index.json").await;
+    assert_reserved_run_key_error(TOOL_CAT, "runs/index.json", "cat runs/index.json").await;
 }
 
 #[tokio::test]
 async fn reserved_run_key_returns_structured_error_for_ls_root() {
-    assert_reserved_run_key_error(TOOL_TRACK_LS, "/", "ls /").await;
+    assert_reserved_run_key_error(TOOL_LS, "", "ls (bound view)").await;
 }
 
 #[tokio::test]
 async fn reserved_run_key_returns_structured_error_for_ls_runs() {
-    assert_reserved_run_key_error(TOOL_TRACK_LS, "runs/", "ls runs/").await;
+    assert_reserved_run_key_error(TOOL_LS, "runs/", "ls runs/").await;
 }
 
 #[tokio::test]
 async fn reserved_run_key_returns_structured_error_for_run_markdown() {
-    assert_reserved_run_key_error(TOOL_TRACK_CAT, "runs/index.md", "cat runs/index.md").await;
+    assert_reserved_run_key_error(TOOL_CAT, "runs/index.md", "cat runs/index.md").await;
 }
 
 #[tokio::test]
@@ -2084,7 +2079,7 @@ async fn runs_do_not_leak_across_tracks() {
 
     let err = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         other_planner_identity(&boot),
         json!({ "path": "runs/private-run.md" }),
     )
@@ -2102,7 +2097,7 @@ async fn unknown_run_key_matches_unknown_card_error_shape() {
     let boot = boot().await;
     let card_err = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "cards/not-a-card/.payload.json" }),
     )
@@ -2110,7 +2105,7 @@ async fn unknown_run_key_matches_unknown_card_error_shape() {
     .expect_err("unknown card must be unavailable");
     let run_err = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/not-a-run.md" }),
     )
@@ -2134,7 +2129,7 @@ async fn run_status_derivation_follows_projection_rules() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -2162,7 +2157,7 @@ async fn empty_track_has_empty_runs_projection() {
 
     let ls = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": "runs/" }),
     )
@@ -2175,7 +2170,7 @@ async fn empty_track_has_empty_runs_projection() {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -2191,7 +2186,7 @@ async fn card_payload_from_other_track_is_forbidden() {
         let path = format!("cards/{}/{leaf}", boot.other_track_card_id.as_str());
         let err = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({ "path": path }),
         )
@@ -2207,7 +2202,7 @@ async fn card_payload_from_other_track_is_forbidden() {
     let worker_payload_path = format!("cards/{}/.payload.json", boot.other_track_card_id.as_str());
     let err = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         worker_identity(&boot),
         json!({ "path": worker_payload_path }),
     )
@@ -2222,7 +2217,7 @@ async fn card_payload_from_other_track_is_forbidden() {
     let path = format!("cards/{}", boot.other_track_card_id.as_str());
     let err = call_tool(
         &boot,
-        TOOL_TRACK_LS,
+        TOOL_LS,
         planner_identity(&boot),
         json!({ "path": path }),
     )
@@ -2239,7 +2234,7 @@ async fn card_payload_from_other_track_is_forbidden() {
 async fn track_file_tools_allow_worker_bound_track_reads() {
     let boot = boot().await;
 
-    let ls = call_tool(&boot, TOOL_TRACK_LS, worker_identity(&boot), json!({}))
+    let ls = call_tool(&boot, TOOL_LS, worker_identity(&boot), json!({}))
         .await
         .expect("worker can list its bound track");
     assert!(
@@ -2249,7 +2244,7 @@ async fn track_file_tools_allow_worker_bound_track_reads() {
 
     let cat = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         worker_identity(&boot),
         json!({ "path": "runs/index.json" }),
     )
@@ -2259,7 +2254,7 @@ async fn track_file_tools_allow_worker_bound_track_reads() {
 
     let report = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         worker_identity(&boot),
         json!({ "path": "report.md" }),
     )
@@ -2279,7 +2274,7 @@ async fn unknown_paths_return_clean_errors() {
     for path in ["runs/anything", "foo", local_bad.as_str()] {
         let err = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({ "path": path }),
         )
@@ -2298,7 +2293,7 @@ async fn index_md_uses_bound_track_title_and_id() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "index.md" }),
     )
@@ -2326,7 +2321,7 @@ async fn report_md_matches_report_read_body() {
 
     let file = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "report.md" }),
     )
@@ -2535,7 +2530,7 @@ async fn track_json_uses_bound_track_metadata() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": "track.json" }),
     )
@@ -2648,7 +2643,7 @@ async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
 
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({"path":format!("runs/{id}/summary.json")}),
     )
@@ -2656,7 +2651,7 @@ async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
     .unwrap();
     let refused = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         worker_identity(&boot),
         json!({"path":format!("runs/{id}/summary.json")}),
     )
@@ -2678,7 +2673,7 @@ async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
         .unwrap();
         let log = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({"path": summary["gate"]["log"]}),
         )
@@ -2694,7 +2689,7 @@ async fn check_run_summary_gate_failure(failing_step: Option<&'static str>) {
     }
     let result = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({"path": summary["worker"]["result_ref"]}),
     )
@@ -2771,7 +2766,7 @@ async fn gate_log_view_is_file_backed_and_needs_a_card_surface() {
     .unwrap();
     let content = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({ "path": log }),
     )
@@ -2790,7 +2785,7 @@ async fn gate_log_view_is_file_backed_and_needs_a_card_surface() {
 }
 
 /// #1970: a read-only reviewer's test evidence is the producer task's gate log. Any card of the
-/// bound track reads it over `neige_track_cat`; another track's task stays -32403.
+/// bound track reads it over `neige_cat`; another track's task stays -32403.
 #[tokio::test]
 async fn worker_reads_own_track_gate_log_but_not_another_tracks() {
     let boot = boot().await;
@@ -2810,7 +2805,7 @@ async fn worker_reads_own_track_gate_log_but_not_another_tracks() {
     let read = |task_id: &str| {
         call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             worker_identity(&boot),
             json!({ "path": format!("runs/{task_id}/gates/1.log") }),
         )
@@ -2849,7 +2844,7 @@ async fn output_result_reads_full_worker_value_not_planner_verdict() {
         let path = format!("runs/{key}/result");
         let out = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             worker_identity(&boot),
             json!({"path":path}),
         )
@@ -2863,7 +2858,7 @@ async fn output_result_reads_full_worker_value_not_planner_verdict() {
         for json in [false, true] {
             let displayed = calm_server::mcp_server::cli::render::render(
                 calm_server::mcp_server::cli::render::Render::Content,
-                TOOL_TRACK_CAT,
+                TOOL_CAT,
                 json,
                 &out,
             )
@@ -2879,7 +2874,7 @@ async fn output_result_reads_full_worker_value_not_planner_verdict() {
         assert!(
             call_tool(
                 &boot,
-                TOOL_TRACK_CAT,
+                TOOL_CAT,
                 other_planner_identity(&boot),
                 json!({"path":path})
             )
@@ -2902,7 +2897,7 @@ async fn output_gate_step_selects_only_matching_text() {
     let path = format!("runs/{task}/gates/1.log");
     let out = call_tool(
         &boot,
-        TOOL_TRACK_CAT,
+        TOOL_CAT,
         planner_identity(&boot),
         json!({"path":path,"step":"build"}),
     )
@@ -2914,7 +2909,7 @@ async fn output_gate_step_selects_only_matching_text() {
         json!({"path":"runs/output-gate/result","step":"build"}),
     ] {
         assert_eq!(
-            call_tool(&boot, TOOL_TRACK_CAT, planner_identity(&boot), args)
+            call_tool(&boot, TOOL_CAT, planner_identity(&boot), args)
                 .await
                 .unwrap_err()
                 .code,
@@ -2952,19 +2947,20 @@ async fn assistant_reads_bound_track_files_and_history_but_not_foreign_commits()
         role: CardRole::Assistant,
         ..planner_identity(&boot)
     };
-    let file = call_tool(
-        &boot,
-        TOOL_TRACK_CAT,
-        id.clone(),
-        json!({"path":"report.md"}),
-    )
-    .await
-    .unwrap();
-    assert!(file["content"].as_str().unwrap().contains("概要"));
-    let listed = call_tool(&boot, TOOL_TRACK_LS, id.clone(), json!({"path":"/"}))
+    let file = call_tool(&boot, TOOL_CAT, id.clone(), json!({"path":"report.md"}))
         .await
         .unwrap();
-    assert!(!listed["entries"].as_array().unwrap().is_empty());
+    assert!(file["content"].as_str().unwrap().contains("概要"));
+    let listed = call_tool(&boot, TOOL_LS, id.clone(), json!({}))
+        .await
+        .unwrap();
+    let entries = listed["entries"].as_array().unwrap();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"index.md"), "entries = {entries:?}");
+    assert!(names.contains(&"track.json"), "entries = {entries:?}");
     let history = call_tool(&boot, TOOL_TRACK_LOG, id.clone(), json!({}))
         .await
         .unwrap();
@@ -3001,6 +2997,57 @@ async fn assistant_reads_bound_track_files_and_history_but_not_foreign_commits()
                 .code,
             RpcError::NOT_FOUND,
             "{tool}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unified_browse_mcp_foreign_report_and_refusal() {
+    let boot = boot().await;
+    boot.repo
+        .card_create(NewCard {
+            track_id: boot.other_track_id.clone(),
+            title: None,
+            kind: "track-report".into(),
+            sort: None,
+            payload: serde_json::to_value(TrackReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
+    let path = format!(
+        "/areas/{}/tracks/{}/report.md",
+        boot.other_area_id, boot.other_track_id
+    );
+    let result = call_tool(
+        &boot,
+        "neige_cat",
+        planner_identity(&boot),
+        json!({"path":path}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["content_type"], "text/markdown");
+    for tail in [
+        "cards/index.json",
+        "conversation.md",
+        "runs/index.json",
+        "ops/x/result",
+    ] {
+        let path = format!(
+            "/areas/{}/tracks/{}/{tail}",
+            boot.other_area_id, boot.other_track_id
+        );
+        assert_eq!(
+            call_tool(
+                &boot,
+                "neige_cat",
+                planner_identity(&boot),
+                json!({"path":path})
+            )
+            .await
+            .unwrap_err()
+            .code,
+            RpcError::INVALID_PARAMS
         );
     }
 }

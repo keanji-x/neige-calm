@@ -544,13 +544,13 @@ mod tests {
     #[test]
     fn rows_carry_surfaces_and_the_derived_command() {
         let entries = vec![
-            entry("neige_track_cat", false),
+            entry("neige_cat", false),
             entry("neige_track_close", true),
             entry("neige_track_rename", true),
         ];
         let page = select_as_planner(
             Query::List {
-                prefix: "neige_track_".into(),
+                prefix: "neige_".into(),
                 cursor: None,
             },
             entries.clone(),
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(
             rows,
             &vec![
-                json!({"name":"neige_track_cat","surfaces":["mcp","cli"],"cli":"neige track cat","listed":false,"plugin":null,"kind":null}),
+                json!({"name":"neige_cat","surfaces":["mcp","cli"],"cli":"neige cat","listed":false,"plugin":null,"kind":null}),
                 json!({"name":"neige_track_close","surfaces":["mcp","cli"],"cli":"neige track close","listed":true,"plugin":null,"kind":null}),
                 json!({"name":"neige_track_rename","surfaces":["mcp"],"cli":null,"listed":true,"plugin":null,"kind":null}),
             ],
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(
             text(&page),
             format!(
-                "neige_track_cat  mcp+cli  neige track cat  hidden  kernel  —\n\
+                "neige_cat  mcp+cli  neige cat  hidden  kernel  —\n\
                  neige_track_close  mcp+cli  neige track close  listed  kernel  —\n\
                  neige_track_rename  mcp  —  listed  kernel  —\n\
                  next_cursor: null\n{FOOTER}\n"
@@ -578,7 +578,7 @@ mod tests {
         );
         let described = select_as_planner(
             Query::Describe {
-                name: "neige_track_cat".into(),
+                name: "neige_cat".into(),
             },
             entries,
             &kernel,
@@ -590,11 +590,7 @@ mod tests {
                 &described["cli"],
                 &described["listed"]
             ),
-            (
-                &json!(["mcp", "cli"]),
-                &json!("neige track cat"),
-                &json!(false)
-            )
+            (&json!(["mcp", "cli"]), &json!("neige cat"), &json!(false))
         );
     }
 

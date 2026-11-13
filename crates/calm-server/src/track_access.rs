@@ -183,3 +183,8 @@ mod fixtures {
 pub(crate) use fixtures::after_assembly;
 #[cfg(feature = "fixtures")]
 pub use fixtures::{TrackDetailReadHook, install_track_detail_read_hook_for_test};
+
+/// Public directories omit retired Area conversation containers; direct Report reads retain them.
+pub(crate) fn user_visible_track(track: &crate::model::Track) -> bool {
+    track.purpose.as_deref() != Some(crate::AREA_CHAT_PURPOSE)
+}

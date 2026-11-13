@@ -1,0 +1,1 @@
+List bound views for omitted/relative path. Absolute / has areas/ and report-changes/; /areas/ lists user Areas; /areas/<area-id>/tracks/ lists stable paths, including closed Tracks. Resume next_cursor in the same directory. Link: [label](neige://wave/<track_id>#<block_id>); fragment optional.

@@ -356,14 +356,12 @@ fn registry_with_track_cat_identity_capture() -> (Arc<ToolRegistry>, IdentityCap
     let (tx, rx) = mpsc::unbounded_channel();
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
-    let track_cat = registry
-        .lookup("neige_track_cat")
-        .expect("neige_track_cat registered");
+    let track_cat = registry.lookup("neige_cat").expect("neige_cat registered");
     let descriptor = registry
         .descriptors()
         .into_iter()
-        .find(|d| d.name == "neige_track_cat")
-        .expect("neige_track_cat descriptor registered");
+        .find(|d| d.name == "neige_cat")
+        .expect("neige_cat descriptor registered");
     let handler: ToolHandler = Arc::new(move |ctx, identity, args| -> ToolHandlerFuture {
         let tx = tx.clone();
         let track_cat = track_cat.clone();
@@ -640,12 +638,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(
-            10,
-            "neige_track_cat",
-            &b.thread_id,
-            json!({"path": "track.json"}),
-        ),
+        tools_call_frame(10, "neige_cat", &b.thread_id, json!({"path": "track.json"})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;
@@ -675,7 +668,7 @@ async fn two_tools_calls_route_per_call_meta_thread_id() {
         &mut wr,
         tools_call_frame(
             11,
-            "neige_track_cat",
+            "neige_cat",
             &thread_id_a2,
             json!({"path": "track.json"}),
         ),
@@ -732,7 +725,7 @@ async fn superseded_card_bound_connection_rejects_before_thread_resolution() {
         &mut wr,
         tools_call_frame(
             12,
-            "neige_track_cat",
+            "neige_cat",
             &second_thread_id,
             json!({"path": "track.json"}),
         ),
@@ -888,7 +881,7 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(20, "neige_track_ls", &b.thread_id, json!({"path": "/"})),
+        tools_call_frame(20, "neige_ls", &b.thread_id, json!({})),
     )
     .await;
     let r1 = recv_frame(&mut rd).await;
@@ -906,12 +899,7 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
 
     send_frame(
         &mut wr,
-        tools_call_frame(
-            21,
-            "neige_track_cat",
-            &b.thread_id,
-            json!({"path": "index.md"}),
-        ),
+        tools_call_frame(21, "neige_cat", &b.thread_id, json!({"path": "index.md"})),
     )
     .await;
     let r2 = recv_frame(&mut rd).await;

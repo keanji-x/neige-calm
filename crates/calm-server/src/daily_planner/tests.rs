@@ -125,10 +125,8 @@ async fn daily_planner_freezes_workspace_report_working_method() {
     .unwrap();
     let instructions = context.text();
     for required in [
-        "neige_workspace_ls",
-        "neige_workspace_cat",
-        "neige_workspace_diff",
-        "neige_workspace_log",
+        "neige_ls",
+        "neige_cat",
         "all user-visible Areas",
         "next_cursor is null",
         "no write authority over other Tracks",

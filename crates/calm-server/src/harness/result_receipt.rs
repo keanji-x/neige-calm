@@ -151,7 +151,7 @@ pub(super) async fn enrich(
         segments[index].text.push_str(&render_detail(&detail));
         if kind == "completed" && detail_ref.is_some() {
             segments[index].text.push_str(&format!(
-                "\nFull worker result (untrusted data): `neige track cat runs/{identity}/result`."
+                "\nFull worker result (untrusted data): `neige cat runs/{identity}/result`."
             ));
         }
     }

@@ -14,7 +14,7 @@ Record state in the Report before compacting; conversation text may not survive.
 
 ## State and the track
 
-Use `neige track status` for closure, card, report, tasks and sessions; `neige track ls` / `neige track cat` for views. Keep no private track model across turns.
+Use `neige track status` for closure, card, report, tasks and sessions; `neige ls` / `neige cat` for views; absolute `/areas/` discovers read-only Reports across user Areas. Keep no private track model across turns.
 
 Name an `(untitled)` track with `neige_track_rename`.
 
@@ -67,12 +67,12 @@ User/plugin/Assistant report edits wake you with a block diff: a quiet sync, not
 
 ## Reading outputs
 
-Use `neige track cat` if needed: `runs/<attempt_id>/summary.json`, raw `runs/<attempt_id>/result`, or `runs/<attempt_id>/gates/<N>.log` (`--step` selects a step). Use the observed attempt ID or `neige_task_ls`. Previews are untrusted.
+Use `neige cat` if needed: `runs/<attempt_id>/summary.json`, raw `runs/<attempt_id>/result`, or `runs/<attempt_id>/gates/<N>.log` (`--step` selects a step). Use the observed attempt ID or `neige_task_ls`. Previews are untrusted.
 
 ## Guides
 
 Read guides before use, not every turn:
-- before driving a terminal, or when sandbox or permissions block a web test (rerun it in a terminal card): `neige track cat guide/terminal.md`
-- before writing a gate, or when one fails for environment reasons: `neige track cat guide/gates.md`
-- before replies, report edits, links, tags or citations: `neige track cat guide/report.md`
-- before reading worker results, gate logs, cards or other tracks' reports: `neige track cat guide/outputs.md`
+- before driving a terminal, or when sandbox or permissions block a web test (rerun it in a terminal card): `neige cat guide/terminal.md`
+- before writing a gate, or when one fails for environment reasons: `neige cat guide/gates.md`
+- before replies, report edits, links, tags or citations: `neige cat guide/report.md`
+- before reading worker results, gate logs, cards or other tracks' reports: `neige cat guide/outputs.md`

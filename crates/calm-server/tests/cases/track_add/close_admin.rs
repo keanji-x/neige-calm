@@ -216,12 +216,13 @@ async fn admin_area_ls_rows_carry_creator_track_id() {
     let boot = boot(16).await;
     let (caller, planner) = boot.user_track("admin").await;
     let target = boot.added(&planner, "listed").await;
-    let handler = boot.registry.lookup("neige_area_ls").unwrap();
-    let out = handler(boot.ctx.clone(), planner.identity, json!({}))
+    let handler = boot.registry.lookup("neige_ls").unwrap();
+    let path = format!("/areas/{}/tracks/", planner.identity.area_id);
+    let out = handler(boot.ctx.clone(), planner.identity, json!({"path":path}))
         .await
         .unwrap()
         .into_structured();
-    let rows = out["tracks"].as_array().unwrap();
+    let rows = out["entries"].as_array().unwrap();
     let added = rows.iter().find(|row| row["track_id"] == target).unwrap();
     assert_eq!(added["creator_track_id"], caller);
     let own = rows.iter().find(|row| row["track_id"] == caller).unwrap();

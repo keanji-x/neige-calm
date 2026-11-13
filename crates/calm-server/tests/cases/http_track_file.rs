@@ -1,4 +1,4 @@
-//! Authenticated HTTP track file views, compared against MCP `neige_track_ls` / `neige_track_cat` over the same repo.
+//! Authenticated HTTP track file views, compared against MCP `neige_ls` / `neige_cat` over the same repo.
 
 #![cfg(unix)]
 
@@ -6,7 +6,7 @@ use crate::support;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use calm_server::mcp_server::tools::track_file::{TOOL_TRACK_CAT, TOOL_TRACK_LS};
+use calm_server::mcp_server::tools::track_file::{TOOL_CAT, TOOL_LS};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::track_file::{
@@ -64,9 +64,10 @@ async fn http_ls_and_cat_match_mcp_outputs() {
     ] {
         let mcp = call_tool(
             &boot,
-            TOOL_TRACK_LS,
+            TOOL_LS,
             planner_identity(&boot),
-            json!({ "path": path.as_str() }),
+            // HTTP `/` remains the bound root; MCP uses an empty relative path.
+            json!({ "path": if path == "/" { "" } else { path.as_str() } }),
         )
         .await
         .unwrap_or_else(|e| panic!("MCP ls {path} failed: {e}"));
@@ -104,7 +105,7 @@ async fn http_ls_and_cat_match_mcp_outputs() {
     for path in cat_paths {
         let mcp = call_tool(
             &boot,
-            TOOL_TRACK_CAT,
+            TOOL_CAT,
             planner_identity(&boot),
             json!({ "path": path }),
         )
@@ -202,7 +203,7 @@ async fn planner_run_summary_returns_403_over_http() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
-/// The tool's `neige_track_ls` rows with their RFC 3339 times read back as REST's unix ms, and a
+/// The tool's `neige_ls` rows with their RFC 3339 times read back as REST's unix ms, and a
 /// `null` `updated_at` dropped as REST omits it.
 fn rest_rows(entries: &Value) -> Value {
     let ms = |value: &mut Value| {

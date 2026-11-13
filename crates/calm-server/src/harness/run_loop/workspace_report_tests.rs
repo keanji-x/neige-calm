@@ -30,10 +30,8 @@ async fn managed_report_context_refreshes_historical_resumed_turns() {
             panic!("expected text")
         };
         for name in [
-            "neige_workspace_ls",
-            "neige_workspace_cat",
-            "neige_workspace_diff",
-            "neige_workspace_log",
+            "neige_ls",
+            "neige_cat",
             "read-only",
             "all user-visible Areas",
         ] {
@@ -43,10 +41,7 @@ async fn managed_report_context_refreshes_historical_resumed_turns() {
             text.contains("guide/operations.md"),
             role == CardRole::Planner
         );
-        assert!(
-            text.find("neige_workspace_ls").unwrap()
-                < text.find("Read other Areas' reports").unwrap()
-        );
+        assert!(text.find("neige_ls").unwrap() < text.find("Read other Areas' reports").unwrap());
         assert_eq!(
             fx.projected_segments().await,
             expected,
@@ -106,7 +101,7 @@ async fn managed_report_context_refreshes_historical_resumed_turns() {
             panic!("expected text")
         };
         assert!(text.contains("Continue after revocation"));
-        assert!(!text.contains("neige_workspace_ls"));
+        assert!(!text.contains("neige_ls"));
     }
 }
 
@@ -139,6 +134,6 @@ async fn ordinary_readers_and_workers_do_not_receive_managed_report_context() {
         let InputItem::Text { text } = &sent[0].1[0] else {
             panic!("expected text")
         };
-        assert!(!text.contains("neige_workspace_ls"), "{role:?} / {scope:?}");
+        assert!(!text.contains("neige_ls"), "{role:?} / {scope:?}");
     }
 }

@@ -252,7 +252,7 @@ async fn op_show_refuses_undecodable_out_of_scope_rows_like_an_absent_id() {
             &mut wr,
             tools_call_frame(
                 id + 100,
-                "neige_track_cat",
+                "neige_cat",
                 &fx.thread_id,
                 json!({"path":format!("ops/{op_id}/result")}),
             ),
@@ -406,7 +406,7 @@ async fn op_show_output_inline_and_virtual_continuation_are_track_scoped() {
             &mut wr,
             tools_call_frame(
                 7,
-                "neige_track_cat",
+                "neige_cat",
                 &fx.thread_id,
                 json!({"path": if size == 10 { format!("ops/{id}/result") } else { shown["result"]["structuredContent"]["result"]["output_ref"].as_str().unwrap().to_owned() }}),
             ),
@@ -424,7 +424,7 @@ async fn op_show_output_inline_and_virtual_continuation_are_track_scoped() {
             &mut wr,
             tools_call_frame(
                 8,
-                "neige_track_cat",
+                "neige_cat",
                 &foreign.thread_id,
                 json!({"path":format!("ops/{id}/result")}),
             ),

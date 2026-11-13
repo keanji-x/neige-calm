@@ -3,6 +3,8 @@
 
 mod catalog;
 mod commands;
+#[cfg(test)]
+pub(crate) use commands::cli_spelling;
 pub mod help;
 pub mod render;
 

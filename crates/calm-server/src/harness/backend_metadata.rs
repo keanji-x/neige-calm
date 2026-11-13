@@ -117,10 +117,10 @@ impl ToolDiscovery {
                 }
                 match text {
                     "neige track status" => "`neige_track_status`".to_owned(),
-                    "neige track ls" => "`neige_track_ls`".to_owned(),
-                    "neige track cat" => "`neige_track_cat`".to_owned(),
-                    command => match command.strip_prefix("neige track cat ") {
-                        Some(path) => format!("`neige_track_cat` with `path: {path}`"),
+                    "neige ls" => "`neige_ls`".to_owned(),
+                    "neige cat" => "`neige_cat`".to_owned(),
+                    command => match command.strip_prefix("neige cat ") {
+                        Some(path) => format!("`neige_cat` with `path: {path}`"),
                         None => format!("`{text}`"),
                     },
                 }

@@ -231,7 +231,7 @@ pub async fn send(
                             "unknown_track",
                             format!(
                                 "{TOOL}: no track {to_track} in this area; \
-                                 list the area's tracks with neige_area_ls"
+                                 list the area's tracks with neige ls /areas/{}/tracks/", sender.area_id
                             ),
                         )
                     })?;
