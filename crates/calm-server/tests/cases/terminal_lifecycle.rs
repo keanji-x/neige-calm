@@ -23,10 +23,14 @@ use tower::ServiceExt;
 
 /// An `AppState` backed by an in-memory SQLite repo; no real codex binaries.
 fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
+    state_with_daemon(repo, DaemonClient::new_stub())
+}
+
+fn state_with_daemon(repo: Arc<dyn Repo>, daemon: DaemonClient) -> AppState {
     AppState::from_parts(
         repo.clone(),
         EventBus::new(),
-        Arc::new(DaemonClient::new_stub()),
+        Arc::new(daemon),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo,
@@ -88,30 +92,11 @@ fn spawn_long_running_child() -> std::process::Child {
         .expect("spawn /bin/sleep")
 }
 
-/// The test process is the child's parent, so the exit must be reaped via `try_wait`:
-/// `kill(pid, 0)` reports success on zombies and would read as "still alive".
-async fn await_child_killed(child: &mut std::process::Child) {
-    let pid = child.id();
-    for _ in 0..40 {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let _ = status;
-                return;
-            }
-            Ok(None) => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(e) => panic!("try_wait(pid={pid}) failed: {e}"),
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("pid {pid} was still alive after 2s (force-killed by fixture cleanup)");
-}
-
 #[tokio::test]
 async fn card_delete_reaps_terminal_process() {
-    let state = fresh_state().await;
+    let owner = legacy_disposal::Owner::new();
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let state = owner.state(repo);
     let raw = state.raw_repo();
 
     // Seed: area → track → terminal card → terminal row pointing at a
@@ -162,12 +147,7 @@ async fn card_delete_reaps_terminal_process() {
         })
         .await
         .unwrap();
-    let mut child = spawn_long_running_child();
-    state
-        .repo
-        .terminal_set_pid(&term.id, Some(child.id()))
-        .await
-        .unwrap();
+    let entry = legacy_disposal::owned_entry(&state, &owner.sock, &term.id).await;
 
     // Sanity: pid is alive and terminal row exists.
     assert!(
@@ -194,7 +174,11 @@ async fn card_delete_reaps_terminal_process() {
     );
 
     // Post-delete: process gone and row removed.
-    await_child_killed(&mut child).await;
+    assert!(
+        entry
+            .wait_exit_persisted_for_test(Duration::from_secs(1))
+            .await
+    );
     assert!(
         state.repo.terminal_get(&term.id).await.unwrap().is_none(),
         "terminal row must be deleted with the card"
@@ -618,3 +602,6 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
 
 #[path = "terminal_lifecycle_task_delete.rs"]
 mod task_delete;
+
+#[path = "terminal_lifecycle/legacy_disposal.rs"]
+mod legacy_disposal;

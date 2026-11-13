@@ -22,6 +22,7 @@ use crate::model::{
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::planner_start_fence::CardStartFence;
+use crate::operation::terminal_disposal::quiesce_terminal;
 use crate::operation::workspace_lease::{
     any_track_has_unmigrated_forge_action, release_workspace_leases_for_track_tx,
 };
@@ -36,7 +37,6 @@ use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::templates::{Template, TemplateRoster};
-use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::track_creation::{
     TrackInitialization, initialize_track_tx, planner_harness_card_payload,
 };
@@ -2701,8 +2701,10 @@ async fn teardown_track_deletion(
         observation
             .observe(
                 Stage::TerminalQuiesce,
-                quiesce_terminal_artifacts_for_deletion(
-                    Some(w.terminal_renderer.as_ref()),
+                quiesce_terminal(
+                    s.repo.as_ref(),
+                    s.operation_runtime.execution().engine(),
+                    w.terminal_renderer.as_ref(),
                     w.daemon.proc_supervisor_sock.as_deref(),
                     terminal,
                 ),
@@ -3004,12 +3006,7 @@ impl RecycledTrackDeletion {
             .collect();
         // The Terminal cards whose generated hook settings file goes with the committed delete
         // (kept on rollback: the card still exists).
-        let terminal_card_ids: Vec<String> = prepared
-            .plan
-            .terminals
-            .iter()
-            .map(|terminal| terminal.card_id.to_string())
-            .collect();
+        let finished_terminals = prepared.plan.terminals.clone();
         let sweeps = match prepared
             .observation
             .observe(
@@ -3068,8 +3065,10 @@ impl RecycledTrackDeletion {
         route.mcp_context.preview.release_track(&track.id);
         // Post-commit, best effort: remove `<terminal-hooks>/<card_id>.json` for every deleted
         // Terminal card.
-        for card_id in &terminal_card_ids {
-            route.terminal_renderer.remove_hook_settings(card_id);
+        for term in &finished_terminals {
+            route
+                .terminal_renderer
+                .finish_legacy_deletion(&term.id, term.card_id.as_str());
         }
         // This sweep is post-commit. A failure here must not restore the
         // workspace: the track row is already gone and the trash path is now

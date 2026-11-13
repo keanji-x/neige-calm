@@ -219,11 +219,173 @@ pub(crate) async fn unsettled(
     Ok(sql::unsettled_executions(tx, scope).await?)
 }
 
+/// Required-repository owner for every terminal deletion. Callers retain their scope and
+/// location admission fences through the final transaction; no external I/O holds a writer.
+pub(crate) async fn quiesce_terminal(
+    repo: &dyn RouteRepo,
+    engine: Option<&crate::execution_boot::ExecutionEngine>,
+    renderer: &crate::terminal_renderer::TerminalRendererRegistry,
+    configured_socket: Option<&Path>,
+    term: &crate::model::Terminal,
+) -> Result<()> {
+    require_safe(repo, Scope::Terminal(term.id.clone()), configured_socket).await?;
+    if term.is_typed(repo).await? {
+        return crate::execution_quiesce::quiesce(repo, engine, Scope::Terminal(term.id.clone()))
+            .await;
+    }
+    let socket = legacy_endpoint(repo, term, configured_socket).await?;
+    let cfg = crate::terminal_renderer::RendererConfig::observation(term, socket)
+        .map_err(|e| CalmError::Conflict(e.to_string()))?;
+    renderer.quiesce_legacy(cfg).await.map_err(|error| {
+        tracing::warn!(terminal_id=%term.id, %error, "legacy terminal disposal retained resources");
+        CalmError::Conflict("Deletion blocked because the server could not confirm that an old terminal has exited.".into())
+    })
+}
+
+async fn legacy_endpoint(
+    repo: &dyn RouteRepo,
+    term: &crate::model::Terminal,
+    configured: Option<&Path>,
+) -> Result<PathBuf> {
+    let absolute = |p: &Path| -> Result<PathBuf> {
+        Ok(if p.is_absolute() {
+            p.into()
+        } else {
+            std::env::current_dir()?.join(p)
+        })
+    };
+    let configured = configured.map(absolute).transpose()?;
+    let scope = Scope::Terminal(term.id.clone());
+    let terminal = term.id.clone();
+    let recorded = write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            let (sql, id) = unresolved_query(&scope);
+            let rows = sqlx::query(&sql).bind(id).fetch_all(&mut **tx).await?;
+            let mut endpoint = None;
+            for row in rows {
+                let op = super::repo_sqlite::operation_from_row(&row)?;
+                let Some(output) = op.tx_output.as_ref() else {
+                    continue;
+                };
+                let recorded = match RequestState::read(&output.data)? {
+                    Some(
+                        RequestState::Requested {
+                            terminal_id,
+                            supervisor_sock,
+                            ..
+                        }
+                        | RequestState::HandedOff {
+                            terminal_id,
+                            supervisor_sock,
+                            ..
+                        }
+                        | RequestState::Rejected {
+                            terminal_id,
+                            supervisor_sock,
+                            ..
+                        },
+                    ) => {
+                        if terminal_id != terminal {
+                            return Err(CalmError::Conflict(
+                                "terminal launch identity changed".into(),
+                            ));
+                        }
+                        Some(supervisor_sock)
+                    }
+                    _ => None,
+                };
+                if let Some(recorded) = recorded {
+                    if endpoint
+                        .as_ref()
+                        .is_some_and(|previous| previous != &recorded)
+                    {
+                        return Err(CalmError::Conflict(
+                            "terminal owner endpoints disagree".into(),
+                        ));
+                    }
+                    endpoint = Some(recorded);
+                }
+            }
+            Ok(endpoint)
+        })
+    })
+    .await?
+    .as_deref()
+    .map(absolute)
+    .transpose()?;
+    if let (Some(configured), Some(recorded)) = (&configured, &recorded)
+        && configured != recorded
+    {
+        return Err(CalmError::Conflict(
+            "terminal launch endpoint disagrees with configuration".into(),
+        ));
+    }
+    recorded.or(configured).ok_or_else(|| CalmError::Conflict(
+        "Deletion blocked because the server could not confirm that an old terminal has exited.".into()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::sqlite::SqlxRepo;
     use workspace_runtime::execution::{Store, test_support};
+
+    #[tokio::test]
+    async fn legacy_disposal_typed_missing_renderer_requires_execution_settlement() {
+        let repo = std::sync::Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+        let store = crate::execution_store::SqliteExecutionStore::new(repo.db().clone())
+            .with_projection(
+                test_support::TEST_CONSUMER.into(),
+                std::sync::Arc::new(crate::execution_store::tests::NoopProjection),
+            );
+        let term = crate::model::Terminal {
+            id: "typed-missing".into(),
+            card_id: "typed-card".into(),
+            program: "/bin/true".into(),
+            cwd: "/".into(),
+            env: serde_json::json!({}),
+            pid: Some(123),
+            theme_fg: "255,255,255".into(),
+            theme_bg: "0,0,0".into(),
+            exit_code: Some(2),
+            signal_killed: false,
+            pty_output: String::new(),
+            pty_output_truncated: false,
+            created_at: 0,
+        };
+        let mut intent = test_support::intent("/".into());
+        intent.metadata.alias = workspace_runtime::execution::ProcessAlias(
+            calm_truth::db::sqlite::workspace_execution::terminal_alias(&term.id),
+        );
+        let execution_id = intent.metadata.id.clone();
+        let observed_store = store.clone();
+        repo.db()
+            .writer()
+            .with_writer(|writer| {
+                Box::pin(async move {
+                    let mut tx = writer.begin_immediate().await.unwrap();
+                    store.insert(&mut tx, &intent).await.unwrap();
+                    tx.commit().await.unwrap();
+                })
+            })
+            .await
+            .unwrap();
+        let renderer =
+            crate::terminal_renderer::TerminalRendererRegistry::new_with_repo(repo.clone());
+        assert!(matches!(
+            quiesce_terminal(repo.as_ref(), None, &renderer, None, &term).await,
+            Err(CalmError::Conflict(_))
+        ));
+        assert!(renderer.get(&term.id).is_none());
+        assert!(matches!(
+            observed_store.load(&execution_id).await.unwrap(),
+            Some(workspace_runtime::execution::Stored::Active {
+                desired: workspace_runtime::execution::Desired::Stop,
+                ..
+            })
+        ));
+    }
 
     #[tokio::test]
     async fn terminal_disposal_lookup_seeks_terminal_identity() {

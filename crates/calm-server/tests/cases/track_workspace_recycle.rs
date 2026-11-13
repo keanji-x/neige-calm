@@ -38,6 +38,7 @@ struct Boot {
     shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
     operation_runtime: Arc<calm_server::operation::OperationRuntime>,
     tmp: TempDir,
+    _supervisor: calm_proc_supervisor::test_support::InProcessProcSupervisor,
 }
 
 async fn boot() -> Boot {
@@ -49,6 +50,9 @@ async fn boot_with_workspace_root(root: impl FnOnce(&Path) -> PathBuf) -> Boot {
 }
 
 async fn boot_with_storage(root: impl FnOnce(&Path) -> PathBuf, persistent: bool) -> Boot {
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
     let tmp = TempDir::new().unwrap();
     let workspace_root = root(tmp.path());
     let url = if persistent {
@@ -65,7 +69,7 @@ async fn boot_with_storage(root: impl FnOnce(&Path) -> PathBuf, persistent: bool
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: Some(supervisor.sock().to_path_buf()),
     });
     std::fs::create_dir_all(&daemon.data_dir).unwrap();
     let plugin = Arc::new(PluginHost::new_full(
@@ -120,6 +124,7 @@ async fn boot_with_storage(root: impl FnOnce(&Path) -> PathBuf, persistent: bool
         shared_codex,
         operation_runtime,
         tmp,
+        _supervisor: supervisor,
     }
 }
 

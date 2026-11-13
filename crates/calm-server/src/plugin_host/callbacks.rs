@@ -13,7 +13,6 @@ use crate::card_kind::validate_card_kind_global;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_delete_tx, card_update_tx, overlay_delete_tx, overlay_upsert_tx,
-    terminal_delete_tx,
 };
 use crate::db::{RepoRead, RouteRepo, write_with_actor_events_typed, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
@@ -23,7 +22,6 @@ use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
-use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 #[cfg(test)]
 use crate::track_area_cache::TrackAreaCache;
 use crate::validation::{
@@ -509,37 +507,23 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         card_scope_for_callback(ctx.repo.as_ref(), card.id.clone(), track_id.as_str()).await;
     let write_for_tx = ctx.write.clone();
 
-    // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal is reaped and its row dropped in the same txn as the card, unconditionally.
-    let term = ctx
-        .repo
-        .terminal_get_by_card(card_id.as_str())
-        .await
-        .map_err(internal_repo_err)?;
-    if let Some(t) = term.as_ref() {
-        try_reap_terminal_artifacts_with_renderer(None, t)
-            .await
-            .map_err(internal_repo_err)?;
-    }
-    let terminal_id = term.map(|t| t.id);
+    let check_card = card_id.clone();
+    crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
+        Box::pin(async move { require_callback_delete_safe(tx, &check_card).await })
+    })
+    .await
+    .map_err(callback_delete_error)?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point("plugin-card-delete-before-tx", &card_id).await;
 
-    let (retire, _) = write_with_actor_events_typed(
+    let (_, _) = write_with_actor_events_typed(
         ctx.repo.as_ref(),
         correlation.as_deref(),
         ctx.event_bus.as_ref(),
         &ctx.write,
         move |tx| {
             Box::pin(async move {
-                let mut retire = None;
-                if let Some(tid) = terminal_id.as_deref() {
-                    match terminal_delete_tx(tx, tid)
-                        .await
-                        .map_err(crate::error::CalmError::from)
-                    {
-                        Ok(deleted) => retire = Some(deleted),
-                        Err(crate::error::CalmError::NotFound(_)) => {}
-                        Err(e) => return Err(e),
-                    }
-                }
+                require_callback_delete_safe(tx, &card_id).await?;
                 let mut events =
                     crate::scheduler::fail_tasks_for_deleted_card_tx(tx, &card).await?;
                 events.extend(
@@ -559,18 +543,43 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                         track_id,
                     },
                 ));
-                Ok((retire, events))
+                Ok(((), events))
             })
         },
     )
     .await
-    .map_err(|e| match e {
-        crate::error::CalmError::NotFound(s) => entity_not_found(s),
-        other => internal_repo_err(other),
-    })?;
-    ctx.execution
-        .drive(retire.into_iter().filter_map(|deleted| deleted.retire));
+    .map_err(callback_delete_error)?;
     Ok(json!({}))
+}
+
+fn callback_delete_error(error: crate::error::CalmError) -> RpcError {
+    match error {
+        crate::error::CalmError::NotFound(s) => entity_not_found(s),
+        crate::error::CalmError::Forbidden(s) => permission_denied(s),
+        other => internal_repo_err(other),
+    }
+}
+
+/// This callback has no lifecycle/admission capabilities. Inspect the accepted operation owner,
+/// never editable card payload, and repeat inside the deleting writer to close the creation race.
+async fn require_callback_delete_safe(
+    tx: &mut crate::operation::Tx<'_>,
+    card: &str,
+) -> crate::error::Result<()> {
+    let terminal = crate::db::sqlite::terminal_get_by_card_tx(tx, card)
+        .await?
+        .is_some();
+    let execution: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workspace_executions e JOIN operations o ON \
+             json_extract(e.intent_json,'$.owner')=o.id WHERE o.target_type='card' AND o.target_id=?1)")
+        .bind(card).fetch_one(&mut **tx).await?;
+    if terminal || execution {
+        return Err(crate::error::CalmError::Forbidden("plugin callback cannot delete a card with terminal or execution resources; use the lifecycle deletion entry".into()));
+    }
+    crate::operation::terminal_disposal::require_safe_tx(
+        tx,
+        &crate::operation::terminal_disposal::Scope::Card(card.into()),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -761,6 +770,7 @@ async fn kv_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcErr
 
 #[cfg(test)]
 mod tests {
+    mod legacy_disposal;
     use super::*;
     // Tests seed fixtures via raw sync-domain writes, so the harness keeps a full `Arc<dyn Repo>`; `ctx()` upcasts to `RouteRepo`.
     use crate::db::Repo;

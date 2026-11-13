@@ -36,9 +36,13 @@ struct Boot {
     shared_codex: Arc<SharedCodexAppServer>,
     pending: Arc<PendingThreadStartRegistry>,
     _tmp: TempDir,
+    _supervisor: calm_proc_supervisor::test_support::InProcessProcSupervisor,
 }
 
 async fn boot() -> Boot {
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
     let tmp = TempDir::new().unwrap();
     let workspace_root = tmp.path().join("workspaces");
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -50,7 +54,7 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: Some(supervisor.sock().to_path_buf()),
     });
     std::fs::create_dir_all(&daemon.data_dir).unwrap();
     let plugin = Arc::new(PluginHost::new_full(
@@ -101,6 +105,7 @@ async fn boot() -> Boot {
         shared_codex,
         pending,
         _tmp: tmp,
+        _supervisor: supervisor,
     }
 }
 

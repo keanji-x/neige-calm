@@ -13,6 +13,7 @@ use crate::event::{Event, EventScope};
 use crate::extract::{Json, JsonBody, Path, Query};
 use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
+use crate::operation::terminal_disposal::quiesce_terminal;
 use crate::operation::workspace_lease::{
     any_track_has_unmigrated_forge_action, release_workspace_leases_for_track_tx,
 };
@@ -21,7 +22,6 @@ use crate::organization_access::{
 };
 use crate::routes::planner_cards::quiesce_shared_codex_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use axum::{
     Router,
     extract::State,
@@ -500,8 +500,10 @@ impl PreparedAreaDeletion {
                     seals.seal(thread_id);
                 }
                 if let Some(terminal) = route.repo.terminal_get_by_card(card.id.as_str()).await? {
-                    quiesce_terminal_artifacts_for_deletion(
-                        Some(worker.terminal_renderer.as_ref()),
+                    quiesce_terminal(
+                        route.repo.as_ref(),
+                        route.operation_runtime.execution().engine(),
+                        worker.terminal_renderer.as_ref(),
                         worker.daemon.proc_supervisor_sock.as_deref(),
                         &terminal,
                     )
@@ -768,8 +770,15 @@ impl RecycledAreaDeletion {
             .codex_backends
             .forget_turn_state_for_deleted_threads(&self.quiesced.sealed_thread_ids);
         // Post-commit, best effort: the generated hook settings file of every deleted Terminal card.
-        for card_id in &self.quiesced.terminal_card_ids {
-            route.terminal_renderer.remove_hook_settings(card_id);
+        for (terminal, card) in self
+            .quiesced
+            .terminal_ids
+            .iter()
+            .zip(&self.quiesced.terminal_card_ids)
+        {
+            route
+                .terminal_renderer
+                .finish_legacy_deletion(terminal, card);
         }
         for track_id in deleted_track_ids {
             let track_id = crate::ids::TrackId::from(track_id);
