@@ -1485,6 +1485,7 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
         server.clone(),
         &tmp.path().join("workspaces"),
         &tmp.path().join("gate-logs"),
+        &execution.socket,
     )
     .await;
     wiring

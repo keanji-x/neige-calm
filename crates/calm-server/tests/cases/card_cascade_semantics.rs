@@ -33,7 +33,7 @@ struct Boot {
     _tmp: TempDir,
 }
 
-async fn boot() -> Boot {
+async fn boot(proc_supervisor_sock: Option<PathBuf>) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -68,7 +68,7 @@ async fn boot() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock,
     });
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
@@ -206,7 +206,10 @@ async fn assert_identity_present(repo: &SqlxRepo, card_id: &str) -> String {
 
 #[tokio::test]
 async fn delete_card_route_cascades_mcp_token_and_runtime() {
-    let boot = boot().await;
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
+    let boot = boot(Some(supervisor.sock().to_owned())).await;
     let (card, term) = mint_codex_worker(&boot).await;
     let card_id = card.id.to_string();
     let runtime_id = assert_identity_present(&boot.repo, &card_id).await;
@@ -270,7 +273,7 @@ async fn delete_card_route_cascades_mcp_token_and_runtime() {
 
 #[tokio::test]
 async fn card_delete_tx_alone_cascades_mcp_token_and_runtime() {
-    let boot = boot().await;
+    let boot = boot(None).await;
     let (card, term) = mint_codex_worker(&boot).await;
     let card_id = card.id.to_string();
     let runtime_id = assert_identity_present(&boot.repo, &card_id).await;

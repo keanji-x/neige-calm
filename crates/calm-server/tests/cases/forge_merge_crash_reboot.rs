@@ -119,7 +119,7 @@ async fn assert_merge_crash(probe_window: Option<bool>) {
         &seeded.track_id,
         &tmp_path,
         &shim_dir,
-        &execution.lifecycle,
+        &execution,
     )
     .await;
     seed_caller_lease(&repo, &seeded).await;
@@ -371,7 +371,7 @@ async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
         &seeded.track_id,
         &tmp_path,
         &shim_dir,
-        &execution.lifecycle,
+        &execution,
     )
     .await;
     seed_caller_lease(&repo, &seeded).await;
@@ -543,9 +543,10 @@ async fn prepare_pr(
     track: &str,
     tmp: &Path,
     shim: &Path,
-    execution: &calm_server::execution_quiesce::ExecutionLifecycle,
+    execution: &support::execution::Fixture,
 ) -> (u64, String) {
-    let engine = Arc::new(execution.engine().unwrap().clone());
+    let engine = Arc::new(execution.lifecycle.engine().unwrap().clone());
+    let supervisor_socket = execution.socket.clone();
     let (track, tmp, shim) = (track.to_string(), tmp.to_path_buf(), shim.to_path_buf());
     tokio::task::spawn_blocking(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
@@ -582,7 +583,7 @@ async fn prepare_pr(
                 registry.clone(), None, host_cell.clone(), op_cell.clone(), logs.clone()).await.unwrap();
             let ctx = support::done_delivery::context(repo.clone(), events.clone(), write.clone(), host_cell, op_cell.clone(), logs.clone());
             let wiring = support::done_delivery::wire(repo.clone(), host.clone(), events, write, cache, track_areas,
-                server, &tmp.join("prepare-workspaces"), &logs).await;
+                server, &tmp.join("prepare-workspaces"), &logs, &supervisor_socket).await;
             wiring.runtime.execution().bind(engine);
             op_cell.set(wiring.runtime.clone()).ok().unwrap();
             let started = support::done_delivery::start(&repo, &ctx, &registry, planner.clone(), "implement").await;
