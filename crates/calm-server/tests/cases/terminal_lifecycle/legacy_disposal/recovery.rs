@@ -225,6 +225,16 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
         "UPDATE cards SET payload=json_set(payload,'$.idempotency_key','recovery-task') WHERE id=?1"
     ).bind(&card)).await.unwrap();
     let ready = owner._dir.path().join("output-ready");
+    let release = owner._dir.path().join("release-exit");
+    let ordinary_exit = failure == "lookup";
+    let ending = if ordinary_exit {
+        format!(
+            "while [ ! -e '{}' ]; do sleep 0.01; done; exit 23",
+            release.display()
+        )
+    } else {
+        "exec sleep 60".into()
+    };
     let entry = state
         .terminal_renderer
         .ensure(calm_server::terminal_renderer::RendererConfig {
@@ -238,7 +248,7 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
             args: vec![
                 "-c".into(),
                 format!(
-                    "echo completion-evidence; touch '{}'; exec sleep 60",
+                    "echo completion-evidence; touch '{}'; {ending}",
                     ready.display()
                 ),
             ],
@@ -255,6 +265,92 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
     ).bind(&track).bind(&card)).await.unwrap();
 
     seed_session(&repo, &card, &term).await;
+    let read_table = match failure {
+        "lookup" => Some("terminals"),
+        "classification" | "ownership" => Some("workspace_executions"),
+        _ => None,
+    };
+    if let Some(table) = read_table {
+        repo.db()
+            .writer()
+            .execute(sqlx::query(&format!(
+                "ALTER TABLE {table} RENAME TO unavailable_completion_query"
+            )))
+            .await
+            .unwrap();
+        // Exit comes from the real temporary supervisor, after the query is unavailable.
+        if ordinary_exit {
+            std::fs::write(&release, "exit").unwrap();
+        } else {
+            entry
+                .shutdown_signal(calm_session::control::ProcSignal::Term)
+                .await;
+        }
+        assert!(!entry.wait_exit_reader_closed_for_test().await);
+        repo.db()
+            .writer()
+            .execute(sqlx::query(&format!(
+                "ALTER TABLE unavailable_completion_query RENAME TO {table}"
+            )))
+            .await
+            .unwrap();
+    }
+    if matches!(failure, "typed" | "ownership") {
+        seed_typed_history(&repo, &track, &term, owner._dir.path()).await;
+        if failure == "typed" {
+            entry
+                .shutdown_signal(calm_session::control::ProcSignal::Term)
+                .await;
+            assert!(!entry.wait_exit_reader_closed_for_test().await);
+        }
+        // Initial positive classification and ownership acquired before retry both keep
+        // Store as the sole writer. Router admission must not fall back to legacy disposal.
+        for _ in 0..2 {
+            assert_eq!(
+                delete(&state, format!("/api/cards/{card}")).await.status(),
+                StatusCode::CONFLICT
+            );
+            let terminal = state.repo.terminal_get(&term).await.unwrap().unwrap();
+            assert!(terminal.is_typed(state.repo.as_ref()).await.unwrap());
+            assert_eq!(terminal.exit_code, None);
+            assert!(!terminal.signal_killed);
+            assert!(terminal.pty_output.is_empty());
+            let session: String =
+                sqlx::query_scalar("SELECT state FROM worker_sessions WHERE id='recovery-session'")
+                    .fetch_one(repo.db().read_pool())
+                    .await
+                    .unwrap();
+            assert_eq!(session, "running");
+            assert_eq!(
+                state
+                    .repo
+                    .task_get("recovery-task")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                calm_server::model::TaskStatus::Running
+            );
+            assert!(
+                !state
+                    .repo
+                    .events_since(0, i64::MAX)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|(_, _, _, event)| matches!(
+                        event.kind_tag(),
+                        "task.failed" | "task.completed"
+                    ))
+            );
+            assert!(hook_file.exists());
+            assert!(Arc::ptr_eq(
+                &entry,
+                &state.terminal_renderer.get(&term).unwrap()
+            ));
+        }
+        return;
+    }
     let trigger = match failure {
         "terminal" => {
             "CREATE TRIGGER reject_completion BEFORE UPDATE OF exit_code ON terminals BEGIN SELECT RAISE(ABORT,'temporary'); END"
@@ -264,6 +360,9 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
         }
         "hook" => {
             "CREATE TRIGGER reject_completion BEFORE UPDATE OF status ON tasks BEGIN SELECT RAISE(ABORT,'temporary'); END"
+        }
+        "lookup" | "classification" => {
+            "CREATE TRIGGER reject_completion BEFORE UPDATE OF exit_code ON terminals BEGIN SELECT RAISE(ABORT,'temporary'); END"
         }
         _ => unreachable!(),
     };
@@ -329,8 +428,8 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
             .await
     );
     let terminal = state.repo.terminal_get(&term).await.unwrap().unwrap();
-    assert!(terminal.signal_killed);
-    assert_eq!(terminal.exit_code, None);
+    assert_eq!(terminal.signal_killed, !ordinary_exit);
+    assert_eq!(terminal.exit_code, ordinary_exit.then_some(23));
     assert_eq!(terminal.pty_output, "completion-evidence\r\n");
     assert!(!terminal.pty_output_truncated);
     let session: String =
@@ -338,7 +437,7 @@ async fn completion_recovery(failure: &str, absent: bool, scheduler_first: bool)
             .fetch_one(repo.db().read_pool())
             .await
             .unwrap();
-    assert_eq!(session, "failed");
+    assert_eq!(session, if ordinary_exit { "exited" } else { "failed" });
     let completion_count = || async {
         state
             .repo
@@ -444,4 +543,58 @@ async fn seed_session(repo: &SqlxRepo, card: &str, terminal: &str) {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn legacy_disposal_recover_lookup_sticky() {
+    completion_recovery("lookup", false, false).await;
+}
+#[tokio::test]
+async fn legacy_disposal_recover_lookup_absent() {
+    completion_recovery("lookup", true, false).await;
+}
+#[tokio::test]
+async fn legacy_disposal_recover_classification_sticky() {
+    completion_recovery("classification", false, false).await;
+}
+#[tokio::test]
+async fn legacy_disposal_recover_classification_absent() {
+    completion_recovery("classification", true, false).await;
+}
+
+async fn seed_typed_history(repo: &SqlxRepo, track: &str, terminal: &str, root: &std::path::Path) {
+    let mut intent = workspace_runtime::execution::test_support::intent(root.to_owned());
+    intent.metadata.track.0 = track.to_owned();
+    intent.metadata.alias = workspace_runtime::execution::ProcessAlias(
+        calm_truth::db::sqlite::workspace_execution::terminal_alias(terminal),
+    );
+    repo.db()
+        .writer()
+        .with_writer(|writer| {
+            Box::pin(async move {
+                let mut tx = writer.begin_immediate().await.unwrap();
+                calm_truth::db::sqlite::workspace_execution::insert(
+                    &mut tx,
+                    intent.metadata.id.as_str(),
+                    &intent.metadata.track.0,
+                    &intent.metadata.alias.0,
+                    &serde_json::to_string(&intent.metadata).unwrap(),
+                    &serde_json::to_string(&intent.secrets).unwrap(),
+                )
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+            })
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn legacy_disposal_recover_classification_typed() {
+    completion_recovery("typed", false, false).await;
+}
+#[tokio::test]
+async fn legacy_disposal_recover_classification_ownership_change() {
+    completion_recovery("ownership", false, false).await;
 }

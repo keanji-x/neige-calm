@@ -9,7 +9,6 @@ use super::{
     OutputWake, SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo,
     record_output,
 };
-use crate::db::RouteRepo;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
@@ -38,7 +37,6 @@ pub fn spawn_supervisor_attach_reader(
     event_tx: broadcast::Sender<DaemonMsg>,
     supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
     exited_tx: oneshot::Sender<Option<i32>>,
-    repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
     completion: Arc<super::legacy_completion::LegacyCompletion>,
     output_capture: SharedTerminalOutputCapture,
@@ -73,16 +71,24 @@ pub fn spawn_supervisor_attach_reader(
                 Ok(ControlReply::Exited {
                     status, signalled, ..
                 }) => {
-                    // Only the typed Store projection may write a typed terminal's exit.
-                    if let Some(repo) = repo.as_ref() {
-                        match repo.terminal_get(&terminal_id).await {
-                            Ok(Some(term)) => match term.is_typed(repo.as_ref()).await {
-                                Ok(false) => {}
-                                Ok(true) | Err(_) => break,
-                            },
-                            Err(_) => break,
-                            Ok(None) => {}
-                        }
+                    // Preserve the transport fact before classification or any other I/O.
+                    // Only completion's current ownership check grants projection authority.
+                    let output = output_capture
+                        .lock()
+                        .map(|capture| capture.snapshot())
+                        .unwrap_or_else(|_| {
+                            crate::terminal_renderer::output_capture::TerminalOutputSnapshot {
+                                text: String::new(),
+                                truncated: true,
+                            }
+                        });
+                    if let Err(error) = completion.record(super::legacy_completion::LegacyExit {
+                        code: if signalled { None } else { status },
+                        signalled,
+                        output,
+                    }) {
+                        tracing::warn!(%terminal_id, %error, "cannot record legacy exit");
+                        break;
                     }
                     source.exited = true;
                     let effects = match render_plane.lock() {
@@ -111,24 +117,7 @@ pub fn spawn_supervisor_attach_reader(
                     if let Some(tx) = exited_tx.take() {
                         let _ = tx.send(status);
                     }
-                    let exit_code = if signalled { None } else { status };
-                    let output = output_capture
-                        .lock()
-                        .map(|capture| capture.snapshot())
-                        .unwrap_or_else(|_| {
-                            crate::terminal_renderer::output_capture::TerminalOutputSnapshot {
-                                text: String::new(),
-                                truncated: true,
-                            }
-                        });
-                    if let Err(error) = completion
-                        .observe(super::legacy_completion::LegacyExit {
-                            code: exit_code,
-                            signalled,
-                            output,
-                        })
-                        .await
-                    {
+                    if let Err(error) = completion.retry().await {
                         tracing::warn!(terminal_id = %terminal_id, %error,
                             "legacy completion failed; retained observation can be retried");
                     }

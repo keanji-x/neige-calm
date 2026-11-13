@@ -4,7 +4,7 @@ use super::{OutputWake, output_capture::TerminalOutputSnapshot, wake_projector};
 use crate::{
     db::RouteRepo, scheduler::TerminalTaskHook, session_projection_repo::WorkerSessionState,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, watch};
 
 pub(super) struct LegacyExit {
@@ -19,7 +19,8 @@ pub(super) struct LegacyCompletion {
     terminal: String,
     wake: OutputWake,
     persisted: watch::Sender<bool>,
-    observed: Mutex<Option<LegacyExit>>,
+    observed: StdMutex<Option<Arc<LegacyExit>>>,
+    completing: Mutex<()>,
 }
 impl LegacyCompletion {
     pub fn new(
@@ -35,21 +36,32 @@ impl LegacyCompletion {
             terminal,
             wake,
             persisted,
-            observed: Mutex::new(None),
+            observed: StdMutex::new(None),
+            completing: Mutex::new(()),
         })
     }
 
-    pub async fn observe(&self, exit: LegacyExit) -> anyhow::Result<bool> {
-        let mut observed = self.observed.lock().await;
+    /// Recording transport evidence grants no projection authority and performs no I/O.
+    pub fn record(&self, exit: LegacyExit) -> anyhow::Result<()> {
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("exit observation poisoned"))?;
         anyhow::ensure!(observed.is_none(), "legacy exit already observed");
-        *observed = Some(exit);
-        self.complete(observed.as_ref()).await
+        *observed = Some(Arc::new(exit));
+        Ok(())
     }
 
-    /// Serialize with the reader and other retries. No writer lease spans this call.
+    /// Serialize classification and all projections with the reader and other retries.
+    /// No writer lease or observation lock spans this call's I/O.
     pub async fn retry(&self) -> anyhow::Result<bool> {
-        let observed = self.observed.lock().await;
-        self.complete(observed.as_ref()).await
+        let _completing = self.completing.lock().await;
+        let observed = self
+            .observed
+            .lock()
+            .map_err(|_| anyhow::anyhow!("exit observation poisoned"))?
+            .clone();
+        self.complete(observed.as_deref()).await
     }
 
     async fn complete(&self, observed: Option<&LegacyExit>) -> anyhow::Result<bool> {

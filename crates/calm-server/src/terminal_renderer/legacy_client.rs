@@ -278,7 +278,6 @@ pub(super) async fn ensure_entry(
         event_tx.clone(),
         supervisor_tx.clone(),
         exited_tx,
-        repo,
         cfg.terminal_id.clone(),
         completion.clone(),
         output_capture,
