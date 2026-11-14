@@ -641,6 +641,34 @@ async fn ls_root_returns_top_level_entries() {
 }
 
 #[tokio::test]
+async fn named_paths_mcp_default_and_parent_report() {
+    let boot = boot().await;
+    for identity in [planner_identity(&boot), worker_identity(&boot)] {
+        let default = call_tool(&boot, TOOL_CAT, identity.clone(), json!({}))
+            .await
+            .unwrap();
+        let relative = call_tool(
+            &boot,
+            TOOL_CAT,
+            identity.clone(),
+            json!({"path":"./report.md"}),
+        )
+        .await
+        .unwrap();
+        let absolute = call_tool(
+            &boot,
+            TOOL_CAT,
+            identity.clone(),
+            json!({"path":"/track-file-test/track file test/report.md"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(default, relative);
+        assert_eq!(default, absolute);
+    }
+}
+
+#[tokio::test]
 async fn cards_index_lists_only_bound_track_cards_without_payload() {
     let boot = boot().await;
     let out = call_tool(
@@ -2058,7 +2086,7 @@ async fn reserved_run_key_returns_structured_error_for_runs_index_json() {
 
 #[tokio::test]
 async fn reserved_run_key_returns_structured_error_for_ls_root() {
-    assert_reserved_run_key_error(TOOL_LS, "", "ls (bound view)").await;
+    assert_reserved_run_key_error(TOOL_LS, ".", "ls (bound view)").await;
 }
 
 #[tokio::test]
@@ -3014,10 +3042,7 @@ async fn unified_browse_mcp_foreign_report_and_refusal() {
         })
         .await
         .unwrap();
-    let path = format!(
-        "/areas/{}/tracks/{}/report.md",
-        boot.other_area_id, boot.other_track_id
-    );
+    let path = "/track-file-other/other track/report.md".to_string();
     let result = call_tool(
         &boot,
         "neige_cat",
@@ -3033,10 +3058,7 @@ async fn unified_browse_mcp_foreign_report_and_refusal() {
         "runs/index.json",
         "ops/x/result",
     ] {
-        let path = format!(
-            "/areas/{}/tracks/{}/{tail}",
-            boot.other_area_id, boot.other_track_id
-        );
+        let path = format!("/track-file-other/other track/{tail}");
         assert_eq!(
             call_tool(
                 &boot,
@@ -3051,3 +3073,9 @@ async fn unified_browse_mcp_foreign_report_and_refusal() {
         );
     }
 }
+
+#[path = "mcp_track_file_nodes.rs"]
+mod nodes;
+
+#[path = "mcp_track_file_named_paths.rs"]
+mod named_paths;

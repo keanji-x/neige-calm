@@ -1,10 +1,10 @@
 //! `GET /api/areas/{area_id}/mentions` (#1881): the chat `@` candidates of one area — its report
-//! tags, its reports and their blocks, exactly the `area/reports/` view the Planner reads — each with
+//! tags, its reports and their blocks, using canonical named Report paths — each with
 //! the text a chosen candidate inserts:
 //!
-//! * tag: ``@`tag:<tag>` `` — the Planner runs `neige report find area/reports/ --tag <tag>`;
-//! * report: ``@`area/reports/<name>.md` `` — `neige cat <path>`;
-//! * block: ``@`area/reports/<name>.md#<block_id>` `` — `neige cat <path> --blocks <block_id>`.
+//! * tag: ``@`tag:<tag>` `` — the Planner runs `neige report find .. --tag <tag>`;
+//! * report: ``@`/AreaName/TrackName/report.md` `` — `neige cat <path>`;
+//! * block: ``@`/AreaName/TrackName/report.md#<block_id>` `` — `neige cat <path> --blocks <block_id>`.
 //!
 //! Every request reads the area afresh (no cache or index), so a new tag or a rename shows on the
 //! next keystroke; matching and ranking run in memory, see [`rank`].
@@ -62,7 +62,7 @@ pub(crate) async fn list_mentions(
     let pool = s.mcp_context.sqlite_db.as_ref().ok_or_else(|| {
         CalmError::Internal("mentions: route requires a sqlite-backed repo".into())
     })?;
-    let reports = area_reports::outlines(pool.read_pool(), &area_id).await?;
+    let reports = area_reports::outlines(&s.mcp_context, pool.read_pool(), &area_id).await?;
     Ok(Json(rank::candidates(
         &reports,
         &query.q,

@@ -216,7 +216,7 @@ it('provides the same immediate message and pending feedback under reduced motio
 it.each([1400, 390])('keeps the first message bubble and mentions consistent through refusal and adoption at %ipx', async width => {
   await page.viewport(width, 900);
   await commands.emulateReducedMotion(width === 390);
-  const message = 'Please read @`area/reports/Release notes.md` before continuing.\nKeep these words together.';
+  const message = 'Please read @`/研发/Release notes/report.md` before continuing.\nKeep these words together.';
   const view = mount({ persistSent: true, message });
   const appearance = () => {
     const bubble = outgoing();
@@ -248,7 +248,7 @@ it.each([1400, 390])('keeps the first message bubble and mentions consistent thr
     const bubble = outgoing().getBoundingClientRect();
     expect(Math.abs(contentRight - bubble.right)).toBeLessThan(1);
     expect(bubble.width).toBeLessThan(parent.width);
-    expect(outgoing().querySelector('[data-nc-sent-mention]')?.getAttribute('title')).toBe('@`area/reports/Release notes.md`');
+    expect(outgoing().querySelector('[data-nc-sent-mention]')?.getAttribute('title')).toBe('@`/研发/Release notes/report.md`');
     const visible = outgoing().textContent;
     const beforePosition = position();
     await act(async () => { view.answer({ status: 429, statusText: 'Too Many Requests', body: { code: 'rate_limited', error: 'Wait before retrying.' } }); await Promise.resolve(); });

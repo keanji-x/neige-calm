@@ -166,9 +166,9 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
     /** Known on the Track route; Today resolves the open conversation's Track on demand. */
     workspaceRoot: string | null;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
-    /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses.
-     * `asks` are the track's open asks, shown above that row's composer, and `answerAsk` answers one; `role` is the
-     * Track's Area admin state, picked beside that row's model picker. */
+    /** The row and Area supplying report mention candidates; null without an Area context.
+     * Candidate inserts are server-owned and the composer sends them verbatim.
+     * asks/answerAsk serve open asks above the composer; role supplies the Area admin state. */
     planner: Readonly<{
       cardId: string; areaId: string; asks: readonly OpenAsk[];
       answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;

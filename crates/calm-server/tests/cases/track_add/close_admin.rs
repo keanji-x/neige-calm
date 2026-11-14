@@ -217,7 +217,7 @@ async fn admin_area_ls_rows_carry_creator_track_id() {
     let (caller, planner) = boot.user_track("admin").await;
     let target = boot.added(&planner, "listed").await;
     let handler = boot.registry.lookup("neige_ls").unwrap();
-    let path = format!("/areas/{}/tracks/", planner.identity.area_id);
+    let path = "..";
     let out = handler(boot.ctx.clone(), planner.identity, json!({"path":path}))
         .await
         .unwrap()

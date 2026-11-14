@@ -1,14 +1,9 @@
-//! `ls` and `report find` text. A track-view listing prints `d name` / `- name` (with `-l`, each entry's
-//! own update time too); an `area/reports/` listing (#1838) prints report names, or with `-l` a
-//! `UPDATED_AT  TAGS  NAME` table; `find` prints one readable `area/reports/` path per line.
-//! Times print as `YYYY-MM-DD HH:MM` in the server's local time; `--json` is the tool result as is.
+//! List bound view rows or canonical named directory rows; find prints Report paths.
 
 use chrono::DateTime;
 use serde_json::Value;
-use unicode_width::UnicodeWidthStr;
 
 use super::{RenderError, compact, required_str, shape};
-use crate::area_reports::REPORTS_DIR;
 
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M";
 /// Printed for an entry without a time and for a report without tags.
@@ -16,21 +11,15 @@ const NONE: &str = "—";
 /// Width of a rendered [`TIME_FORMAT`] time.
 const TIME_WIDTH: usize = "YYYY-MM-DD HH:MM".len();
 
-pub(super) fn ls(
-    tool: &str,
-    json: bool,
-    long: bool,
-    reports: bool,
-    value: &Value,
-) -> Result<String, RenderError> {
-    let entries = rows(tool, value, if reports { "reports" } else { "entries" })?;
+pub(super) fn ls(tool: &str, json: bool, long: bool, value: &Value) -> Result<String, RenderError> {
+    let entries = rows(tool, value, "entries")?;
     if json {
         return Ok(compact(value));
     }
     if let Some(pattern) = value["date_pattern"].as_str() {
         return Ok(format!("Date files: {pattern}\n"));
     }
-    if !reports && entries.first().is_some_and(|row| row.get("path").is_some()) {
+    if entries.first().is_some_and(|row| row.get("id").is_some()) {
         let mut out = String::new();
         for entry in entries {
             out.push_str(&format!(
@@ -45,16 +34,7 @@ pub(super) fn ls(
         }
         return Ok(out);
     }
-    match (reports, long) {
-        (false, false) => track_entries(tool, entries, false),
-        (false, true) => track_entries(tool, entries, true),
-        (true, false) => entries.iter().try_fold(String::new(), |mut out, entry| {
-            out.push_str(report_name(tool, entry)?);
-            out.push('\n');
-            Ok(out)
-        }),
-        (true, true) => report_table(tool, entries),
-    }
+    track_entries(tool, entries, long)
 }
 
 pub(super) fn find(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
@@ -69,7 +49,7 @@ pub(super) fn find(tool: &str, json: bool, value: &Value) -> Result<String, Rend
     })
 }
 
-/// The rows of a listing, under `key` (`entries`, or `reports` on `area/reports/`).
+/// Rows under the declared result envelope key.
 fn rows<'a>(tool: &str, value: &'a Value, key: &str) -> Result<&'a [Value], RenderError> {
     value
         .get(key)
@@ -116,91 +96,14 @@ fn track_entries(tool: &str, entries: &[Value], long: bool) -> Result<String, Re
     Ok(out)
 }
 
-fn report_name<'a>(tool: &str, entry: &'a Value) -> Result<&'a str, RenderError> {
-    required_str(entry, "path", tool, "entry")?
-        .strip_prefix(REPORTS_DIR)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .ok_or_else(|| {
-            shape(
-                format!("{tool} entry path is not under {REPORTS_DIR}/"),
-                tool,
-                "entry",
-                entry,
-            )
-        })
-}
-
-/// `UPDATED_AT  TAGS  NAME`, tags comma-joined (`—` for none); a tag holds no whitespace or `,`.
-fn report_table(tool: &str, entries: &[Value]) -> Result<String, RenderError> {
-    let mut rows = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let updated_at = required_str(entry, "updated_at", tool, "entry")?;
-        let time = DateTime::parse_from_rfc3339(updated_at)
-            .map_err(|_| {
-                shape(
-                    format!("{tool} entry updated_at is not RFC 3339"),
-                    tool,
-                    "entry",
-                    entry,
-                )
-            })?
-            .format(TIME_FORMAT)
-            .to_string();
-        let missing_tags = || {
-            shape(
-                format!("{tool} entry missing string array tags"),
-                tool,
-                "entry",
-                entry,
-            )
-        };
-        let tags = entry
-            .get("tags")
-            .and_then(Value::as_array)
-            .ok_or_else(missing_tags)?
-            .iter()
-            .map(|tag| tag.as_str().ok_or_else(missing_tags))
-            .collect::<Result<Vec<_>, _>>()?;
-        let tags = if tags.is_empty() {
-            NONE.to_string()
-        } else {
-            tags.join(",")
-        };
-        rows.push([time, tags, report_name(tool, entry)?.to_string()]);
-    }
-    let tags_width = rows
-        .iter()
-        .map(|row| row[1].width())
-        .chain(["TAGS".len()])
-        .max()
-        .expect("the header is a row");
-    let mut out = format!(
-        "{}  {}  NAME\n",
-        pad("UPDATED_AT", TIME_WIDTH),
-        pad("TAGS", tags_width)
-    );
-    for [time, tags, name] in rows {
-        let (time, tags) = (pad(&time, TIME_WIDTH), pad(&tags, tags_width));
-        out.push_str(&format!("{time}  {tags}  {name}\n"));
-    }
-    Ok(out)
-}
-
-/// `text` padded with spaces to `width` terminal columns (a CJK character takes 2), so the next
-/// column starts at the same column on every row.
-fn pad(text: &str, width: usize) -> String {
-    let fill = width.saturating_sub(text.width());
-    format!("{text}{:fill$}", "")
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::{Render, render};
     use chrono::{Local, TimeZone};
     use serde_json::{Value, json};
 
-    fn ls(long: bool, reports: bool, value: &Value) -> String {
-        render(Render::Ls { long, reports }, "neige_ls", false, value).unwrap()
+    fn ls(long: bool, value: &Value) -> String {
+        render(Render::Ls { long }, "neige_ls", false, value).unwrap()
     }
 
     fn local(ms: i64) -> chrono::DateTime<Local> {
@@ -212,12 +115,9 @@ mod tests {
         let entries = json!({ "entries": [
             { "name": "cards/", "kind": "dir" }, { "name": "track.json", "kind": "file" }
         ] });
-        assert_eq!(ls(false, false, &entries), "d cards/\n- track.json\n");
+        assert_eq!(ls(false, &entries), "d cards/\n- track.json\n");
         let err = render(
-            Render::Ls {
-                long: false,
-                reports: false,
-            },
+            Render::Ls { long: false },
             "neige_ls",
             false,
             &json!({ "entries": [{ "name": "x" }] }),
@@ -235,145 +135,55 @@ mod tests {
             { "name": "cards/", "kind": "dir", "updated_at": null }
         ] });
         assert_eq!(
-            ls(true, false, &entries),
+            ls(true, &entries),
             format!(
                 "- {}  report.md\nd —                 cards/\n",
                 local(at).format("%Y-%m-%d %H:%M")
             )
         );
         let unix_ms = json!({ "entries": [{ "name": "x", "kind": "file", "updated_at": at }] });
-        assert!(
-            render(
-                Render::Ls {
-                    long: true,
-                    reports: false
-                },
-                "neige_ls",
-                false,
-                &unix_ms
-            )
-            .is_err()
-        );
-    }
-
-    fn reports() -> Value {
-        let at = |ms: i64| local(ms).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
-        json!({ "reports": [
-            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "track_id": "t1",
-              "tags": ["认证", "架构"], "updated_at": at(1_790_000_000_000) },
-            { "path": "area/reports/x%2Fy~abcdef12.md", "title": "x/y", "track_id": "abcdef1234",
-              "tags": [], "updated_at": at(1_789_000_000_000) }
-        ] })
-    }
-
-    /// Mixed CJK/ASCII tags: every row's NAME starts at the header's NAME display column.
-    #[test]
-    fn long_report_table_aligns_the_name_column_by_display_width() {
-        use unicode_width::UnicodeWidthStr;
-        let at = local(1_790_000_000_000).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
-        let entry = |name: &str, tags: Value| {
-            json!({ "path": format!("area/reports/{name}"), "title": name, "track_id": "t",
-                    "tags": tags, "updated_at": at })
-        };
-        let table = ls(
-            true,
-            true,
-            &json!({ "reports": [
-                entry("认证 方案.md", json!(["认证", "架构"])),
-                entry("login.md", json!(["auth", "x"])),
-                entry("登录 排查~abcdef12.md", json!(["排障"])),
-                entry("none.md", json!([])),
-            ] }),
-        );
-        let columns: Vec<usize> = table
-            .lines()
-            .zip([
-                "NAME",
-                "认证 方案.md",
-                "login.md",
-                "登录 排查~abcdef12.md",
-                "none.md",
-            ])
-            .map(|(line, name)| {
-                let prefix = line.strip_suffix(name).unwrap_or_else(|| panic!("{table}"));
-                prefix.width()
-            })
-            .collect();
-        assert_eq!(columns.len(), 5, "{table}");
-        assert!(
-            columns.iter().all(|c| *c == columns[0]),
-            "{columns:?}\n{table}"
-        );
+        assert!(render(Render::Ls { long: true }, "neige_ls", false, &unix_ms).is_err());
     }
 
     #[test]
-    fn report_listings_print_names_a_table_or_paths() {
+    fn named_directory_entries_print_id_title_and_canonical_path() {
+        let entries = json!({"entries":[{"id":"track-id","title":"认证 方案","path":"/研发/认证 方案/","kind":"dir"}],"next_cursor":"opaque"});
         assert_eq!(
-            ls(false, true, &reports()),
-            "认证 方案.md\nx%2Fy~abcdef12.md\n"
+            ls(false, &entries),
+            "track-id  认证 方案  /研发/认证 方案/\nnext_cursor: opaque\n"
         );
-        let time = |ms| local(ms).format("%Y-%m-%d %H:%M").to_string();
+        assert_eq!(ls(true, &entries), ls(false, &entries));
+        let reports = json!({"reports":[{"path":"/研发/认证 方案/report.md"}]});
         assert_eq!(
-            ls(true, true, &reports()),
-            format!(
-                "UPDATED_AT        TAGS       NAME\n{}  认证,架构  认证 方案.md\n{}  —          x%2Fy~abcdef12.md\n",
-                time(1_790_000_000_000),
-                time(1_789_000_000_000)
-            )
+            render(Render::Find, "neige_report_find", false, &reports).unwrap(),
+            "/研发/认证 方案/report.md\n"
         );
-        assert_eq!(
-            ls(true, true, &json!({ "reports": [] })),
-            "UPDATED_AT        TAGS  NAME\n",
-            "an empty directory still prints its header"
-        );
-        assert_eq!(
-            render(Render::Find, "neige_report_find", false, &reports()).unwrap(),
-            "area/reports/认证 方案.md\narea/reports/x%2Fy~abcdef12.md\n"
-        );
-        for how in [
-            Render::Find,
-            Render::Ls {
-                long: true,
-                reports: true,
-            },
-        ] {
-            assert_eq!(
-                render(how, "t", true, &reports()).unwrap(),
-                format!("{}\n", reports())
+    }
+    #[test]
+    fn named_directory_shape_errors_refuse_missing_fields() {
+        for field in ["title", "path"] {
+            let mut row = json!({"id":"t","title":"T","path":"/A/T/","kind":"dir"});
+            row.as_object_mut().unwrap().remove(field);
+            assert!(
+                render(
+                    Render::Ls { long: false },
+                    "neige_ls",
+                    false,
+                    &json!({"entries":[row]})
+                )
+                .is_err()
             );
         }
-    }
-
-    #[test]
-    fn report_entry_shape_errors_name_the_missing_field() {
-        let mut bad = reports();
-        bad["reports"][0]["updated_at"] = json!("yesterday");
-        let err = render(
-            Render::Ls {
-                long: true,
-                reports: true,
-            },
-            "neige_ls",
-            false,
-            &bad,
-        )
-        .unwrap_err();
-        assert_eq!(err.message, "neige_ls entry updated_at is not RFC 3339");
-        let mut bad = reports();
-        bad["reports"][1]["path"] = json!("report.md");
-        let err = render(
-            Render::Ls {
-                long: false,
-                reports: true,
-            },
-            "neige_ls",
-            false,
-            &bad,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.message,
-            "neige_ls entry path is not under area/reports/"
+        let bad = json!({"entries":[{"name":"x","kind":"file","updated_at":"yesterday"}]});
+        assert!(render(Render::Ls { long: true }, "neige_ls", false, &bad).is_err());
+        assert!(
+            render(
+                Render::Find,
+                "neige_report_find",
+                false,
+                &json!({"reports":[{}]})
+            )
+            .is_err()
         );
     }
 }

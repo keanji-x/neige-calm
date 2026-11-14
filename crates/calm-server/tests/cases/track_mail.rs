@@ -34,7 +34,7 @@ async fn mail_send_wakes_the_recipient_planner_with_one_line() {
     let w = World::new(&["Weekly review", "NVDA research"]).await;
     let (r, n) = (w.p(0), w.p(1));
     w.user_turn(r, "review this week").await;
-    let body = "The guidance is below the thesis; see area/reports/review.md#b_3";
+    let body = "The guidance is below the thesis; see /Research/review/report.md#b_3";
     let sent = w
         .send(
             r,
@@ -509,8 +509,8 @@ async fn mail_send_refusals_follow_the_table() {
             "unknown_track",
             -32404,
             format!(
-                "{tool}: no track {} in this area; list the area's tracks with neige ls /areas/{}/tracks/",
-                foreign.track_id, w.area_id
+                "{tool}: no track {} in this area; list the area's tracks with neige ls ..",
+                foreign.track_id
             ),
         ),
         (
@@ -518,8 +518,7 @@ async fn mail_send_refusals_follow_the_table() {
             "unknown_track",
             -32404,
             format!(
-                "{tool}: no track no-such-track in this area; list the area's tracks with neige ls /areas/{}/tracks/",
-                w.area_id
+                "{tool}: no track no-such-track in this area; list the area's tracks with neige ls .."
             ),
         ),
         (
@@ -725,14 +724,8 @@ async fn mail_trace_of_the_investment_case() {
     let w = World::new(&["Weekly review", "NVDA research"]).await;
     let (r, n) = (w.p(0), w.p(1));
     w.user_turn(r, "review this week").await;
-    let outline = super::track_mail_fixture::structured(
-        &w.call(
-            r,
-            "neige_ls",
-            json!({"path":format!("/areas/{}/tracks/",w.area_id)}),
-        )
-        .await,
-    );
+    let outline =
+        super::track_mail_fixture::structured(&w.call(r, "neige_ls", json!({"path":".."})).await);
     assert!(
         outline["entries"]
             .as_array()

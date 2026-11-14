@@ -5,6 +5,7 @@ use super::worker_message::{message, running, set_status, written};
 use calm_server::db::prelude::*;
 use calm_server::event::{Event, EventScope};
 use calm_server::ids::ActorId;
+use calm_server::plugin_host::mcp::RpcError;
 use calm_truth::db::RepoEventWrite as _;
 use calm_truth::db::RepoRead;
 use serde_json::{Value, json};
@@ -402,16 +403,15 @@ async fn planner_message_audit_refuses_a_foreign_attempt_from_editable_card_meta
                     String::from_utf8_lossy(&body)
                 );
                 let audit = h
-                    .ok(
+                    .call(
                         "neige_cat",
                         json!({"path":format!("runs/{}/planner-messages.json", owner.task)}),
                     )
                     .await;
-                let run: Value = serde_json::from_str(audit["content"].as_str().unwrap()).unwrap();
                 assert_eq!(
-                    run,
-                    json!([]),
-                    "foreign records must not follow editable payload keys"
+                    audit["error"]["code"],
+                    RpcError::FORBIDDEN,
+                    "foreign records must not follow editable payload keys: {audit}"
                 );
             })
         })

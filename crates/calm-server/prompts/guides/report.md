@@ -23,4 +23,4 @@ Capture sources on first reading with `neige_source_capture`; cite only captures
 
 ## Tags
 
-List: `neige report tag report.md`; edit: repeat `--add <tag>` / `--remove <tag>`. No spaces/commas/body tags. Find: `neige report find area/reports/ --tag <tag>`.
+List: `neige report tag report.md`; edit: repeat `--add <tag>` / `--remove <tag>`. No spaces/commas/body tags. Find: `neige report find .. --tag <tag>`.

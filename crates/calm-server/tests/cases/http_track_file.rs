@@ -66,16 +66,25 @@ async fn http_ls_and_cat_match_mcp_outputs() {
             &boot,
             TOOL_LS,
             planner_identity(&boot),
-            // HTTP `/` remains the bound root; MCP uses an empty relative path.
-            json!({ "path": if path == "/" { "" } else { path.as_str() } }),
+            // HTTP `/` remains the bound root; MCP uses `.`.
+            json!({ "path": if path == "/" { "." } else { path.as_str() } }),
         )
         .await
         .unwrap_or_else(|e| panic!("MCP ls {path} failed: {e}"));
         let (status, http) =
             get_json(&app, ls_uri(track_id, Some(path.as_str())), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "HTTP ls {path}: {http}");
+        for entry in mcp["entries"].as_array().unwrap() {
+            assert!(
+                entry["path"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("/track-file-test/track file test/")
+            );
+        }
         // The tool wraps the REST rows under `entries` (§5); the rows are the same but for the
-        // times: RFC 3339 in the tool (§4), unix ms in REST, which omits an absent `updated_at`.
+        // times and MCP-only canonical paths: RFC 3339 in the tool (§4), unix ms in REST,
+        // which omits an absent `updated_at` and does not add name navigation.
         assert_eq!(
             http,
             rest_rows(&mcp["entries"]),
@@ -214,6 +223,7 @@ fn rest_rows(entries: &Value) -> Value {
     };
     let mut rows = entries.clone();
     for row in rows.as_array_mut().expect("entries") {
+        row.as_object_mut().unwrap().remove("path");
         for key in ["updated_at", "requested_at", "finished_at"] {
             if let Some(value) = row.get_mut(key) {
                 ms(value);

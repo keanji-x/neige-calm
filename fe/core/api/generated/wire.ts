@@ -81,11 +81,11 @@ detail?: string, options: Array<string>, };
 export type AttachmentId = string;
 
 /**
- * One block of a report of the area; `insert` is ``@`area/reports/<name>.md#<block_id>` ``.
+ * One block of a report of the area; `insert` is ``@`/AreaName/TrackName/report.md#<block_id>` ``.
  */
 export type BlockMention = { 
 /**
- * The block's heading as `neige_area_ls` lists it; a block with no heading is not offered.
+ * The block's heading in the Report outline; a block with no heading is not offered.
  */
 label: string, block_id: string, 
 /**
@@ -985,7 +985,7 @@ export type TrackFsRunVerdictSummary = { at: number, status: string, };
 export type TrackId = string;
 
 /**
- * A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige track cat` reads.
+ * A report of the area; `insert` is ``@`/AreaName/TrackName/report.md` ``, the path `neige cat` reads.
  */
 export type TrackMention = { 
 /**

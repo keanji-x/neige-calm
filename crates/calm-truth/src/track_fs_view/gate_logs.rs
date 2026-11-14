@@ -22,7 +22,7 @@ pub fn task_gate_log_path(attempt_id: &str, gate_attempt: i64) -> Result<String,
 }
 
 impl TrackFsView<'_> {
-    fn gate_logs_directory(&self, path: &str) -> Result<&Path, TrackFsError> {
+    pub(super) fn gate_logs_directory(&self, path: &str) -> Result<&Path, TrackFsError> {
         self.gate_log_access.as_deref().ok_or_else(|| {
             TrackFsError::Forbidden(format!("{path} is not available on this surface"))
         })
@@ -35,6 +35,17 @@ impl TrackFsView<'_> {
         attempt_id: &str,
         gate_file: &str,
     ) -> Result<TrackFsContent, TrackFsError> {
+        let gate_attempt = self.execution_gate_attempt(path, attempt_id, gate_file)?;
+        let task = self.gate_task_in_track(track, path, attempt_id).await?;
+        self.read_gate_log(&task, gate_attempt, path).await
+    }
+
+    pub(super) fn execution_gate_attempt(
+        &self,
+        path: &str,
+        attempt_id: &str,
+        gate_file: &str,
+    ) -> Result<i64, TrackFsError> {
         self.gate_logs_directory(path)?;
         let gate_attempt = gate_file
             .strip_suffix(".log")
@@ -43,6 +54,15 @@ impl TrackFsView<'_> {
         if task_gate_log_path(attempt_id, gate_attempt)? != path {
             return Err(path_not_available(path));
         }
+        Ok(gate_attempt)
+    }
+
+    pub(super) async fn gate_task_in_track(
+        &self,
+        track: &Track,
+        path: &str,
+        attempt_id: &str,
+    ) -> Result<Task, TrackFsError> {
         let task = self
             .repo
             .task_get(attempt_id)
@@ -56,7 +76,7 @@ impl TrackFsView<'_> {
                 track.id.as_str()
             )));
         }
-        self.read_gate_log(&task, gate_attempt, path).await
+        Ok(task)
     }
 
     async fn read_gate_log(
@@ -66,19 +86,7 @@ impl TrackFsView<'_> {
         path: &str,
     ) -> Result<TrackFsContent, TrackFsError> {
         let directory = self.gate_logs_directory(path)?;
-        // This guard also protects the on-disk join for legacy task IDs. Never
-        // interpolate unchecked request or database bytes into filesystem paths.
-        task_gate_log_path(&task.id, gate_attempt)?;
-        if task.gate_json.is_none() {
-            return Err(path_not_available(&format!(
-                "{path} (task declares no gate)"
-            )));
-        }
-        if gate_attempt > task.gate_attempt {
-            return Err(path_not_available(&format!(
-                "{path} (gate run {gate_attempt} has not run)"
-            )));
-        }
+        self.check_gate_run(task, gate_attempt, path)?;
         let log_path = directory.join(format!("{}-g{gate_attempt}.log", task.id));
         match tokio::fs::read_to_string(&log_path).await {
             Ok(content) => Ok(TrackFsContent {
@@ -93,6 +101,27 @@ impl TrackFsView<'_> {
                 log_path.display()
             ))),
         }
+    }
+    pub(super) fn check_gate_run(
+        &self,
+        task: &Task,
+        gate_attempt: i64,
+        path: &str,
+    ) -> Result<(), TrackFsError> {
+        // This guard also protects the on-disk join for legacy task IDs. Never
+        // interpolate unchecked request or database bytes into filesystem paths.
+        task_gate_log_path(&task.id, gate_attempt)?;
+        if task.gate_json.is_none() {
+            return Err(path_not_available(&format!(
+                "{path} (task declares no gate)"
+            )));
+        }
+        if gate_attempt > task.gate_attempt {
+            return Err(path_not_available(&format!(
+                "{path} (gate run {gate_attempt} has not run)"
+            )));
+        }
+        Ok(())
     }
 }
 

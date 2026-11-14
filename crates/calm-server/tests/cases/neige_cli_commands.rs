@@ -20,10 +20,7 @@ use support::mcp::{
 };
 use support::track_vcs_seed::seed_linear_commits;
 
-const LS: Render = Render::Ls {
-    long: false,
-    reports: false,
-};
+const LS: Render = Render::Ls { long: false };
 
 async fn cli(boot: &CardBoot, argv: &[&str]) -> (String, String, i64) {
     cli_output(&neige_cli_via_socket(&boot.socket_path, &boot.raw_token, argv).await)
@@ -934,10 +931,13 @@ async fn help_and_unknown_commands_are_served_by_the_kernel() {
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("removed command usage error");
     assert_eq!(parsed["error"]["detail"]["kind"], json!("usage"));
-    let (_, stderr, exit) = cli(&boot, &["--json", "cat"]).await;
+    let (_, stderr, exit) = cli(&boot, &["--json", "cat", "--blocks"]).await;
     assert_eq!(exit, 1);
     let parsed: Value = serde_json::from_str(&stderr).expect("JSON usage error");
-    assert_eq!(parsed["error"]["message"], json!("cat requires <path>"));
+    assert_eq!(
+        parsed["error"]["message"],
+        json!("cat requires a value after --blocks")
+    );
     assert_eq!(
         parsed["error"]["detail"]["usage"],
         json!(help::usage_line(Some("neige_cat")))

@@ -1,5 +1,5 @@
 //! `neige_cat { blocks }` (#1874, `neige cat <report> --blocks`): chosen blocks of a report,
-//! own (`report.md`) or same-area (`area/reports/<name>.md`), exactly as `neige_report_read`'s
+//! own (`report.md`) or same-area (`/area-a/<name>/report.md`), exactly as `neige_report_read`'s
 //! `blocks` text. Block ids come from `neige_ls`, the Planner's id source.
 
 use super::*;
@@ -27,14 +27,9 @@ async fn cat_blocks(
 
 /// `side`'s block ids in document order, as `neige_ls` lists them to `reader`.
 async fn outline_ids(boot: &Boot, reader: &Side, side: &Side) -> Vec<String> {
-    let outline = call(
-        boot,
-        TOOL_LS,
-        planner(reader),
-        json!({"path":format!("/areas/{}/tracks/",reader.area_id)}),
-    )
-    .await
-    .expect("neige_ls");
+    let outline = call(boot, TOOL_LS, planner(reader), json!({"path":".."}))
+        .await
+        .expect("neige_ls");
     let track = outline["entries"]
         .as_array()
         .expect("tracks")
@@ -72,7 +67,7 @@ async fn blocks_of_another_same_area_report_come_back_in_document_order_with_mar
     let text = cat_blocks(
         &boot,
         planner(own),
-        "area/reports/登录 排查.md",
+        "/area-a/登录 排查/report.md",
         &[&ids[3], &ids[1]],
     )
     .await
@@ -91,7 +86,7 @@ async fn blocks_of_another_same_area_report_come_back_in_document_order_with_mar
     );
 }
 
-/// One report, one output: the own `report.md`, the same report through `area/reports/` and the
+/// One report, one output: the own `report.md`, the same Report through its canonical name path and the
 /// report's own `neige_report_read` blocks all print the same bytes.
 #[tokio::test]
 async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
@@ -130,18 +125,13 @@ async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
         want
     );
     assert_eq!(
-        cat_blocks(
-            &boot,
-            planner(own),
-            &format!("/areas/{}/tracks/{}/report.md", own.area_id, own.track_id),
-            &chosen
-        )
-        .await
-        .unwrap(),
+        cat_blocks(&boot, planner(own), "/area-a/认证 方案/report.md", &chosen)
+            .await
+            .unwrap(),
         want
     );
     assert_eq!(
-        cat_blocks(&boot, planner(own), "area/reports/认证 方案.md", &chosen)
+        cat_blocks(&boot, planner(own), "/area-a/认证 方案/report.md", &chosen)
             .await
             .unwrap(),
         want
@@ -157,7 +147,7 @@ async fn blocks_text_equals_calm_report_read_select_on_every_report_path() {
     let theirs = outline_ids(&boot, own, other).await;
     let chosen = [theirs[2].as_str(), theirs[4].as_str()];
     assert_eq!(
-        cat_blocks(&boot, planner(own), "area/reports/登录 排查.md", &chosen)
+        cat_blocks(&boot, planner(own), "/area-a/登录 排查/report.md", &chosen)
             .await
             .unwrap(),
         select_text(&boot, other, &chosen).await,
@@ -173,7 +163,7 @@ async fn an_unknown_block_id_is_refused_with_the_reports_block_list() {
     write_body(&boot, other, BODY).await;
     for (reader, path, side) in [
         (own, "report.md", own),
-        (own, "area/reports/登录 排查.md", other),
+        (own, "/area-a/登录 排查/report.md", other),
     ] {
         let ids = outline_ids(&boot, reader, side).await;
         let err = cat_blocks(&boot, planner(reader), path, &[&ids[1], "b_nope"])
@@ -207,8 +197,8 @@ async fn blocks_on_a_path_that_names_no_report_is_refused() {
         "cards/index.json",
         "/",
         "area",
-        "area/reports/",
-        "area/reports/a/b.md",
+        "..",
+        "/area-a/a/b/report.md",
         "area/other",
     ] {
         assert_eq!(
@@ -226,7 +216,7 @@ async fn blocks_on_a_path_that_names_no_report_is_refused() {
         INVALID_PARAMS,
         "is not a report",
     );
-    for path in ["area/reports/登录 排查.md", "area/reports/"] {
+    for path in ["/area-a/登录 排查/report.md", ".."] {
         assert_eq!(
             cat_blocks(&boot, worker(), path, &["b_1"])
                 .await
@@ -268,24 +258,24 @@ async fn ambiguous_and_cross_area_names_are_still_refused_with_blocks() {
     let err = cat_blocks(
         &boot,
         planner(reader),
-        "area/reports/认证 方案.md",
+        "/area-a/认证 方案/report.md",
         &[&ids[1]],
     )
     .await
     .expect_err("ambiguous");
     assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
-    assert!(err.message.contains("names 2 reports"), "{err:?}");
+    assert!(err.message.contains("ambiguous name"), "{err:?}");
 
     let secret_ids = outline_ids(&boot, secret, secret).await;
     for path in [
-        "area/reports/机密.md".to_string(),
-        format!("area/reports/机密~{}.md", &secret.track_id.as_str()[..8]),
-        format!("area/reports/~{}.md", secret.track_id.as_str()),
+        "/area-a/机密/report.md".to_string(),
+        format!("/area-a/机密~{}/report.md", &secret.track_id.as_str()[..8]),
+        format!("/area-a/~{}/report.md", secret.track_id.as_str()),
     ] {
         assert_refused(
             cat_blocks(&boot, planner(reader), &path, &[&secret_ids[1]]).await,
             INVALID_PARAMS,
-            "no report at",
+            "not available",
         );
     }
 }
@@ -320,7 +310,7 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
         select_text(&boot, own, &[&ids[2], &ids[3], &ids[4]]).await,
         "a section is its H1 block and the blocks up to the next H1, in document order"
     );
-    for path in ["report.md", "area/reports/认证 方案.md"] {
+    for path in ["report.md", "/area-a/认证 方案/report.md"] {
         let value = call(
             &boot,
             TOOL_CAT,

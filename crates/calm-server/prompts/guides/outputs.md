@@ -16,6 +16,6 @@ Forge receipts inline output within 16 KiB. Overflow gives `output_ref: ops/<op_
 
 ## Area reports and mentions
 
-`neige ls area/reports/` lists `<title>.md` newest first; `-l` adds times/tags. `neige report find area/reports/ --name '<glob>' --tag <tag>` filters with AND. `neige cat area/reports/<name>.md` reads; `--blocks <id>,<id>` narrows it. Use listed paths: duplicate titles get `~<id>`, special characters `%XX`; renames invalidate old paths. `--json` adds title, track_id, tags and updated_at.
+`neige ls ..` lists the current user Area's Tracks; `neige ls /` discovers user Areas. Read listed `/AreaName/TrackName/report.md` paths with `neige cat`; `--blocks <id>,<id>` selects blocks. Shell-quote names. Names use `%XX` escapes and `~<id>` suffixes for duplicates; renames invalidate old paths. `neige report find .. --name '<glob>' --tag <tag>` searches this Area with AND, matching the canonical Track segment. Search keeps tags/times; directories page by stable ID.
 
-Mentions: ``@`tag:<tag>` `` means find by tag; ``@`area/reports/<name>.md` `` means read that report; a `#<id>` suffix selects `--blocks <id>`. List again after renames. Cite other tracks' reports; run or re-declare their tasks only when this request needs it.
+Mentions: ``@`tag:<tag>` `` means find by tag; ``@`/AreaName/TrackName/report.md` `` means read that Report; a `#<id>` suffix selects `--blocks <id>`. After renames, list again. System Areas offer no references. Cite other Tracks' Reports; run or re-declare their tasks only when this request needs it.

@@ -212,7 +212,8 @@ tool `neige_<object>_<action>` it calls; each option is the tool's input key
 (`--attempt-id` for `attempt_id`). `neige tool ls --all` lists this session's
 tools with their commands.
 
-A Planner can read other reports through the read-only `area/reports/` view,
+Agents discover user Areas with `neige ls /` and sibling Tracks with `neige ls ..`.
+Read a listed `/AreaName/TrackName/report.md` path,
 inspect selected blocks with `neige cat report.md --blocks <id>`, and query
 report tags with `neige report tag report.md`. Report writes use `neige_report_commit`
 for targeted edits or `neige_report_write` for whole-document changes.

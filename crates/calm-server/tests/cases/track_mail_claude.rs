@@ -166,7 +166,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     let request = SendRequest {
         to: Recipient::Track(n.track_id.to_string()),
         summary: "updated the review".into(),
-        text: "see area/reports/review.md".into(),
+        text: "see /Research/review/report.md".into(),
     };
     assert_eq!(
         calm_server::mail::send(&ctx, &identity, request)

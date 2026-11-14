@@ -1,9 +1,10 @@
 //! Read-only MCP file views (`neige_ls`, `neige_cat`) rooted at the track bound to the caller's MCP connection.
-//! Paths under `area/` retain the bound Area's Report content addresses ([`super::area_reports`]);
+//! Names and navigation belong to report_paths; content stays in its original view.
 //! `guide/` serves the Planner's on-demand guides, [`GUIDES`] (#1893).
 
+use super::track_file_nodes::ServerPath;
+pub use super::track_file_nodes::own_node_kind;
 use super::unified_browse::{self, Scope};
-use crate::area_reports;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -12,9 +13,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::report_links::{unknown_block, unknown_section};
 use crate::model::{Card, CardRole, Track};
 use crate::report_sections::section_block_ids;
-use crate::track_fs_view::{
-    TrackFsContent, TrackFsEntry, TrackFsError, TrackFsView, normalize_path,
-};
+use crate::track_fs_view::{TrackFsContent, TrackFsEntry, TrackFsError, TrackFsView};
 use crate::track_report::ReportBlock;
 use crate::track_report_read::selected_blocks_text;
 use serde_json::{Value, json};
@@ -44,7 +43,7 @@ where
     })
 }
 
-/// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns `{ entries }` (`{ reports }` on `area/reports/`); `cat` returns `{ content, content_type }`.
+/// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns `{ entries }`; `cat` returns `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_LS.into(),
@@ -74,7 +73,6 @@ fn cat_descriptor() -> ToolDescriptor {
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["path"],
             "properties": {
                 "path": { "type": "string" },
                 "detail": {"type":"string","enum":["full","index"]},
@@ -108,25 +106,40 @@ async fn track_ls(
 ) -> Result<Value, RpcError> {
     let raw = parse_path_arg(&args, false)?;
     let (track, _) = crate::managed_track::report_browse_context(&ctx, &identity).await?;
-    let path = match unified_browse::resolve(&raw)? {
-        Scope::Bound(path) => normalize_path(path),
-        Scope::OwnReport => return Err(RpcError::invalid_params("report.md is not a directory")),
-        Scope::Legacy(path) => {
-            unified_browse::reject(&args, &["cursor"])?;
-            return super::area_reports::ls(&ctx, &track, path).await;
-        }
+    let path = match crate::report_paths::resolve(&ctx, &identity, &track, &raw).await? {
+        Scope::Bound(path) => path,
         scope => return unified_browse::ls(&ctx, scope, &args).await,
     };
     unified_browse::reject(&args, &["cursor"])?;
-    if path == GUIDE_DIR {
-        return guide_ls();
-    }
-    let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write);
-    let entries = view
-        .ls(&track, Some(path.as_str()))
+    let mut result = if matches!(ServerPath::classify(&path), ServerPath::GuideDirectory) {
+        guide_ls()?
+    } else {
+        let entries = own_view(&ctx, &identity)
+            .ls(&track, Some(path.as_str()))
+            .await
+            .map_err(track_fs_error_to_rpc)?;
+        entries_result(entries)?
+    };
+    let area = ctx
+        .repo
+        .area_get(track.area_id.as_str())
         .await
-        .map_err(track_fs_error_to_rpc)?;
-    entries_result(entries)
+        .map_err(|e| RpcError::internal(e.to_string()))?
+        .ok_or_else(|| RpcError::not_found("Area not found"))?;
+    let root = if area.kind == crate::model::AreaKind::System {
+        "./".to_string()
+    } else {
+        crate::report_paths::track_path(&ctx, track.area_id.as_str(), track.id.as_str()).await?
+    };
+    for entry in result["entries"].as_array_mut().unwrap() {
+        let name = entry["name"].as_str().unwrap();
+        entry["path"] = json!(if path.is_empty() {
+            format!("{root}{name}")
+        } else {
+            format!("{root}{path}/{name}")
+        });
+    }
+    Ok(result)
 }
 
 /// A track-view listing: rows under `entries` (§5, never a bare array). The REST entry keeps unix
@@ -157,15 +170,11 @@ async fn track_cat(
 ) -> Result<Value, RpcError> {
     let raw = parse_path_arg(&args, true)?;
     let (track, zone) = crate::managed_track::report_browse_context(&ctx, &identity).await?;
-    let path = match unified_browse::resolve(&raw)? {
-        Scope::Bound(path) => normalize_path(path),
-        Scope::OwnReport => {
+    let path = match crate::report_paths::resolve(&ctx, &identity, &track, &raw).await? {
+        Scope::Bound(path) => path,
+        Scope::Report(_, id) if id == track.id.as_str() => {
             unified_browse::reject(&args, &["step", "cursor", "through_event_id"])?;
             return unified_browse::report(&ctx, &track, &args).await;
-        }
-        Scope::Legacy(path) => {
-            unified_browse::reject(&args, &["step", "cursor", "through_event_id"])?;
-            return super::area_reports::cat(&ctx, &track, &raw, path, &args).await;
         }
         scope => return unified_browse::cat(&ctx, scope, &args, zone).await,
     };
@@ -188,10 +197,7 @@ async fn track_cat(
         ));
     }
     unified_browse::reject(&args, &["detail"])?;
-    if let Some(name) = path
-        .strip_prefix(GUIDE_DIR)
-        .and_then(|rest| rest.strip_prefix('/'))
-    {
+    if let ServerPath::Guide(name) = ServerPath::classify(&path) {
         if let Some(selection) = selection {
             return Err(not_a_report(&path, &selection));
         }
@@ -200,17 +206,11 @@ async fn track_cat(
     if let Some(selection) = selection {
         return Err(not_a_report(&path, &selection));
     }
-    // Gate logs are enabled only here (MCP carries a card identity, so the track is the caller's own); the gate-logs dir is the configured one, never recomputed from env.
-    let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
-        .with_gate_log_access(ctx.gate_logs_dir.clone());
-    let view = if identity.role == CardRole::Planner {
-        view.with_planner_run_summary()
-    } else {
-        view
-    };
-    let mut content = if let Some(op_id) = path
-        .strip_prefix("ops/")
-        .and_then(|rest| rest.strip_suffix("/result"))
+    let view = own_view(&ctx, &identity);
+    let mut content = if let ServerPath::Operation {
+        id: op_id,
+        result: true,
+    } = ServerPath::classify(&path)
     {
         let op = super::op::lookup(&ctx, &identity, op_id).await?;
         TrackFsContent {
@@ -231,29 +231,35 @@ async fn track_cat(
         .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
 }
 
+/// Configure content and node checks identically, after authenticating the own-track binding.
+pub(super) fn own_view<'a>(ctx: &'a AppContext, identity: &ToolCallIdentity) -> TrackFsView<'a> {
+    let view = TrackFsView::new(ctx.repo.as_ref(), &ctx.write)
+        .with_gate_log_access(ctx.gate_logs_dir.clone());
+    if identity.role == CardRole::Planner {
+        view.with_planner_run_summary()
+    } else {
+        view
+    }
+}
+
 fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params("arguments must be an object"))?;
     let Some(raw) = obj.get("path") else {
-        if required {
-            return Err(RpcError::invalid_params(
-                "neige_cat: missing `path` (string)",
-            ));
-        }
-        return Ok(String::new());
+        return Ok(if required { "report.md" } else { "." }.to_string());
     };
     let path = raw
         .as_str()
         .ok_or_else(|| RpcError::invalid_params("`path` must be a string"))?;
-    Ok(path.trim().to_string())
+    if path.is_empty() {
+        return Err(RpcError::invalid_params("path must not be empty"));
+    }
+    Ok(path.to_string())
 }
 
-/// The caller's own report in the track view.
-const OWN_REPORT: &str = "report.md";
-
 /// Where the guides are served: `guide/` lists them, `guide/<name>` prints one.
-const GUIDE_DIR: &str = "guide";
+pub(super) const GUIDE_DIR: &str = "guide";
 
 /// The Planner's on-demand guides (#1893): situational detail `prompts/planner.md` names by path
 /// instead of carrying. Static text, the same for every track and role.
@@ -300,6 +306,12 @@ fn guide_ls() -> Result<Value, RpcError> {
 }
 
 fn guide_cat(name: &str) -> Result<Value, RpcError> {
+    markdown_content(calm_types::report_blocks::tasks::render_task_guidance(
+        guide_text(name)?,
+    ))
+}
+
+pub(super) fn guide_text(name: &str) -> Result<&'static str, RpcError> {
     let (_, text) = GUIDES
         .iter()
         .find(|(guide, _)| *guide == name)
@@ -310,7 +322,7 @@ fn guide_cat(name: &str) -> Result<Value, RpcError> {
                 names.join(", ")
             ))
         })?;
-    markdown_content(calm_types::report_blocks::tasks::render_task_guidance(text))
+    Ok(text)
 }
 
 /// A partial report read, the same on every report path and in `neige_report_read`:
@@ -383,9 +395,7 @@ pub(crate) fn not_a_report(path: &str, selection: &Selection) -> RpcError {
         Selection::Sections(_) => ("--sections", "sections"),
     };
     RpcError::invalid_params(format!(
-        "`{path}` is not a report; {flag} reads {unit} of `{OWN_REPORT}`, `{}/<name>.md`, \
-         or a listed absolute Report path",
-        area_reports::REPORTS_DIR
+        "`{path}` is not a report; {flag} reads {unit} of report.md or a listed Report path"
     ))
 }
 

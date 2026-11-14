@@ -1,13 +1,7 @@
-//! `area/reports/` (#1838 S2): the content addresses of Track reports within one Area,
-//! served by `neige ls`, `neige report find` and `neige cat`. This module lists, filters, resolves and reads
-//! for all three. The area is always the caller's own; a path resolves only against that area's
-//! listing, so no name, ID suffix, duplicate title, rename or traversal reaches another area. A read
-//! returns a report's body or its blocks (#1874), tags and the report card's `updated_at` — never
-//! another track's card payload, runs or workspace. The name codec lives in [`name`]. [`outlines`]
-//! serves the same listing, with blocks, to the chat `@` mention search (#1881).
+//! Report search owns tag/glob filtering, update ordering and its 500-match limit.
+//! Navigation and canonical names belong to report_paths.
 
 pub mod glob;
-pub mod name;
 mod store;
 
 #[cfg(test)]
@@ -17,52 +11,17 @@ use calm_types::report_blocks::tasks::normalize_legacy_task_blocks;
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-use crate::track_fs_view::{TrackFsContent, TrackFsError, report_markdown};
+use crate::track_fs_view::TrackFsError;
 use crate::track_report::{ReportBlock, TrackReportPayload};
-use crate::track_report_read::{legacy_row_blocks, report_doc_snapshot};
+use crate::track_report_read::legacy_row_blocks;
 
-/// The directory every report path starts with.
-pub const REPORTS_DIR: &str = "area/reports";
-/// Most reports one `ls` or `find` returns; more is refused, never truncated.
+/// Most matches one `find` returns; more is refused, never truncated.
 pub const MAX_REPORTS_PER_LISTING: usize = 500;
 
-/// A normalized view path under `area/`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AreaPath<'a> {
-    /// `area`: holds `reports/`.
-    Root,
-    /// `area/reports`.
-    Reports,
-    /// `area/reports/<file>`; `file` holds no `/`.
-    Report(&'a str),
-}
-
-/// `None` when `path` (already `normalize_path`ed) is not under `area/`, so the track view serves it;
-/// `Some(Err)` for a path under `area/` this view does not have, traversal included.
-pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
-    if path == "area" {
-        return Some(Ok(AreaPath::Root));
-    }
-    let rest = path.strip_prefix("area/")?;
-    Some(if rest == "reports" {
-        Ok(AreaPath::Reports)
-    } else if let Some(file) = rest.strip_prefix("reports/")
-        && !file.contains('/')
-        && !file.is_empty()
-    {
-        Ok(AreaPath::Report(file))
-    } else {
-        Err(format!(
-            "path not available in this view: {path} (under `area/` there is only \
-             `area/reports/<name>.md`)"
-        ))
-    })
-}
-
-/// One listed report: a row of `{reports: […]}`, the `--json` shape of `ls`/`find` on `area/reports/`.
+/// One match in the search result `{reports: […]}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReportEntry {
-    /// `area/reports/<name>.md`, readable with `neige cat`.
+    /// Canonical `/AreaName/TrackName/report.md`, readable with `neige cat`.
     pub path: String,
     pub title: String,
     pub track_id: String,
@@ -72,19 +31,13 @@ pub struct ReportEntry {
     pub updated_at: String,
 }
 
-/// `find` predicates; both set means AND. The default matches every report (plain `ls`).
+/// `find` predicates; both set means AND. The default matches every report.
 #[derive(Debug, Default)]
 pub struct Filter {
-    /// Glob over the listed file name; see [`glob`].
+    /// Glob over the canonical Track segment; see [`glob`].
     pub name: Option<String>,
     /// One tag, matched exactly.
     pub tag: Option<String>,
-}
-
-impl Filter {
-    fn is_search(&self) -> bool {
-        self.name.is_some() || self.tag.is_some()
-    }
 }
 
 struct Named {
@@ -92,29 +45,10 @@ struct Named {
     file: String,
 }
 
-/// The listed file name of each of `rows`, which must be every report of the area.
-fn file_names(rows: &[&store::Row]) -> Vec<String> {
-    let pairs: Vec<(&str, &str)> = rows
-        .iter()
-        .map(|row| (row.title.as_str(), row.track_id.as_str()))
-        .collect();
-    name::file_names(&pairs)
-}
-
-async fn named(pool: &SqlitePool, area_id: &str) -> Result<Vec<Named>, TrackFsError> {
-    let rows = store::rows(pool, area_id).await.map_err(internal)?;
-    let files = file_names(&rows.iter().collect::<Vec<_>>());
-    Ok(rows
-        .into_iter()
-        .zip(files)
-        .map(|(row, file)| Named { row, file })
-        .collect())
-}
-
 /// One report of the area with its block projection: the `@` mention candidates (#1881).
 #[derive(Debug)]
 pub struct ReportOutline {
-    /// `area/reports/<name>.md`, exactly as `ls` lists it.
+    /// Canonical `/AreaName/TrackName/report.md`, readable with `neige cat`.
     pub path: String,
     pub title: String,
     pub track_id: String,
@@ -122,26 +56,51 @@ pub struct ReportOutline {
     pub tags: Vec<String>,
     /// The report card's update time (ms).
     pub updated_at: i64,
-    /// In document order, with the ids [`read_blocks`] accepts; see [`outlines`].
+    /// In document order, with the ids `neige cat --blocks` accepts; see [`outlines`].
     pub blocks: Vec<ReportBlock>,
 }
 
-/// Every report of `area_id` with its path, tags and blocks, ordered by track id, from one
-/// statement. Blocks carry the ids [`read_blocks`] accepts, without loading any report CRDT (#1859):
+/// Every discoverable report of `area_id` with its path, tags and blocks, ordered by track id.
+/// Names use complete identity sets; report payloads and tags come from one
+/// statement. Blocks carry the ids `neige cat --blocks` accepts, without loading any report CRDT (#1859):
 /// a row with no CRDT derives them from its body exactly as `report_doc_snapshot` does; a CRDT row
 /// returns its stored projection, normalized as that function's cached branch does. A CRDT row
 /// without a stored projection (the writer always stores one) lists with no blocks.
 pub async fn outlines(
+    ctx: &crate::mcp_server::registry::AppContext,
     pool: &SqlitePool,
     area_id: &str,
 ) -> Result<Vec<ReportOutline>, TrackFsError> {
+    // Name the complete user Area and sibling Track sets before selecting report rows.
+    // System Areas have no discoverable name path, so offer no references (including tags).
+    let Some((_, area_name)) = crate::report_paths::areas(ctx)
+        .await
+        .map_err(path_error)?
+        .into_iter()
+        .find(|(a, _)| a.id.as_str() == area_id)
+    else {
+        return Ok(Vec::new());
+    };
+    let paths: std::collections::HashMap<_, _> = crate::report_paths::tracks(ctx, area_id)
+        .await
+        .map_err(path_error)?
+        .into_iter()
+        .filter(|(track, _)| crate::track_access::user_visible_track(track))
+        .map(|(track, name)| {
+            (
+                track.id.to_string(),
+                format!("/{area_name}/{name}/report.md"),
+            )
+        })
+        .collect();
     let rows = store::rows_with_projection(pool, area_id)
         .await
         .map_err(internal)?;
-    let files = file_names(&rows.iter().map(|(row, _)| row).collect::<Vec<_>>());
     rows.into_iter()
-        .zip(files)
-        .map(|((row, projection), file)| {
+        .filter_map(|(row, projection)| {
+            paths.get(&row.track_id).map(|path| (row, projection, path))
+        })
+        .map(|(row, projection, path)| {
             let payload: TrackReportPayload =
                 serde_json::from_str(&projection.payload).map_err(|e| {
                     TrackFsError::Internal(format!(
@@ -155,7 +114,7 @@ pub async fn outlines(
                 (true, None) => Vec::new(),
             };
             Ok(ReportOutline {
-                path: format!("{REPORTS_DIR}/{file}"),
+                path: path.clone(),
                 title: row.title,
                 track_id: row.track_id,
                 tags: row.tags,
@@ -166,21 +125,50 @@ pub async fn outlines(
         .collect()
 }
 
-/// The reports of `area_id` that pass `filter`, newest report update first (then by name).
-/// Refused when more than [`MAX_REPORTS_PER_LISTING`] match.
-pub async fn list(
+/// Find in the current user Area; name all Tracks before report/tag filtering.
+pub async fn find(
+    ctx: &crate::mcp_server::registry::AppContext,
     pool: &SqlitePool,
     area_id: &str,
     filter: &Filter,
 ) -> Result<Vec<ReportEntry>, TrackFsError> {
-    let mut matched: Vec<Named> = named(pool, area_id)
-        .await?
+    let root = crate::report_paths::area_path(ctx, area_id)
+        .await
+        .map_err(path_error)?;
+    let tracks = crate::report_paths::tracks(ctx, area_id)
+        .await
+        .map_err(path_error)?;
+    let names: std::collections::HashMap<_, _> = tracks
+        .into_iter()
+        .filter(|(t, _)| crate::track_access::user_visible_track(t))
+        .map(|(t, name)| (t.id.to_string(), name))
+        .collect();
+    let reports = store::rows(pool, area_id)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .filter_map(|row| {
+            names.get(&row.track_id).map(|file| Named {
+                file: file.clone(),
+                row,
+            })
+        })
+        .collect();
+    let mut result = list_named(reports, filter)?;
+    for r in &mut result {
+        r.path = format!("{root}{}/report.md", r.path);
+    }
+    Ok(result)
+}
+
+fn list_named(reports: Vec<Named>, filter: &Filter) -> Result<Vec<ReportEntry>, TrackFsError> {
+    let mut matched: Vec<Named> = reports
         .into_iter()
         .filter(|report| {
             filter
                 .name
                 .as_deref()
-                .is_none_or(|pattern| glob::matches(pattern, &report.file))
+                .is_none_or(|p| glob::matches(p, &report.file))
                 && filter
                     .tag
                     .as_deref()
@@ -189,18 +177,12 @@ pub async fn list(
         .collect();
     if matched.len() > MAX_REPORTS_PER_LISTING {
         let count = matched.len();
-        return Err(TrackFsError::PathNotAvailable(if filter.is_search() {
-            format!(
-                "{count} reports match, more than the {MAX_REPORTS_PER_LISTING} one listing \
-                 returns; narrow the search with a tighter `name` glob or a `tag`"
-            )
-        } else {
-            format!(
-                "{REPORTS_DIR}/ holds {count} reports, more than the {MAX_REPORTS_PER_LISTING} one \
-                 listing returns; narrow it with neige_report_find: `path` `{REPORTS_DIR}/` and a `name` glob or a `tag`"
-            )
-        }));
+        return Err(TrackFsError::PathNotAvailable(format!(
+            "{count} reports match, more than the {MAX_REPORTS_PER_LISTING} one search \
+             returns; narrow the search with a name glob or tag"
+        )));
     }
+
     matched.sort_by(|a, b| {
         b.row
             .updated_at
@@ -211,7 +193,7 @@ pub async fn list(
         .into_iter()
         .map(|report| {
             Ok(ReportEntry {
-                path: format!("{REPORTS_DIR}/{}", report.file),
+                path: report.file,
                 updated_at: rfc3339_local(report.row.updated_at)?,
                 title: report.row.title,
                 track_id: report.row.track_id,
@@ -221,124 +203,15 @@ pub async fn list(
         .collect()
 }
 
-/// Resolve a historical content address with the same ambiguity and Area checks as HTTP.
-pub(crate) async fn resolve_track(
-    pool: &SqlitePool,
-    area_id: &str,
-    file: &str,
-    only_track: Option<&str>,
-) -> Result<String, TrackFsError> {
-    Ok(resolve_named(pool, area_id, file, only_track)
-        .await?
-        .track_id)
-}
-
-/// The latest body of the report `file` names in `area_id`: resolved against the area's listing,
-/// then the body read in one statement that re-checks the track and the area. A rename after the
-/// resolution still reads the resolved report's latest body; a report that left the area is not found.
-pub async fn read(
-    pool: &SqlitePool,
-    area_id: &str,
-    file: &str,
-) -> Result<TrackFsContent, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file).await?;
-    report_markdown(&report.card_id, report.payload)
-}
-
-/// The block projection of the report `file` names in `area_id` — the blocks `neige_ls`
-/// indexes and `neige_report_read` selects — resolved and re-checked exactly as [`read`].
-pub async fn read_blocks(
-    pool: &SqlitePool,
-    area_id: &str,
-    file: &str,
-) -> Result<Vec<ReportBlock>, TrackFsError> {
-    let report = resolve_and_read(pool, area_id, file).await?;
-    report_doc_snapshot(
-        &report.card_id,
-        report.updated_at,
-        report.payload,
-        report.body_crdt.as_deref(),
-    )
-    .map(|snapshot| snapshot.blocks)
-    .map_err(|e| TrackFsError::Internal(e.to_string()))
-}
-
-/// One resolved report card, read in one statement.
-struct ReadReport {
-    card_id: String,
-    payload: serde_json::Value,
-    body_crdt: Option<Vec<u8>>,
-    updated_at: i64,
-}
-
-/// Resolve names, ambiguity and the optional own-Track restriction without loading report content.
-async fn resolve_named(
-    pool: &SqlitePool,
-    area_id: &str,
-    file: &str,
-    only_track: Option<&str>,
-) -> Result<store::Row, TrackFsError> {
-    let path = format!("{REPORTS_DIR}/{file}");
-    let parsed = name::parse(file).map_err(TrackFsError::PathNotAvailable)?;
-    let reports = named(pool, area_id).await?;
-    let mut candidates: Vec<Named> = reports
-        .into_iter()
-        .filter(|report| {
-            only_track.is_none_or(|id| report.row.track_id == id)
-                && report.row.title == parsed.title
-                && parsed
-                    .suffix
-                    .as_deref()
-                    .is_none_or(|suffix| report.row.track_id.starts_with(suffix))
-        })
-        .collect();
-    let report = match candidates.len() {
-        0 => return Err(report_not_found(file)),
-        1 => candidates.remove(0),
-        _ => {
-            let paths: Vec<String> = candidates
-                .iter()
-                .map(|report| format!("{REPORTS_DIR}/{}", report.file))
-                .collect();
-            return Err(TrackFsError::PathNotAvailable(format!(
-                "`{path}` names {} reports in this area; read one of: {}",
-                paths.len(),
-                paths.join(", ")
-            )));
+fn path_error(error: crate::mcp_server::framing::RpcError) -> TrackFsError {
+    use crate::mcp_server::framing::RpcError;
+    match error.code {
+        RpcError::INVALID_PARAMS | RpcError::NOT_FOUND => {
+            TrackFsError::PathNotAvailable(error.message)
         }
-    };
-    Ok(report.row)
-}
-
-fn report_not_found(file: &str) -> TrackFsError {
-    TrackFsError::PathNotAvailable(format!(
-        "no report at `{REPORTS_DIR}/{file}` in this area; `neige ls {REPORTS_DIR}/` lists the current names"
-    ))
-}
-
-/// Resolves `file`, then reads that report's row in one statement that re-checks its track and Area.
-async fn resolve_and_read(
-    pool: &SqlitePool,
-    area_id: &str,
-    file: &str,
-) -> Result<ReadReport, TrackFsError> {
-    let report = resolve_named(pool, area_id, file, None).await?;
-    let stored = store::report(pool, area_id, &report)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| report_not_found(file))?;
-    let card_id = report.card_id;
-    let payload = serde_json::from_str(&stored.payload).map_err(|e| {
-        TrackFsError::Internal(format!(
-            "track_report: malformed payload on card {card_id}: {e}"
-        ))
-    })?;
-    Ok(ReadReport {
-        card_id,
-        payload,
-        body_crdt: stored.body_crdt,
-        updated_at: stored.updated_at,
-    })
+        RpcError::FORBIDDEN => TrackFsError::Forbidden(error.message),
+        _ => TrackFsError::Internal(error.message),
+    }
 }
 
 fn rfc3339_local(ms: i64) -> Result<String, TrackFsError> {

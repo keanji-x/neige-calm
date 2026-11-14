@@ -145,20 +145,23 @@ async fn report_tool_results_are_snake_case() {
         "the Planner's task verdicts are respelled too, not skipped: {read}"
     );
 
-    let found = ok(&boot, "neige_report_find", json!({"path": "area/reports/"})).await;
+    let found = ok(&boot, "neige_report_find", json!({"path": ".."})).await;
     assert_snake_case("neige_report_find", &found);
     let row = &found["reports"][0];
     assert_eq!(row["track_id"], json!(boot.track_id.as_str()), "{found}");
     assert!(row["updated_at"].is_string(), "{found}");
 
-    let listed = ok(&boot, "neige_ls", json!({"path": "area/reports/"})).await;
+    let listed = ok(&boot, "neige_ls", json!({"path": ".."})).await;
     assert_snake_case("neige_ls", &listed);
-    assert_eq!(listed, found, "ls and find list the same rows");
+    assert_eq!(
+        listed["entries"][0]["report_path"],
+        found["reports"][0]["path"]
+    );
 
     // `neige --json` prints the tool result as is.
     for (argv, mcp) in [
-        (&["--json", "ls", "area/reports/"][..], &listed),
-        (&["--json", "report", "find", "area/reports/"][..], &found),
+        (&["--json", "ls", ".."][..], &listed),
+        (&["--json", "report", "find", ".."][..], &found),
     ] {
         let (stdout, stderr, exit) =
             cli_output(&neige_cli_via_socket(&boot.socket_path, &boot.raw_token, argv).await);
@@ -199,8 +202,8 @@ async fn no_kernel_tool_returns_a_top_level_array() {
         );
     }
     for (tool, args) in [
-        ("neige_report_find", json!({"path": "area/reports/"})),
-        ("neige_ls", json!({"path": "area/"})),
+        ("neige_report_find", json!({"path": ".."})),
+        ("neige_ls", json!({"path": ".."})),
         ("neige_ls", json!({"path": "guide/"})),
     ] {
         let value = ok(&boot, tool, args.clone()).await;
@@ -273,7 +276,7 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
             ]}),
         ),
         ("neige_report_read", json!({})),
-        ("neige_report_find", json!({"path": "area/reports/"})),
+        ("neige_report_find", json!({"path": ".."})),
         ("neige_link_ls", json!({})),
         ("neige_task_ls", json!({})),
         (
@@ -288,10 +291,7 @@ async fn tool_result_times_are_rfc3339_with_an_offset() {
         ("neige_ls", json!({"path": "runs/"})),
         ("neige_track_status", json!({})),
         ("neige_track_close", json!({"message": "done"})),
-        (
-            "neige_ls",
-            json!({"path":format!("/areas/{}/tracks/",boot.repo.track_get(boot.track_id.as_str()).await.unwrap().unwrap().area_id)}),
-        ),
+        ("neige_ls", json!({"path":".."})),
         ("neige_track_status", json!({})),
     ] {
         results.push((tool, ok(&boot, tool, args).await));

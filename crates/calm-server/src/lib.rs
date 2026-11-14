@@ -570,6 +570,7 @@ pub mod area_admin;
 pub mod area_reports;
 /// One way to ask the user (#2209): `ask.requested` / `ask.answered`.
 pub mod ask;
+pub mod report_paths;
 pub(crate) mod track_plugin_access;
 pub use calm_truth::card_role_cache;
 /// #2516: resume owner-created Claude cards whose PTY the boot reconcile found lost.

@@ -18,12 +18,11 @@ mod mail;
 /// How one command prints its tool result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Render {
-    /// `ls`: `long` is `-l`; `reports` when the path is the `area/reports/` directory (#1838).
+    /// `ls`: `long` is `-l`; directories carry their canonical paths.
     Ls {
         long: bool,
-        reports: bool,
     },
-    /// `report find`: one `area/reports/` path per line.
+    /// `report find`: one canonical Report path per line.
     Find,
     /// `cat` and `track show`: the view content; `--json` changes only the error format.
     Content,
@@ -56,7 +55,7 @@ pub fn render(
     value: &Value,
 ) -> Result<String, RenderError> {
     match render {
-        Render::Ls { long, reports } => listing::ls(tool, json, long, reports, value),
+        Render::Ls { long } => listing::ls(tool, json, long, value),
         Render::Find => listing::find(tool, json, value),
         Render::Content => content(tool, value),
         Render::Status => state(tool, json, value),

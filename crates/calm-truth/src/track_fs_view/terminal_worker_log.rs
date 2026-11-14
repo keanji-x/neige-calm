@@ -9,6 +9,25 @@ impl TrackFsView<'_> {
         path: &str,
         attempt: &str,
     ) -> Result<TrackFsContent, TrackFsError> {
+        let log = self.terminal_log_in_track(track, path, attempt).await?;
+        let content = tokio::fs::read_to_string(&log).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                path_not_available(path)
+            } else {
+                TrackFsError::Internal(format!("terminal log read: {e}"))
+            }
+        })?;
+        Ok(TrackFsContent {
+            content,
+            content_type: "text/plain".into(),
+        })
+    }
+    pub(super) async fn terminal_log_in_track(
+        &self,
+        track: &Track,
+        path: &str,
+        attempt: &str,
+    ) -> Result<String, TrackFsError> {
         // Match the gate-log surface restriction: only callers with a bound identity enable logs.
         if self.gate_log_access.is_none() {
             return Err(TrackFsError::Forbidden(format!(
@@ -32,16 +51,6 @@ impl TrackFsView<'_> {
             .await
             .map_err(|e| TrackFsError::Internal(e.to_string()))?;
         let log = log.ok_or_else(|| path_not_available(path))?;
-        let content = tokio::fs::read_to_string(&log).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                path_not_available(path)
-            } else {
-                TrackFsError::Internal(format!("terminal log read: {e}"))
-            }
-        })?;
-        Ok(TrackFsContent {
-            content,
-            content_type: "text/plain".into(),
-        })
+        Ok(log)
     }
 }

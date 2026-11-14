@@ -22,6 +22,7 @@ pub mod task_gate;
 pub mod terminal;
 pub mod track_add;
 pub mod track_file;
+mod track_file_nodes;
 pub mod track_history;
 pub mod track_rename;
 pub mod track_report;
@@ -246,7 +247,8 @@ mod tests {
         // Listing `neige_mail_ls` and `neige_mail_cat` for the Planner adds 849 bytes of
         // description/schema to the existing surface; the measured aggregate cap is 42,097.
         // The report selectors, Area status, mail filters and commit guidance add 650 bytes.
-        const SURFACE_MAX_BYTES: usize = 42_747;
+        // #3668: compact named-path descriptions keep the measured surface bounded.
+        const SURFACE_MAX_BYTES: usize = 42_725;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

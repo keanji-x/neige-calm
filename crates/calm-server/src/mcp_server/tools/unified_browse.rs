@@ -5,77 +5,12 @@ use super::{
     track_report::{ReadSelect, parse_select_arg},
 };
 use crate::mcp_server::{framing::RpcError, registry::AppContext};
-use crate::model::{AreaKind, Track};
+use crate::model::Track;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum Scope<'a> {
-    Bound(&'a str),
-    OwnReport,
-    Legacy(crate::area_reports::AreaPath<'a>),
-    Root,
-    Areas,
-    Area(&'a str),
-    Tracks(&'a str),
-    Track(&'a str, &'a str),
-    Report(&'a str, &'a str),
-    ChangesDir,
-    Changes(&'a str),
-    EditsDir(&'a str, &'a str),
-    Edits(&'a str, &'a str, &'a str),
-}
-
-pub(super) fn resolve(path: &str) -> Result<Scope<'_>, RpcError> {
-    let bad = || RpcError::invalid_params("path not available in this view");
-    if path.split('/').any(|part| part == ".." || part == ".") {
-        return Err(bad());
-    }
-    if !path.starts_with('/') {
-        let path = path.trim_end_matches('/');
-        if path == "report.md" {
-            return Ok(Scope::OwnReport);
-        }
-        if let Some(path) = crate::area_reports::classify(path) {
-            return path.map(Scope::Legacy).map_err(RpcError::invalid_params);
-        }
-        return Ok(Scope::Bound(path));
-    }
-    let parts: Vec<_> = path.trim_end_matches('/').split('/').skip(1).collect();
-    Ok(match parts.as_slice() {
-        [""] | [] => Scope::Root,
-        ["areas"] => Scope::Areas,
-        ["areas", area] if !area.is_empty() => Scope::Area(area),
-        ["areas", area, "tracks"] => Scope::Tracks(area),
-        ["areas", area, "tracks", track] => Scope::Track(area, track),
-        ["areas", area, "tracks", track, file] => match *file {
-            "report.md" => Scope::Report(area, track),
-            "report-edits" => Scope::EditsDir(area, track),
-            _ => return Err(bad()),
-        },
-        ["report-changes"] => Scope::ChangesDir,
-        ["report-changes", date] => Scope::Changes(date),
-        ["areas", area, "tracks", track, "report-edits", date] => Scope::Edits(area, track, date),
-        _ => return Err(bad()),
-    })
-}
-
-pub(super) async fn is_user_area(ctx: &AppContext, area: &str) -> Result<bool, RpcError> {
-    let area = ctx
-        .repo
-        .area_get(area)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| RpcError::not_found("Area not found"))?;
-    Ok(area.kind == AreaKind::User)
-}
-
-pub(super) async fn user_area(ctx: &AppContext, area: &str) -> Result<(), RpcError> {
-    if !is_user_area(ctx, area).await? {
-        return Err(RpcError::forbidden("Report is outside user Areas"));
-    }
-    Ok(())
-}
+pub(crate) use crate::report_paths::Scope;
+use crate::report_paths::user_area;
 
 async fn target(ctx: &AppContext, area: &str, id: &str) -> Result<Track, RpcError> {
     user_area(ctx, area).await?;
@@ -139,23 +74,31 @@ fn row(id: &str, title: &str, path: &str, kind: &str) -> Value {
     json!({"id":id,"title":title,"path":path,"kind":kind})
 }
 
-fn listing(mut rows: Vec<Value>, args: &Value) -> Result<Value, RpcError> {
+fn listing(mut rows: Vec<Value>, args: &Value, directory: &Value) -> Result<Value, RpcError> {
     rows.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let cursor = paging::cursor_arg(args, track_file::TOOL_LS)?;
     if let Some(cursor) = cursor
-        && !rows.iter().any(|row| row["path"] == cursor)
+        && !rows
+            .iter()
+            .any(|row| directory_cursor(directory, row["id"].as_str().unwrap()) == cursor)
     {
         return Err(paging::foreign_cursor(track_file::TOOL_LS, cursor));
     }
     let mut page = Page::new(50);
     let after = cursor
-        .and_then(|cursor| rows.iter().find(|row| row["path"] == cursor))
+        .and_then(|cursor| {
+            rows.iter()
+                .find(|row| directory_cursor(directory, row["id"].as_str().unwrap()) == cursor)
+        })
         .and_then(|row| row["id"].as_str());
     for row in rows
         .iter()
         .filter(|row| after.is_none_or(|after| row["id"].as_str().unwrap() > after))
     {
-        if !page.push(row["path"].as_str().unwrap().to_string(), row.clone()) {
+        if !page.push(
+            directory_cursor(directory, row["id"].as_str().unwrap()),
+            row.clone(),
+        ) {
             break;
         }
     }
@@ -163,45 +106,49 @@ fn listing(mut rows: Vec<Value>, args: &Value) -> Result<Value, RpcError> {
     Ok(json!({"entries":entries,"next_cursor":next_cursor}))
 }
 
+fn directory_cursor(directory: &Value, id: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&(directory, id)).unwrap())
+}
+
 pub(super) async fn ls(
     ctx: &Arc<AppContext>,
-    scope: Scope<'_>,
+    scope: Scope,
     args: &Value,
 ) -> Result<Value, RpcError> {
+    let directory = match &scope {
+        Scope::Root => json!(["root"]),
+        Scope::System => json!(["system"]),
+        Scope::Track(area, id) => json!(["track", area, id]),
+        _ => Value::Null,
+    };
     let rows = match scope {
-        Scope::Root => vec![
-            row("areas", "Areas", "/areas/", "dir"),
-            row(
-                "report-changes",
-                "Report changes",
-                "/report-changes/",
-                "dir",
-            ),
-        ],
-        Scope::Areas => ctx
-            .repo
-            .areas_list_user_visible()
-            .await
-            .map_err(internal)?
-            .into_iter()
-            .map(|a| {
-                let mut row = row(a.id.as_str(), &a.name, &format!("/areas/{}/", a.id), "dir");
-                row["area_id"] = json!(a.id);
-                row
-            })
-            .collect(),
-        Scope::Area(area) => {
-            user_area(ctx, area).await?;
-            vec![row(
-                "tracks",
-                "Tracks",
-                &format!("/areas/{area}/tracks/"),
-                "dir",
-            )]
+        Scope::Root => {
+            let mut rows = vec![row(".neige", ".neige", "/.neige/", "dir")];
+            for (a, name) in crate::report_paths::areas(ctx).await? {
+                let mut r = row(a.id.as_str(), &a.name, &format!("/{name}/"), "dir");
+                r["area_id"] = json!(a.id);
+                rows.push(r);
+            }
+            rows
         }
-        Scope::Tracks(area) => {
-            user_area(ctx, area).await?;
-            let mut tracks = ctx.repo.tracks_by_area(area).await.map_err(internal)?;
+        Scope::System => vec![row(
+            "report-changes",
+            "Report changes",
+            "/.neige/report-changes/",
+            "dir",
+        )],
+        Scope::Area(area) => {
+            user_area(ctx, &area).await?;
+            let directory = json!(["area", area]);
+            let root = crate::report_paths::area_path(ctx, &area).await?;
+            let named = crate::report_paths::tracks(ctx, &area).await?;
+            let paths: std::collections::HashMap<_, _> = named
+                .iter()
+                .map(|(t, n)| (t.id.to_string(), format!("{root}{n}/")))
+                .collect();
+            let mut tracks: Vec<_> = named.into_iter().map(|(t, _)| t).collect();
             tracks.retain(crate::track_access::user_visible_track);
             tracks.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
             let cursor = paging::cursor_arg(args, track_file::TOOL_LS)?;
@@ -209,7 +156,7 @@ pub(super) async fn ls(
                 .map(|cursor| {
                     tracks
                         .iter()
-                        .find(|track| format!("/areas/{area}/tracks/{}/", track.id) == cursor)
+                        .find(|track| directory_cursor(&directory, track.id.as_str()) == cursor)
                         .map(|track| track.id.as_str())
                         .ok_or_else(|| paging::foreign_cursor(track_file::TOOL_LS, cursor))
                 })
@@ -233,11 +180,11 @@ pub(super) async fn ls(
                     .fetch_one(db.read_pool())
                     .await
                     .map_err(internal)?;
-                let path = format!("/areas/{area}/tracks/{}/", track.id);
+                let path = paths[track.id.as_str()].clone();
                 let mut row = row(track.id.as_str(), &track.title, &path, "dir");
                 let blocks: Vec<_> = doc.blocks.iter().take(40).map(|b| json!({"id":b.id,"kind":b.kind,"heading":super::report_links::block_heading(b)})).collect();
                 row.as_object_mut().unwrap().extend(json!({"area_id":track.area_id,"track_id":track.id,"report_path":format!("{path}report.md"),"closed_at":crate::time_format::at_opt(track.closed_at),"creator_track_id":track.creator_track_id,"doc_rev":doc.doc_rev,"updated_at":crate::time_format::at(doc.updated_at),"active_tasks_count":count,"blocks":blocks,"blocks_truncated":doc.blocks.len().saturating_sub(40)}).as_object().unwrap().clone());
-                if !page.push(path, row) {
+                if !page.push(directory_cursor(&directory, track.id.as_str()), row) {
                     break;
                 }
             }
@@ -245,9 +192,9 @@ pub(super) async fn ls(
             return Ok(json!({"entries":entries,"next_cursor":next_cursor}));
         }
         Scope::Track(area, id) => {
-            target(ctx, area, id).await?;
-            let root = format!("/areas/{area}/tracks/{id}/");
-            vec![
+            target(ctx, &area, &id).await?;
+            let root = crate::report_paths::track_path(ctx, &area, &id).await?;
+            let mut rows = vec![
                 row("report.md", "Report", &format!("{root}report.md"), "file"),
                 row(
                     "report-edits",
@@ -255,11 +202,16 @@ pub(super) async fn ls(
                     &format!("{root}report-edits/"),
                     "dir",
                 ),
-            ]
+            ];
+            for row in &mut rows {
+                row["area_id"] = json!(area);
+                row["track_id"] = json!(id);
+            }
+            rows
         }
         Scope::ChangesDir | Scope::EditsDir(..) => {
-            if let Scope::EditsDir(area, id) = scope {
-                target(ctx, area, id).await?;
+            if let Scope::EditsDir(ref area, ref id) = scope {
+                track_in_area(ctx, area, id).await?;
             }
             if args.get("cursor").is_some() {
                 return Err(RpcError::invalid_params("date directories have no cursor"));
@@ -268,21 +220,21 @@ pub(super) async fn ls(
         }
         _ => return Err(RpcError::invalid_params("path is not a directory")),
     };
-    listing(rows, args)
+    listing(rows, args, &directory)
 }
 
 pub(super) async fn cat(
     ctx: &Arc<AppContext>,
-    scope: Scope<'_>,
+    scope: Scope,
     args: &Value,
     zone: chrono_tz::Tz,
 ) -> Result<Value, RpcError> {
     match scope {
         Scope::Report(area, id) => {
             reject(args, &["step", "cursor", "through_event_id"])?;
-            report(ctx, &target(ctx, area, id).await?, args).await
+            report(ctx, &target(ctx, &area, &id).await?, args).await
         }
-        Scope::Changes(file) | Scope::Edits(_, _, file) => {
+        Scope::Changes(ref file) | Scope::Edits(_, _, ref file) => {
             reject(args, &["blocks", "sections", "detail", "step"])?;
             let date = file
                 .strip_suffix(".json")
@@ -296,8 +248,8 @@ pub(super) async fn cat(
             let mut query = args.as_object().unwrap().clone();
             query.remove("path");
             query.insert("date".into(), json!(date));
-            let value = if let Scope::Edits(area, id, _) = scope {
-                target(ctx, area, id).await?;
+            let value = if let Scope::Edits(ref area, ref id, _) = scope {
+                track_in_area(ctx, area, id).await?;
                 query.insert("track_id".into(), json!(id));
                 let query = serde_json::from_value(Value::Object(query))
                     .map_err(|e| RpcError::invalid_params(e.to_string()))?;
