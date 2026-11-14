@@ -1,0 +1,356 @@
+{
+  "id": "live-neige-dom",
+  "title": "Neige Calm",
+  "duration": 49,
+  "fps": 30,
+  "width": 1920,
+  "height": 1200,
+  "environment": "study",
+  "participants": [
+    {
+      "id": "viewer",
+      "kind": "person",
+      "x": 640,
+      "y": 820,
+      "scale": 1.05,
+      "shirt": "#8d9baf",
+      "hair": "#514a5c",
+      "skin": "#ecc5ad",
+      "facing": "back",
+      "visibility": [
+        {
+          "at": 0,
+          "value": 0
+        },
+        {
+          "at": 4.6,
+          "value": 0
+        },
+        {
+          "at": 5,
+          "value": 1
+        },
+        {
+          "at": 8.8,
+          "value": 1
+        },
+        {
+          "at": 9.3,
+          "value": 0
+        },
+        {
+          "at": 19.1,
+          "value": 0
+        },
+        {
+          "at": 19.3,
+          "value": 1
+        },
+        {
+          "at": 21,
+          "value": 1
+        },
+        {
+          "at": 21.4,
+          "value": 0
+        },
+        {
+          "at": 49,
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "partner",
+      "kind": "robot",
+      "x": 1790,
+      "y": 872,
+      "scale": 1,
+      "mark": "codex-pixel.svg",
+      "visibility": [
+        {
+          "at": 0,
+          "value": 1
+        },
+        {
+          "at": 12,
+          "value": 1
+        },
+        {
+          "at": 12.7,
+          "value": 1
+        },
+        {
+          "at": 13,
+          "value": 0
+        },
+        {
+          "at": 14.9,
+          "value": 0
+        },
+        {
+          "at": 15.25,
+          "value": 1
+        },
+        {
+          "at": 21.3,
+          "value": 1
+        },
+        {
+          "at": 21.5,
+          "value": 0
+        },
+        {
+          "at": 27.6,
+          "value": 0
+        },
+        {
+          "at": 28,
+          "value": 0
+        },
+        {
+          "at": 28.4,
+          "value": 0
+        },
+        {
+          "at": 31.9,
+          "value": 0
+        },
+        {
+          "at": 32.4,
+          "value": 1
+        },
+        {
+          "at": 32.8,
+          "value": 1
+        },
+        {
+          "at": 33,
+          "value": 0
+        },
+        {
+          "at": 37.9,
+          "value": 0
+        },
+        {
+          "at": 38.3,
+          "value": 1
+        },
+        {
+          "at": 49,
+          "value": 1
+        }
+      ]
+    }
+  ],
+  "camera": {
+    "zoom": [
+      {
+        "at": 0,
+        "value": 1.8
+      },
+      {
+        "at": 2,
+        "value": 1.85
+      },
+      {
+        "at": 3.3,
+        "value": 1.85
+      },
+      {
+        "at": 5,
+        "value": 1.9
+      },
+      {
+        "at": 8,
+        "value": 1.9
+      },
+      {
+        "at": 10,
+        "value": 1.8
+      },
+      {
+        "at": 12,
+        "value": 1.8
+      },
+      {
+        "at": 15.75,
+        "value": 1.8
+      },
+      {
+        "at": 16.859,
+        "value": 1.9
+      },
+      {
+        "at": 18.8,
+        "value": 1.85
+      },
+      {
+        "at": 19.2,
+        "value": 1.7
+      },
+      {
+        "at": 21.0,
+        "value": 1.7
+      },
+      {
+        "at": 29.561999999999998,
+        "value": 2.1
+      },
+      {
+        "at": 49.0,
+        "value": 2.1
+      }
+    ],
+    "focusX": [
+      {
+        "at": 0,
+        "value": 1308
+      },
+      {
+        "at": 12.0,
+        "value": 1308
+      },
+      {
+        "at": 15.75,
+        "value": 1308
+      },
+      {
+        "at": 16.859,
+        "value": 1308
+      },
+      {
+        "at": 18.8,
+        "value": 1308
+      },
+      {
+        "at": 19.2,
+        "value": 1308
+      },
+      {
+        "at": 21.0,
+        "value": 1308
+      },
+      {
+        "at": 29.561999999999998,
+        "value": 1308
+      },
+      {
+        "at": 49.0,
+        "value": 1308
+      }
+    ],
+    "focusY": [
+      {
+        "at": 0,
+        "value": 650
+      },
+      {
+        "at": 12.0,
+        "value": 650
+      },
+      {
+        "at": 15.75,
+        "value": 650
+      },
+      {
+        "at": 16.859,
+        "value": 620
+      },
+      {
+        "at": 18.8,
+        "value": 630
+      },
+      {
+        "at": 19.2,
+        "value": 650
+      },
+      {
+        "at": 21.0,
+        "value": 650
+      },
+      {
+        "at": 29.561999999999998,
+        "value": 590
+      },
+      {
+        "at": 49.0,
+        "value": 590
+      }
+    ]
+  },
+  "dialogue": [
+    {
+      "id": "question",
+      "start": 16.644,
+      "end": 18.8,
+      "speaker": "partner",
+      "text": "跟随系统，\n还是手动切换？",
+      "box": {
+        "x": 1460,
+        "y": 700,
+        "width": 380,
+        "height": 140
+      }
+    },
+    {
+      "id": "preview",
+      "start": 41.5,
+      "end": 45.0,
+      "speaker": "partner",
+      "text": "在这里，\n直接试试深色。",
+      "box": {
+        "x": 1460,
+        "y": 700,
+        "width": 380,
+        "height": 140
+      }
+    },
+    {
+      "id": "create",
+      "start": 0.7,
+      "end": 3,
+      "speaker": "partner",
+      "text": "给这个想法，\n先留一个位置。",
+      "box": {
+        "x": 1460,
+        "y": 700,
+        "width": 380,
+        "height": 140
+      }
+    }
+  ],
+  "gestures": [
+    {
+      "participant": "viewer",
+      "kind": "answer",
+      "start": 18.96,
+      "end": 21.0
+    },
+    {
+      "participant": "partner",
+      "kind": "point",
+      "start": 21.4,
+      "end": 30.188000000000002
+    },
+    {
+      "participant": "partner",
+      "kind": "point",
+      "start": 33.5,
+      "end": 37.0
+    },
+    {
+      "participant": "partner",
+      "kind": "point",
+      "start": 41.2,
+      "end": 46.5
+    }
+  ],
+  "frontend": {
+    "entry": "/app.html",
+    "viewport": {
+      "width": 1600,
+      "height": 1000
+    }
+  }
+}
