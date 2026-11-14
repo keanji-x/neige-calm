@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
-import { page } from 'vitest/browser';
+import { commands, page, userEvent } from 'vitest/browser';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
@@ -101,6 +101,171 @@ async function revealComposerControls() {
   options.click();
   await expect.poll(() => options.closest('details')?.open).toBe(true);
 }
+
+type Rgba = readonly [number, number, number, number];
+
+/** Unpremultiplied Porter-Duff source-over, in CSS's encoded sRGB space. */
+function sourceOver(source: Rgba, backdrop: Rgba): Rgba {
+  const alpha = source[3] + backdrop[3] * (1 - source[3]);
+  if (alpha === 0) return [0, 0, 0, 0];
+  const channel = (index: 0 | 1 | 2) =>
+    (source[index] * source[3] + backdrop[index] * backdrop[3] * (1 - source[3])) / alpha;
+  return [channel(0), channel(1), channel(2), alpha];
+}
+
+function paint(color: string): Rgba {
+  const context = document.createElement('canvas').getContext('2d')!;
+  context.fillStyle = color;
+  context.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;
+  return [r / 255, g / 255, b / 255, a / 255];
+}
+
+function ink(element: Element, token: string): string {
+  const probe = document.createElement('span');
+  probe.style.color = `var(${token})`;
+  element.append(probe);
+  const color = getComputedStyle(probe).color;
+  probe.remove();
+  return color;
+}
+
+/** Paint the glyph and its empty backdrop separately. Each CSS opacity applies
+ * to the whole local group AFTER its text and background have been composited,
+ * before that group is placed over the parent's background (W3C compositing).
+ * Uniform gradients are Astryx's interaction overlays; reject any unknown image.
+ */
+function textContrast(element: Element): number {
+  let glyph = paint(getComputedStyle(element).color);
+  let empty: Rgba = [0, 0, 0, 0];
+  for (let node: Element | null = element; node !== null; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    let background = paint(style.backgroundColor);
+    if (style.backgroundImage !== 'none') {
+      const gradient = style.backgroundImage.match(/^linear-gradient\((.+), \1\)$/);
+      expect(gradient, style.backgroundImage).not.toBeNull();
+      background = sourceOver(paint(gradient![1]), background);
+    }
+    glyph = sourceOver(glyph, background);
+    empty = sourceOver(empty, background);
+    const opacity = Number(style.opacity);
+    glyph = [glyph[0], glyph[1], glyph[2], glyph[3] * opacity];
+    empty = [empty[0], empty[1], empty[2], empty[3] * opacity];
+  }
+  const luminance = (color: Rgba) => {
+    const linear = color.slice(0, 3).map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  };
+  const canvas: Rgba = [1, 1, 1, 1];
+  const values = [luminance(sourceOver(glyph, canvas)), luminance(sourceOver(empty, canvas))];
+  return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
+}
+
+it('measures group opacity after composing text and background', () => {
+  const backdrop = document.createElement('div');
+  backdrop.style.backgroundColor = 'black';
+  const group = document.createElement('span');
+  group.style.cssText = 'background-color: white; color: black; opacity: 0.5';
+  group.textContent = 'Ink';
+  backdrop.append(group);
+  document.body.append(backdrop);
+  try {
+    /* Half-opacity black-on-white over black paints black text on sRGB 0.5 gray:
+     * (linear(0.5) + 0.05) / 0.05 = 5.2808, not independently dimmed text. */
+    expect(textContrast(group)).toBeCloseTo(5.2808, 4);
+  } finally { backdrop.remove(); }
+});
+
+async function settled(element: Element) {
+  /* Flush style before collecting CSS transitions, then measure their final ink. */
+  getComputedStyle(element).getPropertyValue('background-image');
+  await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
+}
+
+it.each(['light', 'dark'] as const)('keeps borderless split-tone ink legible in every interaction (%s)', async (theme) => {
+  await page.viewport(1280, 800);
+  setup({ theme });
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const restingInks: string[] = [];
+  for (const [label, tone, token] of [
+    ['Never', 'neutral', '--text-3'], ['Ask me', 'warning', '--warn-text'], ['Full access', 'danger', '--error-text'],
+  ] as const) {
+    const trigger = page.getByRole('button', { name: `Approvals: ${label}` });
+    const button = await trigger.findElement();
+    const value = button.querySelector<HTMLElement>('span[data-nc-tone]')!;
+    const prefix = value.parentElement!;
+    await page.getByRole('button', { name: /^Model:/ }).hover();
+    button.blur();
+    await settled(button);
+    expect(button.getAttribute('data-variant')).toBe('ghost');
+    expect(button.querySelectorAll('svg')).toHaveLength(0);
+    expect(getComputedStyle(button).borderTopWidth).toBe('0px');
+    expect(paint(getComputedStyle(button).backgroundColor)[3]).toBe(0);
+    expect(getComputedStyle(button).backgroundImage).toBe('none');
+    expect(value.dataset.ncTone).toBe(tone);
+    expect(prefix.firstChild?.textContent).toBe('Approvals: ');
+    expect(getComputedStyle(prefix).color).toBe(ink(button, '--text-3'));
+    const foreground = getComputedStyle(value).color;
+    expect(foreground).toBe(ink(button, token));
+    if (tone === 'neutral') expect(foreground).toBe(getComputedStyle(prefix).color);
+    else {
+      expect(foreground).not.toBe(getComputedStyle(prefix).color);
+      expect(getComputedStyle(value).fontWeight).toBe('500');
+    }
+    restingInks.push(foreground);
+    await page.screenshot({ path: `./__screenshots__/approvals-ink-${theme}-${tone}.png` });
+    const check = (state: string) => {
+      for (const text of [prefix, value]) expect(textContrast(text), `${theme} ${label} ${state} ${text.textContent}`).toBeGreaterThanOrEqual(4.5);
+    };
+    check('rest');
+    await trigger.hover();
+    await settled(button);
+    expect(button.matches(':hover')).toBe(true);
+    expect(getComputedStyle(prefix).color).toBe(ink(button, '--text'));
+    check('hover');
+    try {
+      await commands.mouseButton(`button[aria-label="Approvals: ${label}"]`, true);
+      await settled(button);
+      expect(button.matches(':active')).toBe(true);
+      check('active');
+    } finally { await commands.mouseButton('body', false); }
+    await expect.element(trigger).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: /^Model:/ }).hover();
+    await settled(button);
+    expect(getComputedStyle(prefix).color).toBe(ink(button, '--text'));
+    check('expanded');
+
+    const menu = page.getByRole('menu');
+    const full = menu.getByRole('menuitem', { name: /^Full access/ });
+    const item = await full.findElement();
+    const title = await full.getByText('Full access', { exact: true }).findElement();
+    const description = await full.getByText("No sandbox; never asks. Runs with your account's access.", { exact: true }).findElement();
+    expect(item.getAttribute('data-variant')).toBe('destructive');
+    const checkMenu = (state: string) => {
+      for (const text of [title, description]) {
+        expect(getComputedStyle(text).color).toBe(ink(item, '--error-text'));
+        expect(textContrast(text), `${theme} Full access menu ${state} ${text.textContent}`).toBeGreaterThanOrEqual(4.5);
+      }
+    };
+    checkMenu('rest');
+    if (tone === 'danger') await page.screenshot({ path: `./__screenshots__/approvals-menu-${theme}.png` });
+    await full.hover();
+    await settled(item);
+    checkMenu('hover');
+    try {
+      await commands.mouseButton('[role="menuitem"][data-variant="destructive"]', true);
+      await settled(item);
+      expect(item.matches(':active')).toBe(true);
+      checkMenu('active');
+      /* Move away before release so this contrast probe does not pick Full access. */
+      await page.getByRole('button', { name: /^Model:/ }).hover();
+    } finally { await commands.mouseButton('body', false); }
+    const next = label === 'Never' ? 'Ask me' : label === 'Ask me' ? 'Full access' : null;
+    if (next !== null) await menu.getByRole('menuitem', { name: new RegExp(`^${next}`) }).click();
+    else await userEvent.keyboard('{Escape}');
+  }
+  expect(new Set(restingInks).size).toBe(3);
+});
 
 it.each([
   ['light', 1280], ['dark', 1280], ['light', 390], ['dark', 390],

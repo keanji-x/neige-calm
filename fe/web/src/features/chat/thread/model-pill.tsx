@@ -343,11 +343,14 @@ function EffortPill({
   );
 }
 
+type SettingTone = 'neutral' | 'warning' | 'danger';
+type SettingOption = Readonly<{ label: string; description: string; tone?: SettingTone }>;
+
 /** Total over `PlannerPermissionMode`, in menu order, so a new mode is a compile error here rather than a missing row. */
-const PERMISSION_MODES: Readonly<Record<PlannerPermissionMode, Readonly<{ label: string; description: string }>>> = Object.freeze({
+const PERMISSION_MODES: Readonly<Record<PlannerPermissionMode, SettingOption>> = Object.freeze({
   never: Object.freeze({ label: 'Never', description: 'Sandbox only; never asks.' }),
-  ask: Object.freeze({ label: 'Ask me', description: 'Pauses the turn to ask you.' }),
-  full: Object.freeze({ label: 'Full access', description: "No sandbox; never asks. Runs with your account's access." }),
+  ask: Object.freeze({ label: 'Ask me', description: 'Pauses the turn to ask you.', tone: 'warning' }),
+  full: Object.freeze({ label: 'Full access', description: "No sandbox; never asks. Runs with your account's access.", tone: 'danger' }),
 });
 
 /** The kernel reads the mode when it starts a turn, so a change never reaches the one already running. */
@@ -369,7 +372,7 @@ export function PermissionModePill({ mode, onChange, isDisabled = false, placeme
 export type PlannerRole = 'member' | 'admin';
 
 /** Total over `PlannerRole`, in menu order; Member is the default. */
-const PLANNER_ROLES: Readonly<Record<PlannerRole, Readonly<{ label: string; description: string }>>> = Object.freeze({
+const PLANNER_ROLES: Readonly<Record<PlannerRole, SettingOption>> = Object.freeze({
   member: Object.freeze({ label: 'Member', description: 'An ordinary Planner.' }),
   admin: Object.freeze({ label: 'Admin', description: 'May add Tracks and close the ones it added.' }),
 });
@@ -394,7 +397,7 @@ function SettingPill<Value extends string>({
   name, options, value, onChange, note, isDisabled, tooltip, placement, alignment = 'start',
 }: Readonly<{
   name: string;
-  options: Readonly<Record<Value, Readonly<{ label: string; description: string }>>>;
+  options: Readonly<Record<Value, SettingOption>>;
   value: Value;
   onChange: (value: Value) => void;
   note?: string;
@@ -406,7 +409,9 @@ function SettingPill<Value extends string>({
 }>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
-  const label = `${name}: ${options[value].label}`;
+  const current = options[value];
+  const tone = current.tone ?? 'neutral';
+  const label = `${name}: ${current.label}`;
   return (
     <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
       <DropdownMenu
@@ -418,7 +423,11 @@ function SettingPill<Value extends string>({
         hasChevron={false}
         button={{
           label,
-          children: <Text type="inherit" color="inherit" maxLines={1}>{label}</Text>,
+          children: <Text type="inherit" color="inherit" maxLines={1}>
+            {`${name}: `}
+            <span className={styles.settingValue} data-nc-tone={tone}>{current.label}</span>
+          </Text>,
+          'data-nc-tone': tone,
           variant: 'ghost',
           size: 'sm',
           isDisabled,
@@ -429,6 +438,7 @@ function SettingPill<Value extends string>({
         {(Object.keys(options) as Value[]).map((option) => (
           /* A node, not a string: Astryx cuts a string description to one line, and Full access's says what it risks. */
           <Choice key={option} label={options[option].label}
+            variant={options[option].tone === 'danger' ? 'destructive' : 'default'}
             description={<Text type="inherit" color="inherit">{options[option].description}</Text>}
             isSelected={value === option} onSelect={() => { if (option !== value) onChange(option); }} />
         ))}
@@ -476,10 +486,11 @@ function ResolvedLabel({ name, resolved }: Readonly<{ name: string; resolved: st
 }
 
 function Choice({
-  label, description, isSelected, isDisabled = false, onSelect,
+  label, description, isSelected, isDisabled = false, onSelect, variant = 'default',
 }: Readonly<{
   label: ReactNode;
   description?: ReactNode;
+  variant?: 'default' | 'destructive';
   isSelected: boolean;
   isDisabled?: boolean;
   onSelect: () => void;
@@ -487,12 +498,14 @@ function Choice({
   return (
     <DropdownMenuItem
       label={label}
+      variant={variant}
+      className={variant === 'destructive' ? styles.destructiveChoice : undefined}
       description={description}
       onClick={onSelect}
       isDisabled={isDisabled}
       endContent={isSelected ? (
         <>
-          <AstryxIcon icon="check" size="sm" color="accent" />
+          <AstryxIcon icon="check" size="sm" color={variant === 'destructive' ? 'error' : 'accent'} />
           <VisuallyHidden>Selected</VisuallyHidden>
         </>
       ) : undefined}

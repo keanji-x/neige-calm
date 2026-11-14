@@ -13,8 +13,8 @@
    * properties overridden on the vendor button; both are tokens, and neither
    * re-implements anything the button does.
    *
-   * `--text-3` is the app's secondary text, which `check-contrast.mjs` already
-   * holds to AA on every surface in the stylesheet.
+   * Settings promote neutral ink over interaction overlays; semantic values
+   * keep their own ink. The contrast recipes cover both composer surfaces.
    */
   .trigger,
   .effort,
@@ -27,6 +27,32 @@
   .setting {
     border-radius: var(--radius-pill);
     flex: none;
+  }
+
+  @media (hover: hover) {
+    .setting:hover:not(:disabled, [aria-disabled='true']) {
+      color: var(--text);
+    }
+  }
+
+  .setting:active:not(:disabled, [aria-disabled='true']),
+  .setting[aria-expanded='true'] {
+    color: var(--text);
+  }
+
+  .settingValue[data-nc-tone='warning'] {
+    color: var(--warn-text);
+    font-weight: var(--weight-medium);
+  }
+
+  .settingValue[data-nc-tone='danger'] {
+    color: var(--error-text);
+    font-weight: var(--weight-medium);
+  }
+
+  /* Astryx's public destructive variant colors the label, description and check. */
+  .destructiveChoice {
+    --color-error: var(--error-text);
   }
 
   /* Long model labels stay capped, while the owning composer and this

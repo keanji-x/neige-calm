@@ -26,8 +26,16 @@ function rgb(value) {
   const l = l_ ** 3; const m = m_ ** 3; const s = s_ ** 3;
   return [4.0767416621*l - 3.3077115913*m + 0.2309699292*s, -1.2684380046*l + 2.6097574011*m - 0.3413193965*s, -0.0041960863*l - 0.7034186147*m + 1.707614701*s, Number(match[4] ?? 1)];
 }
-/** @param {[number, number, number, number]} fg @param {readonly number[]} bg */
-function composite(fg, bg) { return /** @type {[number, number, number]} */ (fg.slice(0, 3).map((channel, index) => channel * fg[3] + bg[index] * (1 - fg[3]))); }
+/** @param {number} value */
+function srgb(value) { return value <= 0.0031308 ? 12.92 * value : 1.055 * value ** (1 / 2.4) - 0.055; }
+/** @param {number} value */
+function linear(value) { return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; }
+/** CSS source-over blends encoded sRGB; luminance is computed after decoding.
+ * @param {[number, number, number, number]} fg @param {readonly number[]} bg */
+function composite(fg, bg) {
+  return /** @type {[number, number, number]} */ (fg.slice(0, 3).map((channel, index) =>
+    linear(srgb(channel) * fg[3] + srgb(bg[index]) * (1 - fg[3]))));
+}
 /** @param {readonly number[]} color */
 function luminance(color) { return 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]; }
 /** @param {readonly number[]} a @param {readonly number[]} b */
@@ -137,6 +145,21 @@ const pairs = [
   { label: 'warning fill on page ground', foreground: '--warn', background: '--bg', underlay: '--bg', minimum: 3 },
   { label: 'error text on soft error over ground', foreground: '--error-text', background: '--error-soft', underlay: '--bg' },
 ];
+/* Ghost settings and destructive menu text share Astryx's hover/pressed overlays.
+ * Expanded triggers use the pressed overlay too. New tones need one recipe here
+ * and their interaction checks in planner-approvals.browser.test.tsx; no test census.
+ */
+for (const surface of ['--surface-card', '--paper']) {
+  for (const [state, overlay] of [['rest', surface], ['hover', '--overlay-hover'], ['active/expanded', '--overlay-active']]) {
+    for (const [tone, foreground] of [
+      ['neutral', state === 'rest' ? '--text-3' : '--text'],
+      ['warning', '--warn-text'], ['danger', '--error-text'],
+    ]) {
+      pairs.push({ label: `ghost setting ${tone} ${state} on ${surface}`, foreground, background: overlay, underlay: surface });
+    }
+    pairs.push({ label: `destructive menu text ${state} on ${surface}`, foreground: '--error-text', background: overlay, underlay: surface });
+  }
+}
 const gamutTokens = ['--warn', '--error-text', ...pairs.flatMap(({ foreground, background }) => [foreground, background])];
 
 for (const [theme, vars] of themes) {
