@@ -1,4 +1,4 @@
-//! Typed creation-time metadata; callers own the Track creation transaction.
+//! Cumulative template capabilities; callers own the Track creation or binding transaction.
 use crate::error::Result;
 use calm_types::ids::TrackId;
 use calm_types::track_capability::TrackCapability;
@@ -10,6 +10,11 @@ pub async fn stamp_tx(
     capabilities: &[TrackCapability],
 ) -> Result<()> {
     for capability in capabilities {
+        // The immutable-row trigger fires before SQLite's conflict handling. Existing facts
+        // must be left untouched, including on a repeated template binding.
+        if has_tx(tx, track, *capability).await? {
+            continue;
+        }
         sqlx::query("INSERT INTO track_capabilities(track_id,capability) VALUES(?1,?2)")
             .bind(track.as_str())
             .bind(capability.as_db_str())

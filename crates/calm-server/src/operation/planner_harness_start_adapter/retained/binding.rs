@@ -49,6 +49,7 @@ impl PlannerHarnessStartAdapter {
                     &target.fence,
                     binding.provider,
                     &thread_tx,
+                    target.workspace.agent_cwd(),
                 )
                 .await?;
                 checkpoint_app_server_interact_tx(
@@ -84,7 +85,15 @@ pub(super) async fn bind_identity_tx(
     expected: &RuntimeExecutionFence,
     provider: AgentProvider,
     thread: &str,
+    cwd: &str,
 ) -> Result<()> {
+    crate::harness::wiring::record_bound_session_cwd_tx(
+        tx,
+        &wire.card_id,
+        &wire.worker_session_id,
+        cwd,
+    )
+    .await?;
     let current =
         conversation::current_input_carrier_tx(tx, &wire.card_id, &wire.worker_session_id).await?;
     let mut frame: CanonicalHarnessSnapshot = serde_json::from_value(current.snapshot().clone())?;

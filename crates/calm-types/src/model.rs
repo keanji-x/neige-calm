@@ -262,13 +262,13 @@ pub struct Track {
     /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,
-    /// Template this track was created from. Names the birth snapshot only.
+    /// Currently selected Track working method. Switching preserves authored Report content.
     // The alias is a deserialization-only read for pre-rename event-log rows; keep BOTH `default` and
     // `alias`, or old rows replay as `None` / get skipped. Non-doc on purpose: doc comments here are
     // exported into generated artifacts.
     #[serde(default, alias = "workflow_id")]
     pub template_id: Option<String>,
-    /// The plugin that owns this track, recorded when the row is created.
+    /// The plugin owning the selected working method. Earlier owners retain manifest-bound grants.
     #[serde(default)]
     pub plugin_scope: Option<String>,
     /// Server-owned structural marker. Public track creation cannot set this.

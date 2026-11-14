@@ -7,9 +7,11 @@ import { Menu } from '../../ui/menu/public.tsx';
 import styles from './area-selector.module.css';
 
 /** The caller owns whether selection navigates or just changes a list's scope. */
-export function AreaSelector({ areas, activeArea, onSelectArea, onCreateArea }: Readonly<{
+export function AreaSelector({ areas, activeArea, draftArea, onSelectArea, onCreateArea }: Readonly<{
   areas: readonly Area[];
   activeArea: Area | undefined;
+  /** Presentation only; draft metadata never adds a selectable Area. */
+  draftArea?: Pick<Area, 'id' | 'name'>;
   onSelectArea: (areaId: string) => void;
   onCreateArea: (origin: DialogOrigin) => void;
 }>) {
@@ -17,7 +19,8 @@ export function AreaSelector({ areas, activeArea, onSelectArea, onCreateArea }: 
   const shown = visibleAreas(areas);
   // A newly created Area can name the draft before the full picker list arrives.
   const current = shown.find((area) => area.id === activeArea?.id)
-    ?? visibleAreas(activeArea === undefined ? [] : [activeArea])[0];
+    ?? visibleAreas(activeArea === undefined ? [] : [activeArea])[0]
+    ?? draftArea;
   return <Menu wrapClassName={styles.area} menuClassName={styles.menu}
     itemClassName={styles.item} separatorClassName={styles.separator}
     items={[

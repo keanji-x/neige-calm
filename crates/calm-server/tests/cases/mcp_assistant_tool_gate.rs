@@ -52,6 +52,7 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_task_regate",
     // Naming the track is a planner judgement.
     "neige_track_rename",
+    "neige_track_set",
     // Publishing the track's verified commit is a Planner action.
     "plugin_gitforge_publish",
     // Rerunning failed CI jobs, once the user approves it, is a Planner action (#2617).

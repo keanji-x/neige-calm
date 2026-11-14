@@ -61,6 +61,7 @@ mod control_tests;
 mod dispatcher_inputs_tests;
 mod dispatcher_report_edit_tests;
 mod g4_system_creation_tests;
+mod implicit_method_tests;
 mod input_feedback_tests;
 #[cfg(feature = "fixtures")]
 mod input_source_handoff_tests;

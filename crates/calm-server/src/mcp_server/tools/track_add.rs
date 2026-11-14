@@ -118,6 +118,13 @@ impl From<CalmError> for TrackAddRefusal {
 /// The keyed create, bound at boot by the route layer that owns it.
 #[async_trait::async_trait]
 pub trait TrackCreator: super::track_sources::TrackCatalog + Send + Sync {
+    /// Select the caller's Track working method through the same admission owner as REST.
+    async fn set_template(
+        &self,
+        identity: ToolCallIdentity,
+        template_id: String,
+        message: Option<String>,
+    ) -> crate::error::Result<Value>;
     /// Mint the Track, or resume the one this request's key already minted.
     async fn add(&self, request: TrackAddRequest) -> Result<Track, TrackAddRefusal>;
 }

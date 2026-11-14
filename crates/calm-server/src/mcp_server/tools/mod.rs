@@ -28,6 +28,7 @@ pub mod track_rename;
 pub mod track_report;
 pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
+pub mod track_set;
 pub mod track_sources;
 pub mod track_state;
 mod unified_browse;
@@ -47,6 +48,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     area_reports::register_into(registry);
     source::register_into(registry);
     track_rename::register_into(registry);
+    track_set::register_into(registry);
     user_ask::register_into(registry);
     plugin_access::register_into(registry);
     mail::register_into(registry);
@@ -247,8 +249,9 @@ mod tests {
         // Listing `neige_mail_ls` and `neige_mail_cat` for the Planner adds 849 bytes of
         // description/schema to the existing surface; the measured aggregate cap is 42,097.
         // The report selectors, Area status, mail filters and commit guidance add 650 bytes.
-        // #3668: compact named-path descriptions keep the measured surface bounded.
-        const SURFACE_MAX_BYTES: usize = 42_725;
+        // #3651 catch-up: named-path declarations and the template setter together
+        // measure 43,235 bytes. Preserve both contracts with the measured aggregate cap.
+        const SURFACE_MAX_BYTES: usize = 43_235;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

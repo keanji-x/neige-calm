@@ -6,14 +6,12 @@ import { Popover } from '@astryxdesign/core/Popover';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
-import { FolderPill, StartingPointPill, IsolationPill } from '../default-pills/public.tsx';
+import { FolderPill } from '../default-pills/public.tsx';
 import styles from './composer-preferences.module.css';
 
 type Props = Readonly<{
-  startingPoint: ComponentProps<typeof StartingPointPill>;
   folder: Omit<ComponentProps<typeof FolderPill>, 'onBrowse'> & { onBrowse: (origin: DialogOrigin) => void };
   browsing: boolean;
-  isolation: ComponentProps<typeof IsolationPill>;
 }>;
 
 /** Button owns truncation. Include its clipped text when measuring the space
@@ -26,16 +24,14 @@ function fullButtonWidth(button: HTMLButtonElement): number {
     + (label === undefined ? 0 : Math.max(0, label.scrollWidth - label.clientWidth));
 }
 
-export function ComposerPreferences({ startingPoint, folder, browsing, isolation }: Props) {
+export function ComposerPreferences({ folder, browsing }: Props) {
   const compact = useCompactViewport();
   const [collapsed, setCollapsed] = useState(false);
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const itemsRef = useRef<HTMLDivElement>(null);
-  const startingRef = useRef<HTMLSpanElement>(null);
   const folderRef = useRef<HTMLSpanElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
-  const isolationRef = useRef<HTMLDivElement>(null);
   const requiredWidth = useRef(0);
   const measuredLabels = useRef('');
   const restoreFocus = useRef(false);
@@ -79,9 +75,8 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     const actions = row?.lastElementChild;
     if (host === null || !(row instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
     const measure = () => {
-      const template = startingRef.current?.querySelector('button');
       const folders = [...(folderRef.current?.querySelectorAll<HTMLButtonElement>(':scope > button') ?? [])];
-      const buttons = template === null || template === undefined ? folders : [template, ...folders];
+      const buttons = folders;
       const labels = buttons.map((button) => button.getAttribute('aria-label') ?? button.textContent).join('\n');
       if (items !== null && items.getBoundingClientRect().width > 0) {
         const gap = parseFloat(getComputedStyle(host).columnGap) || 0;
@@ -96,8 +91,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
         return;
       }
       const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
-      const isolationWidth = isolationRef.current?.getBoundingClientRect().width ?? 0;
-      const available = row.clientWidth - actions.getBoundingClientRect().width - isolationWidth - gap * 2;
+      const available = row.clientWidth - actions.getBoundingClientRect().width - gap;
       const next = compact && requiredWidth.current > available + 0.5;
       if (next !== collapsed) {
         restoreFocus.current = (items?.contains(document.activeElement) ?? false) || moreRef.current === document.activeElement;
@@ -114,12 +108,10 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
     observer.observe(row);
     observer.observe(actions);
     if (items !== null) observer.observe(items);
-    if (isolationRef.current !== null) observer.observe(isolationRef.current);
     return () => observer.disconnect();
   });
 
   const preferences = <div ref={itemsRef} className={styles.items}>
-    <span ref={startingRef} className={styles.startingPoint}><StartingPointPill {...startingPoint} showLabel /></span>
     <span ref={folderRef} className={styles.folder}><FolderPill {...folder} controlLabel="Repo" showLabel onBrowse={() => {
       // A native top-layer popup must relinquish hits and its focus trap before
       // the body-portal modal opens. Public controlled close also restores More.
@@ -135,8 +127,7 @@ export function ComposerPreferences({ startingPoint, folder, browsing, isolation
       content={<div className={styles.panel}>{preferences}</div>}>
       {(trigger) => <Button {...trigger} ref={(node) => { moreRef.current = node; trigger.ref(node); }}
         label="Track options" variant="secondary" className={styles.trigger} isIconOnly
-        icon={<Icon name="more" />} isDisabled={startingPoint.isDisabled} />}
+        icon={<Icon name="more" />} isDisabled={folder.isDisabled} />}
     </Popover> : preferences}
-    <div ref={isolationRef} className={styles.isolation}><IsolationPill {...isolation} showLabel={!compact} /></div>
   </div>;
 }

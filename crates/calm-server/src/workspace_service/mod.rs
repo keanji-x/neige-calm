@@ -1,10 +1,11 @@
 //! Kernel workspace policy. Mechanisms live in the `workspace` package.
 pub(crate) mod identity;
+pub(crate) mod isolation;
 pub(crate) mod ports;
 mod repair;
 pub(crate) use repair::{
     HeldTrack, ManagedPreparation, RetainedAdmission, RetainedPreparation, managed_effect,
-    refuse_admitted_teardown, retained_worktree, selected_track,
+    refuse_admitted_teardown, retained_task_worktree, retained_worktree, selected_track,
 };
 pub(crate) mod reclaim;
 pub(crate) mod sweep;
@@ -122,4 +123,49 @@ pub(crate) async fn materialize_borrowed_creation(
         admission,
     )
     .await
+}
+
+/// Configuration holds operation drive before Track. The spawned repair owner retains
+/// that Track fence even if its HTTP waiter is cancelled.
+pub(crate) async fn materialize_configuration(
+    state: &crate::state::RouteState,
+    track: &crate::model::Track,
+    held: Option<HeldTrack>,
+) -> crate::error::Result<()> {
+    let targets = state.teardown_targets.clone();
+    let repo = state.repo.clone();
+    let selected = track.clone();
+    let admit = move || {
+        let targets = targets.clone();
+        let repo = repo.clone();
+        let selected = selected.clone();
+        async move {
+            refuse_admitted_teardown(&targets, selected.id.as_str())?;
+            selected_track(repo.as_ref(), &selected).await?;
+            Ok(())
+        }
+    };
+    match held {
+        Some(held) => {
+            repair::retained_worktree(
+                state.repo.clone(),
+                &state.track_delete_locks,
+                track,
+                RetainedAdmission::Held(held),
+                RetainedPreparation::Locator,
+                admit,
+            )
+            .await
+        }
+        None => {
+            repair::selected_worktree(
+                state.repo.clone(),
+                &state.track_delete_locks,
+                track,
+                true,
+                admit,
+            )
+            .await
+        }
+    }
 }

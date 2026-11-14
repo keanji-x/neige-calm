@@ -9,6 +9,7 @@ use serde_json::json;
 
 mod batch;
 mod fixture;
+mod selection_read;
 use fixture::RetryFixture;
 
 #[tokio::test]

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 pub(crate) mod input_transfer;
 
-const SUCCESSOR_SESSION_KEY: &str = "runtime_id";
-const PREDECESSOR_SESSION_KEY: &str = "old_runtime_id";
+pub const SUCCESSOR_SESSION_KEY: &str = "runtime_id";
+pub const PREDECESSOR_SESSION_KEY: &str = "old_runtime_id";
 
 use async_trait::async_trait;
 use calm_types::conversation_receipt::{
@@ -33,7 +33,7 @@ use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::harness::backend::factory::{PlannerFactory, ReadinessFor};
-use crate::harness::wiring::{PlannerRow, PlannerWiring};
+use crate::harness::wiring::{PlannerRow, PlannerWiring, SessionCwdUndo};
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation,
     PlannerHarness, PlannerHarnessParams, QueueEntry, initial_snapshot_with_goal,
@@ -901,7 +901,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             None => None,
         };
         let existing_active_runtime = if defer_runtime_start {
-            credential_predecessor
+            credential_predecessor.clone()
         } else {
             None
         };
@@ -914,6 +914,13 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             None
         };
         let predecessor = existing_active_runtime.as_ref().or(failed_carrier.as_ref());
+        let old_session_cwd = match credential_predecessor.as_ref().or(failed_carrier.as_ref()) {
+            Some(old) => Some(
+                SessionCwdUndo::capture_tx(tx, card.id.as_str(), &old.id, &worker_session_id)
+                    .await?,
+            ),
+            None => None,
+        };
         let inherited_snapshot = predecessor.and_then(|runtime| {
             let state = runtime.handle_state_json.as_ref()?;
             if state.get("mode").and_then(Value::as_str) != Some(HARNESS_MODE) {
@@ -1169,6 +1176,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             "runtime_id": worker_session_id,
             "runtime_deferred": defer_runtime_start,
             "old_codex_credential": old_codex_credential,
+            "old_session_cwd": old_session_cwd,
             "cwd": payload.cwd,
             "goal": payload.goal,
             "report_card_id": report_card_id,
@@ -1291,7 +1299,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             &track_id,
             profile,
             card_role,
-            cwd,
+            cwd.clone(),
             runtime_deferred,
             || self.mcp_socket_path_for_thread(),
             || Box::pin(self.admit_historical(&card_id)),
@@ -1370,6 +1378,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         .await?;
                         if let Some(existing) = raced_in.as_ref() {
                             old_worker_session_id = Some(existing.id.clone());
+                            checkpoint_output.set_output_data(
+                                "old_session_cwd",
+                                serde_json::to_value(
+                                    SessionCwdUndo::capture_tx(
+                                        tx,
+                                        &card_id,
+                                        &existing.id,
+                                        &worker_session_id,
+                                    )
+                                    .await?,
+                                )?,
+                                "planner harness",
+                            )?;
                             checkpoint_output.set_output_data(
                                 "old_runtime_id",
                                 json!(existing.id.clone()),
@@ -1473,6 +1494,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             tx,
                             &worker_session_id,
                             Some(serde_json::to_value(&bound_snapshot)?),
+                        )
+                        .await?;
+                    }
+                    if std::path::Path::new(&cwd).is_absolute() {
+                        crate::harness::wiring::record_bound_session_cwd_tx(
+                            tx,
+                            &card_id,
+                            &worker_session_id,
+                            &cwd,
                         )
                         .await?;
                     }
@@ -1770,14 +1800,15 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             "planner harness tx_output missing old_runtime_status".into(),
                         )
                     })?;
-            steps.push(CompensationStep::new(
-                "restore_old_runtime",
-                json!({
-                    "runtime_id": old_worker_session_id,
-                    "status": old_runtime_status,
-                    "codex_credential": output.data.get("old_codex_credential"),
-                }),
-            ));
+            let mut args = json!({
+                "runtime_id": old_worker_session_id,
+                "status": old_runtime_status,
+                "codex_credential": output.data.get("old_codex_credential"),
+            });
+            if let Some(undo) = output.data.get("old_session_cwd") {
+                args["session_cwd"] = undo.clone();
+            }
+            steps.push(CompensationStep::new("restore_old_runtime", args));
         }
         Ok(finish(steps))
     }
@@ -1813,7 +1844,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // card's current binding says. Each owner checks the execution consumer; a Codex
                 // interrupt of an absent thread is a no-op. Failures remain log-only (#1791).
                 // plan_compensation requires the original runtime id in the durable output.
-                let worker_session_id = _output.output_string("runtime_id", "planner harness")?;
+                let worker_session_id =
+                    _output.output_string(SUCCESSOR_SESSION_KEY, "planner harness")?;
                 if let Err(error) = crate::acp_planner::lifecycle::stop_session(
                     &self.acp_host,
                     &worker_session_id,
@@ -1921,6 +1953,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     ctx.repo.as_ref(),
                     worker_session_id,
                     status,
+                    step.args
+                        .get("session_cwd")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()?,
+                    (
+                        _output.output_string("runtime_id", "planner harness")?,
+                        _output
+                            .result
+                            .get("payload")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    ),
                     step.args
                         .get("codex_credential")
                         .filter(|value| !value.is_null())
@@ -2529,35 +2574,43 @@ async fn restore_old_runtime_after_spawn_failure(
     repo: &dyn crate::db::RouteRepo,
     old_worker_session_id: String,
     status: WorkerSessionState,
+    cwd: Option<SessionCwdUndo>,
+    legacy: (String, Value),
     credential: Option<CodexAssistantCredential>,
 ) -> Result<()> {
-    // A failed carrier (#2192) goes back to being the card's session, still `failed`.
-    if status == WorkerSessionState::Failed {
-        return write_in_tx_typed(repo, move |tx| {
-            Box::pin(async move {
-                session_restore_failed_carrier_runtime_tx(tx, &old_worker_session_id)
-                    .await
-                    .map_err(CalmError::from)
-            })
-        })
-        .await;
+    if status != WorkerSessionState::Failed {
+        active_run_status_to_db(&status)?;
     }
-    active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            if let Some(credential) = credential {
+            let cwd = match cwd {
+                Some(undo) => undo,
+                None => {
+                    SessionCwdUndo::recover_legacy_tx(
+                        tx,
+                        &old_worker_session_id,
+                        &legacy.0,
+                        &legacy.1,
+                    )
+                    .await?
+                }
+            };
+            let card = cwd.require_owner_tx(tx, &old_worker_session_id).await?;
+            if status == WorkerSessionState::Failed {
+                session_restore_failed_carrier_runtime_tx(tx, &old_worker_session_id).await?;
+            } else if let Some(credential) = credential {
                 restore_codex_assistant_credential_tx(
                     tx,
                     &credential,
                     &old_worker_session_id,
                     status,
                 )
-                .await
+                .await?;
             } else {
                 session_restore_from_superseded_runtime_tx(tx, &old_worker_session_id, status)
-                    .await
-                    .map_err(CalmError::from)
+                    .await?;
             }
+            cwd.restore_tx(tx, &card).await
         })
     })
     .await
@@ -2910,8 +2963,8 @@ mod tests {
                 .contains("Before report edits, read affected sections with `neige_report_read`"),
             "base prompt must require the report read before direct edits"
         );
-        assert!(expected.contains("Selected Template snapshot"));
-        assert!(expected.contains("not to reproduce a template checklist"));
+        assert!(expected.contains("Template snapshot has method/report format; do not reread."));
+        assert!(expected.contains("Delegate for work, not template checklists."));
     }
 
     #[test]

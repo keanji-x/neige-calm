@@ -183,6 +183,7 @@ pub(super) async fn allocate_track_structure_tx(
         write_for_tx.area_cache(),
     )
     .await?;
+    crate::track_plugin_access::grant_git_workspace_plugins_tx(tx, &track).await?;
     if let Some(creator) = &creator {
         creator.stamp_tx(tx, &mut track).await?;
     }

@@ -3371,7 +3371,14 @@ impl SelectionSource for Inner {
         // Deterministic card-read-then-track-read window. No-op in production.
         wait_at_planner_harness_cwd_race_hook(self.worker_session_id.as_str()).await;
         match self.repo.track_get(self.track_id.as_str()).await {
-            Ok(Some(track)) => Ok(track.workspace.agent_cwd().to_string()),
+            Ok(Some(track)) => crate::harness::wiring::session_cwd_for(
+                self.repo.as_ref(),
+                self.card_id.as_str(),
+                &self.worker_session_id,
+                &track,
+            )
+            .await
+            .map_err(|error| IssuanceRefusal::retryable(error.to_string())),
             // "There is no workspace" and "we could not read the workspace" are different facts, and
             // neither means "read the global layers instead". `Ok(None)` IS reachable: a
             // `track_delete_tx` can commit between the card read and this one.

@@ -128,8 +128,8 @@ it('keeps actual AddCardMenu focus trigger separate from the NewCard source', as
   await page.screenshot({ path: 'test-results/dialog-card.png' });
 });
 it('opens the actual NewTrack folder picker from its inline folder host', async () => {
-  render(<NewTrackForm loadTemplate={vi.fn()} submitting={false} error={null} templates={[]} templatesLoaded
-    initialTemplateId={null} initialCwd={null} onManageRecipes={vi.fn()}
+  render(<NewTrackForm submitting={false} error={null}
+    initialCwd={null}
     listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })} onSubmit={vi.fn()} />);
   const folder = screen.getByRole('button', { name: /^Repo:/ });
   await userEvent.click(folder);
@@ -177,8 +177,8 @@ function AreaEntry({ empty }: { empty: boolean }) {
       collapsed={false} onToggleCollapsed={vi.fn()} />
   </UiPreferencesProvider>)}
     <Dialog purpose="form" origin={origin ?? { kind: 'surface-center' }} open={origin !== null} title="New area" onClose={() => setOrigin(null)} initialFocusRef={input}>
-      <AreaEditorForm initial={{ name: '', defaultTemplateId: null, defaultCwd: null }} submitting={false} locked={false}
-        cancelLabel="Cancel" error={null} templates={[]} templatesLoaded templatesError={null}
+      <AreaEditorForm initial={{ name: '', defaultCwd: null }} submitting={false} locked={false}
+        cancelLabel="Cancel" error={null}
         listDirectory={() => Promise.resolve({ path: '/', parent: null, entries: [] })}
         nameInputRef={input} submitLabel="Create area" onCancel={() => setOrigin(null)} onSubmit={vi.fn()} />
     </Dialog></>;

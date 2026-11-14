@@ -118,36 +118,48 @@ pub(crate) async fn collect<A: WorkerAdmission>(
     root: &Path,
 ) -> Result<Option<Box<dyn PreparedTx>>> {
     let pool = ctx.operation_repo.sqlite_db();
-    let write_db = (pool).clone();
-    write_db
+    let admitted = pool
         .writer()
-        .with_writer(|write_session| {
+        .with_writer(|session| {
             Box::pin(async move {
-                let mut tx = write_session.begin_immediate().await?;
+                let mut tx = session.begin_immediate().await?;
                 if !crate::operation::repo_sqlite::has_live_claim_tx(&mut tx, op).await? {
                     tx.rollback().await?;
-                    return Ok(None); // Repository's original-claim guard rejects before direct prepare.
+                    return Ok::<_, CalmError>(false);
                 }
-                let admitted = read_facts(&mut tx, track_id, attempt).await;
+                read_facts(&mut tx, track_id, attempt).await?;
                 tx.rollback().await?;
-                admitted?;
-                observe_worker_checkout(ctx, track_id).await?;
-                let mut tx = write_session.begin_immediate().await?;
-                let facts = read_facts(&mut tx, track_id, attempt).await;
-                tx.rollback().await?;
-                let facts = facts?;
-                let evidence = observe(&facts).await;
-                Ok(Some(Box::new(PreparedWorker {
-                    adapter,
-                    claim: PreparationClaim::new(op)?,
-                    facts,
-                    evidence,
-                    root: root.to_owned(),
-                }) as Box<dyn PreparedTx>))
+                Ok(true)
             })
         })
         .await
-        .map_err(calm_truth::TruthError::from)?
+        .map_err(calm_truth::TruthError::from)??;
+    if !admitted {
+        return Ok(None);
+    }
+    // Effects and observation use their own transactions, outside the fact-reader's writer scope.
+    super::lazy_worktree::prepare(ctx, op, track_id, attempt).await?;
+    observe_worker_checkout(ctx, track_id).await?;
+    let facts = pool
+        .writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut tx = session.begin_immediate().await?;
+                let facts = read_facts(&mut tx, track_id, attempt).await?;
+                tx.rollback().await?;
+                Ok::<_, CalmError>(facts)
+            })
+        })
+        .await
+        .map_err(calm_truth::TruthError::from)??;
+    let evidence = observe(&facts).await;
+    Ok(Some(Box::new(PreparedWorker {
+        adapter,
+        claim: PreparationClaim::new(op)?,
+        facts,
+        evidence,
+        root: root.to_owned(),
+    })))
 }
 
 async fn observe(facts: &Facts) -> Evidence {

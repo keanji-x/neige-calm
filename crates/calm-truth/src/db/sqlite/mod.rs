@@ -128,8 +128,9 @@ pub use area::{
 pub use card::{
     CardExecutionShape, TerminalDeleted, card_body_crdt_get_tx, card_create_tx,
     card_create_with_id_tx, card_delete_tx, card_execution_shape_tx, card_for_update_tx,
-    card_update_tx, card_update_with_crdt_tx, planner_permission_mode_set_tx, terminal_create_tx,
-    terminal_delete_tx, terminal_get_by_card_tx, terminal_set_exit_with_output_tx,
+    card_update_tx, card_update_with_crdt_tx, planner_configuration_set_tx,
+    planner_permission_mode_set_tx, terminal_create_tx, terminal_delete_tx,
+    terminal_get_by_card_tx, terminal_set_exit_with_output_tx,
 };
 pub use card_composite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
@@ -225,7 +226,7 @@ pub use worker_flow_capture::worker_flow_cursor_set_for_test;
 pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
     TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
-    admit_attached_workspace_tx, track_create_idempotency_claim_tx,
+    admit_attached_workspace_tx, track_bind_template_tx, track_create_idempotency_claim_tx,
     track_create_idempotency_get_pool, track_create_idempotency_get_tx, track_create_tx,
     track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx,
     track_require_reopenable_tx, track_update_tx, track_worktree_locations,

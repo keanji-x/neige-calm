@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,7 +11,8 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { AreaCreatePreflightError } from '../providers/queries.ts';
-import type { TrackTemplate } from '../../../../core/domain/track.ts';
+import { useKeyedIntent } from '../providers/idempotency-key.ts';
+import type { NewAreaBody } from '../../../../core/domain/area.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { ReadReceiptsProvider } from '../providers/read-receipts.tsx';
 import { NewTrackDraftProvider } from '../router/new-track-drafts.tsx';
@@ -28,9 +29,6 @@ const harness = vi.hoisted(() => ({
     createdAt: 1,
     updatedAt: 1,
   },
-  templates: [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }] as TrackTemplate[],
-  templatesLoaded: true,
-  templatesError: null as string | null,
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
@@ -77,12 +75,6 @@ vi.mock('../providers/queries.ts', async (importOriginal) => {
     useTrackMutations: () => ({
       create: vi.fn(), patch: vi.fn(), setPinned: vi.fn(), createTerminal: vi.fn(),
       createCodex: vi.fn(), createCard: vi.fn(), removeCard: vi.fn(), remove: vi.fn(),
-    }),
-    useTrackTemplates: () => ({
-      templates: harness.templates,
-      loaded: harness.templatesLoaded,
-      error: harness.templatesError,
-      refetch: vi.fn(),
     }),
   };
 });
@@ -152,9 +144,6 @@ beforeEach(() => {
     defaultTemplateId: null,
     defaultCwd: null,
   };
-  harness.templates = [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }];
-  harness.templatesLoaded = true;
-  harness.templatesError = null;
   harness.create.mockReset().mockResolvedValue(harness.area);
   harness.update.mockReset().mockResolvedValue(harness.area);
   harness.remove.mockReset().mockResolvedValue(undefined);
@@ -167,6 +156,31 @@ beforeEach(() => {
 });
 
 describe('AppShell Area editor flow', () => {
+  it('creates with only a name and optional folder, without template or isolation controls', async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    const dialog = screen.getByRole('dialog', { name: 'New area' });
+    expect(within(dialog).queryByRole('button', { name: /template/i })).toBeNull();
+    expect(within(dialog).queryByText(/Could not load templates/)).toBeNull();
+    expect(within(dialog).queryByText(/isolation/i)).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Default folder: Neige workspace' })).toBeTruthy();
+    await userEvent.type(within(dialog).getByRole('textbox', { name: /^Name/ }), 'Simple');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(harness.create).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Simple', default_cwd: null,
+    }), expect.any(String)));
+  });
+
+  it('does not read templates when creating or editing an Area', async () => {
+    const send = vi.fn((request: ApiRequest) => Promise.resolve({ status: 503, statusText: 'Unavailable', body: { path: request.path } }));
+    renderShell(false, { send });
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    expect(send.mock.calls.filter(([request]) => request.path.startsWith('/api/track-templates'))).toEqual([]);
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await openDesktopEditor();
+    expect(send.mock.calls.filter(([request]) => request.path.startsWith('/api/track-templates'))).toEqual([]);
+  });
+
   function areaTransport(replies: (() => ApiTransportResponse)[]) {
     const writes: ApiRequest[] = [];
     const transport: ApiTransportPort = { send: (request) => {
@@ -247,7 +261,7 @@ describe('AppShell Area editor flow', () => {
     expect(input.disabled).toBe(false);
   });
 
-  it('creates from the shared Dialog with the two pill values', async () => {
+  it('creates from the shared Dialog with no template default', async () => {
     renderShell();
     await userEvent.click(screen.getByRole('button', { name: 'New area' }));
     const dialog = screen.getByRole('dialog', { name: 'New area' });
@@ -256,14 +270,12 @@ describe('AppShell Area editor flow', () => {
     const name = within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'Name' });
     expect(name.required).toBe(true);
     await userEvent.type(name, 'Reading');
-    await userEvent.click(screen.getByRole('button', { name: 'Default template: No template' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
 
     await waitFor(() => expect(harness.create).toHaveBeenCalledTimes(1));
     const body = harness.create.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(body).toMatchObject({
-      name: 'Reading', default_template_id: 'small-change', default_cwd: null,
+      name: 'Reading', default_cwd: null,
     });
     expect(AREA_PALETTE).toContain(body.color);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
@@ -372,9 +384,6 @@ describe('AppShell Area editor flow', () => {
     harness.area = {
       ...harness.area, defaultTemplateId: 'retired-template', defaultCwd: '/srv/ legal-space ',
     };
-    harness.templates = [];
-    harness.templatesLoaded = false;
-    harness.templatesError = 'Could not load templates.';
     renderShell();
     await openDesktopEditor();
     const name = screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ });
@@ -393,13 +402,10 @@ describe('AppShell Area editor flow', () => {
     };
     renderShell();
     await openDesktopEditor();
-    await userEvent.click(screen.getByRole('button', { name: 'Default template: Small change' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /^No template/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Use a new Neige workspace' }));
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(harness.update).toHaveBeenCalledWith('c1', {
-      default_template_id: null,
       default_cwd: null,
     }));
   });
@@ -467,4 +473,18 @@ describe('AppShell Area editor flow', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(harness.go).toHaveBeenCalledWith({ name: 'new-track', areaId: 'c-created' });
   });
+});
+
+it('keeps a legacy unknown Area body and key when the new builder omits templates', () => {
+  const { result } = renderHook(() => useKeyedIntent<null, NewAreaBody>(() => true));
+  const body: NewAreaBody = { name: 'Original Area', color: '#123456', default_cwd: null, default_template_id: 'legacy-template' };
+  let original: ReturnType<typeof result.current.request>;
+  act(() => { original = result.current.request(null, () => body); });
+  const freshBody = vi.fn(() => ({ name: 'New draft', color: '#654321', default_cwd: null }));
+  act(() => {
+    const retry = result.current.request(null, freshBody);
+    expect(retry.body).toEqual(body);
+    expect(retry.key).toBe(original.key);
+  });
+  expect(freshBody).not.toHaveBeenCalled();
 });

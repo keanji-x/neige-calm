@@ -42,46 +42,15 @@ function mount() {
   return { creates, router };
 }
 
-it.each([1280, 390])('composer isolation option, badge, explanation and admission refusal (%ipx)', async (width) => {
+it.each([1280, 390])('composer starts attached folders without eager isolation (%ipx)', async (width) => {
   await page.viewport(width, 900);
   const { creates } = mount();
-  const trigger = page.getByRole('button', { name: 'Workspace isolation: Worktree' });
-  await expect.element(trigger).toBeVisible();
-  await page.screenshot({ path: `../../../../test-results/v10-new-track-${width}.png` });
-  expect(trigger.element().closest('[data-nc-composer-preferences]')).toBeTruthy();
-  await trigger.click();
-  await expect.element(page.getByRole('menuitem', { name: /Worktree.*Selected/ })).toBeVisible();
-  await page.getByRole('menuitem', { name: /Worktree/ }).click();
+  await expect.element(page.getByRole('button', { name: /Workspace isolation/ })).not.toBeInTheDocument();
   await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan');
   await page.getByRole('button', { name: 'Create track' }).click();
   await expect.poll(() => creates.length).toBe(1);
-  expect(creates[0]?.body).not.toHaveProperty('isolation');
-
-  await trigger.click();
-  await page.getByRole('menuitem', { name: 'None' }).click();
-  const badge = page.getByRole('button', { name: 'Not isolated · no guarantees' });
-  await expect.element(badge).toBeVisible();
-  await badge.click();
-  await expect.element(page.getByText(/Planner commits land on its current branch/)).toBeVisible();
-  await expect.element(page.getByText(/task workers are unavailable/i)).toBeVisible();
-  await expect.element(page.getByText(/#2862/)).toBeVisible();
-  await badge.click();
-  await page.getByRole('button', { name: 'Create track' }).click();
-  await expect.poll(() => creates.length).toBe(2);
-  expect(creates[1]?.body).toMatchObject({ cwd: '/repo', isolation: 'none', first_message: 'Plan' });
+  expect(creates[0]?.body).toMatchObject({ cwd: '/repo', isolation: 'none', first_message: 'Plan' });
   await expect.element(page.getByText('Folder overlaps Neige-owned location /repo/.claude/worktrees/track-other')).toBeVisible();
-  expect(document.documentElement.scrollWidth).toBe(width);
-  if (width === 390) await page.getByRole('button', { name: 'Track options', exact: true }).click();
-  await page.getByRole('button', { name: 'Use a Neige workspace instead' }).click();
-  if (width === 390) await page.getByRole('button', { name: 'Track options', exact: true }).click();
-  const privateTrigger = page.getByRole('button', { name: 'Workspace isolation: None' });
-  await expect.element(privateTrigger).toBeVisible();
-  await expect.element(badge).not.toBeInTheDocument();
-  await privateTrigger.click();
-  const disabled = page.getByRole('menuitem', { name: /Worktree/ });
-  await expect.element(disabled).toHaveAttribute('aria-disabled', 'true');
-  await expect.element(page.getByText('Private Neige folder: no worktree. Choose a Git folder to use one.')).toBeVisible();
-  await expect.element(page.getByRole('menuitem', { name: /None.*Selected/ })).toBeVisible();
   expect(document.documentElement.scrollWidth).toBe(width);
 });
 

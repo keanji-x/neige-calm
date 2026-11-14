@@ -18,8 +18,8 @@ mod historical;
 pub(crate) use historical::HistoricalHumanSource;
 mod storage_contract;
 pub(crate) use storage_contract::{
-    InputStorageContract, has_canonical_storage, human_input_storage_contract,
-    require_historical_storage, require_historical_storage_tx,
+    InputStorageContract, has_canonical_storage, has_canonical_track_carriers_tx,
+    human_input_storage_contract, require_historical_storage, require_historical_storage_tx,
     require_recreatable_track_carriers_tx,
 };
 mod selection_read;

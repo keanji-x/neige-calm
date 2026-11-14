@@ -1561,6 +1561,7 @@ async fn a_non_user_actor_may_not_change_a_workspace() {
         &calm_server::actor::Actor("ai:codex".into()),
         &track_row,
         &calm_server::model::TrackWorkspacePatch {
+            isolation: None,
             kind: calm_server::model::TrackWorkspaceKind::Attached,
             path: target.to_string_lossy().into_owned(),
             attach_folder: true,
@@ -1737,4 +1738,291 @@ async fn c5_repoint_writer_refuses_new_owned_root_and_restarts_old_harness() {
         }),
         "the refused binding writer must restart the old Planner at its old path"
     );
+}
+
+async fn repoint_isolation(
+    b: &Boot,
+    track: &str,
+    path: &Path,
+    isolation: &str,
+) -> (StatusCode, String) {
+    request(b.app.clone(), "PATCH", &format!("/api/tracks/{track}"),
+        Some(json!({"workspace": {"kind":"attached", "path":path, "isolation":isolation, "attach_folder":true}}))).await
+}
+
+#[tokio::test]
+async fn isolation_lattice_materializes_worktree_and_restarts_planner() {
+    for upgrade in [false, true] {
+        let b = boot().await;
+        let area = create_area(&b, "isolation").await;
+        let (track, _) = managed_track(&b, &area, "worktree").await;
+        let target = user_repo(&b.tmp.path().join("target"));
+        if upgrade {
+            let (status, body) = repoint_to(&b, &track, &target).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            std::fs::write(target.join("dirty"), "user changes").unwrap();
+        }
+        let (status, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let updated = b.repo.track_get(&track).await.unwrap().unwrap();
+        let worktree = updated.workspace.worktree.as_ref().unwrap();
+        assert!(Path::new(worktree).join(".git").is_file());
+        assert_ne!(Path::new(worktree), target);
+        let payloads = harness_start_payloads(&b).await;
+        let last: Value = serde_json::from_str(payloads.last().unwrap()).unwrap();
+        assert_eq!(last["cwd"].as_str(), Some(worktree.as_str()));
+        for isolation in ["none", "worktree"] {
+            let (status, body) = repoint_isolation(&b, &track, &target, isolation).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        }
+        if upgrade {
+            assert_eq!(
+                std::fs::read_to_string(target.join("dirty")).unwrap(),
+                "user changes"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn isolation_lattice_refuses_managed_target_and_attached_cross_path() {
+    let b = boot().await;
+    let area = create_area(&b, "isolation").await;
+    let (track, _) = managed_track(&b, &area, "refusals").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    let (status, body) = repoint_isolation(&b, &track, &target, "managed").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = repoint_isolation(&b, &track, &target, "none").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let elsewhere = user_repo(&b.tmp.path().join("elsewhere"));
+    let (status, body) = repoint_isolation(&b, &track, &elsewhere, "worktree").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(workspace_path(&b, &track).await, target);
+}
+
+#[tokio::test]
+async fn isolation_lattice_refuses_active_tasks_before_fencing() {
+    for status in ["dispatched", "running", "verifying"] {
+        let b = boot().await;
+        let area = create_area(&b, "active").await;
+        let (track, _) = managed_track(&b, &area, status).await;
+        let target = user_repo(&b.tmp.path().join("target"));
+        let (code, body) = repoint_to(&b, &track, &target).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        let runtime = install_live_harness(&b, &track).await;
+        let before = b.repo.track_get(&track).await.unwrap().unwrap().workspace;
+        b.repo.db().writer().execute(sqlx::query(
+            "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) \
+             VALUES('active',?1,'active','codex','active','{}',?2,0,0)")
+            .bind(&track).bind(status)).await.unwrap();
+        let (code, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+        assert_eq!(code, StatusCode::CONFLICT, "{body}");
+        assert_eq!(
+            b.repo.track_get(&track).await.unwrap().unwrap().workspace,
+            before
+        );
+        assert!(b.harness.get(&runtime).is_some());
+    }
+}
+
+#[tokio::test]
+async fn isolation_lattice_refuses_diverged_repo_before_fencing() {
+    let b = boot().await;
+    let area = create_area(&b, "diverged").await;
+    let (track, _) = managed_track(&b, &area, "diverged").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    git(&target, &["branch", "upstream"]);
+    std::fs::write(target.join("local"), "local").unwrap();
+    git(&target, &["add", "local"]);
+    git(&target, &["commit", "-qm", "local"]);
+    git(&target, &["checkout", "upstream"]);
+    std::fs::write(target.join("remote"), "remote").unwrap();
+    git(&target, &["add", "remote"]);
+    git(&target, &["commit", "-qm", "remote"]);
+    git(&target, &["checkout", "main"]);
+    git(&target, &["branch", "--set-upstream-to=upstream"]);
+    let runtime = install_live_harness(&b, &track).await;
+    let before = b.repo.track_get(&track).await.unwrap().unwrap().workspace;
+    let (status, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        b.repo.track_get(&track).await.unwrap().unwrap().workspace,
+        before
+    );
+    assert!(b.harness.get(&runtime).is_some());
+}
+
+#[tokio::test]
+async fn isolation_lattice_frozen_writer_only_allows_stamped_same_path_upgrade() {
+    let b = boot().await;
+    let area = create_area(&b, "writer").await;
+    let (track, _) = managed_track(&b, &area, "writer").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    let (status, body) = repoint_to(&b, &track, &target).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let before = b.repo.track_get(&track).await.unwrap().unwrap().workspace;
+    let worktree = workspace::worktree::track_worktree_path_for(&target, &track)
+        .to_string_lossy()
+        .into_owned();
+    let db = b.repo.db().clone();
+    db.writer()
+        .with_writer(|session| {
+            Box::pin(async move {
+                let mut upgrade = before.clone();
+                upgrade.worktree = Some(worktree);
+                for invalid in [
+                    calm_server::model::TrackWorkspace {
+                        path: "/elsewhere".into(),
+                        ..upgrade.clone()
+                    },
+                    calm_server::model::TrackWorkspace {
+                        kind: calm_server::model::TrackWorkspaceKind::Managed,
+                        ..upgrade.clone()
+                    },
+                    calm_server::model::TrackWorkspace {
+                        frozen_at: None,
+                        ..upgrade.clone()
+                    },
+                    before.clone(),
+                ] {
+                    let mut tx = session.begin_immediate().await.unwrap();
+                    let error = calm_server::db::sqlite::track_workspace_write_tx(
+                        &mut tx, &track, &invalid,
+                    )
+                    .await
+                    .unwrap_err();
+                    assert!(
+                        matches!(
+                            error,
+                            calm_truth::error::CalmError::Core(
+                                calm_types::error::CoreError::Conflict(_)
+                            )
+                        ),
+                        "{error:?}"
+                    );
+                    tx.rollback().await.unwrap();
+                }
+                let mut tx = session.begin_immediate().await.unwrap();
+                calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &track, &upgrade)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                for invalid in [before, upgrade] {
+                    let mut tx = session.begin_immediate().await.unwrap();
+                    let error = calm_server::db::sqlite::track_workspace_write_tx(
+                        &mut tx, &track, &invalid,
+                    )
+                    .await
+                    .unwrap_err();
+                    assert!(
+                        matches!(
+                            error,
+                            calm_truth::error::CalmError::Core(
+                                calm_types::error::CoreError::Conflict(_)
+                            )
+                        ),
+                        "{error:?}"
+                    );
+                    tx.rollback().await.unwrap();
+                }
+            })
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn same_patch_repairs_committed_worktree_selection_after_materialization_failure() {
+    let b = boot().await;
+    let area = create_area(&b, "repair").await;
+    let (track, _) = managed_track(&b, &area, "repair").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    assert_eq!(
+        repoint_isolation(&b, &track, &target, "worktree").await.0,
+        StatusCode::OK
+    );
+    let selected = b.repo.track_get(&track).await.unwrap().unwrap();
+    let worktree = selected.workspace.worktree.as_ref().unwrap();
+    git(&target, &["worktree", "remove", worktree]);
+    assert!(!Path::new(worktree).exists());
+    let active: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions WHERE track_id=? AND state IN ('starting','running','idle','turn_pending')")
+        .bind(&track).fetch_all(b.repo.pool()).await.unwrap();
+    calm_server::db::write_in_tx_typed(b.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            for id in active {
+                calm_truth::db::sqlite::session_mark_superseded_runtime_tx(tx, &id).await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let starts_before = harness_start_payloads(&b).await.len();
+    let (status, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let starts = harness_start_payloads(&b).await;
+    assert_eq!(starts.len(), starts_before + 1);
+    let restarted: Value = serde_json::from_str(starts.last().unwrap()).unwrap();
+    assert_eq!(restarted["cwd"], worktree.as_str());
+    assert!(Path::new(worktree).join(".git").is_file());
+    assert_eq!(
+        b.repo.track_get(&track).await.unwrap().unwrap().workspace,
+        selected.workspace
+    );
+    assert_eq!(
+        repoint_isolation(&b, &track, &target, "worktree").await.0,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn worktree_retry_refuses_admitted_teardown_before_touching_git() {
+    let b = boot().await;
+    let area = create_area(&b, "teardown").await;
+    let (track, _) = managed_track(&b, &area, "repair").await;
+    let target = user_repo(&b.tmp.path().join("target"));
+    assert_eq!(
+        repoint_isolation(&b, &track, &target, "worktree").await.0,
+        StatusCode::OK
+    );
+    let selected = b.repo.track_get(&track).await.unwrap().unwrap();
+    let worktree = selected.workspace.worktree.as_ref().unwrap();
+    git(&target, &["worktree", "remove", worktree]);
+    let teardown = calm_server::state::RouteState::from_ref(&b.state)
+        .teardown_targets
+        .registration();
+    teardown.register_location(&track, PathBuf::from(worktree));
+    let (status, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(!Path::new(worktree).exists());
+    drop(teardown);
+    let (status, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn worktree_retry_requires_settled_tasks() {
+    for status in ["dispatched", "running", "verifying"] {
+        let b = boot().await;
+        let area = create_area(&b, "repair-tasks").await;
+        let (track, _) = managed_track(&b, &area, "repair").await;
+        let target = user_repo(&b.tmp.path().join("target"));
+        assert_eq!(
+            repoint_isolation(&b, &track, &target, "worktree").await.0,
+            StatusCode::OK
+        );
+        let selected = b.repo.track_get(&track).await.unwrap().unwrap();
+        let worktree = selected.workspace.worktree.as_ref().unwrap();
+        git(&target, &["worktree", "remove", worktree]);
+        b.repo.db().writer().execute(sqlx::query(
+            "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,created_at_ms,updated_at_ms) VALUES('repair-active',?1,'active','codex','active','{}',?2,0,0)"
+        ).bind(&track).bind(status)).await.unwrap();
+        let (code, body) = repoint_isolation(&b, &track, &target, "worktree").await;
+        assert_eq!(code, StatusCode::CONFLICT, "{body}");
+        assert!(!Path::new(worktree).exists());
+        assert_eq!(
+            b.repo.track_get(&track).await.unwrap().unwrap().workspace,
+            selected.workspace
+        );
+    }
 }

@@ -521,3 +521,149 @@ async fn canonical_selection_read_preserves_appended_pending_while_issuing_origi
         .await
         .expect("independent write operation")
 }
+
+#[tokio::test]
+async fn canonical_selection_read_rejects_rebound_cwd_at_native_gates() {
+    for catalog in [false, true] {
+        let fx = Fixture::new().await;
+        let track = fx
+            .original
+            .repo
+            .track_get(fx.harness.inner.track_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        let cwd = track.workspace.agent_cwd().to_owned();
+        let bind = |worker: String| {
+            let repo = fx.original.repo.clone();
+            let card = fx.harness.inner.card_id.to_string();
+            let cwd = cwd.clone();
+            async move {
+                write_in_tx_typed(repo.as_ref(), move |tx| {
+                    Box::pin(async move {
+                        crate::harness::wiring::record_bound_session_cwd_tx(
+                            tx, &card, &worker, &cwd,
+                        )
+                        .await
+                    })
+                })
+                .await
+                .unwrap();
+            }
+        };
+        bind(fx.harness.inner.worker_session_id.clone()).await;
+        let admission = bound_admission(&fx).await;
+        assert_eq!(admission.cwd(), cwd);
+        let before = fx.frame().await;
+        let (_client, mut peer) = connect(&fx.daemon).await;
+        let gate = crate::shared_codex_appserver::native_owner_tests::hold_connected_client_gate(
+            &fx.daemon,
+        )
+        .await;
+        let native = crate::harness::native_admission::NativePromptAdmission::new(
+            || admission.check_current(),
+            || admission.admit_native_read(),
+        );
+        let read = async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            if catalog {
+                fx.daemon
+                    .model_list_admitted(deadline, &native)
+                    .await
+                    .map(drop)
+            } else {
+                fx.daemon
+                    .config_read_admitted(Some(admission.cwd()), deadline, &native)
+                    .await
+                    .map(drop)
+            }
+        };
+        tokio::pin!(read);
+        assert!(futures_util::poll!(read.as_mut()).is_pending());
+        // Keep the pathname identical: only the owning worker binding changes.
+        bind("replacement-worker".into()).await;
+        drop(gate);
+        let unexpected = tokio::select! {
+            result = &mut read => {
+                assert!(matches!(result, Err(CalmError::Conflict(_))));
+                None
+            }
+            call = request(&mut peer) => {
+                send(&mut peer, json!({"id":call["id"],"error":{"code":-32000,"message":"unexpected rebound read"}})).await;
+                let _ = read.await;
+                Some(call["method"].clone())
+            }
+        };
+        assert_eq!(fx.frame().await, before);
+        fx.harness.shutdown().await.unwrap();
+        assert_eq!(
+            unexpected, None,
+            "a different binding cannot reuse a captured read admission"
+        );
+    }
+}
+
+#[tokio::test]
+async fn canonical_selection_read_stored_claim_keeps_bound_scope() {
+    let fx = Fixture::new().await;
+    let repo = fx.original.repo.clone();
+    let card = fx.harness.inner.card_id.to_string();
+    let worker = fx.harness.inner.worker_session_id.clone();
+    let source = fx.source.clone();
+    let admission = write_in_tx_typed(repo.as_ref(), {
+        let repo = repo.clone();
+        let (card, worker) = (card.clone(), worker.clone());
+        move |tx| {
+            Box::pin(async move {
+                crate::harness::wiring::record_bound_session_cwd_tx(
+                    tx,
+                    &card,
+                    &worker,
+                    "/original-session",
+                )
+                .await?;
+                let mut carrier = current_input_carrier_tx(tx, &card, &worker).await?;
+                let plan = human_plan_for_pending_prefix_tx(
+                    tx,
+                    &carrier,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    vec![],
+                )
+                .await?;
+                let claim =
+                    crate::conversation_inputs::claim_initial_tx(tx, &source, &mut carrier, plan)
+                        .await?;
+                crate::conversation_inputs::SelectionReadAdmission::stored_tx(
+                    tx,
+                    repo,
+                    source,
+                    &carrier,
+                    claim.submission_id,
+                )
+                .await
+            })
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(admission.cwd(), "/original-session");
+    admission.revalidate().await.unwrap();
+    write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            crate::harness::wiring::record_bound_session_cwd_tx(
+                tx,
+                &card,
+                &worker,
+                "/changed-session",
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        admission.revalidate().await,
+        Err(CalmError::Conflict(_))
+    ));
+    fx.harness.shutdown().await.unwrap();
+}

@@ -1972,6 +1972,37 @@
     ]
   },
   {
+    "name": "neige_track_set",
+    "description_sha256": "d569cf0790421068272b3d7c493f52bbae779d2e226e78f3e4c0f7edaf179405",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "template_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_track_show",
     "description_sha256": "326ac527e79da068405caa9323ed7c94204f735ed40b3a48ba005ab77efc73a8",
     "input_schema": {
@@ -2021,7 +2052,7 @@
   },
   {
     "name": "neige_user_ask",
-    "description_sha256": "dafd2573fe565c97856687ac39e060f86f39c42bcf08efe6046ffff8a7b36555",
+    "description_sha256": "70ec60ec02dcc3a7145b3f535116dcf28fa097ba01dfefc773d568f97c457041",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

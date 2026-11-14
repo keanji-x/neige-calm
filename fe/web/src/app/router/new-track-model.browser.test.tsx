@@ -5,25 +5,21 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
-import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import { FOLLOW_INSTALLATION_DEFAULT, type ModelCatalog, type ModelSelection } from '../../../../core/domain/conversation.ts';
 import type { ListDirectory } from '../../ui/directory-browser/public.tsx';
-import { ISSUE_INPUT_BODY, ISSUE_INPUT_SCHEMA } from '../../features/area/new-track/template-input-fixture.ts';
 import { NewTrackForm } from '../../features/area/new-track/public.tsx';
 import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
 import { useState } from '../../ui/state/public.ts';
 
 function ModelForm({
   onChange = () => undefined, submitting = false, locked = false, initialCwd = null,
-  templates = [], initialTemplateId = null, modelName = 'Test model',
+  modelName = 'Test model',
   listDirectory = (path) => Promise.resolve({ path: path ?? '/', parent: null, entries: [] }),
 }: Readonly<{
   onChange?: (selection: ModelSelection) => void;
   submitting?: boolean;
   locked?: boolean;
   initialCwd?: string | null;
-  templates?: readonly TrackTemplate[];
-  initialTemplateId?: string | null;
   modelName?: string;
   listDirectory?: ListDirectory;
 }>) {
@@ -38,8 +34,7 @@ function ModelForm({
     source: 'live', fetched_at_ms: 1,
   };
   return <NewTrackForm
-      loadTemplate={(id: string) => Promise.resolve({ id, title: 'Test template', description: 'Author supplied description.', instructions: 'Run relevant verification.', body: id === 'dev' ? ISSUE_INPUT_BODY : '# Template source\n' })} submitting={submitting} locked={locked} error={null} templates={templates} templatesLoaded
-    initialTemplateId={initialTemplateId} initialCwd={initialCwd} onManageRecipes={vi.fn()}
+    submitting={submitting} locked={locked} error={null} initialCwd={initialCwd}
     listDirectory={listDirectory} onSubmit={vi.fn()}
     modelControls={<ModelPill provider="codex" groups={[{ provider: 'codex', catalog, availability: null }]} selection={selection} effortControl="in-menu" onChange={(next) => { setSelection(next); onChange(next); }} />}
   />;
@@ -52,7 +47,7 @@ function expectFullLabel(name: string) {
   expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
 }
 
-it('keeps three phone preferences while selecting model and effort in one menu', async () => {
+it('keeps phone preferences compact while selecting model and effort in one menu', async () => {
   await page.viewport(390, 844);
   const onChange = vi.fn();
   const view = render(<ModelForm onChange={onChange} />);
@@ -65,10 +60,10 @@ it('keeps three phone preferences while selecting model and effort in one menu',
     await userEvent.click(screen.getByRole('menuitem', { name: /high/ }));
     expect(onChange).toHaveBeenLastCalledWith({ model: 'test-model', reasoning_effort: 'high' });
     expect(screen.queryByRole('button', { name: /^Reasoning effort:/ })).toBeNull();
-    expect(screen.getAllByRole('button')).toHaveLength(4); // Options, Isolation, Model and Create track.
+    expect(screen.getAllByRole('button')).toHaveLength(3); // Options, Model and Create track.
     for (const [width, height] of [[390, 844], [320, 700]]) {
       await page.viewport(width, height);
-      expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: width === 320 ? 'Track options' : 'Repo: Neige workspace' })).toBeTruthy();
       const model = screen.getByRole('button', { name: 'Model: Test model' }).getBoundingClientRect();
       const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
       expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
@@ -91,12 +86,12 @@ it('gives the phone composer a compact input and one aligned preference row with
       const input = screen.getByRole('textbox', { name: 'What this track should do' });
       const model = screen.getByRole('button', { name: 'Model: Default' }).getBoundingClientRect();
       const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
-      if (width < 600) {
+      if (width === 320) {
         expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();
       } else {
         await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
-        for (const name of ['Template: No template', 'Repo: Neige workspace', 'Model: Default']) expectFullLabel(name);
+        for (const name of ['Repo: Neige workspace', 'Model: Default']) expectFullLabel(name);
       }
       expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
       expect(model.right).toBeLessThanOrEqual(send.left);
@@ -139,11 +134,9 @@ it('keeps a retained phone draft at the same text size and height while submitti
 });
 
 it('keeps long custom preferences readable inside overflow and preserves the folder clear action', async () => {
-  const templateTitle = 'A long custom template for checking the mobile preference strip';
   const modelName = 'A long custom model for careful reasoning';
   const cwd = '/srv/projects/a-long-custom-folder-for-the-mobile-layout';
-  const view = render(<ModelForm initialCwd={cwd} initialTemplateId="long-template"
-    templates={[{ id: 'long-template', title: templateTitle, description: null, availability: { status: 'ready' as const }, tasks: [] }]} modelName={modelName} />);
+  const view = render(<ModelForm initialCwd={cwd} modelName={modelName} />);
   try {
     await page.viewport(320, 740);
     await userEvent.click(screen.getByRole('button', { name: 'Model: Default' }));
@@ -174,14 +167,13 @@ it('keeps Model beside Create and moves preferences into overflow before they st
     const model = screen.getByRole('button', { name: 'Model: Default' }).getBoundingClientRect();
     const send = screen.getByRole('button', { name: 'Create track' }).getBoundingClientRect();
     expect(Math.abs(model.top + model.height / 2 - send.top - send.height / 2)).toBeLessThan(2);
-    expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
     await page.viewport(320, 740);
     expect(await screen.findByRole('button', { name: 'Track options' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Template: No template' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Repo: Neige workspace' })).toBeNull();
     await page.viewport(600, 740);
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
-    expectFullLabel('Template: No template');
     expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
@@ -189,31 +181,17 @@ it('keeps Model beside Create and moves preferences into overflow before they st
   }
 });
 
-it('dismisses the nested template picker before overflow and leaves directory selection usable', async () => {
+it('keeps directory selection and cancellation usable through overflow', async () => {
   // Astryx ignores repeat trigger clicks for 50 ms after a layer closes.
   const user = userEvent.setup({ delay: 60 });
   await page.viewport(320, 740);
   const cwd = '/srv/a-long-directory-selected-through-the-real-browser';
-  const view = render(<ModelForm templates={[{ id: 'small', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect', goal: 'Read the change.' }] }]}
-    listDirectory={() => Promise.resolve({ path: cwd, parent: null, entries: [] })} />);
+  const view = render(<ModelForm listDirectory={() => Promise.resolve({ path: cwd, parent: null, entries: [] })} />);
   try {
     const more = await screen.findByRole('button', { name: 'Track options' });
     more.focus();
     await user.keyboard('{Enter}');
     const options = await screen.findByRole('dialog', { name: 'Track options' });
-    await user.click(within(options).getByRole('button', { name: 'Template: No template' }));
-    expect(await screen.findByRole('menu', { name: 'Template: No template' })).toBeTruthy();
-    await user.keyboard('{Escape}');
-    await waitFor(() => { expect(screen.queryByRole('menu')).toBeNull(); });
-    expect(screen.getByRole('dialog', { name: 'Track options' })).toBeTruthy();
-    await user.click(within(options).getByRole('button', { name: 'Template: No template' }));
-    // Native HoverCard previews use the first touch; keyboard activation selects
-    // the same real menu item without depending on that baseline pointer behavior.
-    (await screen.findByRole('menuitem', { name: /^Small change/ })).focus();
-    await user.keyboard('{Enter}');
-    expect(await screen.findByRole('button', { name: 'Template: Small change' })).toBeTruthy();
-    await user.click(within(options).getByRole('button', { name: 'Template: Small change' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'No template' }));
     await user.click(within(options).getByRole('button', { name: 'Repo: Neige workspace' }));
     const cancelledDirectory = await screen.findByRole('dialog', { name: 'Choose a directory' });
     await user.click(within(cancelledDirectory).getByRole('button', { name: 'Cancel' }));
@@ -233,11 +211,10 @@ it('dismisses the nested template picker before overflow and leaves directory se
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull(); });
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Track options' }));
     await page.viewport(600, 844);
-    await user.click(screen.getByRole('button', { name: 'Track options' }));
+    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
     await user.click(await screen.findByRole('button', { name: 'Use a Neige workspace instead' }));
     await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
     expect(screen.getByRole('button', { name: 'Repo: Neige workspace' })).toBeTruthy();
-    expectFullLabel('Template: No template');
     expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
@@ -307,7 +284,7 @@ it('restores a focused overflow trigger into inline preferences without moving u
 
 
 it('uses the card radius for the composer while retaining full pill and send contours', async () => {
-  await page.viewport(390, 844);
+  await page.viewport(320, 844);
   const view = render(<ModelForm />);
   try {
     const input = screen.getByRole('textbox', { name: 'What this track should do' });
@@ -325,93 +302,16 @@ it('uses the card radius for the composer while retaining full pill and send con
       expect(getComputedStyle(await screen.findByRole('button', { name })).borderRadius).toBe('999px');
     }
     await page.getByRole('button', { name: 'Track options', exact: true }).click();
-    for (const name of ['Template: No template', 'Repo: Neige workspace']) {
+    for (const name of ['Repo: Neige workspace']) {
       expect(getComputedStyle(await screen.findByRole('button', { name })).borderRadius).toBe('999px');
     }
 
-    await page.getByRole('button', { name: 'Template: No template', exact: true }).click();
-    const templateMenu = await page.getByRole('menu').findElement();
-    expect(getComputedStyle(templateMenu).borderRadius).toBe('16px');
-    expect(getComputedStyle(templateMenu).paddingTop).toBe('4px');
-    const templateItem = await page.getByRole('menuitem', { name: /^No template/ }).findElement();
-    expect(getComputedStyle(templateItem).borderRadius).toBe('12px');
-    await page.getByRole('menuitem', { name: /^No template/ }).click();
     await page.getByRole('button', { name: 'Model: Default', exact: true }).click();
     const modelMenu = await page.getByRole('menu').findElement();
     expect(getComputedStyle(modelMenu).borderRadius).toBe('16px');
     expect(getComputedStyle(modelMenu).paddingTop).toBe('4px');
     expect(getComputedStyle(await page.getByRole('menuitem', { name: 'Test model', exact: true }).findElement()).borderRadius).toBe('12px');
     expect(getComputedStyle(document.documentElement).getPropertyValue('-webkit-tap-highlight-color')).toBe('rgba(0, 0, 0, 0)');
-  } finally {
-    view.unmount();
-    await page.viewport(1280, 720);
-  }
-});
-
-
-it('keeps the selected template and required inputs readable on a narrow screen', async () => {
-  const template: TrackTemplate = { id: 'dev', title: 'Development', description: null, availability: { status: 'ready' as const }, tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
-  await page.viewport(320, 700);
-  const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
-  try {
-    expect(await screen.findByText('Author supplied description.')).toBeTruthy();
-    const preview = screen.getByRole('region', { name: 'Selected template' });
-    expect(preview.getBoundingClientRect().width).toBeLessThanOrEqual(320);
-    expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth);
-    expect(getComputedStyle(screen.getByText('Working method')).fontSize).toBe('14px');
-    const request = screen.getByLabelText('What this track should do');
-    await userEvent.click(request);
-    await userEvent.type(request, 'Implement the requested change');
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create track' }).disabled).toBe(false);
-    await userEvent.click(await screen.findByLabelText('Issue URL'));
-    await userEvent.type(screen.getByLabelText('Issue URL'), 'https://github.com/owner/repo/issues/123');
-    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' }).checked).toBe(false);
-    await userEvent.click(screen.getByText('View full template'));
-    expect(screen.getByText(/neige:input-form/)).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Track options' }));
-    await userEvent.click(screen.getByRole('button', { name: /^Template:/ }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'No template' }));
-    expect(screen.queryByRole('region', { name: 'Selected template' })).toBeNull();
-    expect(document.activeElement).toBe(screen.getByLabelText('What this track should do'));
-  } finally {
-    view.unmount();
-    await page.viewport(1280, 720);
-  }
-});
-
-
-it('aligns template field labels and descriptions on the same desktop axis', async () => {
-  await page.viewport(1280, 900);
-  const template: TrackTemplate = { id: 'dev', title: 'Development', description: null, availability: { status: 'ready' as const }, tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
-  const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
-  try {
-    const issue = await screen.findByLabelText<HTMLInputElement>('Issue URL');
-    const merge = screen.getByRole<HTMLInputElement>('checkbox', { name: 'Merge automatically' });
-    const issueLabel = issue.labels?.[0];
-    const mergeLabel = merge.labels?.[0];
-    const issueHelp = document.getElementById(issue.getAttribute('aria-describedby') ?? '');
-    const mergeHelp = document.getElementById(merge.getAttribute('aria-describedby') ?? '');
-    if (!issueLabel || !mergeLabel || !issueHelp || !mergeHelp) throw new Error('Label or description association missing');
-    expect(Math.abs(issueLabel.getBoundingClientRect().left - mergeLabel.getBoundingClientRect().left)).toBeLessThan(1);
-    expect(Math.abs(issueHelp.getBoundingClientRect().left - mergeHelp.getBoundingClientRect().left)).toBeLessThan(1);
-    const issueGap = issueHelp.getBoundingClientRect().top - issueLabel.getBoundingClientRect().bottom;
-    const mergeGap = mergeHelp.getBoundingClientRect().top - mergeLabel.getBoundingClientRect().bottom;
-    expect(Math.abs(issueGap - mergeGap)).toBeLessThan(1);
-  } finally { view.unmount(); }
-});
-
-
-it('remeasures changed template metadata while its overflow popup is closed', async () => {
-  await page.viewport(600, 844);
-  const template = { id: 'short', title: 'An exceptionally long template name that cannot share the footer', description: null, availability: { status: 'ready' as const }, tasks: [] };
-  const view = render(<ModelForm templates={[template]} initialTemplateId={template.id} />);
-  try {
-    await screen.findByRole('button', { name: 'Track options' });
-    expect(screen.queryByRole('dialog', { name: 'Track options' })).toBeNull();
-    view.rerender(<ModelForm templates={[{ ...template, title: 'A' }]} initialTemplateId={template.id} />);
-    await waitFor(() => { expect(screen.queryByRole('button', { name: 'Track options' })).toBeNull(); });
-    expectFullLabel('Template: A');
-    expectFullLabel('Repo: Neige workspace');
   } finally {
     view.unmount();
     await page.viewport(1280, 720);

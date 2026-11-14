@@ -606,6 +606,7 @@ impl PlannerHarnessStartAdapter {
         output.data = json!({"activation":"native_known", "thread_id":thread});
         let repo = self.repo.clone();
         let provider = target.binding.provider.clone();
+        let bound_cwd = track.workspace.agent_cwd().to_owned();
         let wire = wire.clone();
         let op = op.clone();
         let thread_tx = thread.clone();
@@ -629,8 +630,10 @@ impl PlannerHarnessStartAdapter {
             &write,
             move |tx| {
                 Box::pin(async move {
-                    binding::bind_identity_tx(tx, &wire, &op, &expected, provider, &thread_tx)
-                        .await?;
+                    binding::bind_identity_tx(
+                        tx, &wire, &op, &expected, provider, &thread_tx, &bound_cwd,
+                    )
+                    .await?;
                     persist_card_mcp_token_hash(tx, &wire.card_id, &hashed).await?;
                     mirror_session_mcp_token(tx, &wire.worker_session_id, &hashed).await?;
                     let card = card_apply_harness_start_payload_tx(

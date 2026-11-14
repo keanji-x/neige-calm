@@ -1,6 +1,6 @@
 /* Astryx owns control appearance. This file owns page layout, the composer's
    local focus treatment and input size, plus the send button's full contour.
-   Shared default-pills own Template/Folder widths and pill contours; no general
+   Shared default-pills own Folder widths and pill contours; no general
    button recipe is restated here. */
 @layer features {
   .editor {
@@ -100,7 +100,7 @@
     color: var(--text-3);
   }
 
-  /* The prompt is the main editorial heading; template context stays in interface type. */
+  /* The prompt is the main editorial heading; supporting copy stays in interface type. */
   .greeting {
     font: var(--type-heading);
     letter-spacing: var(--type-heading-tracking);
@@ -148,14 +148,14 @@
    *  * Re-declaring astryx's `--shadow-low` / `--shadow-med` on the wrapper,
    *    which is the *documented* theming seam and is the wrong tool here: those
    *    are inherited custom properties, so flattening them at the wrapper also
-   *    flattens the template menu's popup, which is a floating layer and needs
+   *    flattens the model menu's popup, which is a floating layer and needs
    *    its shadow.
    *
    * `> [data-density] >` is therefore the selector: astryx reflects its visual
    * props as data attributes (`themeProps`) and `density` is one this call site
    * passes. Stated precisely, because the first version of this comment
    * overclaimed: the two combinators keep the rule off anything *nested* inside
-   * the composer — the footer's chips, the template menu's popup layer — but it
+   * the composer — the footer's chips, the model menu's popup layer — but it
    * matches **every direct child of the root**, which is the body plus the
    * status bar, and would match a `drawer` if this call site ever passed one.
    * That is harmless because none of those carry a shadow of their own; it is
@@ -169,7 +169,7 @@
   /*
    * `:has(… :focus)` and not `:focus-within`, because the chips live inside
    * this same element: with `:focus-within` the ring lit up around the whole
-   * composer whenever the template or folder chip took focus, on top of that
+   * composer whenever the model or folder chip took focus, on top of that
    * button's own `:focus-visible` ring. Two rings for one focus is worse than
    * none — it makes "where am I" ambiguous, which is the exact question the
    * ring exists to answer. Scoped to the editable, it means one thing.

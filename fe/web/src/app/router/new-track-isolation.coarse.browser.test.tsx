@@ -8,31 +8,28 @@ import '../../styles/entry.css';
 
 afterEach(cleanup);
 
-it('opens the isolation menu by touch and keeps private Worktree disabled at 390px', async () => {
+it('keeps workspace isolation implicit on touch at 390px', async () => {
   await page.viewport(390, 844);
-  render(<ThemeProvider><NewTrackForm submitting={false} error={null} templates={[]} templatesLoaded
-    initialTemplateId={null} initialCwd={null} loadTemplate={vi.fn()} onManageRecipes={vi.fn()}
+  render(<ThemeProvider><NewTrackForm submitting={false} error={null}
+    initialCwd={null}
     listDirectory={vi.fn()} onSubmit={vi.fn()} /></ThemeProvider>);
-  await commands.tap('button[aria-label="Workspace isolation: None"]');
-  await expect.element(page.getByRole('menuitem', { name: /Worktree/ })).toHaveAttribute('aria-disabled', 'true');
-  await expect.element(page.getByText('Private Neige folder: no worktree. Choose a Git folder to use one.')).toBeVisible();
-  await expect.element(page.getByRole('menuitem', { name: /Worktree/ })).toBeDisabled();
-  await commands.tap('[role="menu"][aria-label="Workspace isolation: None"] [role="menuitem"]:not([aria-disabled="true"])');
-  await expect.element(page.getByRole('button', { name: 'Workspace isolation: None' })).toBeVisible();
-  await expect.element(page.getByRole('button', { name: 'Not isolated · no guarantees' })).not.toBeInTheDocument();
+  await expect.element(page.getByRole('button', { name: /Workspace isolation/ })).not.toBeInTheDocument();
   expect(document.documentElement.scrollWidth).toBe(390);
 });
 
-it('hands compact Folder touch ownership to the directory modal and restores reachable options', async () => {
+it('hands Folder touch ownership to the directory modal and restores reachable options', async () => {
   await page.viewport(390, 844);
-  render(<ThemeProvider><DepthFeedback /><NewTrackForm submitting={false} error={null} templates={[]} templatesLoaded
-    initialTemplateId={null} initialCwd="/repo" loadTemplate={vi.fn()} onManageRecipes={vi.fn()}
+  render(<ThemeProvider><DepthFeedback /><NewTrackForm submitting={false} error={null}
+    initialCwd="/repo"
     listDirectory={path => Promise.resolve({ path: path ?? '/repo', parent: '/', entries: Array.from({ length: 16 }, (_, i) => ({
       name: `folder-${i}`, path: `/repo/folder-${i}`, isDirectory: true,
     })) })} onSubmit={vi.fn()} /></ThemeProvider>);
   for (const select of [false, true]) {
-    await commands.tap('button[aria-label="Track options"]');
-    await expect.element(page.getByRole('dialog', { name: 'Track options', exact: true })).toBeVisible();
+    const overflow = document.querySelector('button[aria-label="Track options"]') !== null;
+    if (overflow) {
+      await commands.tap('button[aria-label="Track options"]');
+      await expect.element(page.getByRole('dialog', { name: 'Track options', exact: true })).toBeVisible();
+    }
     await commands.tap('button[aria-label^="Repo:"]');
     const dialog = page.getByRole('dialog', { name: 'Choose a directory' });
     await expect.element(dialog).toBeVisible();
@@ -52,6 +49,7 @@ it('hands compact Folder touch ownership to the directory modal and restores rea
     await expect.element(page.getByRole('combobox', { name: 'Directory path' })).not.toHaveValue('/repo/');
     await commands.tap(select ? 'button:has-text("Select this directory")' : 'button:has-text("Cancel")');
     await expect.element(dialog).not.toBeInTheDocument();
-    await expect.element(page.getByRole('button', { name: 'Track options', exact: true })).toHaveFocus();
+    await expect.element(overflow ? page.getByRole('button', { name: 'Track options', exact: true })
+      : page.getByRole('button', { name: /^Repo:/ })).toHaveFocus();
   }
 });

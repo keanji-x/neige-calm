@@ -655,7 +655,7 @@
   source: fe/core/domain/activity.ts:19-89; fe/core/domain/track.ts:138-206,213-239,795-815;
     fe/core/domain/conversation-summary.ts:19-39; fe/web/src/app/conversations/store.ts:59-69,171-244;
     fe/web/src/app/router/public.tsx:759-775,826-843,970-987,1121-1130,1229-1246; fe/web/src/features/track/page/public.tsx:7,45-68,90-93,561-611,642;
-    fe/web/src/app/providers/queries.ts:936-951;
+    fe/web/src/app/providers/queries.ts:904-919;
     fe/core/domain/read-receipts.ts:41-50; fe/web/src/app/providers/read-receipts.tsx:65-106; fe/web/src/ui/activity-indicator/activity-indicator.module.css:7-8;
     fe/web/src/features/chat/list/public.tsx:32-88; fe/core/view/track-page.ts:14-18,59-61,69-70,90,107,119;
     fe/web/src/systems/cards/builtins/terminal-card.tsx:12-87;
@@ -699,7 +699,7 @@
     fe/core/domain/track.ts:448-456,581-593,668-768; fe/web/src/app/router/public.tsx:1375-1419;
     fe/web/src/app/router/recipes-route.tsx:1-70; fe/web/src/app/shell/public.tsx:98-100,247-256;
     fe/web/src/app/router/calendar.tsx:46-59
-  authoritative_test: fe/web/src/app/router/new-card.test.tsx:210-414; fe/web/src/app/router/recipes-route.test.tsx:416-530;
+  authoritative_test: fe/web/src/app/router/new-card.test.tsx:210-414; fe/web/src/app/router/recipes-route.test.tsx:391-505;
     fe/web/src/app/shell/area-editor-flow.test.tsx:169-199; fe/web/src/app/router/calendar-writes.test.tsx:172-193
   owner_slice: app/providers
   runtime_layer: app
@@ -858,8 +858,8 @@
     #2131 类 2：首次保存已落库而应答丢失时，读者重试仍带着旧 revision，服务端只能答 409，于是读者自己的写被报成
     「别处改过」。只有在未知结果之后才读回，首个 409 不多一次读取；真正的并发编辑读回后内容不同，仍是 stale。
   source: fe/core/domain/failure-class.ts:152-184; fe/core/domain/track.ts:443-446,458-472;
-    fe/core/domain/calendar.ts:93-112; fe/web/src/app/providers/queries.ts:613-635; fe/web/src/app/router/calendar.tsx:34-44
-  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:329-388; fe/web/src/app/router/calendar-writes.test.tsx:91-156
+    fe/core/domain/calendar.ts:93-112; fe/web/src/app/providers/queries.ts:581-603; fe/web/src/app/router/calendar.tsx:34-44
+  authoritative_test: fe/web/src/app/router/recipes-route.test.tsx:304-363; fe/web/src/app/router/calendar-writes.test.tsx:91-156
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit

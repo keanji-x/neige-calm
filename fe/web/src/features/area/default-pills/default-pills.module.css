@@ -1,33 +1,6 @@
 @layer features {
-  .host {
-    display: contents;
-  }
-
   .trigger {
     border-radius: var(--radius-pill);
     max-inline-size: 16rem;
-  }
-
-  .choiceLine {
-    display: block;
-    max-inline-size: var(--measure-form);
-    white-space: normal;
-  }
-
-  .taskScroll {
-    display: block;
-    max-inline-size: 28rem;
-    max-block-size: 14rem;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-
-  /* A quiet, non-interactive band label when recipes and built-ins coexist. */
-  .menuGroupHeading {
-    font-size: var(--font-step-1-size);
-    line-height: 1;
-    padding: var(--space-half) var(--space-1);
-    color: var(--text-3);
-    user-select: none;
   }
 }

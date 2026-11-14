@@ -1,4 +1,4 @@
-//! User-controlled extra plugin authority, independent of a Track's owning plugin.
+//! Manifest-bound per-Track plugin grants, including cumulative template owners.
 use crate::{
     ask::StoredAsk,
     error::{CalmError, Result},
@@ -23,7 +23,7 @@ pub(crate) fn digest(manifest: &Manifest) -> Result<String> {
 async fn grants(
     db: Option<&crate::db::sqlite::SqliteDb>,
     track: &str,
-) -> Result<Vec<(String, String, String)>> {
+) -> Result<Vec<(String, String, Option<String>)>> {
     let db = db.ok_or_else(|| CalmError::Internal("plugin access requires SQLite".into()))?;
     grants_from(db.read_pool(), track).await
 }
@@ -31,9 +31,9 @@ async fn grants(
 pub(crate) async fn grants_from<'e, E: sqlx::SqliteExecutor<'e>>(
     executor: E,
     track: &str,
-) -> Result<Vec<(String, String, String)>> {
+) -> Result<Vec<(String, String, Option<String>)>> {
     Ok(sqlx::query_as(
-        concat!("SELECT a.plugin_id, a.manifest_sha256, p.manifest FROM track_plugin_access a JOIN plugins p ON ","p.id=a.plugin_id WHERE a.track_id=? AND a.granted=1"),
+        concat!("SELECT a.plugin_id, a.manifest_sha256, p.manifest FROM track_plugin_access a LEFT JOIN plugins p ON ","p.id=a.plugin_id WHERE a.track_id=? AND a.granted=1"),
     )
     .bind(track)
     .fetch_all(executor)
@@ -45,28 +45,83 @@ pub(crate) async fn current_grants(
     track: &Track,
     host: &crate::plugin_host::PluginHost,
 ) -> Result<BTreeSet<String>> {
-    if track.plugin_scope.is_none() {
-        return Ok(BTreeSet::new());
-    }
-    filter_grants(grants(db, track.id.as_str()).await?, host)
+    filter_grants(grants(db, track.id.as_str()).await?, host).await
 }
 
-pub(crate) fn filter_grants(
-    rows: Vec<(String, String, String)>,
+pub(crate) async fn filter_grants(
+    rows: Vec<(String, String, Option<String>)>,
     host: &crate::plugin_host::PluginHost,
 ) -> Result<BTreeSet<String>> {
     let mut result = BTreeSet::new();
+    let running = host.running_plugin_ids().await;
     for (id, approved, declared) in rows {
-        let installed =
-            Manifest::parse(&declared).map_err(|e| CalmError::Internal(e.to_string()))?;
-        if let Some(manifest) = host.registry().get(&id)
-            && manifest.agent_tools_scope == AgentToolsScope::Enabled
-            && digest(&installed)? == approved
-        {
+        let Some(manifest) = host.registry().get(&id) else {
+            continue;
+        };
+        if !matches!(
+            manifest.agent_tools_scope,
+            AgentToolsScope::Enabled | AgentToolsScope::BoundTrack
+        ) {
+            continue;
+        }
+        // Stored identity stays declared even when connectors materialize runtime tools.
+        let matches = match declared {
+            Some(raw) => {
+                let stored =
+                    Manifest::parse(&raw).map_err(|e| CalmError::Internal(e.to_string()))?;
+                digest(&stored)? == approved
+            }
+            None => running.contains(&id) && digest(&manifest)? == approved,
+        };
+        if matches {
             result.insert(id);
         }
     }
     Ok(result)
+}
+
+/// Template owners are cumulative, manifest-bound grants, including built-ins without a plugin row.
+pub(crate) async fn grant_template_plugin_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track_id: &crate::ids::TrackId,
+    manifest: &Manifest,
+) -> Result<()> {
+    let declared: Option<String> = sqlx::query_scalar("SELECT manifest FROM plugins WHERE id=?1")
+        .bind(&manifest.id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let approved = match declared {
+        Some(raw) => {
+            digest(&Manifest::parse(&raw).map_err(|e| CalmError::Internal(e.to_string()))?)?
+        }
+        None => digest(manifest)?,
+    };
+    sqlx::query("INSERT INTO track_plugin_access(track_id,plugin_id,granted,manifest_sha256,revision) VALUES(?1,?2,1,?3,1) ON CONFLICT(track_id,plugin_id) DO UPDATE SET granted=1,manifest_sha256=excluded.manifest_sha256,revision=track_plugin_access.revision+1")
+        .bind(track_id.as_str()).bind(&manifest.id).bind(approved)
+        .execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Workspace-bound built-ins are authority of an attached Git locator, independent of method.
+pub(crate) async fn grant_git_workspace_plugins_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &Track,
+) -> Result<()> {
+    if track.workspace.kind != crate::model::TrackWorkspaceKind::Attached
+        || workspace_runtime::selection::git_repo_root_for_track_cwd(
+            track.id.as_str(),
+            &track.workspace.path,
+        )
+        .is_err()
+    {
+        return Ok(());
+    }
+    for definition in plugin::builtin::catalog() {
+        if definition.git_workspace_bound() {
+            grant_template_plugin_tx(tx, &track.id, definition.manifest()).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn decision_tx(

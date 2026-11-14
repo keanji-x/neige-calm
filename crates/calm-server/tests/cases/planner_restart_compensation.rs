@@ -13,7 +13,9 @@ use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::harness::queue::{FoldOutcome, try_fold_tail};
 use calm_server::harness::{HarnessSnapshot, HarnessState, SendKey, is_harness_snapshot_value};
 use calm_server::model::new_id;
-use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
+use calm_server::operation::planner_harness_start_adapter::{
+    PREDECESSOR_SESSION_KEY, PlannerHarnessStartAdapter, SUCCESSOR_SESSION_KEY,
+};
 use calm_server::operation::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
     Operation, OperationCompletionBus, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx,
@@ -35,11 +37,26 @@ struct DeliverThenFailSpawn {
     repo: Arc<SqlxRepo>,
     daemon: Arc<SharedCodexAppServer>,
     card_id: String,
-    delivered: &'static str,
+    failure: StartFailure,
+}
+
+enum StartFailure {
+    AfterDelivery(&'static str),
+    BeforeNative,
+    HistoricalJournal {
+        after_checkpoint: bool,
+        conflict: Option<HistoricalConflict>,
+        verified_undo: Arc<std::sync::Mutex<Option<Value>>>,
+    },
+}
+
+enum HistoricalConflict {
+    NativeIdentity,
+    Cwd,
 }
 
 impl DeliverThenFailSpawn {
-    async fn new_session_still_holds(&self) -> bool {
+    async fn new_session_still_holds(&self, delivered: &str) -> bool {
         let rows: Vec<Option<String>> = sqlx::query_scalar(
             "SELECT handle_state_json FROM worker_sessions WHERE card_id = ?1 \
                AND state IN ('starting','running','idle','turn_pending')",
@@ -55,7 +72,7 @@ impl DeliverThenFailSpawn {
                     "{:?}",
                     HarnessSnapshot::from_value_strict(value).pending_entries()
                 )
-                .contains(self.delivered)
+                .contains(delivered)
         })
     }
 }
@@ -88,7 +105,41 @@ impl ProviderAdapter for DeliverThenFailSpawn {
         input: &Value,
         op: &Operation,
     ) -> CalmResult<TxOutput> {
-        self.inner.prepare_tx(tx, input, op).await
+        let mut output = self.inner.prepare_tx(tx, input, op).await?;
+        if let StartFailure::HistoricalJournal { verified_undo, .. } = &self.failure {
+            // Reproduce the persisted pre-change producer's layout, without implementing undo.
+            *verified_undo.lock().unwrap() = output
+                .data
+                .as_object_mut()
+                .unwrap()
+                .remove("old_session_cwd");
+        }
+        if let StartFailure::HistoricalJournal {
+            conflict: Some(conflict),
+            ..
+        } = &self.failure
+        {
+            let old = output.data[PREDECESSOR_SESSION_KEY].as_str().unwrap();
+            match conflict {
+                HistoricalConflict::NativeIdentity => {
+                    sqlx::query(
+                        "UPDATE worker_sessions SET thread_id='crossed-native' WHERE id=?1",
+                    )
+                    .bind(old)
+                    .execute(&mut **tx)
+                    .await?;
+                    // Runtime display fields may be cleared independently; the old snapshot
+                    // still carries the pre-prepare native identity and must be checked.
+                    sqlx::query("UPDATE cards SET payload=json_remove(payload,'$.codex_thread_id') WHERE id=?1")
+                        .bind(&self.card_id).execute(&mut **tx).await?;
+                }
+                HistoricalConflict::Cwd => {
+                    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.bound_session_cwd.cwd','/changed/native/cwd') WHERE id=?1")
+                        .bind(&self.card_id).execute(&mut **tx).await?;
+                }
+            }
+        }
+        Ok(output)
     }
 
     async fn app_server_interact(
@@ -97,6 +148,19 @@ impl ProviderAdapter for DeliverThenFailSpawn {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> CalmResult<AppServerInteractOutcome> {
+        if matches!(self.failure, StartFailure::BeforeNative)
+            || matches!(
+                self.failure,
+                StartFailure::HistoricalJournal {
+                    after_checkpoint: false,
+                    ..
+                }
+            )
+        {
+            return Err(CalmError::Internal(
+                "test: native mint refused before checkpoint".into(),
+            ));
+        }
         self.inner.app_server_interact(output, op, ctx).await
     }
 
@@ -106,12 +170,17 @@ impl ProviderAdapter for DeliverThenFailSpawn {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> CalmResult<SpawnOutcome> {
+        let StartFailure::AfterDelivery(delivered) = self.failure else {
+            return Err(CalmError::Internal(
+                "test: native mint failed after checkpoint".into(),
+            ));
+        };
         self.inner.spawn_side_effect(output, op, ctx).await?;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let handed_over =
-                format!("{:?}", self.daemon.started_turns_for_test()).contains(self.delivered);
-            if handed_over && !self.new_session_still_holds().await {
+                format!("{:?}", self.daemon.started_turns_for_test()).contains(delivered);
+            if handed_over && !self.new_session_still_holds(delivered).await {
                 break;
             }
             assert!(
@@ -154,6 +223,13 @@ async fn fail_starts_after_delivering(
     boot: &mut Boot,
     delivered: &'static str,
 ) -> calm_server::state::AppState {
+    replace_start_adapter(boot, StartFailure::AfterDelivery(delivered)).await
+}
+
+async fn replace_start_adapter(
+    boot: &mut Boot,
+    failure: StartFailure,
+) -> calm_server::state::AppState {
     let original = boot.state.clone();
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.db().clone()));
@@ -175,7 +251,7 @@ async fn fail_starts_after_delivering(
         repo: boot.repo.clone(),
         daemon: boot.state.shared_codex_appserver.clone(),
         card_id: boot.planner_card_id.clone(),
-        delivered,
+        failure,
     });
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -658,3 +734,6 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
     );
     boot.shutdown().await;
 }
+
+#[path = "planner_restart_compensation/historical_journal.rs"]
+mod historical_journal;

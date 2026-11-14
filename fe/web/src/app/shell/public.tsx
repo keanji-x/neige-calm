@@ -37,7 +37,7 @@ import { useState } from '../../ui/state/public.ts';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { workspaceActivityErrorText, workspaceReadErrorText } from '../providers/query-read-feedback.ts';
 import {
-  AreaCreatePreflightError, useAreaMutations, useTrackMutations, useTrackTemplates, useWorkspace,
+  AreaCreatePreflightError, useAreaMutations, useTrackMutations, useWorkspace,
 } from '../providers/queries.ts';
 import { useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useNewTrackBack, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
@@ -176,7 +176,6 @@ export function AppShell({
   const prepareNewTrack = usePrepareNewTrack();
   const trackMutations = useTrackMutations(transport, unauthorized);
   const pinFeedback = useOperationFeedback();
-  const templates = useTrackTemplates(transport, unauthorized);
   const listDirectory = createDirectoryLister(transport, unauthorized);
   /* The create form is locked while a request is held, so every press resends the held key and body (#2131). */
   const areaIntent = useKeyedIntent<null, NewAreaBody>(() => true);
@@ -241,7 +240,8 @@ export function AppShell({
   const newTrackArea = useNewTrackDraftArea(newTrackBack === null ? undefined : routeAreaId);
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
-  const activeArea = areas.find((area) => area.id === activeAreaId) ?? newTrackArea ?? areas[0];
+  const liveActiveArea = areas.find((area) => area.id === activeAreaId);
+  const activeArea = liveActiveArea ?? newTrackArea ?? areas[0];
   const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
@@ -368,8 +368,6 @@ export function AppShell({
     const originEntryKey = (router.history as RouterHistory).location.state.__TSR_key;
     const patch: AreaEditorPatch | null = target.kind === 'create' ? null : {
       ...(values.name === target.area.name ? {} : { name: values.name }),
-      ...(values.defaultTemplateId === target.area.defaultTemplateId
-        ? {} : { defaultTemplateId: values.defaultTemplateId }),
       ...(values.defaultCwd === target.area.defaultCwd ? {} : { defaultCwd: values.defaultCwd }),
     };
     if (patch !== null && Object.keys(patch).length === 0) {
@@ -384,15 +382,12 @@ export function AppShell({
       creation = areaIntent.request(null, () => ({
         name: values.name,
         color: randomAreaColor(),
-        default_template_id: values.defaultTemplateId,
         default_cwd: values.defaultCwd,
       }));
       write = areaMutations.create(creation.body, creation.key);
     } else {
       write = areaMutations.update(target.area.id, {
         ...(patch?.name === undefined ? {} : { name: patch.name }),
-        ...(patch?.defaultTemplateId === undefined
-          ? {} : { default_template_id: patch.defaultTemplateId }),
         ...(patch?.defaultCwd === undefined ? {} : { default_cwd: patch.defaultCwd }),
       });
     }
@@ -439,7 +434,8 @@ export function AppShell({
       {dismissalLayer}
       {narrowRail && !settingsOpen && !mobileOverlayRoute && <MobileWorkspaceHeader shareMode={shareScope !== null}
         areas={areas}
-        activeArea={activeArea}
+        activeArea={liveActiveArea ?? (newTrackArea === undefined ? areas[0] : undefined)}
+        draftArea={newTrackArea}
         navigationOpen={workspaceInteractive || historyOpen}
         historyTriggerRef={workspaceReturnRef}
         onBack={newTrackBack === null || routeAreaId === undefined ? undefined : () => {
@@ -608,20 +604,15 @@ export function AppShell({
             initial={areaEditorTarget.kind === 'edit'
               ? {
                 name: areaEditorTarget.area.name,
-                defaultTemplateId: areaEditorTarget.area.defaultTemplateId,
                 defaultCwd: areaEditorTarget.area.defaultCwd,
               }
               : {
                 name: areaCreateRequest?.body.name ?? '',
-                defaultTemplateId: areaCreateRequest?.body.default_template_id ?? null,
                 defaultCwd: areaCreateRequest?.body.default_cwd ?? null,
               }}
             submitting={areaEditorPending}
             locked={areaEditorTarget.kind === 'create' && areaCreateRequest !== null}
             error={areaEditorError}
-            templates={templates.templates}
-            templatesLoaded={templates.loaded}
-            templatesError={templates.error}
             listDirectory={listDirectory}
             nameInputRef={areaEditorNameRef}
             submitLabel={areaEditorTarget.kind === 'edit' ? 'Save changes'

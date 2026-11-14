@@ -60,11 +60,11 @@ pub struct OperationDriveGuard {
 
 pub(crate) struct LaunchFence {
     _admission: tokio::sync::OwnedRwLockReadGuard<()>,
-    _track: crate::per_card_lock::KeyedLockGuard,
+    _track: crate::workspace_service::HeldTrack,
 }
 
 impl LaunchFence {
-    fn into_track_guard(self) -> crate::per_card_lock::KeyedLockGuard {
+    fn into_track_guard(self) -> crate::workspace_service::HeldTrack {
         self._track
     }
 }
@@ -104,7 +104,7 @@ impl OperationRuntime {
             .ok_or_else(|| CalmError::WorkspaceBusy(track.to_owned()))?;
         Ok(LaunchFence {
             _admission: admission,
-            _track: guard,
+            _track: crate::workspace_service::HeldTrack::new(guard),
         })
     }
 
@@ -133,7 +133,7 @@ impl OperationRuntime {
             .try_fence(
                 &mut connection,
                 std::path::Path::new(cwd),
-                held_track.map(|fence| fence._track.key()),
+                held_track.map(|fence| fence._track.track_id()),
             )
             .await
     }
@@ -489,9 +489,7 @@ impl OperationRuntime {
                 && !matches!(op.phase, Phase::Pending)
                 && let Some(fence) = preparation_fence.take()
             {
-                held_track = Some(crate::workspace_service::HeldTrack::new(
-                    fence.into_track_guard(),
-                ));
+                held_track = Some(fence.into_track_guard());
             }
             let ctx = match &held_track {
                 Some(held) => self.spawn_ctx.clone().with_held_track(held.clone()),
@@ -1030,6 +1028,11 @@ impl OperationRuntime {
                     };
                     owned_fence.as_ref()
                 };
+                let preparation_ctx = match track_fence {
+                    Some(fence) => ctx.clone().with_held_track(fence._track.clone()),
+                    None => ctx.clone(),
+                };
+                let ctx = &preparation_ctx;
                 let mut location_fence = None;
                 // Facts may change during external I/O. Retry boundedly under this exact
                 // claim; after that leave Pending leased, so wait()'s drive retries on expiry.

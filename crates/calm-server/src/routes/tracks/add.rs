@@ -250,6 +250,16 @@ impl RouteTrackCreator {
 
 #[async_trait::async_trait]
 impl TrackCreator for RouteTrackCreator {
+    async fn set_template(
+        &self,
+        identity: crate::mcp_server::registry::ToolCallIdentity,
+        template_id: String,
+        message: Option<String>,
+    ) -> crate::error::Result<serde_json::Value> {
+        super::template_binding::set_from_planner(&self.route, identity, &template_id, message)
+            .await
+    }
+
     async fn add(&self, request: TrackAddRequest) -> std::result::Result<Track, TrackAddRefusal> {
         let s = &self.route;
         let fingerprint = request.fingerprint()?;
