@@ -194,9 +194,27 @@ impl<'a> IssueTurnHandle<'a> {
             .await)
     }
 
+    #[cfg(test)]
     pub(in crate::harness) async fn compact_start(
         self,
         request: CompactRequest,
+        track_fence: &crate::provider_execution::TrackFenceHandoff,
+    ) -> Result<CompactSubmission<CalmError>> {
+        self.compact_start_admitted(
+            request,
+            &crate::harness::native_admission::NativePromptAdmission::new(
+                || Ok(()),
+                || Box::pin(async { Ok(()) }),
+            ),
+            track_fence,
+        )
+        .await
+    }
+
+    pub(in crate::harness) async fn compact_start_admitted(
+        self,
+        request: CompactRequest,
+        admission: &crate::harness::native_admission::NativePromptAdmission<'_>,
         track_fence: &crate::provider_execution::TrackFenceHandoff,
     ) -> Result<CompactSubmission<CalmError>> {
         let thread_id = self.thread()?;
@@ -204,11 +222,13 @@ impl<'a> IssueTurnHandle<'a> {
             Arm::Codex(daemon, _) => {
                 track_fence.release();
                 Ok(compact_delivery(
-                    daemon.thread_compact_delivery(thread_id).await,
+                    daemon
+                        .thread_compact_delivery_historical(thread_id, admission)
+                        .await,
                 ))
             }
             Arm::Claude(session) => Ok(session
-                .compact_start(thread_id, &request.selection, track_fence)
+                .compact_start(thread_id, &request.selection, admission, track_fence)
                 .await),
             Arm::Acp(_) => Err(CalmError::BadRequest(
                 "Manual context compaction is available for Codex and Claude conversations.".into(),

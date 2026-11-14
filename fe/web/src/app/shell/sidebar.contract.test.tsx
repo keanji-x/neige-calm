@@ -43,6 +43,8 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         tracks={tracks}
         currentPath={props.currentPath ?? '/'}
         onGo={props.onGo ?? vi.fn()}
+        onShareTrack={props.onShareTrack}
+        onShareArea={props.onShareArea}
         onRequestCreateArea={props.onRequestCreateArea ?? vi.fn()}
         onRequestEditArea={props.onRequestEditArea ?? vi.fn()}
         onDeleteArea={props.onDeleteArea ?? vi.fn()}
@@ -200,4 +202,15 @@ describe('active row', () => {
     expect(rows.filter((row) => row.getAttribute('aria-current') === 'page')).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: /^Track Pinned row/ })).toHaveLength(2);
   });
+});
+
+it('shares user-area Tracks and Areas through their desktop menus', async () => {
+  const onShareTrack = vi.fn(); const onShareArea = vi.fn();
+  renderSidebar({ tracks: [track()], onShareTrack, onShareArea });
+  await userEvent.click(screen.getByRole('button', { name: 'Actions for track Task' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Share track' }));
+  expect(onShareTrack).toHaveBeenCalledWith(track(), expect.objectContaining({ kind: 'anchor' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Area actions for Work' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Share area' }));
+  expect(onShareArea).toHaveBeenCalledWith(area(), expect.objectContaining({ kind: 'anchor' }));
 });

@@ -803,7 +803,7 @@ export function overlaysByKindOperation(entityKind: 'track' | 'card'): ApiOperat
 /* The three activity predicates read only the kernel's `activity` overlay — no track-state OR — so they cannot disagree with it. */
 
 /** The kernel says something dispatched is still running. */
-export function isWorking(track: Track): boolean {
+export function isWorking(track: Pick<Track, 'working'>): boolean {
   return track.working;
 }
 
@@ -818,7 +818,7 @@ export function hasFailed(track: Track): boolean {
 }
 
 /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */
-export function trackActivityState(track: Track, unread: boolean): ActivityState {
+export function trackActivityState(track: Pick<Track, 'working' | 'attention'>, unread: boolean): ActivityState {
   return activityStateOf({ working: isWorking(track), attention: track.attention, unread });
 }
 

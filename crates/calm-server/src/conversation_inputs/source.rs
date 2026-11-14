@@ -77,7 +77,7 @@ impl InputSource {
                 authorize_human_resource_tx(tx, &repeat.human, carrier.card_id()).await?;
                 let intent =
                     conversation::retry_intent_tx(tx, carrier, &repeat.retry_intent_id).await?;
-                if intent.principal != repeat.human.current_principal()?.user_id
+                if intent.principal != repeat.human.current_human_principal()?.user_id
                     || intent.unavailable.is_some()
                 {
                     return Err(CalmError::Forbidden(
@@ -110,8 +110,8 @@ impl InputSource {
     pub(crate) fn check_current(&self) -> Result<()> {
         match self {
             Self::Share(source) => source.check_current(),
-            Self::Human(source) => source.current_principal().map(drop),
-            Self::HumanRepeat(source) => source.human.current_principal().map(drop),
+            Self::Human(source) => source.current_human_principal().map(drop),
+            Self::HumanRepeat(source) => source.human.current_human_principal().map(drop),
             Self::Dispatcher(source) => source.check_current().map(drop),
         }
     }
@@ -149,7 +149,7 @@ impl InputSource {
     ) -> Result<bool> {
         match (self, input) {
             (Self::Human(source), SubmissionRenderInput::Human { message, author }) => Ok(source
-                .current_principal()?
+                .current_human_principal()?
                 .user_id
                 == author.registered_user_id
                 && super::execution::current_human_ref_matches_tx(tx, source, carrier, message)
@@ -179,11 +179,11 @@ pub(crate) async fn authorize_resource_tx(
         InputSource::Share(source) => source.authorize_tx(tx, carrier.card_id()).await,
         InputSource::Human(source) => {
             authorize_human_resource_tx(tx, source, carrier.card_id()).await?;
-            Ok(source.current_principal()?.user_id)
+            Ok(source.current_human_principal()?.user_id)
         }
         InputSource::HumanRepeat(repeat) => {
             source.repeat_intent_tx(tx, carrier).await?;
-            Ok(repeat.human.current_principal()?.user_id)
+            Ok(repeat.human.current_human_principal()?.user_id)
         }
         InputSource::Dispatcher(source) => source.authorize_resource_tx(tx, carrier).await,
     }

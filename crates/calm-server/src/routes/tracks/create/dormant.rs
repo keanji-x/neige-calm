@@ -2,14 +2,12 @@
 //! starts or wakes a provider; later execution needs its owning authorization.
 use super::creation_plan::{EmptyTrackCreationPlan, HumanTrackCreationPlan};
 use super::*;
-use crate::auth::HumanInputSource;
 use crate::db::sqlite::conversation::{
     HumanTrackCreationAcceptance, HumanTrackCreationAck, current_input_carrier_tx,
     human_track_creation_get_tx, human_track_creation_insert_tx,
 };
 use crate::db::sqlite::track_create_idempotency_get_tx;
 use calm_types::conversation::{AcceptedInputRef, HumanPayload};
-use calm_types::organization::AreaAccess;
 use sqlx::{Sqlite, Transaction};
 use std::sync::{Arc, OnceLock};
 
@@ -29,10 +27,11 @@ pub(in crate::routes::tracks) struct HumanTrackCreationResult {
 /// owns fresh allocation rather than accepting caller-supplied allocated IDs.
 pub(in crate::routes::tracks) async fn accept_dormant_human_track(
     s: RouteState,
-    source: HumanInputSource,
+    source: impl Into<crate::conversation_inputs::CreationInputSource>,
     plan: HumanTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<HumanTrackCreationResult> {
+    let source = source.into();
     let preparation_state = s.clone();
     let raw_key = plan.key().to_owned();
     let create_sha = plan.create_sha().to_owned();
@@ -54,16 +53,9 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
         &s.write,
         move |tx| {
             Box::pin(async move {
-                let principal = source.current_principal()?;
-                let area = crate::organization_access::require_area_access_tx(
-                    tx,
-                    &area_id,
-                    &principal,
-                    AreaAccess::Collaborate,
-                )
-                .await?;
+                let area = source.authorize_tx(tx, &area_id, None).await?;
                 if let Some(stored) = human_track_creation_get_tx(tx, &area_id, &raw_key).await? {
-                    if stored.source_user_id != principal.user_id
+                    if stored.source_user_id != source.source_id()?
                         || stored.create_request_sha256 != create_sha
                         || stored.first_message_sha256 != first_sha
                     {
@@ -72,6 +64,8 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                         ));
                     }
                     require_surviving_allocation_tx(tx, &area_id, &stored.acknowledgement).await?;
+                    let HumanTrackCreationAck::V1 { first_message, .. } = &stored.acknowledgement;
+                    source.require_author_tx(tx, first_message.message_id.as_str()).await?;
                     let track = response_track_tx(tx, &stored.acknowledgement).await?;
                     let _ = replay_tx.send((stored.acknowledgement, track));
                     return Err(CalmError::Conflict(
@@ -92,12 +86,10 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                 advice.require_create_selection(model, effort)?;
                 let (p, options, text) = plan.into_allocation(&preparation_state, area.kind).await?;
                 let CanonicalAllocation { planner, runtime, track, mut events } = allocate_canonical_tx(tx, p, options,
-                    super::super::allocation::TrackAllocationOwners { context: super::super::allocation::CreationContext::Canonical(source.clone()), acp_planner, write, templates, teardown_targets, admission_root }).await?;
+                    super::super::allocation::TrackAllocationOwners { context: super::super::allocation::CreationContext::Canonical(source.human().clone()), acp_planner, write, templates, teardown_targets, admission_root }).await?;
                 let mut carrier = current_input_carrier_tx(tx, &planner, &runtime).await?;
-                let current = source.current_principal()?;
-                let accepted = crate::conversation_inputs::accept_human_tx(
+                let accepted = source.accept_tx(
                     tx,
-                    &current,
                     &mut carrier,
                     HumanPayload {
                         text,
@@ -115,7 +107,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     &area_id,
                     &raw_key,
                     &HumanTrackCreationAcceptance {
-                        source_user_id: current.user_id,
+                        source_user_id: source.source_id()?,
                         origin_runtime_id: runtime,
                         first_message: message,
                         presentation_sequence: accepted.presentation_sequence,
@@ -129,6 +121,7 @@ pub(in crate::routes::tracks) async fn accept_dormant_human_track(
                     cursor:calm_types::conversation_display::ConversationCursor::new(&planner,
                         calm_types::conversation_display::ConversationCursorSource::Presentation,accepted.presentation_sequence),
                 }));
+                source.authorize_tx(tx, &area_id, None).await?;
                 Ok(((stored.acknowledgement, track), events))
             })
         },
@@ -286,20 +279,21 @@ pub(in crate::routes::tracks) async fn mint_dormant_carrier_tx(
 /// binding is the existing message-less fingerprint, with unkeyed mint unchanged.
 pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
     s: RouteState,
-    source: HumanInputSource,
+    source: impl Into<crate::conversation_inputs::CreationInputSource>,
     plan: EmptyTrackCreationPlan,
     advice: crate::planner_model::selection_advice::CatalogAdvice,
 ) -> Result<(
     crate::model::Track,
     crate::workspace_service::CreationOutcome,
 )> {
+    let source = source.into();
     let preparation_state = s.clone();
     let binding = plan
         .binding()
         .map(|(key, sha)| (key.to_owned(), sha.to_owned()));
     let area_id = plan.area_id().to_owned();
     let owners = super::super::allocation::TrackAllocationOwners {
-        context: super::super::allocation::CreationContext::Canonical(source.clone()),
+        context: super::super::allocation::CreationContext::Canonical(source.human().clone()),
         acp_planner: s.acp_planner.clone(),
         write: s.write.clone(),
         templates: s.templates,
@@ -314,14 +308,7 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
         &s.write,
         move |tx| {
             Box::pin(async move {
-                let principal = source.current_principal()?;
-                let area = crate::organization_access::require_area_access_tx(
-                    tx,
-                    &area_id,
-                    &principal,
-                    AreaAccess::Collaborate,
-                )
-                .await?;
+                let area = source.authorize_tx(tx, &area_id, None).await?;
                 if let Some((key, create_sha)) = &binding {
                     if let Some(binding) =
                         track_create_idempotency_get_tx(tx, &area_id, key).await?
@@ -374,7 +361,7 @@ pub(in crate::routes::tracks) async fn allocate_dormant_empty_track(
                     plan.into_allocation(&preparation_state, area.kind).await?;
                 let CanonicalAllocation { track, events, .. } =
                     allocate_canonical_tx(tx, allocation, options, owners).await?;
-                source.current_principal()?;
+                source.authorize_tx(tx, &area_id, None).await?;
                 Ok((track, events))
             })
         },

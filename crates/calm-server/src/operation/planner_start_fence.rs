@@ -228,6 +228,15 @@ pub(crate) async fn wake_canonical_human(
     wake_human(state, card_id, source.into(), None).await;
 }
 
+/// Cold creation has no active carrier requiring a pre-commit handoff.
+pub(crate) async fn wake_canonical_input(
+    state: crate::state::RouteState,
+    card_id: CardId,
+    source: crate::conversation_inputs::InputSource,
+) {
+    wake_human(state, card_id, source, None).await;
+}
+
 /// Existing-worker mutations must acquire this handoff before commit. The
 /// detached owner retains it if the HTTP waiter disappears.
 pub(crate) async fn finish_canonical_human_handoff(

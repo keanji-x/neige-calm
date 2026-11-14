@@ -243,10 +243,13 @@ pub(super) async fn read(
                         &binding.provider,
                         &card.track_id,
                         &s.workspace_root,
+                        source.as_ref(),
                     )
                     .await?,
-                    manual_compact_supported:
-                        crate::harness::PlannerBackend::manual_compact_supported(&binding),
+                    manual_compact_supported: source
+                        .as_ref()
+                        .is_some_and(|source| source.current_human_principal().is_ok())
+                        && crate::harness::PlannerBackend::manual_compact_supported(&binding),
                     // Persisted native identity does not prove a monotonic running clock after reopen.
                     running_turn: None,
                 },
@@ -262,7 +265,8 @@ pub(super) async fn read(
         .into_response()
     } else {
         let Json(run) =
-            super::planner_cards::historical_planner_run(s.clone(), w, id.clone()).await?;
+            super::planner_cards::historical_planner_run(s.clone(), w, id.clone(), source.as_ref())
+                .await?;
         if query.contract.is_some() {
             if run.worker_session_id.as_ref().is_some_and(|id| {
                 runtime_fence

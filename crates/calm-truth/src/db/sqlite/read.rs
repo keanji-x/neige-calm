@@ -81,6 +81,18 @@ impl RepoRead for SqlxRepo {
     ) -> Result<crate::conversation_title::ConversationTitleContext> {
         super::conversation_title::context(self, ids).await
     }
+    async fn share_track_tree_contains(&self, root: &str, track: &str) -> Result<bool> {
+        let mut conn = self.db.read_pool().acquire().await?;
+        super::share_links::track_tree_contains(&mut conn, root, track).await
+    }
+    async fn share_link_hash(&self, id: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT token_hash FROM share_links WHERE id=?1")
+                .bind(id)
+                .fetch_optional(self.db.read_pool())
+                .await?,
+        )
+    }
     async fn share_link_read_facts(
         &self,
         token_hash: &str,
@@ -110,24 +122,6 @@ impl RepoRead for SqlxRepo {
         descending: bool,
     ) -> Result<calm_types::conversation_display::ConversationPage> {
         super::conversation_read::page(self.db.read_pool(), card_id, after, limit, descending).await
-    }
-
-    async fn conversation_published_page(
-        &self,
-        card_id: &str,
-        after: i64,
-        limit: i64,
-        descending: bool,
-    ) -> Result<calm_types::conversation_display::ConversationPage> {
-        let mut connection = self.db.read_pool().acquire().await?;
-        super::conversation_read::published_page_on_connection(
-            &mut connection,
-            card_id,
-            after,
-            limit,
-            descending,
-        )
-        .await
     }
 
     async fn track_area_membership(

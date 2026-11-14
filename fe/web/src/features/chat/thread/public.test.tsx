@@ -1496,3 +1496,13 @@ it('shows current canonical terminal metadata without a transcript row and clear
   view.rerender(<ChatThread {...props} currentResponseOutcome={null} />);
   expect(screen.queryByRole('status', {name:'Current response status'})).toBeNull();
 });
+
+it('shows mobile conversation options only when footer actions are supplied', () => {
+  const { rerender } = render(<ChatComposer layout="mobile" onSend={vi.fn()} />);
+  expect(screen.queryByLabelText('对话选项')).toBeNull();
+  rerender(<ChatComposer layout="mobile" onSend={vi.fn()} footerActions={<button>Conversation settings</button>} />);
+  expect(screen.getByLabelText('对话选项')).toBeTruthy();
+  rerender(<ChatComposer layout="standard" onSend={vi.fn()} footerActions={<button>Conversation settings</button>} />);
+  expect(screen.queryByLabelText('对话选项')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Conversation settings' })).toBeTruthy();
+});

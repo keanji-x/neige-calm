@@ -32,13 +32,14 @@ export function createDirectoryLister(
 export function createCardFilesPort(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
+  shareLinkId?: string,
 ): CardFilesPort {
   return Object.freeze({
     listDirectory: (path) => runOperation(transport, listDirectoryOperation(path), unauthorized),
     readFile: (path) => runOperation(transport, readFileOperation(path), unauthorized),
     gitStatus: (path) => runOperation(transport, gitStatusOperation(path), unauthorized),
     gitDiff: (path, oldPath) => runOperation(transport, gitDiffOperation(path, oldPath), unauthorized),
-    rawUrl: rawFileUrl,
+    rawUrl: path => withShareLink(rawFileUrl(path), shareLinkId),
   });
 }
 
@@ -47,6 +48,7 @@ export function createTrackWorkspaceFilesPort(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
   trackId: string,
+  shareLinkId?: string,
 ): WorkspaceFilePort {
   return Object.freeze({
     readFile: (path) => runOperation(
@@ -54,6 +56,10 @@ export function createTrackWorkspaceFilesPort(
       readTrackWorkspaceFileOperation(trackId, path),
       unauthorized,
     ),
-    rawUrl: (path) => trackWorkspaceRawFileUrl(trackId, path),
+    rawUrl: (path) => withShareLink(trackWorkspaceRawFileUrl(trackId, path), shareLinkId),
   });
+}
+
+function withShareLink(url: string, id?: string): string {
+  return id === undefined ? url : `${url}${url.includes('?') ? '&' : '?'}share_link=${encodeURIComponent(id)}`;
 }

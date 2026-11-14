@@ -1,3 +1,7 @@
+import { ShareScopeProvider, useShareScope } from '../shell/public.tsx';
+import type { ShareScope } from '../../../../core/api/generated/wire.ts';
+import { TrackShareLinks } from '../providers/share-management.tsx';
+import { useShareManagement } from '../shell/public.tsx';
 import { createDraftBackOwner, DraftBackLifecycle, type DraftBackContext } from './draft-back-owner.tsx';
 import { unlistedPendingInputCount } from '../../../../core/domain/conversation-queue-controls.ts';
 import { usePlannerSwitchControl } from './planner-switch-control.ts';
@@ -112,7 +116,7 @@ import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
   serverVersionOperation, runOperation,
-  prefetchAreaList,
+  prefetchAreaList, areaListQueryOptions, tracksInAreaQueryOptions,
 
   useTrackConversationMutations, useTrackMutations,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
@@ -181,6 +185,9 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
 export type CardRuntime = Readonly<{ registry: CardRegistry; host: CardHost }>;
 
 export type AppRouterDeps = Readonly<{
+  basepath?: string;
+  shareScope?: ShareScope | null;
+  shareLinkId?: string;
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   client: QueryClient;
@@ -198,16 +205,22 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const recentFiles = deps.recentFiles ?? createRecentFileHistory();
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRouteWithContext<DraftBackContext>()({ component: () => (
-    <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
-      <TrackViewProvider><DraftBackLifecycle><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></DraftBackLifecycle></TrackViewProvider>
-    </ReadReceiptsProvider></UiPreferencesProvider>
+    <ShareScopeProvider value={deps.shareScope == null || deps.shareLinkId === undefined ? null : { scope: deps.shareScope, shareLinkId: deps.shareLinkId }}><UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
+      <TrackViewProvider><DraftBackLifecycle><MobileConversationProvider><ShellRoute shareScope={deps.shareScope ?? null} transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></DraftBackLifecycle></TrackViewProvider>
+    </ReadReceiptsProvider></UiPreferencesProvider></ShareScopeProvider>
   ) });
 
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
     /** The index loader primes only the areas list; awaiting the area → tracks fan-out here would let one slow area block the route commit. */
-    loader: () => prefetchAreaList(client, transport, unauthorized),
+    loader: deps.shareScope == null ? () => prefetchAreaList(client, transport, unauthorized) : async ({ location }) => {
+      const scope = deps.shareScope;
+      if (scope == null) return prefetchAreaList(client, transport, unauthorized);
+      const target = scope.kind === 'track' ? scope.id
+        : (await client.ensureQueryData(tracksInAreaQueryOptions(transport, scope.id, unauthorized)))[0]?.id;
+      return redirect({ href: `${deps.basepath ?? APP_BASEPATH}${target === undefined ? `/area/${encodeURIComponent(scope.id)}/new` : `/track/${encodeURIComponent(target)}`}${location.searchStr}${location.hash ? `#${location.hash}` : ''}`, replace: true });
+    },
     validateSearch: (search: Record<string, unknown>) => ({ day: typeof search.day === 'string' ? search.day : undefined }),
     component: function DailyRoute() {
       const day = new URLSearchParams(useLocation({ select: (location) => location.searchStr })).get('day') ?? undefined;
@@ -304,7 +317,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
 export function createAppRouter(deps: AppRouterDeps) {
   const router = createRouter({
     routeTree: createRouteTree(deps),
-    basepath: APP_BASEPATH,
+    basepath: deps.basepath ?? APP_BASEPATH,
     defaultPreload: false,
     // Report arrivals reveal only after their current complete content commits.
     defaultHashScrollIntoView: false,
@@ -313,11 +326,11 @@ export function createAppRouter(deps: AppRouterDeps) {
   return router;
 }
 
-function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
+function ShellRoute({ transport, unauthorized, onSignOut, shareScope }: { shareScope: ShareScope | null; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
   const go = useGo();
   return (
     <ConversationProvider><NewTrackDraftProvider>
-      <AppShell
+      <AppShell shareScope={shareScope}
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
@@ -469,8 +482,9 @@ function useConversationPane(
   });
   const imageRoot = source.workspaceRoot
     ?? (imageTrack.data === undefined ? null : toTrack(imageTrack.data.track).agentCwd);
+  const shareAccess = useShareScope();
   const conversationFiles = useMemo(() => imageTrackId === null ? null
-    : createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId), [imageTrackId, transport, unauthorized]);
+    : createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId, shareAccess?.shareLinkId), [imageTrackId, transport, unauthorized, shareAccess?.shareLinkId]);
   const imageFiles = useMemo(() => imageRoot === null || conversationFiles === null ? null : ({
     root: imageRoot, files: conversationFiles,
   }), [imageRoot, conversationFiles]);
@@ -1141,6 +1155,10 @@ function TrackRouteBody({
   reportEmpty?: ReactNode;
 }) {
   const [centerHost, setCenterHost] = useState<HTMLDivElement | null>(null);
+  const shareAccess = useShareScope();
+  const openShare = useShareManagement();
+  const areasForShare = useQuery(areaListQueryOptions(transport, unauthorized));
+  const shareable = shareAccess === null && areasForShare.data?.some(area => area.id === track.areaId && area.kind === 'user') === true;
   const reportPresentation = useTrackReportPresentation(track.id, cards, prepareReport);
   const progressDisclosure = useTrackViewState(track.id, reportPresentation.presentable);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -1387,8 +1405,8 @@ function TrackRouteBody({
     [transport, unauthorized],
   );
   const reportFiles = useMemo(
-    () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id),
-    [track.id, transport, unauthorized],
+    () => createTrackWorkspaceFilesPort(transport, unauthorized, track.id, shareAccess?.shareLinkId),
+    [track.id, transport, unauthorized, shareAccess?.shareLinkId],
   );
   const [cardDraft, setCardDraft] = useState<(CardAddMenuEntry & { origin: DialogOrigin }) | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
@@ -1535,13 +1553,15 @@ function TrackRouteBody({
     <TrackStage>
     <TrackPage
       fillReading={centerActive}
+      shareLinks={shareAccess === null ? <TrackShareLinks trackId={track.id} areaId={track.areaId} shareable={shareable} transport={transport} unauthorized={unauthorized} /> : undefined}
+      onShareTrack={shareable && openShare !== null ? origin => openShare({ scope: { kind: 'track', id: track.id }, title: track.title, origin }) : undefined}
       progressDisclosure={progressDisclosure}
       panelContent={panelContent}
       mobileReportIntro={mobileReportIntro}
       mobilePanelObscured={(!centerActive && chat.isOpen) || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
-      mobileTitleReadView={(controls) => <TrackSelector track={track} controls={controls}
+      mobileTitleReadView={shareAccess?.scope.kind === 'track' ? undefined : (controls) => <TrackSelector track={track} controls={controls}
         onOpenTracks={() => openMobileSection({ kind: 'tracks', areaId: track.areaId, returnTo: 'report' })} />}
       track={track}
       canReopenTrack={canReopenTrack}
@@ -1603,7 +1623,7 @@ function TrackRouteBody({
       onClosePanel={() => { closePanel(track.id); }}
       /* `?from=` is the whole memory of how the reader got here; absent means Pages. */
       mobileBackLabel={routeFrom === 'area' ? 'Tracks' : 'Pages'}
-      onMobileBack={() => {
+      onMobileBack={shareAccess?.scope.kind === 'track' ? undefined : () => {
         if (routeFrom === 'area') openMobileSection({ kind: 'tracks', areaId: track.areaId });
         else openMobileSection({ kind: 'pages' });
       }}
@@ -1670,7 +1690,7 @@ function TrackRouteBody({
       onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}
       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}
       closedControl={closedControl}
-      onDeleteTrack={(signal) => trackMutations.remove(track.id, track.areaId, signal)}
+      onDeleteTrack={shareAccess === null ? (signal) => trackMutations.remove(track.id, track.areaId, signal) : undefined}
       onTrackDeleted={() => go({ name: 'today' })}
     />
     </TrackStage>

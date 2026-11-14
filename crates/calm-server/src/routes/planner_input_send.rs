@@ -87,8 +87,10 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
         (status = 500, description = "Internal storage or response error; reconcile an uncertain outcome with the original key", body = ErrorBody),
     ),
 )]
-#[allow(deprecated)]
+// Axum extracts the scoped credential alongside state and request fields.
+#[allow(clippy::too_many_arguments, deprecated)]
 pub(crate) async fn send_planner_input(
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
@@ -97,6 +99,23 @@ pub(crate) async fn send_planner_input(
     Path(id): Path<String>,
     JsonBody(body): JsonBody<SendPlannerInputRequest>,
 ) -> Result<Json<SendPlannerInputResponse>> {
+    if let Some(axum::Extension(share)) = share {
+        share.validate(s.repo.as_ref()).await?;
+        if !body.attachments.is_empty() {
+            crate::planner_attachments::require_image_input_source(&source)?;
+        }
+        if body.replaces_turn.is_some() {
+            return Err(CalmError::Forbidden(
+                "share input supports text only".into(),
+            ));
+        }
+        let track = s
+            .repo
+            .card_track_id(&id)
+            .await?
+            .ok_or(CalmError::Unauthorized)?;
+        return super::share_input::accept(&s, share, track, id, headers, body.text).await;
+    }
     let idempotency_key = parse_idempotency_key_header(&headers)?.ok_or_else(|| {
         CalmError::BadRequest(
             "Idempotency-Key header is required so a retried send cannot queue the message twice"

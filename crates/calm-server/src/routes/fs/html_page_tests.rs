@@ -158,6 +158,7 @@ async fn global_raw_route_still_refuses_html() {
     let error = readfile_raw(
         State(state),
         host_access_tests::owner_principal().await,
+        None,
         Query(PathQuery {
             path: page.to_string_lossy().into_owned(),
         }),

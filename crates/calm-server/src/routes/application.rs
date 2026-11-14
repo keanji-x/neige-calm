@@ -34,23 +34,37 @@ pub fn public_mobile_router(state: AppState, auth_state: AuthState) -> Router {
 fn shared_router(state: AppState, auth_state: AuthState) -> Router {
     // Order matters: `actor_middleware` wraps BEFORE `require_session` so the session check runs first; an unauthenticated request never reaches actor validation.
     let protected_rest = routes::protected_router()
+        .layer(axum::Extension(auth_state.clone()))
         .layer(axum::middleware::from_fn(actor_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            (state.clone(), auth_state.clone()),
+            crate::share_access::scope::share_scope_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             auth_state.clone(),
             auth::require_session,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            (state.clone(), auth_state.clone()),
+            crate::share_access::scope::subresource_auth,
         ));
 
     // Internal worker hooks carry `X-Calm-Actor` but no browser session cookie, so they get actor + loopback validation and stay outside the human session gate.
 
     // Every WS upgrade handshake must carry a valid session cookie. No `actor_middleware`: WS frames don't go through the write-eventized path.
-    let protected_ws = ws::router().layer(axum::middleware::from_fn_with_state(
-        auth_state.clone(),
-        auth::require_session_ws,
-    ));
+    let protected_ws = ws::router()
+        .layer(axum::middleware::from_fn_with_state(
+            (state.clone(), auth_state.clone()),
+            crate::share_access::scope::share_scope_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth::require_session_ws,
+        ));
 
     // Public REST — version + openapi.json. No session gate, no actor gate.
     let public_rest =
-        routes::public_router().merge(routes::share_reads::router(auth_state.clone()));
+        routes::public_router().merge(routes::share_unlock::router(auth_state.clone()));
 
     // Auth routes are a separate router because they consume `AuthState`, not `AppState`.
     let pairing_router = crate::mobile_access::routes::public_router().with_state(auth_state);

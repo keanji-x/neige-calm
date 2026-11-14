@@ -107,6 +107,8 @@ export type ChatThreadProps = Readonly<{
   currentResponseOutcome?: import('../../../../../core/domain/conversation-display.ts').CurrentConversationOutcome | null;
   /** The caller declares composer availability; a transcript outcome cannot authorize sends. */
   canContinue: boolean;
+  /** A limited viewer can copy responses while message-changing controls are absent. */
+  messageActions?: 'all' | 'copy-only';
   copyText?: (text: string) => Promise<void>;
   regenerateMessage?: (message: ConversationTurn) => Promise<void>;
   /** Put the message of the turn that ends at `outcome` in the composer, in edit mode; the caller owns what Send then does. */
@@ -123,7 +125,7 @@ export type ChatThreadProps = Readonly<{
   renderLink?: ReplyLinkRenderer;
 }>;
 
-export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, retryInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, currentResponseOutcome = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch, hasPendingInputs = false }: ChatThreadProps) {
+export const ChatThread = memo(function ChatThread({ conversation, turns, pendingMessages, activeInput = null, keepInput, retryInput, hasPendingMessages, pending = false, sending = false, submissionRequest = 0, cards, stalled, stalledReason, recovery = null, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, currentResponseOutcome = null, canContinue, messageActions = 'all', copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView, historyPrefetch, hasPendingInputs = false }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   // Observe the browser timezone on render; keep formatters stable for memoized rows.
   const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -310,7 +312,7 @@ export const ChatThread = memo(function ChatThread({ conversation, turns, pendin
   const currentMeta = <CurrentStatusNotice detailsExpanded={reading.expanded.get('current-status') ?? false}
     leading={live && !empty && !tailCarriesLiveMark ? <ActivityIndicator state="working" motion="thinking" /> : undefined}
     onDetailsExpandedChange={expanded => reading.setExpanded('current-status', expanded)} outcome={currentResponseOutcome ?? currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} sending={sending} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
-    hasPendingInputs={hasPendingInputs} stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
+    hasPendingInputs={hasPendingInputs} stalled={stalled} recovery={recovery} stalledReason={stalledReason ?? null} feedback={stopFeedback} messageActions={messageActions} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
     <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
@@ -600,7 +602,7 @@ export function ChatComposer({
           placeholder={layout === 'mobile' ? '说说你想做什么…' : 'Say something'}
           isDisabled={disabled}
           isStopShown={stopShown}
-          footerActions={layout === 'mobile' ? <details className={mobileStyles.options}>
+          footerActions={layout === 'mobile' && footerActions !== undefined ? <details className={mobileStyles.options}>
             <summary className={floatingControlClassName} aria-label="对话选项"><Icon name="plus" /></summary>
             <div className={mobileStyles.optionsPanel}>{footerActions}</div>
           </details> : footerActions}

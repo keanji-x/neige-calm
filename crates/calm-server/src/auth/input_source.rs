@@ -36,10 +36,32 @@ impl HumanInputSource {
             }
             | Issuer::ConfiguredDev { .. } => self.current_principal(),
             Issuer::Session {
-                authority: SessionAuthority::PairedDevice,
+                authority: SessionAuthority::PairedDevice | SessionAuthority::ShareLink,
                 ..
             } => Err(CalmError::Forbidden("deployment issuer required".into())),
         }
+    }
+
+    /// Credential classification is captured by authentication. Eviction cannot
+    /// turn an in-flight share request into an owner request.
+    pub(crate) fn is_share_link(&self) -> bool {
+        matches!(
+            self.0.as_ref(),
+            Issuer::Session {
+                authority: SessionAuthority::ShareLink,
+                ..
+            }
+        )
+    }
+
+    /// Shared access never supplies a registered Human message author.
+    pub(crate) fn current_human_principal(&self) -> Result<Principal> {
+        if self.is_share_link() {
+            return Err(CalmError::Forbidden(
+                "share input requires LinkGuest source".into(),
+            ));
+        }
+        self.current_principal()
     }
 
     /// Ask the actual issuer again at the protected decision. A recorded author,
@@ -93,7 +115,38 @@ fn dev_principal(config: &AuthConfig) -> Principal {
 }
 
 pub(super) fn resolve(state: &AuthState, headers: &HeaderMap) -> Option<AuthenticatedRequest> {
-    let (principal, issuer) = if state.config.dev_autologin {
+    let selected = headers
+        .get("x-calm-share-link")
+        .map(|h| h.to_str().unwrap_or(""));
+    let share_session = if let Some(id) = selected {
+        let name = crate::share_access::sessions::cookie_name(id);
+        Some(
+            crate::share_access::sessions::cookies(headers, &name).find_map(|token| {
+                let credential = state.shares.get(token)?;
+                if credential.link_id != id {
+                    return None;
+                }
+                state
+                    .sessions
+                    .get(token)
+                    .filter(|s| s.authority == SessionAuthority::ShareLink)
+            })?,
+        )
+    } else {
+        None
+    };
+    let (principal, issuer) = if let Some(session) = share_session {
+        let issuer = Issuer::Session {
+            sessions: state.sessions.clone(),
+            token: session.session_id.clone(),
+            user_id: session.identity.user_id.clone(),
+            authority: session.authority,
+        };
+        (
+            Principal::from_identity(session.identity, session.session_id),
+            issuer,
+        )
+    } else if state.config.dev_autologin {
         (
             dev_principal(&state.config),
             Issuer::ConfiguredDev {
@@ -101,7 +154,12 @@ pub(super) fn resolve(state: &AuthState, headers: &HeaderMap) -> Option<Authenti
             },
         )
     } else {
-        let session = session_cookies(headers).find_map(|id| state.sessions.get(id))?;
+        let session = session_cookies(headers).find_map(|id| {
+            state
+                .sessions
+                .get(id)
+                .filter(|s| s.authority != SessionAuthority::ShareLink)
+        })?;
         let issuer = Issuer::Session {
             sessions: state.sessions.clone(),
             token: session.session_id.clone(),

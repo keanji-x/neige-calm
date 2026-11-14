@@ -4,7 +4,6 @@ use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path, Query};
 use crate::model::HarnessItem as TranscriptRow;
-use crate::read_access::Audience;
 use crate::state::RouteState;
 use axum::{
     extract::State,
@@ -13,8 +12,6 @@ use axum::{
 use calm_types::conversation_display::*;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
-
-mod share_projection;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -59,16 +56,16 @@ pub(crate) async fn get_harness_items(
     Path(id): Path<String>,
     Query(q): Query<ConversationItemsQuery>,
 ) -> Result<Response> {
-    read(&s, Audience::Owner(&principal), id, q).await
+    read(&s, &principal, id, q).await
 }
 
 pub(crate) async fn read(
     s: &RouteState,
-    audience: Audience<'_>,
+    principal: &Principal,
     id: String,
     q: ConversationItemsQuery,
 ) -> Result<Response> {
-    let scope = ReadScope::check_audience(s.repo.as_ref(), &id, audience).await?;
+    let scope = ReadScope::check(s.repo.as_ref(), &id, principal).await?;
     let card = super::cards::harness_card(s, &id).await?;
     if card.track_id.as_str() != scope.track {
         return Err(CalmError::Forbidden("conversation moved".into()));
@@ -113,20 +110,12 @@ pub(crate) async fn read(
         }
     };
     let response = if mode == ConversationCursorSource::Presentation {
-        let mut page = match audience {
-            Audience::Owner(_) => {
-                s.repo
-                    .conversation_presentation_page(&id, after, limit, descending)
-                    .await?
-            }
-            Audience::ShareLink { .. } => {
-                s.repo
-                    .conversation_published_page(&id, after, limit, descending)
-                    .await?
-            }
-        };
+        let mut page = s
+            .repo
+            .conversation_presentation_page(&id, after, limit, descending)
+            .await?;
         for entry in &mut page.items {
-            redact(&mut entry.source, audience);
+            redact(&mut entry.source);
         }
         Json(ConversationItemsReadResponse::Conversation(page)).into_response()
     } else {
@@ -135,7 +124,7 @@ pub(crate) async fn read(
             .harness_item_list_transcript_by_card(&id, after, limit, descending)
             .await?;
         for item in &mut rows {
-            project_item(item, audience);
+            project_item(item);
         }
         if q.contract.is_none() {
             Json(ConversationItemsReadResponse::Historical(rows)).into_response()
@@ -166,31 +155,19 @@ pub(crate) async fn read(
             .into_response()
         }
     };
-    scope.publish_audience(s.repo.as_ref(), audience).await?;
+    scope.publish(s.repo.as_ref(), principal).await?;
     Ok(response)
 }
 
-fn redact(source: &mut ConversationDisplaySource, audience: Audience<'_>) {
+fn redact(source: &mut ConversationDisplaySource) {
     if let ConversationDisplaySource::Native { item }
     | ConversationDisplaySource::ImportedItem { item, .. }
     | ConversationDisplaySource::HistoricalRaw { item } = source
     {
-        project_item(item, audience);
-    }
-    if let Audience::ShareLink { .. } = audience
-        && let ConversationDisplaySource::System {
-            presentation, text, ..
-        } = source
-    {
-        *text = share_projection::system_label(*presentation).into();
+        project_item(item);
     }
 }
 
-fn project_item(item: &mut TranscriptRow, audience: Audience<'_>) {
-    match audience {
-        Audience::Owner(_) => {
-            item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
-        }
-        Audience::ShareLink { .. } => share_projection::project_row(item),
-    }
+fn project_item(item: &mut TranscriptRow) {
+    item.params = crate::planner_attachments::redact_local_image_paths(&item.params);
 }

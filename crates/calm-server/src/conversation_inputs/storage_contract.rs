@@ -48,7 +48,7 @@ pub(crate) async fn human_input_storage_contract(
     let card_id = card_id.to_owned();
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let principal = source.current_principal()?;
+            let principal = source.current_human_principal()?;
             super::authorize_human_tx(tx, &principal, &card_id).await?;
             Ok(
                 if crate::db::sqlite::conversation::card_has_canonical_storage(tx, &card_id).await?

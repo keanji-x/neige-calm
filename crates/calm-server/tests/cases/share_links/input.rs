@@ -1,12 +1,24 @@
-//! Anonymous acceptance calls the real public router and canonical message owner.
-use super::conversations::canonical;
+//! Scoped acceptance calls the ordinary production router and canonical message owner.
+use super::fixtures::canonical;
 use super::*;
 
-async fn send(fx: &Fixture, path: &str, key: Option<&str>, body: Value) -> (StatusCode, Value) {
+async fn send(
+    fx: &Fixture,
+    link: &Value,
+    path: &str,
+    key: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let cookie = link["cookie"].as_str().unwrap();
     let mut req = Request::builder()
         .method("POST")
         .uri(path)
-        .header("content-type", "application/json");
+        .header("content-type", "application/json")
+        .header("cookie", cookie)
+        .header(
+            "X-Calm-Share-Link",
+            link["link"]["delegation"]["id"].as_str().unwrap(),
+        );
     if let Some(key) = key {
         req = req.header("Idempotency-Key", key);
     }
@@ -26,31 +38,35 @@ async fn send(fx: &Fixture, path: &str, key: Option<&str>, body: Value) -> (Stat
 async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
     let fx = Fixture::new().await;
     let (card, _) = canonical(&fx).await;
-    let link = fx.create(true).await;
+    let mut link = fx.create(true).await;
+    link["cookie"] = super::tokens::unlock(&fx, &link).await.into();
     let token = link["token"].as_str().unwrap();
-    let path = format!(
-        "/api/share/{token}/tracks/{}/conversations/{card}/input",
-        fx.track
-    );
+    let path = format!("/api/cards/{card}/planner/input");
     assert_eq!(
-        send(&fx, &path, None, json!({"text":"hello"})).await.0,
+        send(&fx, &link, &path, None, json!({"text":"hello"}))
+            .await
+            .0,
         StatusCode::BAD_REQUEST
     );
     for (body, expected) in [
         (
-            json!({"text":"hello","attachments":[]}),
-            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"text":"hello","attachments":["550e8400-e29b-41d4-a716-446655440000.png"]}),
+            StatusCode::FORBIDDEN,
         ),
         (
-            json!({"text":"hello","actor":"user"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"text":"hello","replaces_turn":"turn"}),
+            StatusCode::FORBIDDEN,
         ),
         (json!({"text":" "}), StatusCode::BAD_REQUEST),
     ] {
-        assert_eq!(send(&fx, &path, Some("guest-key"), body).await.0, expected);
+        assert_eq!(
+            send(&fx, &link, &path, Some("guest-key"), body).await.0,
+            expected
+        );
     }
     let (status, ack) = send(
         &fx,
+        &link,
         &path,
         Some("guest-key"),
         json!({"text":"guest speech"}),
@@ -60,6 +76,7 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
     assert_eq!(
         send(
             &fx,
+            &link,
             &path,
             Some("guest-key"),
             json!({"text":"guest speech"})
@@ -68,16 +85,24 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
         (status, ack.clone())
     );
     assert_eq!(
-        send(&fx, &path, Some("guest-key"), json!({"text":"changed"}))
-            .await
-            .0,
+        send(
+            &fx,
+            &link,
+            &path,
+            Some("guest-key"),
+            json!({"text":"changed"})
+        )
+        .await
+        .0,
         StatusCode::CONFLICT
     );
-    let other = fx.create(true).await;
-    let other_path = path.replace(token, other["token"].as_str().unwrap());
+    let mut other = fx.create(true).await;
+    other["cookie"] = super::tokens::unlock(&fx, &other).await.into();
+    let other_path = path.clone();
     assert_eq!(
         send(
             &fx,
+            &other,
             &other_path,
             Some("guest-key"),
             json!({"text":"guest speech"})
@@ -86,6 +111,22 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
         .0,
         StatusCode::CONFLICT
     );
+    let owner_replay = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("content-type", "application/json")
+                .header("cookie", &fx.cookie)
+                .header("Idempotency-Key", "guest-key")
+                .body(Body::from(json!({"text":"guest speech"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(owner_replay.status(), StatusCode::CONFLICT);
     let db = fx.state.raw_repo().sqlite_db().unwrap();
     let facts: (String,Option<String>,String) = sqlx::query_as("SELECT author_kind,author_user_id,author_share_link_id FROM conversation_messages WHERE id=?1")
         .bind(ack["entry_id"].as_str().unwrap()).fetch_one(db.read_pool()).await.unwrap();
@@ -122,13 +163,14 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
     assert_eq!(
         send(
             &fx,
+            &link,
             &path,
             Some("guest-key"),
             json!({"text":"guest speech"})
         )
         .await
         .0,
-        StatusCode::NOT_FOUND
+        StatusCode::UNAUTHORIZED
     );
     let event_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM events WHERE kind='harness.user_message.enqueued' AND scope_card=?1",
@@ -159,15 +201,24 @@ async fn guest_input_requires_text_only_key_and_active_source_bound_receipt() {
 async fn guest_input_rejects_other_track_and_historical_card() {
     let fx = Fixture::new().await;
     let (card, _) = canonical(&fx).await;
-    let link = fx.create(true).await;
-    let token = link["token"].as_str().unwrap();
-    let other = super::reads::track(&fx, &fx.area).await;
-    let path = format!("/api/share/{token}/tracks/{other}/conversations/{card}/input");
+    let mut link = fx.create(true).await;
+    link["cookie"] = super::tokens::unlock(&fx, &link).await.into();
+    let other = super::fixtures::track(&fx, &fx.area).await;
+    let db = fx.state.raw_repo().sqlite_db().unwrap();
+    db.writer()
+        .execute(
+            sqlx::query("UPDATE cards SET track_id=?2 WHERE id=?1")
+                .bind(&card)
+                .bind(&other),
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/cards/{card}/planner/input");
     assert_eq!(
-        send(&fx, &path, Some("key"), json!({"text":"hello"}))
+        send(&fx, &link, &path, Some("key"), json!({"text":"hello"}))
             .await
             .0,
-        StatusCode::NOT_FOUND
+        StatusCode::FORBIDDEN
     );
     let historical = fx
         .state
@@ -189,12 +240,9 @@ async fn guest_input_rejects_other_track_and_historical_card() {
         )
         .await
         .unwrap();
-    let path = format!(
-        "/api/share/{token}/tracks/{}/conversations/{}/input",
-        fx.track, historical.id
-    );
+    let path = format!("/api/cards/{}/planner/input", historical.id);
     assert_eq!(
-        send(&fx, &path, Some("key"), json!({"text":"hello"}))
+        send(&fx, &link, &path, Some("key"), json!({"text":"hello"}))
             .await
             .0,
         StatusCode::CONFLICT
@@ -205,18 +253,20 @@ async fn guest_input_rejects_other_track_and_historical_card() {
 async fn guest_acceptance_rechecks_revocation_after_initial_resolution() {
     let fx = Fixture::new().await;
     let (card, _) = canonical(&fx).await;
-    let link = fx.create(true).await;
-    let path = format!(
-        "/api/share/{}/tracks/{}/conversations/{card}/input",
-        link["token"].as_str().unwrap(),
-        fx.track
-    );
+    let mut link = fx.create(true).await;
+    link["cookie"] = super::tokens::unlock(&fx, &link).await.into();
+    let path = format!("/api/cards/{card}/planner/input");
     let pause = calm_server::test_seams::PausePoint::default();
     calm_server::test_seams::install_pause_for_test(
         "share-input-before-accept",
         &card,
         pause.clone(),
     );
+    let cookie = link["cookie"].as_str().unwrap().to_owned();
+    let link_id = link["link"]["delegation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let app = fx.app.clone();
     let task = tokio::spawn(async move {
         app.oneshot(
@@ -225,6 +275,8 @@ async fn guest_acceptance_rechecks_revocation_after_initial_resolution() {
                 .uri(path)
                 .header("content-type", "application/json")
                 .header("Idempotency-Key", "revocation-race")
+                .header("cookie", cookie)
+                .header("X-Calm-Share-Link", link_id)
                 .body(Body::from(
                     json!({"text":"must stay unaccepted"}).to_string(),
                 ))
@@ -249,7 +301,7 @@ async fn guest_acceptance_rechecks_revocation_after_initial_resolution() {
         StatusCode::OK
     );
     pause.release.notify_one();
-    assert_eq!(task.await.unwrap().status(), StatusCode::NOT_FOUND);
+    assert_eq!(task.await.unwrap().status(), StatusCode::UNAUTHORIZED);
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM conversation_messages WHERE author_share_link_id=?1",
     )
@@ -261,70 +313,14 @@ async fn guest_acceptance_rechecks_revocation_after_initial_resolution() {
 }
 
 #[tokio::test]
-async fn shared_list_prepends_canonical_planner_without_owner_title_fallback() {
-    let fx = Fixture::new().await;
-    let (card, _) = canonical(&fx).await;
-    let db = fx.state.raw_repo().sqlite_db().unwrap();
-    db.writer().execute(sqlx::query("UPDATE cards SET role='planner',payload=json_set(json_remove(payload,'$.assistant_provider','$.harness_profile'),'$.planner_harness',json('true'),'$.planner_provider','codex') WHERE id=?1").bind(&card)).await.unwrap();
-    let link = fx.create(true).await;
-    let (status, rows) = fx
-        .request(
-            "GET",
-            &format!(
-                "/api/share/{}/tracks/{}/conversations",
-                link["token"].as_str().unwrap(),
-                fx.track
-            ),
-            None,
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{rows}");
-    assert_eq!(rows[0]["id"], card);
-    assert_eq!(rows[0]["kind"], "shared-spec");
-    assert!(rows[0]["title"].is_null());
-    let (status, owner) = fx
-        .request(
-            "GET",
-            &format!("/api/tracks/{}/conversations", fx.track),
-            Some(&fx.cookie),
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK, "{owner}");
-    assert_eq!(owner, json!([]));
-    db.writer()
-        .execute(sqlx::query("UPDATE cards SET title='Shared plan' WHERE id=?1").bind(&card))
-        .await
-        .unwrap();
-    let (status, titled) = fx
-        .request(
-            "GET",
-            &format!(
-                "/api/share/{}/tracks/{}/conversations",
-                link["token"].as_str().unwrap(),
-                fx.track
-            ),
-            None,
-            json!(null),
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(titled[0]["title"], "Shared plan");
-}
-
-#[tokio::test]
 async fn guest_receipt_replays_after_current_session_pointer_is_cleared() {
     let fx = Fixture::new().await;
     let (card, _) = canonical(&fx).await;
-    let link = fx.create(true).await;
-    let path = format!(
-        "/api/share/{}/tracks/{}/conversations/{card}/input",
-        link["token"].as_str().unwrap(),
-        fx.track
-    );
+    let mut link = fx.create(true).await;
+    link["cookie"] = super::tokens::unlock(&fx, &link).await.into();
+    let path = format!("/api/cards/{card}/planner/input");
     let body = json!({"text":"durable guest receipt"});
-    let accepted = send(&fx, &path, Some("cleared-session"), body.clone()).await;
+    let accepted = send(&fx, &link, &path, Some("cleared-session"), body.clone()).await;
     assert_eq!(accepted.0, StatusCode::OK, "{:?}", accepted.1);
     fx.state
         .raw_repo()
@@ -335,12 +331,13 @@ async fn guest_receipt_replays_after_current_session_pointer_is_cleared() {
         .await
         .unwrap();
     assert_eq!(
-        send(&fx, &path, Some("cleared-session"), body).await,
+        send(&fx, &link, &path, Some("cleared-session"), body).await,
         accepted
     );
     assert_eq!(
         send(
             &fx,
+            &link,
             &path,
             Some("fresh-key"),
             json!({"text":"needs a carrier"})

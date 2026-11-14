@@ -67,7 +67,7 @@ mod assistant_terminal;
 mod worker_report;
 
 #[path = "support/terminal_interaction.rs"]
-mod terminal_support;
+pub(crate) mod terminal_support;
 
 #[path = "cases/planner_messages.rs"]
 mod planner_messages;

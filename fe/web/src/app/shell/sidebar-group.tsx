@@ -30,7 +30,7 @@ export type RowProps = Readonly<{
   onGo: (target: NavTarget) => void;
   nowMs?: number;
   onSetPinned: (trackId: string, pinned: boolean) => void;
-  onDelete: (trackId: string, origin: DialogOrigin) => void;
+  onDelete?: (trackId: string, origin: DialogOrigin) => void;
   trackActions?: (track: Track) => NonNullable<Parameters<typeof TrackRow>[0]['actions']>;
   trackRowRef?: (trackId: string, element: HTMLButtonElement | null) => void;
 }>;

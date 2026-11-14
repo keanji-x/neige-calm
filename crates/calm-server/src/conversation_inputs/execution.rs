@@ -22,7 +22,7 @@ pub(super) async fn authorize_legacy_human_area_tx(
     source: &HumanInputSource,
     area_id: &str,
 ) -> Result<()> {
-    let principal = source.current_principal()?;
+    let principal = source.current_human_principal()?;
     crate::organization_access::require_legacy_input_execution_tx(tx, area_id, &principal).await?;
     Ok(())
 }
@@ -34,7 +34,7 @@ pub(super) async fn current_human_ref_matches_tx(
     carrier: &CurrentInputCarrier,
     message: &MessageRevisionRef,
 ) -> Result<bool> {
-    let principal = source.current_principal()?;
+    let principal = source.current_human_principal()?;
     let stored = conversation::message_tx(tx, &message.message_id).await?;
     if stored.card_id != carrier.card_id()
         || stored.current != *message

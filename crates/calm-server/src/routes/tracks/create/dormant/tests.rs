@@ -2,7 +2,7 @@
 //! Real source middleware -> actual shared Track allocation -> canonical DB
 //! acceptance. Fixture preparation supplies data; it does not copy the policy.
 use super::*;
-use crate::auth::{AuthConfig, AuthState, SessionAuthority, SessionIdentity};
+use crate::auth::{AuthConfig, AuthState, HumanInputSource, SessionAuthority, SessionIdentity};
 use crate::db::prelude::*;
 use crate::db::sqlite::conversation::*;
 use crate::db::sqlite::{SqlxRepo, area_membership};

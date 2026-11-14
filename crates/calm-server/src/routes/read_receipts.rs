@@ -53,7 +53,16 @@ fn require_user(actor: &Actor) -> Result<()> {
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
-pub(crate) async fn list_read_receipts(State(s): State<RouteState>) -> Result<Json<ReadReceipts>> {
+pub(crate) async fn list_read_receipts(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
+    State(s): State<RouteState>,
+) -> Result<Json<ReadReceipts>> {
+    if scope.is_some() {
+        return Ok(Json(ReadReceipts {
+            baseline_ms: crate::model::now_ms(),
+            receipts: vec![],
+        }));
+    }
     Ok(Json(s.repo.read_receipts_load().await?))
 }
 
@@ -76,6 +85,7 @@ pub(crate) async fn list_read_receipts(State(s): State<RouteState>) -> Result<Js
     ),
 )]
 pub(crate) async fn mark_read(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     actor: Actor,
     Path((kind, target_id)): Path<(String, String)>,
@@ -88,6 +98,14 @@ pub(crate) async fn mark_read(
             "read receipt: readThroughMs {} is negative",
             body.read_through_ms
         )));
+    }
+    if scope.is_some() {
+        return Ok(Json(ReadReceipt {
+            kind,
+            target_id,
+            read_through_ms: body.read_through_ms,
+            manual_unread: false,
+        }));
     }
     let receipt = s
         .repo
@@ -113,12 +131,21 @@ pub(crate) async fn mark_read(
     ),
 )]
 pub(crate) async fn mark_unread(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     actor: Actor,
     Path((kind, target_id)): Path<(String, String)>,
 ) -> Result<Json<ReadReceipt>> {
     require_user(&actor)?;
     let kind = kind_of(&kind)?;
+    if scope.is_some() {
+        return Ok(Json(ReadReceipt {
+            kind,
+            target_id,
+            read_through_ms: 0,
+            manual_unread: true,
+        }));
+    }
     let receipt = s.repo.read_receipt_mark_unread(kind, &target_id).await?;
     Ok(Json(receipt))
 }

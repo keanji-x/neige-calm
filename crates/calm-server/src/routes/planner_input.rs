@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::actor::Actor;
-use crate::auth::Principal;
+use crate::auth::HumanInputSource;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use crate::harness::queue::{MutationRefused, QueueEntryId, QueueMutation};
@@ -116,8 +116,12 @@ async fn resolve(
     workers: &WorkerState,
     card_id: &str,
     actor: &Actor,
+    source: &HumanInputSource,
 ) -> Result<(CardId, String, crate::harness::PlannerHarness)> {
     require_rest_user_actor_for(actor, ACTOR_SUBJECT, ACTOR_REDIRECT)?;
+    crate::conversation_inputs::HistoricalHumanSource::new(source.clone())
+        .require_card(state.repo.as_ref(), card_id)
+        .await?;
 
     let card = state
         .repo
@@ -202,9 +206,11 @@ async fn mutate(
     card_id: String,
     entry_id: String,
     actor: Actor,
+    source: HumanInputSource,
     build: impl FnOnce(QueueEntryId) -> QueueMutation,
 ) -> Result<Response> {
-    let (card_id, worker_session_id, harness) = resolve(&state, &workers, &card_id, &actor).await?;
+    let (card_id, worker_session_id, harness) =
+        resolve(&state, &workers, &card_id, &actor, &source).await?;
     let mutation = build(QueueEntryId::from_wire(entry_id));
     match harness
         .mutate_pending_entry(mutation, ActorId::User)
@@ -255,20 +261,26 @@ async fn mutate(
 pub(crate) async fn edit_planner_input(
     State(state): State<RouteState>,
     State(workers): State<WorkerState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<EditPlannerInputBody>,
 ) -> Result<Response> {
     validate_planner_input_text(&body.text)?;
     let EditPlannerInputBody { text, if_entry_rev } = body;
-    mutate(state, workers, id, entry_id, actor, move |entry_id| {
-        QueueMutation::Edit {
+    mutate(
+        state,
+        workers,
+        id,
+        entry_id,
+        actor,
+        source,
+        move |entry_id| QueueMutation::Edit {
             entry_id,
             text,
             if_entry_rev,
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -294,18 +306,24 @@ pub(crate) async fn edit_planner_input(
 pub(crate) async fn delete_planner_input(
     State(state): State<RouteState>,
     State(workers): State<WorkerState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<DeletePlannerInputBody>,
 ) -> Result<Response> {
     let if_entry_rev = body.if_entry_rev;
-    mutate(state, workers, id, entry_id, actor, move |entry_id| {
-        QueueMutation::Delete {
+    mutate(
+        state,
+        workers,
+        id,
+        entry_id,
+        actor,
+        source,
+        move |entry_id| QueueMutation::Delete {
             entry_id,
             if_entry_rev,
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -334,12 +352,13 @@ pub(crate) async fn delete_planner_input(
 pub(crate) async fn steer_planner_input(
     State(state): State<RouteState>,
     State(workers): State<WorkerState>,
-    _principal: Principal,
+    source: HumanInputSource,
     actor: Actor,
     Path((id, entry_id)): Path<(String, String)>,
     JsonBody(body): JsonBody<SteerPlannerInputBody>,
 ) -> Result<Response> {
-    let (card_id, worker_session_id, harness) = resolve(&state, &workers, &id, &actor).await?;
+    let (card_id, worker_session_id, harness) =
+        resolve(&state, &workers, &id, &actor, &source).await?;
     match harness
         .steer_pending_entry(
             QueueEntryId::from_wire(entry_id.clone()),

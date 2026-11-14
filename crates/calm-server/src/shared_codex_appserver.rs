@@ -1458,7 +1458,27 @@ impl SharedCodexAppServer {
         .into_steer_delivery()
     }
 
+    #[cfg(feature = "fixtures")]
     pub async fn thread_compact_delivery(&self, thread_id: &str) -> CompactDelivery<ControlError> {
+        self.thread_compact_delivery_historical(
+            thread_id,
+            &NativePromptAdmission::new(|| Ok(()), || Box::pin(async { Ok(()) })),
+        )
+        .await
+    }
+
+    pub(crate) async fn thread_compact_delivery_historical(
+        &self,
+        thread_id: &str,
+        admission: &NativePromptAdmission<'_>,
+    ) -> CompactDelivery<ControlError> {
+        #[cfg(feature = "fixtures")]
+        crate::test_seams::pause_point("historical-compact-before-effect", thread_id).await;
+        if let Err(error) = admission.check_local().await {
+            return CompactDelivery::NotWritten {
+                error: ControlError::Unanswered(error),
+            };
+        }
         if let Err(error) = self.require_authentication() {
             return CompactDelivery::NotWritten { error };
         }
@@ -1481,10 +1501,22 @@ impl SharedCodexAppServer {
             Ok(client) => client,
             Err(error) => return CompactDelivery::NotWritten { error },
         };
-        match client.compact_delivery(thread_id).await {
+        let gate = admission.gate_with_final_check(|| {
+            self.require_authentication().map_err(CalmError::from)?;
+            if self.thread_seals.is_sealed(thread_id) {
+                return Err(CalmError::Conflict(
+                    "the conversation is being deleted".into(),
+                ));
+            }
+            Ok(())
+        });
+        match client.compact_delivery_gated(thread_id, &gate).await {
             CompactDelivery::NativeAck => CompactDelivery::NativeAck,
             CompactDelivery::NotWritten { error } => CompactDelivery::NotWritten {
-                error: error.into(),
+                error: admission
+                    .take_refusal()
+                    .map(ControlError::Unanswered)
+                    .unwrap_or_else(|| error.into()),
             },
             CompactDelivery::Unknown { error } => CompactDelivery::Unknown {
                 error: error.into(),

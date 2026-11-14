@@ -1,0 +1,33 @@
+@layer features {
+@layer components {
+  .content { display: flex; flex-direction: column; gap: var(--space-2); }
+  .description { margin: 0; color: var(--text-2); }
+  .hint { margin: 0; color: var(--text-3); }
+  .actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); margin-block-start: var(--space-4); }
+  .linkBox {
+    display: flex;
+    align-items: center;
+    padding-inline: var(--space-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: transparent;
+  }
+  .linkBox input {
+    flex: 1;
+    min-inline-size: 0;
+    block-size: var(--control-h);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: var(--type-code);
+  }
+  .linkBox input,
+  .linkBox input:focus-visible {
+    border-block-end: none;
+    box-shadow: none;
+    outline: none;
+  }
+  .linkBox:has(input:focus-visible) { border-color: var(--text); }
+}
+}

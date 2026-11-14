@@ -1,3 +1,4 @@
+import { parseShareBasePath } from '../../../../core/domain/share.ts';
 // Terminal protocol, rendering and connection lifecycle. Reconnect replaces only the WebSocket.
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
@@ -386,7 +387,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       const wsUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${
         location.host
       }/api/terminals/${encodeURIComponent(terminalId)}`;
-      const ws = new WebSocket(wsUrl);
+      const share = parseShareBasePath(window.location.pathname);
+      const scopedUrl = share === null ? wsUrl : `${wsUrl}?share_link=${encodeURIComponent(share.shareId)}`;
+      const ws = new WebSocket(scopedUrl);
       let handshakeTimedOut = false;
       const handshakeTimer = __NC_BUNDLED__ ? setTimeout(() => {
         if (current()) { handshakeTimedOut = true; ws.close(); }

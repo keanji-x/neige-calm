@@ -1,7 +1,6 @@
 # Link sharing and execution approval
 
-Status: PR3 L2 implementation for #3633, extending merged shared reads.
-PR3 adds text-only original-conversation guest input and execution provenance.
+Status: L2 scoped-session implementation for #3633, extending PR3 shared reads and accepted-turn execution.
 This decision supersedes the earlier frozen environment binding prerequisite.
 
 ## Outcome and delivery boundaries
@@ -16,7 +15,7 @@ There is no invitation, guest fork, manual Report edit or `allows_input` switch.
 | PR1 | Protected management and persistent approval foundation | Authenticated deployment issuer, owned User Area, typed scope and immutable consent to the current deployment resource policy; independent hash-only access token and monotonic revocation; real HTTP transactions and reopen tests. No anonymous routes or execution cutover. |
 | PR2 | Shared reads and invalidation | Narrow audience-aware Report/history/data projection, resource-owner decisions and scope-only live invalidation, including deletion and subscribe/snapshot races. No guest send endpoint yet. |
 | PR3 | Original-conversation guest work | Explicit link-guest author and ShareDelegation provenance; acceptance binds exact original message/revision to approval. Reuse canonical receipt, pending order, source qualification, claim, dispatch and cold recovery. Revalidate current issuer, ownership and source at execution; loss holds the original work. |
-| PR4 | Complete browser experience | SessionGate-independent composition, existing Report/conversation UI and narrow ports, copy/reopen/multiple-link cookies/origin/revocation and Area navigation; real preview and browser/Tier 1 coverage. |
+| PR4 | Complete browser experience | ProductionApp scoped-session composition, existing Report/conversation UI and narrow ports, copy/reopen/multiple-link cookies/origin/revocation and Area navigation; real preview and browser/Tier 1 coverage. |
 
 Every slice is L2 because it changes authority or persistence boundaries. PR1
 must not change MessageAuthor, dispatch, Private history or old Legacy JSON.
@@ -52,7 +51,7 @@ purpose, policy, current approver and current ownership. There is no extra
 approval state machine, queue or bootstrap execution capability.
 
 A single `share_links` aggregate holds those immutable facts plus independent
-access facts: a hash of a strong random one-time token and monotonic `revoked_at`.
+access facts: a SHA-256 hash of a server-generated random token, immutable `expires_at`, and monotonic `revoked_at`.
 SQL fences prevent delegation edits, access resurrection and physical link
 removal while the target exists. Revocation never changes delegation, pending
 input, messages or receipts.
@@ -66,13 +65,16 @@ its accepted guest work remains held.
 Protected POST/GET `/api/tracks/{id}/share-links`, POST/GET
 `/api/areas/{id}/share-links` and DELETE `/api/share-links/{id}` are the entire PR1
 HTTP surface. Creating a link approves chat by default, without `allows_input`.
-Create returns the token exactly once; storage holds only its hash and listing
-exposes neither. DELETE idempotently marks access revoked. No anonymous endpoint,
-visitor registration, Private history change, historical JSON rewrite, provider
-change or execution dispatch is included.
+Migration `0218_share_link_expiry.sql` replaces the branch-only token migration.
+It stores no plaintext secret. Creation accepts `{}` and returns `{ link, token }`
+once. Management reads expose expiry and revocation without recovering the token.
+The server sets `expires_at = created_at + 86_400_000`; SQLite checks integer expiry
+strictly after creation and prevents subsequent edits. Existing links receive the
+same lifetime measured from their original creation time. DELETE idempotently
+revokes access and immediately evicts all process-local sessions for that link.
 
-Add the next migration after 0214; released migrations are byte-frozen. Run the
-real API/wire generator and update migration fixtures. PR2 notification work
+Released migrations are byte-frozen; follow-up changes use additive migrations.
+Run the real API/wire generator and update migration fixtures. PR2 notification work
 reuses EventScope and establishes a unified Report resource owner; PR4 copying
 preserves fragments. No new permissions panel or warning workflow is introduced.
 
@@ -106,7 +108,7 @@ Real HTTP cases belong to `domain_api_suite::share_links` in the existing
 `api_suite` target. They must prove protected-session enforcement, forged Actor
 rejection, unregistered/non-deployment/foreign owner refusal, System refusal,
 scope/target/purpose/policy mismatch, unrelated second-user behavior,
-one-time token secrecy, management replay and monotonic revocation, deletion,
+one-time token delivery and hash-only persistence, management replay and monotonic revocation, deletion,
 reopen and migration of existing data. Approval reload and current validation
 must be consumed by actual management transactions, not a test-only constructor.
 PR3 will additionally bind and test exact message provenance and accepted work.
@@ -127,131 +129,49 @@ worktree, with the full predicted/actual red set compared before safe restore.
 Verification plan: the worker runs focused owner/share HTTP tests,
 formatter and real API generation; the kernel gate runs text, full L2 contracts,
 quick Rust, focused replay and OpenAPI statuses. Planner owns
-the two independent L2 reviews. PR3 adds the public text-only send endpoint below.
+the two independent L2 reviews. PR3 acceptance is retained behind the ordinary scoped input entry below.
 
-## PR2 shared read boundary
+## Resource reads and retired token API
 
-`report_resource` owns Report, series and captured-source reads for both
-`Owner` and `ShareLink` audiences. Owner reads call `require_detail_access`
-before assembly and `require_detail_publication` afterwards. A share read
-resolves the token and rechecks publication through `share_access`, including
-its original Area. Share Reports use `track_report_read::listed_blocks` for
-both `blocks` and reconstructed `body`; task blocks and task diagnostics are
-never published. Prose, charts, tables, views and sources retain their existing
-read contracts. Series hydration stays in the existing series owner. After
-hydration, `report_resource` projects ShareLink series diagnostics: top-level
-`unavailable.reason` is always `"series data is unavailable"` (the frontend
-requires a string); a nonempty `pending.reason` becomes
-`"series source is unavailable"`, while normal queued reads omit it. In an `ok`
-response, non-ok series entries retain their status but omit free-text `reason`.
-Numeric points and presentation fields are preserved. Owner reads keep the
-complete original diagnostics, including plugin/CLI failures.
+PR4 retires all eleven `/api/share/{token}/...` HTTP and WebSocket paths,
+including the root token lookup and guest input adapter. REST revision 46 records
+this compatibility break; the current frontend already uses ordinary APIs. There is no redirect,
+compatibility forwarding or fallback. Existing clients must unlock a public
+link identifier and use the scoped-session ordinary API described below; a raw
+token is never treated as a public link id.
 
-The presented token is hashed as `hex(Sha256(token))`. One autocommit statement
-snapshots active access, target containment, registry and membership facts.
-The owner validates Conversation/CurrentDeployment,
-the current deployment issuer identity, registration and `AreaAccess::Delete`
-on the target User Area. Containment facts are read without decoding private
-Workspace or provider configuration. Track scope requires the exact Track. Area scope
-resolves current containment dynamically and excludes `purpose = area-chat`.
-A finite response repeats this decision after assembly; it is not a stream
-lease and cannot retract bytes already published.
+`report_resource` remains the owner of ordinary Report, series and captured-source
+reads. Owner reads retain `require_detail_access` before assembly and
+`require_detail_publication` afterwards. Conversation reads retain exact card
+containment, publication checks, cursor/history behavior and local-image path
+redaction. Scoped requests consume those same owners and full production
+contracts, with the additional live scope middleware fence.
 
-The public router, outside `require_session`, declares `security(())` for:
+The retired narrow `SharedTrack`, `SharedTarget`, `SharedRun`, transcript and
+series projections and Truth published-only page abstraction are removed.
+Ordinary presentation reads still preserve current revisions, retry provenance,
+Native/Imported history and pending content through their existing owner.
+The old scope-only snapshot/invalidate/closed socket protocol is retired;
+scoped clients use ordinary `/api/events` replay/live envelopes.
 
-- `GET /api/share/{token}`: scope and narrow Track id/title entries.
-- `GET /api/share/{token}/tracks/{track_id}/report`.
-- `GET /api/share/{token}/tracks/{track_id}/report/series?block_id=…&rev=…`.
-- `GET /api/share/{token}/tracks/{track_id}/sources` and `sources/{source_id}`.
-- `GET /api/share/{token}/tracks/{track_id}/conversations` and
-  `conversations/{card_id}/items`, `live`, `run`.
-- `GET /api/share/{token}/events`: WebSocket invalidation only.
+Share authorization facts remain owned by `share_access::ShareRead`,
+`resolve_hash`, `resolve_id` and the owning Truth factual readers. They still
+validate active access, current deployment issuer, registered User Area ownership
+and containment. EventScope and EventBus access wakes remain shared infrastructure.
+No released migration, stored delegation, historical guest author or execution
+provenance is rewritten or removed.
 
-Conversation items/live reuse the canonical/historical readers, cursor rules
-and audience projection. Owner transcript reads retain their existing behavior,
-including local-image redaction. ShareLink projects the complete transcript row
-through one route-owned `share_projection::project_row` entry point for Native,
-ImportedItem and HistoricalRaw sources, in both versioned pages and historical
-arrays without a contract. User `input_segments` preserve presentation, text,
-attachments and origin. Every System segment publishes only its static public
-label from the conversation renderer vocabulary, with no attachments or origin.
-Claimed System display rows use the same exhaustive presentation-to-label mapping;
-Observation turn text, gate log tails, host paths and internal task details stay
-Owner-only. A new presentation variant must explicitly choose a public label.
-
-Transcript `params` use a fail-closed allowlist. Agent text remains speech.
-UserMessage/user_message envelope text parts (`inputText` and `text`) are withheld,
-even on historical rows without segments: joined System prompts and legacy
-envelopes have no User provenance. Only proven User segments publish user text.
-Image parts retain public image/inputImage URLs and redacted `localImage.path`.
-MCP calls publish only tool identity and activity metadata, except `neige_user_ask` questions (title/options) and
-`neige_mail_send` summary. Command text, `cwd`, command output, file paths/diffs,
-MCP results/non-speech arguments, dynamic tool arguments/results and reasoning
-summary/content are withheld. File changes retain only their count; activities
-retain status, duration and exit code, with tool errors reduced to a failure
-signal. Turn outcomes retain status, duration and error variant keys, never
-provider `error.message` or variant payloads. `turn_error_text` is withheld unless
-an interrupted turn carries the owning contract's max_turn_duration cause or
-complete versioned evidence; it then contains only
-`HarnessInterruptionReason::MaxTurnDuration.message()`, regardless of provider
-error text. Owner rows and System text retain their existing complete behavior.
-Unknown fields and future activity payloads are withheld by default.
-
-Shared presentation reads require an effective claim for the current Human
-revision or System observation, so private pending drafts cannot enter a page.
-A System claim must both be effective and resolve to an immutable render-plan
-segment. Human-resolution retry retirement keeps original provenance visible to
-Owner, but hides both retired Human and System inputs from ShareLink while the
-explicit successor is only queued; effective successor claims publish them again
-at their original presentation positions. Shared lists expose explicit card titles and do not
-use the owner's pending-queue naming fallback. Shared run status explicitly projects card id,
-phase and runtime state; it never serializes owner run configuration, pending
-inputs, recovery capabilities, `cwd` or `permission_mode`. Card containment is
-rechecked before publication. Shared reads cannot send or mutate work.
-
-The WebSocket subscribes to events and authority wakes before its first
-access check. Its initial frame is `{"type":"snapshot","scope":ShareScope}`;
-subsequent frames are `{"type":"invalidate","scope":ShareScope}`. These
-frames invalidate the whole authorized scope and carry no Event payload,
-card details or global cursor. Clients restart the current conversation page
-on invalidation as private drafts can become published at an existing
-presentation position. `EventScope` selects relevant events; Area
-Track descendants are checked dynamically. Existing hidden Tracks do not
-invalidate an Area; deleted descendants and visible Tracks that have moved out
-of the event's old Area still invalidate its list. On a containment NotFound,
-the current Track row distinguishes deletion or migration from hidden area-chat
-scaffolding; lookup failures do not authorize invalidation. Lag forces
-a scoped re-fetch.
-Every wake rechecks active access; revocation or target deletion emits
-`{"type":"closed"}` and closes the socket. Revocation wakes access readers
-after commit on `state.events`; existing Track/Area deletion events already
-wake event subscribers. No second Event kind inventory is introduced.
-
-The public transcript vocabulary belongs to the conversation route projection,
-matching the frontend conversation renderer rather than provider payload shapes.
-A new speech/activity field requires an intentional projection update and HTTP
-contract coverage; an ordinary provider payload field does not. These tests join
-the existing `share_links` selection and add no CI invocation or test census.
-
-Permanence cost: the resource audience/fence is shared across existing readers,
-not a parallel report implementation. The published presentation query extends
-the owning Truth reader. The EventBus authority wake has no stored payload,
-new migration or replay contract. Ordinary new events require no share-specific
-registration. Public endpoints use the existing OpenAPI generator and test
-registration; no new workflow invocation or test census is added. Planner owns
-two independent L2 reviews of these boundaries.
-
-The existing `db/mod.rs` interface registry exceeds 800 lines. PR2 keeps its
-small factual read declarations with the owning `RepoRead` interface; splitting
-that registry is separate from this authority change. New implementation and
-test modules stay below the repository's practical file size limit.
-
+Existing API registrations and the real generator remove the retired contracts;
+there is no permanent retired-route census. Shared test fixtures live independently
+of retired endpoint tests. Owner permission/publication races, the scoped Report revocation/publication race,
+and scoped acceptance, receipt, expiry, revocation and creation regressions remain registered.
 
 ## PR3 guest execution boundary
 
-`POST /api/share/{token}/tracks/{track_id}/conversations/{card_id}/input`
-requires `Idempotency-Key` and a strict `{ "text": "…" }` body. Attachments,
-Actor overrides and replacement fields are refused. Active access, current
+`POST /api/cards/{id}/planner/input` with a selected scoped-session credential
+requires `Idempotency-Key` and accepts text through the ordinary request contract.
+Nonempty attachments and replacement fields are refused. Request Actor fields
+cannot choose the guest author. Active access, current
 issuer, registered User Area ownership (`AreaAccess::Delete`), dynamic scope
 and a canonical Planner/Assistant binding are required before receipt replay
 or fresh acceptance. Historical V1 cards return 409. The canonical receipt hash
@@ -271,11 +191,11 @@ is `0217_share_guest_execution.sql`: upstream already released
 `0216_acp_shared_restart_release.sql`, which remains byte-frozen.
 
 `InputSource::Share` retains the actual deployment issuer declaration from
-`ValidatedApplicationAuth::from_state` on public acceptance and from the installed
+`ValidatedApplicationAuth::from_state` on scoped acceptance and from the installed
 Dispatcher on recovery. Claim, model reads, Workspace admission and native
 crossings revalidate the live delegation, current deployment issuer, registered
 Area owner and current Track/Area containment. They deliberately ignore
-`revoked_at` for accepted work. Revocation blocks new reads/sends and receipt
+`revoked_at` and `expires_at` for accepted work. Revocation blocks new reads/sends and receipt
 replays; ownership, issuer or scope loss holds the original input without
 reminting its identity or deleting its history. Area scope excludes area-chat.
 Cold reconciliation reloads pending and unattempted guest sources through the
@@ -283,10 +203,8 @@ same owner. No session cookie, raw token or stored Actor supplies execution auth
 
 Owner and each link select only their contiguous qualified pending prefix.
 Different execution provenance cannot enter an active Turn through supplemental
-claims; it stays pending for the next logical Turn. Owner and ShareLink transcript
-reads decode guest text with the public label `Link guest`. The shared conversation
-list prepends the current canonical Planner as `shared-spec`, using only an explicit
-card title; the owner list keeps its existing Assistant-only behavior.
+claims; it stays pending for the next logical Turn. Owner and scoped-session transcript
+reads decode guest text with the public label `Link guest`. Ordinary conversation lists use their existing metadata owner.
 
 Verification ownership remains L2: the worker runs focused HTTP/lifecycle tests,
 real API generation, formatting and single-factor ownership/scope/revocation
@@ -296,3 +214,82 @@ Planner owns both independent review channels. The migration rebuild preserves
 the dependent graph, indexes, triggers and presentation sequence and checks only
 new foreign-key violations. Ordinary new tests use the existing registrations;
 no new test census or CI invocation is introduced.
+
+Guest presentation reuses ProductionApp, TrackRouteBody, NewTrackPage and the existing conversation components with an explicitly selected share credential. The earlier public token read/input routes are retired without compatibility forwarding or fallback.
+
+## Separated link and unlock session
+
+The browser navigates with the public link id; the separately delivered token is
+submitted only to `POST /api/share-links/{id}/unlock`. `GET
+/api/share-links/{id}/access` returns 404 for a missing, revoked, expired or
+no-longer-owned target. A locked response contains only `status` and `expiresAt`.
+An unlocked response additionally contains the typed scope. Both endpoints are
+public OpenAPI operations. Unlock checks Origin and the existing per-peer login
+throttle, then compares fixed-size SHA-256 digests in constant time. Wrong tokens
+return 401; throttling returns 429 with Retry-After. Only the digest, public id,
+and expiry remain in the process-local credential store.
+
+Each link sets its own `calm-share-session-<id>` cookie with Path=/, HttpOnly and
+SameSite=Strict. `X-Calm-Share-Link` or `share_link` selects only that cookie for
+whoami, logout, HTTP and WebSocket authentication. Owner cookies, Bearer tokens,
+other links and development auto-login cannot satisfy that selector. Conflicting,
+duplicate or malformed selectors fail closed. Logout clears only the selected
+cookie; restarting the process requires unlocking again.
+
+`ShareAccessScope` owns a fail-closed HTTP allowlist in `shared_router`. Every
+scoped request and upgrade rechecks live SQLite access, current owner and current
+containment. Admission uses the credential authority captured during authentication,
+so evicting both session stores cannot turn an in-flight ShareLink request into
+an owner request. Finite responses repeat validation before publication. Track shares
+include non-area-chat descendants through Truth's bounded tree query; Area shares
+include current non-area-chat Tracks. Cards and terminals resolve their actual
+Track. Owner-only global routes, sharing management, Area writes and Track DELETE
+are forbidden. Lists of Areas, Tracks, overlays, mentions and backlinks are
+filtered in their owning readers. Mentions filter reports before ranking so
+sibling titles, tags and blocks cannot influence or enter the result. Read
+receipts are synthetic for share sessions and never modify owner SQLite state.
+
+Filesystem browsing uses the existing `listdir`, `readfile`, `readfile-raw`,
+`gitstatus` and `gitdiff` routes, constrained to canonical in-scope `agent_cwd` roots;
+`/api/fs/roots` lists only those roots. Git status filters changed files and rename
+sources to those roots; diff checks both current and old paths. Workspace reads retain the existing
+handle-based path fence. Markdown subresources may select a matching live share
+cookie only for the exact workspace raw-file or card attachment route, when no
+explicit selector and no valid owner/dev authentication exists.
+
+The regular `/api/events` WebSocket filters both replay and live envelopes by
+current EventScope, excluding System and area-chat. Access wakes and an expiry
+timer close the socket on revoke or expiry. Terminal upgrades use the same
+scope fence and their connections end on access loss. Scoped Planner text input
+reuses the original LinkGuest acceptance path, never owner message attribution.
+Accepted canonical turns retain PR3's ownership/scope checks while deliberately
+ignoring revocation and expiry. These access changes cannot retract work already
+accepted by the resource owner.
+
+The scope allowlist lives in the share feature and does not add a generic kernel
+route census. New global routes remain forbidden until intentionally admitted;
+new Track/card subroutes inherit their owning resource fence. Public schema and
+wire bindings are regenerated with `cd fe && npm run gen:api`. Frontend domain
+and browser implementation belongs to the separate frontend task.
+
+Scoped shell reads return an empty settings bag and empty Area folders, so mount
+and new-Track flows never read owner settings or host folder claims. PUT settings
+and folder mutations remain forbidden. Track recipes currently have a global
+reusable contract with no private or Area-bound variants; GET list/detail uses
+that existing owner. Any later recipe visibility contract must be enforced there.
+
+Both POST /api/tracks and POST /api/areas/{area_id}/tracks admit creation only
+for the selected Area share. The request Area must match; explicit cwd, admin,
+cross-Area cwd admission and out-of-scope fork sources are forbidden. Empty
+creation reuses dormant allocation. First-message creation and Add Assistant
+reuse the same creation owner, immutable receipts, pending-message acceptance
+and canonical wake, with LinkGuest author and InputSource::Share. Discussion
+branches are forbidden. PATCH refuses admin grants and workspace mutations.
+
+Migration 0219_share_creation_receipts.sql extends the existing receipt proof
+to LinkGuest messages without weakening dormant carrier/allocation checks.
+source_user_id remains the registered approver for factual attribution; replay
+also compares the original immutable message author (including link id).
+A key cannot cross Human/Guest or two different links. No visitor user or
+membership is created. New tests use the existing share_links registration;
+no extra CI invocation or permanent test census is added.

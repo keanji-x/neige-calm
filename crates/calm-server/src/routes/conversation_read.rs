@@ -14,32 +14,14 @@ pub(crate) struct ReadScope {
 }
 impl ReadScope {
     pub async fn check(repo: &dyn RouteRepo, card: &str, principal: &Principal) -> Result<Self> {
-        Self::check_audience(repo, card, crate::read_access::Audience::Owner(principal)).await
-    }
-    pub async fn publish(&self, repo: &dyn RouteRepo, principal: &Principal) -> Result<()> {
-        self.publish_audience(repo, crate::read_access::Audience::Owner(principal))
-            .await
-    }
-    /// No principal is synthesized from a delegation. Share authorization stays
-    /// with share_access, while this owner pins exact card containment.
-    pub async fn check_audience(
-        repo: &dyn RouteRepo,
-        card: &str,
-        audience: crate::read_access::Audience<'_>,
-    ) -> Result<Self> {
-        if let crate::read_access::Audience::Owner(principal) = audience {
-            repo.application_user_require_registered(&principal.user_id)
-                .await?;
-        }
+        repo.application_user_require_registered(&principal.user_id)
+            .await?;
         let track = repo
             .card_track_id(card)
             .await?
             .ok_or_else(|| CalmError::NotFound("conversation".into()))?;
-        let fence = audience.check(repo, &track).await?;
-        let area = match &fence {
-            crate::read_access::ReadFence::Owner(area) => area.clone(),
-            crate::read_access::ReadFence::ShareLink(access) => access.area.clone(),
-        };
+        let fence = crate::read_access::ReadFence::check(repo, &track, principal).await?;
+        let area = fence.area.clone();
         Ok(Self {
             card: card.into(),
             track,
@@ -47,11 +29,7 @@ impl ReadScope {
             fence,
         })
     }
-    pub async fn publish_audience(
-        &self,
-        repo: &dyn RouteRepo,
-        audience: crate::read_access::Audience<'_>,
-    ) -> Result<()> {
+    pub async fn publish(&self, repo: &dyn RouteRepo, principal: &Principal) -> Result<()> {
         let track = repo
             .card_track_id(&self.card)
             .await?
@@ -59,7 +37,7 @@ impl ReadScope {
         if track != self.track {
             return Err(CalmError::Forbidden("conversation moved".into()));
         }
-        audience.publish(repo, &track, &self.fence).await
+        self.fence.publish(repo, &track, principal).await
     }
 }
 

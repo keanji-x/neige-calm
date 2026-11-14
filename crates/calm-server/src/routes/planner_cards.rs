@@ -198,11 +198,13 @@ pub struct GetPlannerRunResponse {
     pub pending: Vec<PendingQueueEntry>,
     /// User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.
     pub pending_overflow: u32,
-    /// Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`).
+    /// Whether this credential, backend and workspace support image input.
+    /// Guest credentials accept text only. Upload and send enforce the same source
+    /// restriction; attached workspaces never accept uploaded images.
     pub attachments_supported: bool,
-    /// Whether the bound Planner backend implements manual context compaction. This is not
-    /// current admission: the compact POST still checks authorization, busy state and history.
-    /// Answered for dormant conversations too; managed ACP does not implement it.
+    /// Whether this credential and the bound backend support manual context compaction.
+    /// Advisory for dormant conversations too; POST rechecks live authorization,
+    /// busy state and history. Managed ACP has no implementation.
     pub manual_compact_supported: bool,
     /// The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state.
     pub running_turn: Option<PlannerRunningTurn>,
@@ -484,6 +486,7 @@ pub(super) async fn historical_planner_run(
     s: RouteState,
     w: WorkerState,
     id: String,
+    source: Option<&crate::auth::HumanInputSource>,
 ) -> Result<Json<GetPlannerRunResponse>> {
     let card = s
         .repo
@@ -499,8 +502,9 @@ pub(super) async fn historical_planner_run(
             "card {id} is not a planner codex card",
         )));
     };
-    let manual_compact_supported =
-        crate::harness::PlannerBackend::manual_compact_supported(&binding);
+    let manual_compact_supported = source
+        .is_some_and(|source| source.current_human_principal().is_ok())
+        && crate::harness::PlannerBackend::manual_compact_supported(&binding);
 
     // Unreadable model keys are reported as 'no selection' by this READ rather than as a 500; the turn-issuing path refuses on the same payload, so the conversation still stops but this surface can show why.
     let selection =
@@ -512,6 +516,7 @@ pub(super) async fn historical_planner_run(
         &binding.provider,
         &card.track_id,
         &s.workspace_root,
+        source,
     )
     .await?;
     let mut dormant = GetPlannerRunResponse {

@@ -1,20 +1,18 @@
-//! Retired claim provenance is Owner-only until the successor is claimed.
-use super::conversations::canonical;
-use super::reads::base;
+//! Ordinary scoped reads retain retry provenance across successor claims.
+use super::fixtures::canonical;
 use super::*;
 use calm_server::db::sqlite::conversation::*;
 use calm_types::conversation::*;
 
 #[tokio::test]
-async fn shared_retry_requires_effective_system_and_human_claims() {
+async fn scoped_retry_preserves_system_and_human_history() {
     let fx = Fixture::new().await;
     let (card, worker) = canonical(&fx).await;
     let link = fx.create(true).await;
-    let shared_url = format!(
-        "{}/conversations/{card}/items?contract=conversation_v1",
-        base(link["token"].as_str().unwrap(), &fx.track)
-    );
-    let owner_url = format!("/api/cards/{card}/harness/items?contract=conversation_v1");
+    let cookie = super::tokens::unlock(&fx, &link).await;
+    let id = link["link"]["delegation"]["id"].as_str().unwrap();
+    let shared_url = format!("/api/cards/{card}/harness/items?contract=conversation_v1");
+    let owner_url = shared_url.clone();
     let db = fx.state.raw_repo().sqlite_db().unwrap();
     let execution = ConversationExecutionProvenance::LegacySingleUserDeployment {
         deployment_owner_user_id: OWNER_USER_ID.into(),
@@ -130,22 +128,30 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
         })
         .await
         .unwrap();
-    async fn page(fx: &Fixture, url: &str, owner: bool) -> Value {
-        let (status, page) = fx
-            .request(
-                "GET",
-                url,
-                if owner { Some(&fx.cookie) } else { None },
-                json!(null),
+    async fn page(fx: &Fixture, url: &str, cookie: &str, id: &str) -> Value {
+        let response = fx
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(url)
+                    .header("cookie", cookie)
+                    .header("X-Calm-Share-Link", id)
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await;
+            .await
+            .unwrap();
+        let status = response.status();
+        let page: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
         assert_eq!(status, StatusCode::OK, "{page}");
         page
     }
-    let before = page(&fx, &shared_url, false).await;
+    let before = page(&fx, &shared_url, &cookie, id).await;
     assert_eq!(before["items"].as_array().unwrap().len(), 2, "{before}");
-    assert!(before.to_string().contains("System update"));
-    assert!(!before.to_string().contains("SECRET"));
+    assert!(before.to_string().contains("SECRET cwd=/host/work"));
     let retry = db
         .writer()
         .with_writer(|session| {
@@ -167,14 +173,15 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
         })
         .await
         .unwrap();
-    let retired_owner = page(&fx, &owner_url, true).await;
+    let (status, retired_owner) = fx
+        .request("GET", &owner_url, Some(&fx.cookie), Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(retired_owner["items"].as_array().unwrap().len(), 2);
     assert!(retired_owner.to_string().contains("SECRET cwd=/host/work"));
-    assert!(
-        page(&fx, &shared_url, false).await["items"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        page(&fx, &shared_url, &cookie, id).await["items"],
+        before["items"]
     );
     db.writer()
         .with_writer(|session| {
@@ -198,7 +205,7 @@ async fn shared_retry_requires_effective_system_and_human_claims() {
         })
         .await
         .unwrap();
-    let after = page(&fx, &shared_url, false).await;
+    let after = page(&fx, &shared_url, &cookie, id).await;
     assert_eq!(
         after["items"], before["items"],
         "same positions and speech return after successor claim"

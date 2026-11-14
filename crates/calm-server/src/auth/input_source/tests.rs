@@ -87,3 +87,36 @@ async fn configured_dev_source_comes_only_from_actual_authentication_ingress() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn share_source_cannot_issue_deployment_or_human_authority() {
+    let auth = AuthState::new(config(true));
+    let token = auth.shares.create(
+        &auth.sessions,
+        SessionIdentity::owner(&auth.config),
+        crate::share_access::sessions::Credential {
+            link_id: "test-link".into(),
+            hash: "0".repeat(64),
+            expires_at: crate::model::now_ms() + 86_400_000,
+        },
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert("X-Calm-Share-Link", "test-link".parse().unwrap());
+    headers.insert(
+        header::COOKIE,
+        format!("calm-share-session-test-link={token}")
+            .parse()
+            .unwrap(),
+    );
+    let (status, source) = authenticated_source(auth, headers).await;
+    assert_eq!(status, StatusCode::OK);
+    let source = source.unwrap();
+    assert!(matches!(
+        source.current_deployment_issuer(),
+        Err(CalmError::Forbidden(_))
+    ));
+    assert!(matches!(
+        source.current_human_principal(),
+        Err(CalmError::Forbidden(_))
+    ));
+}

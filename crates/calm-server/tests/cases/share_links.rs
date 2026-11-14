@@ -147,7 +147,7 @@ async fn request(
 }
 
 #[tokio::test]
-async fn owner_creates_lists_and_revokes_both_scopes_without_leaking_secrets() {
+async fn owner_creates_lists_and_revokes_both_scopes_without_leaking_hashes() {
     let fx = Fixture::new().await;
     fx.register("unrelated").await;
     for track in [false, true] {
@@ -177,7 +177,7 @@ async fn owner_creates_lists_and_revokes_both_scopes_without_leaking_secrets() {
             .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed, json!([created["link"]]));
-        assert!(!listed.to_string().contains(token));
+        assert!(listed[0].get("token").is_none());
         assert!(!listed.to_string().contains(&hash));
         let path = format!("/api/share-links/{id}");
         let (status, revoked) = fx
@@ -582,8 +582,14 @@ async fn upgrade_then_reopen_consumes_durable_delegation_and_revocation() {
     let fx = Fixture::with_state(with_repo(&seed, repo.clone())).await;
     let created = fx.create(true).await;
     let area = fx.create(false).await;
-    let shared_track = format!("/api/share/{}", created["token"].as_str().unwrap());
-    let shared_area = format!("/api/share/{}", area["token"].as_str().unwrap());
+    let shared_track = format!(
+        "/api/share-links/{}/access",
+        created["link"]["delegation"]["id"].as_str().unwrap()
+    );
+    let shared_area = format!(
+        "/api/share-links/{}/access",
+        area["link"]["delegation"]["id"].as_str().unwrap()
+    );
     assert_eq!(
         fx.request("GET", &shared_track, None, Value::Null).await.0,
         StatusCode::OK
@@ -745,17 +751,35 @@ async fn management_resolves_current_track_parent_and_keeps_sibling_scopes_separ
     );
 }
 
+#[path = "share_links/owner_history.rs"]
+mod owner_history;
+
 #[path = "share_links/reads.rs"]
 mod reads;
 
-#[path = "share_links/events.rs"]
-mod events;
-
-#[path = "share_links/conversations.rs"]
-mod conversations;
+#[path = "share_links/fixtures.rs"]
+mod fixtures;
 
 #[path = "share_links/retry.rs"]
 mod retry;
 
 #[path = "share_links/input.rs"]
 mod input;
+
+#[path = "share_links/tokens.rs"]
+mod tokens;
+
+#[path = "share_links/parity.rs"]
+mod parity;
+
+#[path = "share_links/scoped_events.rs"]
+mod scoped_events;
+
+#[path = "share_links/admission.rs"]
+mod admission;
+
+#[path = "share_links/terminal.rs"]
+mod terminal;
+
+#[path = "share_links/fs_security.rs"]
+mod fs_security;

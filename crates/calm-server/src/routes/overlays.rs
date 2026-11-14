@@ -77,12 +77,27 @@ pub struct OverlayQuery {
     ),
 )]
 pub(crate) async fn list_overlays(
+    scope: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     State(s): State<RouteState>,
     Query(q): Query<OverlayQuery>,
 ) -> Result<Json<Vec<Overlay>>> {
     let overlays = match q.entity_id.as_deref() {
         Some(eid) => s.repo.overlays_for(&q.entity_kind, eid).await?,
         None => s.repo.overlays_by_kind(&q.entity_kind).await?,
+    };
+    let overlays = if let Some(axum::Extension(scope)) = scope {
+        let mut visible = Vec::new();
+        for overlay in overlays {
+            if scope
+                .entity(s.repo.as_ref(), &overlay.entity_kind, &overlay.entity_id)
+                .await?
+            {
+                visible.push(overlay);
+            }
+        }
+        visible
+    } else {
+        overlays
     };
     Ok(Json(filter_unsupported_overlay_versions(overlays)))
 }

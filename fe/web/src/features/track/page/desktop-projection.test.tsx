@@ -2,7 +2,7 @@
 //
 // The real page as a faithful projection of its view model, checked over the desktop panel subtree: the mobile surface is a sibling in the same DOM.
 
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
@@ -11,6 +11,7 @@ import { MARKER } from '../../../../../core/view/panel.ts';
 import type { PanelRow, RowModuleView } from '../../../../../core/view/panel.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { checkProjectionIn } from '../../../../../tools/projection/public.ts';
+import type { TrackPageProps } from './public.tsx';
 import { makeDesktopPainter } from './desktop-painter.tsx';
 import pageSource from './public.tsx?raw';
 import { openInventoryDisclosures, captureContextProjection, manualCard as card, openableCardsOf, renderPage } from './test-fixtures.tsx';
@@ -180,4 +181,19 @@ describe('marker-literal hygiene guard: the page spells no MARKER name', () => {
     expect(pageSource).toContain('export function TrackPage');
     expect(pageSource).toContain('paintDesktopPanel');
   });
+});
+
+it('keeps desktop sharing beside the title with an anchored origin while conversation is open', () => {
+  const onShareTrack = vi.fn<NonNullable<TrackPageProps['onShareTrack']>>();
+  renderPage({ onShareTrack, conversationOpen: true });
+  const share = screen.getByRole('button', { name: '分享' });
+  const title = within(share.closest('header')!).getByRole('heading', { level: 1 });
+  expect(title.closest('header')).toBe(share.closest('header'));
+  expect(title.compareDocumentPosition(share) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(share);
+  const origin = onShareTrack.mock.calls[0]?.[0];
+  expect(origin?.kind).toBe('anchor');
+  if (origin?.kind !== 'anchor') throw new Error('Expected an anchored share dialog');
+  expect(origin.anchor.ref.current).toBe(share);
+  expect(origin.unavailable).toBe('surface-center');
 });

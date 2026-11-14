@@ -90,14 +90,24 @@ pub(crate) fn image_input_root(
     attachment_root(workspace, workspace_root)
 }
 
-/// Project the same provider/workspace admission used by uploads for either
+/// Images require the same live Human source as their eventual message author.
+/// Guest delegation accepts text only; provider support alone is not a grant.
+pub(crate) fn require_image_input_source(source: &crate::auth::HumanInputSource) -> Result<()> {
+    source.current_human_principal().map(drop)
+}
+
+/// Project the same credential/provider/workspace admission used by uploads for either
 /// historical or canonical conversation reads. This is advisory, never a grant.
 pub(crate) async fn image_input_supported(
     repo: &dyn crate::db::RepoRead,
     provider: &crate::session_projection_repo::AgentProvider,
     track_id: &crate::ids::TrackId,
     workspace_root: &Path,
+    source: Option<&crate::auth::HumanInputSource>,
 ) -> Result<bool> {
+    if !source.is_some_and(|source| require_image_input_source(source).is_ok()) {
+        return Ok(false);
+    }
     Ok(match repo.track_get(track_id.as_str()).await? {
         Some(track) => image_input_root(provider, &track.workspace, workspace_root).is_ok(),
         None => false,

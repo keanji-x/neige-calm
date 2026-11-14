@@ -1,0 +1,16 @@
+@layer features {
+  .row {
+    display: grid;
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-highlight);
+  }
+  .action { opacity: 0; }
+  .row:hover .action, .row:focus-within .action { opacity: 1; }
+  @media (hover: none) { .action { opacity: 1; } }
+  .label { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+  .error { padding: var(--space-1); color: var(--text-2); }
+}

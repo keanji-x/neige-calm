@@ -733,15 +733,17 @@ export type SetPlannerPermissionModeResponse = { card_id: CardId,
  */
 permission_mode: PlannerPermissionMode, };
 
+export type ShareAccessStatus = { "status": "locked", expiresAt: number, } | { "status": "unlocked", scope: ShareScope, expiresAt: number, };
+
 export type ShareDelegation = { id: string, scope: ShareScope, approverUserId: string, purpose: SharePurpose, resourcePolicy: ShareResourcePolicy, createdAt: number, };
 
 /**
- * Management projection deliberately contains no token or token hash.
+ * Owner-only management projection; guest endpoints never serialize this type.
  */
-export type ShareLink = { delegation: ShareDelegation, revokedAt: number | null, };
+export type ShareLink = { delegation: ShareDelegation, revokedAt: number | null, expiresAt: number, };
 
 /**
- * Secret returned only by creation. No endpoint can recover it later.
+ * Creation result; the secret is returned once and never persisted.
  */
 export type ShareLinkCreated = { link: ShareLink, token: string, };
 
@@ -750,12 +752,6 @@ export type SharePurpose = "conversation";
 export type ShareResourcePolicy = "current_deployment";
 
 export type ShareScope = { "kind": "track", "id": string } | { "kind": "area", "id": string };
-
-export type SharedRun = { card_id: string, phase: HarnessPhaseTag | null, runtime_state: WorkerSessionState | null, };
-
-export type SharedTarget = { scope: ShareScope, tracks: Array<SharedTrack>, };
-
-export type SharedTrack = { id: string, title: string, };
 
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.
@@ -1167,6 +1163,10 @@ worktree?: string, };
  * Why a gate ran without a candidate to check against.
  */
 export type UnboundReason = "legacy_lease" | "legacy_frozen" | "legacy_verdict" | "terminal";
+
+export type UnlockShareLinkRequest = { token: string, };
+
+export type UnlockedShareLink = { scope: ShareScope, expiresAt: number, };
 
 /**
  * `201` body of `POST /api/cards/{id}/planner/attachments`.

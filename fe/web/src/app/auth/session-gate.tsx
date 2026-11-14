@@ -29,7 +29,7 @@ export function clearSessionArtifacts(
 export function SessionGate({ children, transport, unauthorized, client, runtime, cursorStore, renderLogin, renderError }: Readonly<{
   children: ReactNode; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; client: QueryClient;
   runtime: SessionCleanupRuntime; cursorStore: SessionCursorStore;
-  renderLogin: () => ReactNode; renderError: (retry: () => void) => ReactNode;
+  renderLogin: (retry: () => void) => ReactNode; renderError: (retry: () => void) => ReactNode;
 }>) {
   const [state, setState] = useState<SessionProbeState<SessionIdentity>>({ status: 'unknown' });
   const epoch = useRef(0);
@@ -66,7 +66,7 @@ export function SessionGate({ children, transport, unauthorized, client, runtime
     setState({ status: 'unauthed' });
   }), [client, cursorStore, runtime, unauthorized]);
   if (state.status === 'unknown') return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
-  if (state.status === 'unauthed') return renderLogin();
+  if (state.status === 'unauthed') return renderLogin(probe);
   if (state.status === 'error') return renderError(probe);
   return <CurrentUserScope key={state.value.userId} value={state.value}>{children}</CurrentUserScope>;
 }

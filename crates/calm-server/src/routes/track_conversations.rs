@@ -8,6 +8,7 @@ mod canonical;
 /// The rollout belongs to the entry, independently of runtime availability.
 pub(crate) enum AssistantCreationEntry {
     Human(crate::auth::HumanInputSource),
+    Share(Box<crate::conversation_inputs::CreationInputSource>),
     #[cfg_attr(not(any(test, feature = "fixtures")), allow(dead_code))]
     InternalHistorical,
 }
@@ -16,11 +17,13 @@ impl AssistantCreationEntry {
         &self,
         provider: &AssistantProviderRequest,
     ) -> Option<(
-        crate::auth::HumanInputSource,
+        crate::conversation_inputs::CreationInputSource,
         crate::harness::profile::PlannerBinding,
     )> {
-        let Self::Human(source) = self else {
-            return None;
+        let source = match self {
+            Self::Human(source) => source.clone().into(),
+            Self::Share(source) => source.as_ref().clone(),
+            Self::InternalHistorical => return None,
         };
         let provider = match provider {
             AssistantProviderRequest::LegacyCodex => {
@@ -33,7 +36,7 @@ impl AssistantCreationEntry {
             provider,
         };
         crate::harness::backend::factory::PlannerFactory::canonical_inputs(&binding)
-            .then(|| (source.clone(), binding))
+            .then_some((source, binding))
     }
 }
 
@@ -158,15 +161,30 @@ pub(crate) async fn list_track_conversations(
 )]
 /// Accept eligible Human creation before wake; internal entries retain historical mint.
 /// Enqueue observations never establish original acceptance or permission to resend.
+// Axum extracts the scoped credential alongside state and request fields.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_track_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
     actor: Actor,
     source: crate::auth::HumanInputSource,
+    share: Option<axum::Extension<crate::share_access::scope::ShareAccessScope>>,
     headers: HeaderMap,
     Path(track_id): Path<String>,
     JsonBody(body): JsonBody<NewTrackConversationBody>,
 ) -> Result<(StatusCode, Json<TrackConversationCreated>)> {
+    let entry = if let Some(axum::Extension(scope)) = share {
+        if body.side.is_some() {
+            return Err(CalmError::Forbidden(
+                "share cannot open discussion branches".into(),
+            ));
+        }
+        AssistantCreationEntry::Share(Box::new(
+            crate::conversation_inputs::CreationInputSource::new(source, Some(scope)),
+        ))
+    } else {
+        AssistantCreationEntry::Human(source)
+    };
     create_track_conversation_inner(
         s,
         w,
@@ -175,7 +193,7 @@ pub(crate) async fn create_track_conversation(
         track_id,
         body,
         OpeningBriefing::TodaysActivityOnTheLaunchpad,
-        AssistantCreationEntry::Human(source),
+        entry,
     )
     .await
 }
@@ -240,6 +258,11 @@ pub(crate) async fn create_track_conversation_inner(
         }
     }
     let canonical = entry.canonical_binding(&body.provider);
+    if matches!(entry, AssistantCreationEntry::Share(_)) && canonical.is_none() {
+        return Err(CalmError::Forbidden(
+            "share requires canonical Assistant inputs".into(),
+        ));
+    }
     let text = body.text;
     validate_first_message(&text)?;
 
@@ -413,67 +436,6 @@ pub(crate) async fn load_track_conversation_summaries(
     track_id: &str,
     card_id: Option<&str>,
 ) -> Result<Vec<TrackConversationSummary>> {
-    load_summaries(w, track_id, card_id, false).await
-}
-
-pub(crate) async fn load_published_summaries(
-    w: &WorkerState,
-    track_id: &str,
-) -> Result<Vec<TrackConversationSummary>> {
-    let mut rows = load_summaries(w, track_id, None, true).await?;
-    for card in w.repo.cards_by_track(track_id).await? {
-        let Some(binding) = crate::harness::profile::PlannerBinding::from_card(
-            &card,
-            w.repo
-                .card_role_get(card.id.as_str())
-                .await?
-                .ok_or_else(|| CalmError::Conflict("conversation role missing".into()))?,
-        ) else {
-            continue;
-        };
-        if binding.profile != crate::harness::profile::HarnessProfile::Planner
-            || !crate::harness::backend::factory::PlannerFactory::canonical_inputs(&binding)
-            || !crate::conversation_inputs::has_canonical_storage(w.repo.as_ref(), card.id.as_str())
-                .await?
-        {
-            continue;
-        }
-        let db = w
-            .repo
-            .sqlite_db()
-            .ok_or_else(|| CalmError::Internal("conversation summary requires SQLite".into()))?;
-        let (state, completed): (Option<String>, Option<i64>) = sqlx::query_as(&format!(
-            "SELECT ws.state,{LAST_TURN_COMPLETED_MS_SUBQUERY} FROM cards c LEFT JOIN worker_sessions ws ON ws.id=c.session_id AND ws.card_id=c.id WHERE c.id=?1"))
-            .bind(card.id.as_str()).fetch_one(db.read_pool()).await?;
-        rows.insert(
-            0,
-            TrackConversationSummary {
-                id: card.id.to_string(),
-                track_id: track_id.into(),
-                title: card.title,
-                kind: "shared-spec".into(),
-                provider: binding.provider,
-                source_card_id: None,
-                archived_at: None,
-                state: state
-                    .map(WorkerSessionState::try_from)
-                    .transpose()
-                    .map_err(CalmError::Internal)?,
-                updated_at: card.updated_at,
-                last_turn_completed_at: completed,
-            },
-        );
-        break;
-    }
-    Ok(rows)
-}
-
-async fn load_summaries(
-    w: &WorkerState,
-    track_id: &str,
-    card_id: Option<&str>,
-    published: bool,
-) -> Result<Vec<TrackConversationSummary>> {
     let pool = w.repo.sqlite_db().ok_or_else(|| {
         CalmError::Internal("track conversations require a sqlite-backed repo".into())
     })?;
@@ -519,13 +481,7 @@ async fn load_summaries(
         .filter(|row| row.title.is_none())
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
-    // Pending queue text is private. Shared list titles only come from
-    // explicitly named cards; do not run the owner's pending-title fallback.
-    let mut titles = if published {
-        std::collections::HashMap::new()
-    } else {
-        crate::conversation_metadata::titles(w.repo.as_ref(), &ids).await?
-    };
+    let mut titles = crate::conversation_metadata::titles(w.repo.as_ref(), &ids).await?;
     rows.into_iter()
         .map(|mut row| {
             if row.title.is_none() {
