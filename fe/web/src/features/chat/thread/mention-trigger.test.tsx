@@ -17,12 +17,12 @@ const TAG: MentionSuggestion = {
   id: 'tag:@`tag:部署`', kind: 'tag', label: '#部署', detail: '3 tracks', chip: '#部署', insert: '@`tag:部署`',
 };
 const TRACK: MentionSuggestion = {
-  id: 'track:@`area/reports/Deploy notes.md`', kind: 'track', label: 'Deploy notes', detail: null,
-  chip: 'Deploy notes', insert: '@`area/reports/Deploy notes.md`',
+  id: 'track:@`/研发/Deploy notes/report.md`', kind: 'track', label: 'Deploy notes', detail: null,
+  chip: 'Deploy notes', insert: '@`/研发/Deploy notes/report.md`',
 };
 const BLOCK: MentionSuggestion = {
-  id: 'block:@`area/reports/Deploy notes.md#b_1a2b`', kind: 'block', label: 'Rollback', detail: 'Deploy notes',
-  chip: 'Deploy notes › Rollback', insert: '@`area/reports/Deploy notes.md#b_1a2b`',
+  id: 'block:@`/研发/Deploy notes/report.md#b_1a2b`', kind: 'block', label: 'Rollback', detail: 'Deploy notes',
+  chip: 'Deploy notes › Rollback', insert: '@`/研发/Deploy notes/report.md#b_1a2b`',
 };
 
 type Pending = { query: string; signal: ApiAbortSignal; resolve: (items: readonly MentionSuggestion[]) => void; reject: (error: unknown) => void };
@@ -227,8 +227,9 @@ describe('the @ menu in the real composer', () => {
     expect(screen.queryByRole('option')).toBeNull();
   });
 
-  it('groups the answer under Tags, Tracks and Blocks and sends exactly the picked insert', async () => {
-    const search = vi.fn<MentionSearch>(() => Promise.resolve([TAG, TRACK, BLOCK]));
+  it.each([BLOCK.insert, '@``/a%2Fb%25%7E/%2E notes `x`#~12345678/report.md#b_1a2b``'])(
+    'groups candidates and sends exactly %s', async (insert) => {
+    const search = vi.fn<MentionSearch>(() => Promise.resolve([TAG, TRACK, { ...BLOCK, insert }]));
     const onSend = vi.fn();
     render(<MentionComposer search={search} onSend={onSend} />);
     await userEvent.type(field(), 'see @dep');
@@ -250,7 +251,7 @@ describe('the @ menu in the real composer', () => {
 
     await userEvent.keyboard('{Enter}');
     expect(onSend).toHaveBeenCalledOnce();
-    expect(onSend.mock.calls[0][0]).toBe('see @`area/reports/Deploy notes.md#b_1a2b`');
+    expect(onSend.mock.calls[0][0]).toBe('see ' + insert);
   });
 
   it('shows the newest query\'s answer when an older one arrives after it', async () => {

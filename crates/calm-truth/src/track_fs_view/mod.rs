@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
+mod files;
 mod gate_logs;
+mod nodes;
+pub use nodes::TrackFsNodeKind;
 mod run_status;
 mod terminal_worker_log;
 pub use gate_logs::task_gate_log_path;
@@ -60,197 +63,6 @@ impl<'a> TrackFsView<'a> {
     pub fn with_planner_run_summary(mut self) -> Self {
         self.planner_run_summary = true;
         self
-    }
-
-    pub async fn ls(
-        &self,
-        track: &Track,
-        path: Option<&str>,
-    ) -> Result<Vec<TrackFsEntry>, TrackFsError> {
-        let path = path.map(normalize_path).unwrap_or_default();
-        match path.as_str() {
-            "" => {
-                let cards = self.cards_for_track(track).await?;
-                let runs = self.runs_for_track(track).await?;
-                Ok(vec![
-                    entry_file("index.md", None, Some(track.updated_at)),
-                    entry_file("track.json", None, Some(track.updated_at)),
-                    entry_file("report.md", None, Some(track.updated_at)),
-                    entry_dir("cards/", Some(cards.len()), None),
-                    entry_dir(
-                        "runs/",
-                        Some(runs.len().saturating_mul(2).saturating_add(1)),
-                        runs_updated_at(track, &runs),
-                    ),
-                ])
-            }
-            "cards" => {
-                let cards = self.cards_for_track(track).await?;
-                let cards_updated_at = cards_updated_at(track, &cards);
-                let mut entries = Vec::with_capacity(cards.len() + 1);
-                entries.push(entry_file("index.json", None, Some(cards_updated_at)));
-                entries.extend(cards.iter().map(|card| {
-                    entry_dir(
-                        &format!("{}/", card.id.as_str()),
-                        None,
-                        Some(card.updated_at),
-                    )
-                }));
-                Ok(entries)
-            }
-            "runs" => {
-                let runs = self.runs_for_track(track).await?;
-                let mut entries =
-                    Vec::with_capacity(runs.len().saturating_mul(2).saturating_add(1));
-                entries.push(entry_file(
-                    "index.json",
-                    None,
-                    runs_updated_at(track, &runs),
-                ));
-                for run in &runs {
-                    entries.push(run_listing_entry(run, "md"));
-                    entries.push(run_listing_entry(run, "json"));
-                }
-                Ok(entries)
-            }
-            path if path.starts_with("cards/") => {
-                let parts: Vec<&str> = path.split('/').collect();
-                if parts.len() != 2 {
-                    return Err(path_not_available(path));
-                }
-                let card = self.card_in_track(track, parts[1]).await?;
-                let hook_events = self.hook_events_for_card(track, &card.id).await?;
-                let hook_events_updated_at = hook_events_updated_at(&card, &hook_events);
-                let runtime = self
-                    .repo
-                    .session_projection_projectable_for_card(&card.id.to_string())
-                    .await
-                    .map_err(|e| {
-                        TrackFsError::Internal(format!("track_file: runtime lookup: {e}"))
-                    })?;
-                let runtime_updated_at = runtime
-                    .as_ref()
-                    .map(|runtime| runtime.updated_at_ms)
-                    .unwrap_or(card.updated_at);
-                Ok(vec![
-                    entry_file(".meta.json", None, Some(card.updated_at)),
-                    entry_file(".payload.json", None, Some(card.updated_at)),
-                    entry_file("runtime.json", None, Some(runtime_updated_at)),
-                    entry_file("events.json", None, Some(hook_events_updated_at)),
-                    entry_file("conversation.md", None, Some(hook_events_updated_at)),
-                ])
-            }
-            other => Err(path_not_available(other)),
-        }
-    }
-
-    pub async fn cat(&self, track: &Track, path: &str) -> Result<TrackFsContent, TrackFsError> {
-        let path = normalize_path(path);
-        match path.as_str() {
-            "index.md" => {
-                let cards = self.cards_for_track(track).await?;
-                Ok(content_markdown(index_markdown(track, cards.len())))
-            }
-            "track.json" => content_json(track),
-            "report.md" => {
-                let card = self.report_card_for_track(track).await?;
-                report_markdown(card.id.as_str(), card.payload)
-            }
-            "cards/index.json" => {
-                let cards = self.cards_for_track(track).await?;
-                let metas: Vec<_> = cards.iter().map(|card| self.card_meta(card)).collect();
-                content_json(&metas)
-            }
-            "runs/index.json" => {
-                let runs = self.runs_for_track(track).await?;
-                let summaries: Vec<_> = runs.iter().map(run_index_entry).collect();
-                content_json(&summaries)
-            }
-            path if path.starts_with("cards/") => {
-                let parts: Vec<&str> = path.split('/').collect();
-                if parts.len() != 3 {
-                    return Err(path_not_available(path));
-                }
-                let card = self.card_in_track(track, parts[1]).await?;
-                match parts[2] {
-                    ".meta.json" => content_json(&self.card_meta(&card)),
-                    ".payload.json" => content_json(&card.payload),
-                    "runtime.json" => {
-                        let runtime = self.runtime_for_card(&card).await?;
-                        content_json(&runtime)
-                    }
-                    "events.json" => {
-                        let hook_events = self.hook_events_for_card(track, &card.id).await?;
-                        content_json(&hook_events_json(&hook_events))
-                    }
-                    "conversation.md" => {
-                        // Prefer the captured worker-flow transcript when populated, else the hook
-                        // projection. Page through ALL rows: the db layer clamps `limit` to 500.
-                        let rows = worker_flow_rows_all(self.repo, card.id.as_str()).await?;
-                        if rows.is_empty() {
-                            let hook_events = self.hook_events_for_card(track, &card.id).await?;
-                            Ok(content_markdown(conversation_markdown(
-                                &card.id,
-                                &hook_events,
-                            )))
-                        } else {
-                            // Version-tolerant: a payload this binary cannot deserialize becomes an
-                            // `Unknown` placeholder rather than failing the whole read.
-                            let items: Vec<calm_types::worker_flow::WorkerFlowItem> = rows
-                                .iter()
-                                .map(|row| deserialize_flow_row(&row.kind, &row.payload))
-                                .collect();
-                            Ok(content_markdown(worker_flow_markdown(&card.id, &items)))
-                        }
-                    }
-                    _ => Err(path_not_available(path)),
-                }
-            }
-            path if path.starts_with("runs/") => {
-                let parts: Vec<&str> = path.split('/').collect();
-                if parts.len() == 3 && parts[2] == "terminal-worker.log" {
-                    return self.cat_terminal_worker_log(track, path, parts[1]).await;
-                }
-                if parts.len() == 4 && parts[2] == "gates" {
-                    return self
-                        .cat_execution_gate_log(track, path, parts[1], parts[3])
-                        .await;
-                }
-                if parts.len() == 3 && parts[2] == "planner-messages.json" {
-                    let messages = self
-                        .repo
-                        .planner_messages_for_attempt(track.id.as_str(), parts[1])
-                        .await
-                        .map_err(|e| TrackFsError::Internal(format!("planner messages: {e}")))?;
-                    return content_json(&messages);
-                }
-                if parts.len() == 3 && parts[2] == "result" {
-                    return self.run_result(track, parts[1]).await;
-                }
-                if let [_, attempt_id, "summary.json"] = parts.as_slice() {
-                    if !self.planner_run_summary {
-                        return Err(TrackFsError::Forbidden(
-                            "run summary requires a Planner".into(),
-                        ));
-                    }
-                    let runs = self.runs_for_track(track).await?;
-                    let run = run_by_key(&runs, attempt_id)?;
-                    return self.run_summary(track, run).await;
-                }
-                let runs = self.runs_for_track(track).await?;
-                let run_path = path.trim_start_matches("runs/");
-                if let Some(key) = run_path.strip_suffix(".md") {
-                    let run = run_by_key(&runs, key)?;
-                    Ok(content_markdown(run_markdown(run)))
-                } else if let Some(key) = run_path.strip_suffix(".json") {
-                    let run = run_by_key(&runs, key)?;
-                    content_json(&run_json(run))
-                } else {
-                    Err(path_not_available(path))
-                }
-            }
-            other => Err(path_not_available(other)),
-        }
     }
 
     /// Read the immutable worker completion value from the authoritative projection.
@@ -1566,7 +1378,7 @@ pub(crate) fn index_markdown(track: &Track, card_count: usize) -> String {
 }
 
 /// A `report.md` view: the Markdown body of a track-report card's payload, nothing else. Shared
-/// with the Planner's `area/reports/<name>.md` so both paths print a report identically.
+/// with named `/AreaName/TrackName/report.md` reads so both paths print a report identically.
 pub fn report_markdown(card_id: &str, payload: Value) -> Result<TrackFsContent, TrackFsError> {
     let payload: TrackReportPayload = serde_json::from_value(payload).map_err(|e| {
         TrackFsError::Internal(format!(
@@ -1621,3 +1433,6 @@ fn path_not_available(path: &str) -> TrackFsError {
 mod run_markdown_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod node_identity_tests;

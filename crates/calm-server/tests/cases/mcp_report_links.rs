@@ -116,7 +116,7 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
         &boot,
         TOOL_LS,
         planner_identity(&boot),
-        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+        json!({"path":".."}),
     )
     .await
     .unwrap();
@@ -152,7 +152,7 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
         &boot,
         TOOL_LS,
         planner_identity(&boot),
-        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+        json!({"path":".."}),
     )
     .await
     .unwrap();
@@ -208,7 +208,7 @@ async fn outline_labels_live_and_tombstone_tasks_at_the_mcp_boundary() {
         &boot,
         TOOL_LS,
         planner_identity(&boot),
-        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+        json!({"path":".."}),
     )
     .await
     .unwrap();
@@ -245,7 +245,7 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
         &boot,
         TOOL_LS,
         planner_identity(&boot),
-        json!({"path":format!("/areas/{}/tracks/",boot.area_id)}),
+        json!({"path":".."}),
     )
     .await
     .unwrap();
@@ -294,7 +294,7 @@ async fn outline_of_an_area_full_of_contract_bearing_reports_pages_at_fifty_trac
     let mut tracks = Vec::new();
     let mut cursor = None::<String>;
     loop {
-        let mut args = json!({"path":format!("/areas/{}/tracks/",boot.area_id)});
+        let mut args = json!({"path":".."});
         if let Some(cursor) = &cursor {
             args["cursor"] = json!(cursor);
         }
@@ -311,7 +311,12 @@ async fn outline_of_an_area_full_of_contract_bearing_reports_pages_at_fifty_trac
         assert!(bytes <= 32 * 1024 || rows.len() == 1);
         cursor = value["next_cursor"].as_str().map(str::to_owned);
         if let Some(cursor) = &cursor {
-            assert_eq!(rows.last().unwrap()["path"], cursor.as_str());
+            assert!(!cursor.is_empty());
+            assert_ne!(
+                rows.last().unwrap()["path"],
+                cursor.as_str(),
+                "cursor is opaque, not a path"
+            );
         }
         tracks.extend(rows.iter().cloned());
         if cursor.is_none() {

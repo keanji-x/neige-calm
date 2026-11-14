@@ -1,5 +1,5 @@
 //! #1838 S2 end to end through the real `neige` path (kernel socket, `neige/cli`): the issue's
-//! `tag -> ls / ls -l / --json / find -> cat` loop over `area/reports/`, the ambiguous-name refusal,
+//! `tag -> ls / ls -l / --json / find -> cat` loop over named Report paths, the ambiguous-name refusal,
 //! and the Worker's read access. Run with `--no-capture` to see the transcript it prints.
 
 #![cfg(unix)]
@@ -10,7 +10,7 @@ use calm_types::organization::LEGACY_OWNER_USER_ID;
 use calm_server::ids::{AreaId, TrackId};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
 use calm_server::track_report::TrackReportPayload;
-use chrono::{Local, SecondsFormat, TimeZone};
+use chrono::{Local, TimeZone};
 use serde_json::{Value, json};
 use support::mcp::{CardBoot, boot_with_role, cli_output, neige_cli_via_socket};
 
@@ -50,6 +50,22 @@ async fn area_of(boot: &CardBoot) -> AreaId {
         .unwrap()
         .unwrap()
         .area_id
+}
+
+#[tokio::test]
+async fn named_paths_cli_default_and_parent_report() {
+    for role in [CardRole::Planner, CardRole::Assistant, CardRole::Worker] {
+        let boot = boot_with_role(role).await;
+        add_report(&boot, &boot.track_id, "own report\n").await;
+        assert_eq!(ok(&boot, &["cat"]).await, "own report\n");
+        assert_eq!(ok(&boot, &["cat", "./report.md"]).await, "own report\n");
+        let sibling = add_track(&boot, &area_of(&boot).await, "登录 重构").await;
+        add_report(&boot, &sibling, "sibling report\n").await;
+        assert_eq!(
+            ok(&boot, &["cat", "../登录 重构/report.md"]).await,
+            "sibling report\n"
+        );
+    }
 }
 
 async fn add_track(boot: &CardBoot, area: &AreaId, title: &str) -> TrackId {
@@ -202,94 +218,53 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     set_report_time(&boot, &own_report, local_ms(14, 30)).await;
     set_report_time(&boot, &login_report, local_ms(10, 15)).await;
 
-    assert_eq!(ok(&boot, &["ls", "area/"]).await, "d reports/\n");
-    assert_eq!(
-        ok(&boot, &["ls", "area/reports/"]).await,
-        "认证 方案.md\n登录 排查.md\n"
-    );
-    assert_eq!(
-        ok(&boot, &["ls", "-l", "area/reports/"]).await,
-        "UPDATED_AT        TAGS       NAME\n\
-         2026-09-28 14:30  认证,架构  认证 方案.md\n\
-         2026-09-28 10:15  认证,排障  登录 排查.md\n"
-    );
-    let rfc = |ms: i64| {
-        Local
-            .timestamp_millis_opt(ms)
-            .single()
-            .unwrap()
-            .to_rfc3339_opts(SecondsFormat::Millis, false)
-    };
-    let listed: Value =
-        serde_json::from_str(&ok(&boot, &["--json", "ls", "area/reports/"]).await).unwrap();
-    assert_eq!(
-        listed,
-        json!({ "reports": [
-            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "track_id": boot.track_id.as_str(),
-              "tags": ["认证", "架构"], "updated_at": rfc(local_ms(14, 30)) },
-            { "path": "area/reports/登录 排查.md", "title": "登录 排查", "track_id": login.as_str(),
-              "tags": ["认证", "排障"], "updated_at": rfc(local_ms(10, 15)) }
-        ] })
-    );
+    let listing = ok(&boot, &["ls", ".."]).await;
+    assert!(listing.contains("/mcp-test/认证 方案/") && listing.contains("/mcp-test/登录 排查/"));
+    assert_eq!(ok(&boot, &["ls", "-l", ".."]).await, listing);
+    let listed: Value = serde_json::from_str(&ok(&boot, &["--json", "ls", ".."]).await).unwrap();
+    assert_eq!(listed["entries"].as_array().unwrap().len(), 2);
+    let reports: Value =
+        serde_json::from_str(&ok(&boot, &["--json", "report", "find", ".."]).await).unwrap();
+    assert_eq!(reports["reports"][0]["track_id"], boot.track_id.as_str());
+    assert_eq!(reports["reports"][0]["tags"], json!(["认证", "架构"]));
+    assert_eq!(reports["reports"][1]["track_id"], login.as_str());
+    assert_eq!(reports["reports"][1]["tags"], json!(["认证", "排障"]));
 
     assert_eq!(
-        ok(
-            &boot,
-            &["report", "find", "area/reports/", "--name", "*认证*"]
-        )
-        .await,
-        "area/reports/认证 方案.md\n"
+        ok(&boot, &["report", "find", "..", "--name", "*认证*"]).await,
+        "/mcp-test/认证 方案/report.md\n"
     );
     assert_eq!(
-        ok(&boot, &["report", "find", "area/reports/", "--tag", "认证"]).await,
-        "area/reports/认证 方案.md\narea/reports/登录 排查.md\n"
+        ok(&boot, &["report", "find", "..", "--tag", "认证"]).await,
+        "/mcp-test/认证 方案/report.md\n/mcp-test/登录 排查/report.md\n"
     );
     assert_eq!(
         ok(
             &boot,
-            &[
-                "report",
-                "find",
-                "area/reports/",
-                "--name",
-                "*排查*",
-                "--tag",
-                "认证"
-            ]
+            &["report", "find", "..", "--name", "*排查*", "--tag", "认证"]
         )
         .await,
-        "area/reports/登录 排查.md\n"
+        "/mcp-test/登录 排查/report.md\n"
     );
     assert_eq!(
-        ok(
-            &boot,
-            &["report", "find", "area/reports/", "--tag", "不存在"]
-        )
-        .await,
+        ok(&boot, &["report", "find", "..", "--tag", "不存在"]).await,
         ""
     );
     assert_eq!(
         ok(
             &boot,
-            &[
-                "--json",
-                "report",
-                "find",
-                "area/reports",
-                "--tag",
-                "不存在"
-            ]
+            &["--json", "report", "find", "..", "--tag", "不存在"]
         )
         .await,
         "{\"reports\":[]}\n"
     );
 
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/登录 排查.md"]).await,
+        ok(&boot, &["cat", "/mcp-test/登录 排查/report.md"]).await,
         LOGIN_BODY
     );
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["cat", "/mcp-test/认证 方案/report.md"]).await,
         AUTH_BODY
     );
     assert_eq!(
@@ -300,30 +275,47 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
 
     // A tag change is a report change: the listing's time moves off 14:30.
     ok(&boot, &["report", "tag", "report.md", "--add", "排障"]).await;
-    let long = ok(&boot, &["ls", "-l", "area/reports/"]).await;
-    let own_line = long.lines().find(|l| l.ends_with("认证 方案.md")).unwrap();
-    assert!(own_line.contains("  认证,架构,排障  "), "{long}");
-    assert!(!own_line.starts_with("2026-09-28 14:30"), "{long}");
+    let found: Value = serde_json::from_str(
+        &ok(
+            &boot,
+            &["report", "find", "..", "--name", "认证*", "--json"],
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(found["reports"][0]["tags"], json!(["认证", "架构", "排障"]));
+    assert_ne!(
+        found["reports"][0]["updated_at"],
+        reports["reports"][0]["updated_at"]
+    );
 
     // A second track with the same title: both list suffixed, the bare name is refused with both.
     let twin = add_track(&boot, &area, "认证 方案").await;
     add_report(&boot, &twin, "# 认证 方案\n\n第二份 结论。\n").await;
-    let names = ok(&boot, &["ls", "area/reports/"]).await;
-    let suffixed: Vec<String> = names
-        .lines()
-        .filter(|name| name.starts_with("认证 方案~"))
-        .map(|name| format!("area/reports/{name}"))
+    let names = ok(&boot, &["ls", ".."]).await;
+    let listed: Value = serde_json::from_str(&ok(&boot, &["ls", "..", "--json"]).await).unwrap();
+    let suffixed: Vec<String> = listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["title"] == "认证 方案")
+        .map(|e| e["report_path"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(suffixed.len(), 2, "{names}");
-    let (stdout, stderr, exit) = neige(&boot, &["cat", "area/reports/认证 方案.md"]).await;
+    let (stdout, stderr, exit) = neige(&boot, &["cat", "/mcp-test/认证 方案/report.md"]).await;
     assert_eq!((exit, stdout.as_str()), (4, ""));
-    assert!(
-        stderr.starts_with("neige: neige_cat: `area/reports/认证 方案.md` names 2 reports in this area; read one of: "),
-        "{stderr}"
-    );
+    assert!(stderr.contains("ambiguous name"), "{stderr}");
     assert!(stderr.ends_with(" (code -32602)\n"), "{stderr}");
     for path in &suffixed {
-        assert!(stderr.contains(path.as_str()), "{stderr}");
+        assert!(
+            stderr.contains(
+                path.strip_prefix("/mcp-test/")
+                    .unwrap()
+                    .strip_suffix("/report.md")
+                    .unwrap()
+            ),
+            "{stderr}"
+        );
     }
     let twin_path = suffixed
         .iter()
@@ -346,11 +338,11 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
         .await
         .unwrap();
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案 第二版.md"]).await,
+        ok(&boot, &["cat", "/mcp-test/认证 方案 第二版/report.md"]).await,
         "# 认证 方案\n\n第二份 结论。\n"
     );
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/认证 方案.md"]).await,
+        ok(&boot, &["cat", "/mcp-test/认证 方案/report.md"]).await,
         AUTH_BODY
     );
 }
@@ -359,9 +351,9 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
 async fn a_worker_reads_area_reports_through_neige() {
     let boot = boot_with_role(CardRole::Worker).await;
     add_report(&boot, &boot.track_id, "own\n").await;
-    ok(&boot, &["ls", "area/reports/"]).await;
+    ok(&boot, &["ls", ".."]).await;
     assert_eq!(
-        ok(&boot, &["cat", "area/reports/mcp-test.md"]).await,
+        ok(&boot, &["cat", "/mcp-test/mcp-test/report.md"]).await,
         "own\n"
     );
     assert_eq!(ok(&boot, &["cat", "report.md"]).await, "own\n");
@@ -391,7 +383,7 @@ async fn planner_reads_chosen_report_blocks_through_neige() {
     let ids = block_ids(&boot, &add_report(&boot, &login, BLOCKS_BODY).await).await;
     assert_eq!(ids.len(), 4, "{ids:?}");
 
-    let path = "area/reports/登录 排查.md";
+    let path = "/mcp-test/登录 排查/report.md";
     let chosen = format!("{},{}", ids[3], ids[1]);
     let want = format!(
         "<!-- neige:{} -->\n# Goal\n\nalpha\n\n<!-- neige:{} -->\n# Next\n\ngamma\n",
@@ -444,7 +436,7 @@ async fn unified_browse_cli_foreign_report_and_refusal() {
                 .collect::<String>()
         );
         let report_card = add_report(&boot, &track, &body).await;
-        let path = format!("/areas/{}/tracks/{}/report.md", area.id, track);
+        let path = "/foreign/Foreign report/report.md".to_string();
         assert_eq!(ok(&boot, &["cat", &path]).await, body);
         let index: Value =
             serde_json::from_str(&ok(&boot, &["cat", &path, "--detail", "index"]).await).unwrap();
@@ -454,16 +446,10 @@ async fn unified_browse_cli_foreign_report_and_refusal() {
             49,
             "index includes every block"
         );
-        let listed: Value = serde_json::from_str(
-            &ok(
-                &boot,
-                &["ls", &format!("/areas/{}/tracks/", area.id), "--json"],
-            )
-            .await,
-        )
-        .unwrap();
+        let listed: Value =
+            serde_json::from_str(&ok(&boot, &["ls", "/foreign/", "--json"]).await).unwrap();
         assert_eq!(listed["entries"][0]["track_id"], track.as_str());
-        let text = ok(&boot, &["ls", &format!("/areas/{}/tracks/", area.id)]).await;
+        let text = ok(&boot, &["ls", "/foreign/"]).await;
         assert!(
             text.contains(track.as_str())
                 && text.contains("Foreign report")
@@ -484,10 +470,12 @@ async fn unified_browse_cli_foreign_report_and_refusal() {
             .await
             .unwrap();
         assert_eq!(
-            ok(&boot, &["cat", &path]).await,
-            body,
-            "ID paths survive title changes"
+            neige(&boot, &["cat", &path]).await.2,
+            4,
+            "rename has no alias"
         );
+        let path = "/foreign/Renamed/report.md".to_string();
+        assert_eq!(ok(&boot, &["cat", &path]).await, body);
         let id = index["blocks"][1]["id"].as_str().unwrap();
         let selected = ok(&boot, &["cat", &path, "--blocks", id]).await;
         assert!(selected.contains("# Goal") && !selected.contains("# Next"));
@@ -495,34 +483,29 @@ async fn unified_browse_cli_foreign_report_and_refusal() {
             ok(&boot, &["cat", &path, "--sections", "Goal", "--json"]).await,
             selected
         );
-        let changes: Value =
-            serde_json::from_str(&ok(&boot, &["cat", "/report-changes/1970-01-01.json"]).await)
-                .unwrap();
+        let changes: Value = serde_json::from_str(
+            &ok(&boot, &["cat", "/.neige/report-changes/1970-01-01.json"]).await,
+        )
+        .unwrap();
         assert_eq!(changes["timezone"], "Asia/Shanghai");
-        let edits = format!(
-            "/areas/{}/tracks/{}/report-edits/1970-01-01.json",
-            area.id, track
-        );
+        let edits = "/foreign/Renamed/report-edits/1970-01-01.json".to_string();
         let edits: Value =
             serde_json::from_str(&ok(&boot, &["cat", &edits, "--through-event-id", "0"]).await)
                 .unwrap();
         assert_eq!(edits["edits"], json!([]));
         for (tool, args) in [
-            (
-                "neige_ls",
-                json!({"path":format!("/areas/{}/tracks/",area.id)}),
-            ),
+            ("neige_ls", json!({"path":"/foreign/"})),
             ("neige_cat", json!({"path":path})),
             ("neige_cat", json!({"path":path,"detail":"index"})),
             ("neige_cat", json!({"path":path,"blocks":[id]})),
             ("neige_cat", json!({"path":path,"sections":["Goal"]})),
             (
                 "neige_cat",
-                json!({"path":"/report-changes/1970-01-01.json"}),
+                json!({"path":"/.neige/report-changes/1970-01-01.json"}),
             ),
             (
                 "neige_cat",
-                json!({"path":format!("/areas/{}/tracks/{}/report-edits/1970-01-01.json",area.id,track),"through_event_id":0}),
+                json!({"path":"/foreign/Renamed/report-edits/1970-01-01.json","through_event_id":0}),
             ),
         ] {
             let response = support::mcp::call_tool_via_socket(

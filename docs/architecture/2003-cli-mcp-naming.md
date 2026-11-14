@@ -4,6 +4,9 @@ Status: implemented (2026-10-04): #2015 (S1+S6), #2036 (S2+S3+0134), #2073 (S4),
 Related: #1801 (kernel-served CLI), #1668 / #1686 (Codex sanitized names), #1877 / #1883 (report
 read anchors), #1893 (Planner tool byte budget).
 
+Historical migration tables below record the #2003 rollout. Current Report navigation
+and cat defaults follow the [named Report contract](../design/unified-report-browsing.md).
+
 ## 0. Standing rules (owner) and decisions already made
 
 1. **Do not expand without limit.** Fix the observed pain points first. Prefer the simplest design
@@ -89,7 +92,7 @@ Columns:
 | calm.ratify.request | P | — | Planner (review.rs:66) | own track | LC | tools/review.rs:40 |
 | calm.report.blocks.kinds | P,A | — | Planner, Assistant (track_report_blocks.rs:83) | static | V | track_report_blocks/contracts.rs:13 |
 | calm.report.commit | P,A | — | Planner, Assistant (:168) | own report | W, needs anchors | contracts.rs:471 |
-| calm.report.find | — | `find <area/reports/> -name/-tag` | Planner (area_reports.rs:156-157) | own area | V | area_reports.rs:45 |
+| calm.report.find | — | `find <current-user-Area-path> -name/-tag` | Planner (area_reports.rs:156-157) | own area | V | area_reports.rs:45 |
 | calm.report.links.backlinks | P | — | Planner (report_links.rs:288) | area → own report | V | report_links.rs:57 |
 | calm.report.read | P | — | Planner, Assistant (track_report.rs:127) | own report | AR (index: V) | track_report.rs:81 |
 | calm.report.tag | — | `tag <report.md> --add/--remove` | Worker reads; add/remove is Planner only (report_tag.rs:77,100) | own report | V / W | report_tag.rs:53 |
@@ -110,7 +113,7 @@ Columns:
 | calm.track.close | P | `track-close --message` | Planner (track_state.rs:239) | own track | LC | track_state.rs:217 |
 | calm.track.diff | — | `diff <from> [to] [path]` (+`--to`/`--path`) | Planner, Worker (:110) | own track VCS | V | track_history.rs:49 |
 | calm.track.log | — | `log [path] --limit --include-empty` | Planner, Worker (:166) | own track VCS | V | track_history.rs:88 |
-| calm.track.ls | — | `ls [path] [-l]` | Planner, Worker (track_file.rs:99) | own track; `area/reports/` is Planner only | V | track_file.rs:49 |
+| calm.track.ls | — | `ls [path] [-l]` | Planner, Worker (track_file.rs:99) | bound Track; named user Reports are read-only | V | track_file.rs:49 |
 | calm.track.publish | P | — | Planner (dev/publish.rs:274) after require_bound | git-forge-bound attached track | LC | builtin_plugins/dev/publish.rs:57 |
 | calm.track.rename | P | — | Planner (track_rename.rs:79) | own track, empty title only | W | track_rename.rs:44 |
 | calm.track.state | — | `state` | Planner, Worker (track_state.rs:68) | own track | V | track_state.rs:50 |
@@ -307,7 +310,7 @@ to explicit report actions.
 | calm.ratify.request | neige.ratify.request | — |
 | calm.report.blocks.kinds | neige.report.kinds | — |
 | calm.report.commit | neige.report.commit | — |
-| calm.report.find | neige.report.find | `neige report find <area/reports/> [--name] [--tag]` |
+| calm.report.find | neige.report.find | `neige report find <current-user-Area-path> [--name] [--tag]` |
 | calm.report.links.backlinks | neige.report.backlinks | — |
 | calm.report.read | neige.report.read | — |
 | calm.report.tag | neige.report.tag | `neige report tag <report.md> [--add …] [--remove …]` |

@@ -154,7 +154,9 @@ function sentMentionLabel(address: string): string | null {
     if (tag === '' || /[\s,\p{Cc}]/u.test(tag) || Array.from(tag).length > 64) return null;
     return `#${tag}`;
   }
-  const report = /^area\/reports\/(.+)\.md(?:#([^\s]+))?$/.exec(address);
+  // Display the server's path shape only: no identity lookup, canonicality or authorization.
+  const canonical = /^\/[^/]+\/([^/]+)\/report\.md(?:#([^\s]+))?$/.exec(address);
+  const report = canonical ?? /^area\/reports\/(.+)\.md(?:#([^\s]+))?$/.exec(address);
   if (report === null) return null;
   let name: string;
   try { name = decodeURIComponent(report[1]); } catch { return null; }

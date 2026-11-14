@@ -20,8 +20,8 @@ it.each([1200])('shows readable type entrances and enters each filtered list by 
   await page.viewport(width, 900);
   const search = vi.fn<MentionSearch>((query) => Promise.resolve(mentionSuggestionsOf({
     tags: [{ label: 'release', track_count: 2, insert: '@`tag:release`' }],
-    tracks: [{ label: 'Release notes', track_id: 't1', insert: '@`area/reports/Release notes.md`' }],
-    blocks: [{ label: 'Checklist', block_id: 'b1', track_id: 't1', track_title: 'Release notes', insert: '@`area/reports/Release notes.md#b1`' }],
+    tracks: [{ label: 'Release notes', track_id: 't1', insert: '@`/研发/Release notes/report.md`' }],
+    blocks: [{ label: 'Checklist', block_id: 'b1', track_id: 't1', track_title: 'Release notes', insert: '@`/研发/Release notes/report.md#b1`' }],
   }, mentionQueryOf(query))));
   render(<Composer search={search} onSend={vi.fn()} />);
   const field = page.getByRole('combobox', { name: 'Message' });

@@ -6,14 +6,12 @@ use serde_json::{Map, Value};
 
 use super::help;
 use super::render::Render;
-use crate::area_reports::{self, AreaPath};
 use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::registry::ToolRegistry;
 use crate::mcp_server::tools::{
     admin, area_reports as area_reports_tool, emit, op, report_tag, task_gate, track_file,
     track_history, track_state,
 };
-use crate::track_fs_view::normalize_path;
 
 /// One CLI command: `neige <object> <action>`, the tool name `neige_<object>_<action>` split at `_`.
 pub(crate) struct Command {
@@ -208,14 +206,11 @@ pub(crate) const COMMANDS: &[Command] = &[
             opt("--cursor", "cursor", OptValue::Text, false),
         ],
         confirm: None,
-        render: Render::Ls {
-            long: false,
-            reports: false,
-        },
+        render: Render::Ls { long: false },
     },
     Command {
         tool: track_file::TOOL_CAT,
-        positionals: &[pos("path", true)],
+        positionals: &[pos("path", false)],
         options: &[
             opt("--step", "step", OptValue::Text, false),
             opt("--detail", "detail", OptValue::Text, false),
@@ -547,16 +542,6 @@ pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, 
     let render = match command.render {
         Render::Ls { .. } => Render::Ls {
             long: views.contains(&"long"),
-            reports: args
-                .get("path")
-                .and_then(Value::as_str)
-                .is_some_and(|path| {
-                    !path.starts_with('/')
-                        && matches!(
-                            area_reports::classify(&normalize_path(path)),
-                            Some(Ok(AreaPath::Reports))
-                        )
-                }),
         },
         Render::MailLs { .. } => Render::MailLs {
             filtered: args.contains_key("track_id") || args.contains_key("state"),

@@ -1,20 +1,17 @@
-//! MCP side of `area/reports/` (#1838 S2): the `area/` branch of `neige_ls` / `neige_cat`
-//! and the Planner-only `neige_report_find`. Browsing uses the caller's `identity.area_id`,
-//! never an argument. Listing, resolving and reading live in [`crate::area_reports`].
+//! Planner-only Report search; navigation is delegated to report_paths.
 
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use super::track_file::track_fs_error_to_rpc;
-use crate::area_reports::{self, AreaPath, Filter, REPORTS_DIR};
+use crate::area_reports::{self, Filter};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations,
 };
-use crate::model::{CardRole, Track};
-use crate::track_fs_view::{TrackFsEntry, normalize_path};
+use crate::model::CardRole;
 
 pub const TOOL_REPORT_FIND: &str = "neige_report_find";
 
@@ -67,74 +64,6 @@ fn pool(ctx: &AppContext) -> Result<&sqlx::SqlitePool, RpcError> {
         .ok_or_else(|| RpcError::internal("area reports: requires a sqlite-backed repo"))
 }
 
-/// `neige_ls` on a path under `area/`.
-pub(crate) async fn ls(
-    ctx: &AppContext,
-    bound: &Track,
-    path: AreaPath<'_>,
-) -> Result<Value, RpcError> {
-    let entries = match path {
-        AreaPath::Root => {
-            return super::track_file::entries_result(vec![TrackFsEntry {
-                name: "reports/".into(),
-                kind: "dir".into(),
-                size: None,
-                updated_at: None,
-                extra: serde_json::Map::new(),
-            }]);
-        }
-        AreaPath::Reports => {
-            let mut reports =
-                area_reports::list(pool(ctx)?, bound.area_id.as_str(), &Filter::default())
-                    .await
-                    .map_err(track_fs_error_to_rpc)?;
-            let user = super::unified_browse::is_user_area(ctx, bound.area_id.as_str()).await?;
-            if !user {
-                reports.retain(|r| Some(r.track_id.as_str()) == Some(bound.id.as_str()));
-            }
-            serde_json::to_value(reports).map(|reports| json!({"reports":reports}))
-        }
-        AreaPath::Report(file) => {
-            return Err(RpcError::invalid_params(format!(
-                "{REPORTS_DIR}/{file} is a report, not a directory; read it with `neige cat`"
-            )));
-        }
-    };
-    entries.map_err(|e| RpcError::internal(format!("area reports: json serialization: {e}")))
-}
-
-/// `neige_cat` on `raw` (classified as `path`), a path under `area/`; `selection` narrows a report
-/// to those blocks (#1874) or sections (#1877).
-pub(crate) async fn cat(
-    ctx: &Arc<AppContext>,
-    bound: &Track,
-    raw: &str,
-    path: AreaPath<'_>,
-    args: &Value,
-) -> Result<Value, RpcError> {
-    super::unified_browse::reject(args, &["step"])?;
-    if let Some(selection) = super::track_file::Selection::parse(
-        args.as_object().expect("validated arguments"),
-        super::track_file::TOOL_CAT,
-    )? && !matches!(path, AreaPath::Report(_))
-    {
-        return Err(super::track_file::not_a_report(raw, &selection));
-    }
-    let AreaPath::Report(file) = path else {
-        return Err(RpcError::invalid_params("path is a directory"));
-    };
-    let only_track = if super::unified_browse::is_user_area(ctx, bound.area_id.as_str()).await? {
-        None
-    } else {
-        Some(bound.id.as_str())
-    };
-    let id = area_reports::resolve_track(pool(ctx)?, bound.area_id.as_str(), file, only_track)
-        .await
-        .map_err(track_fs_error_to_rpc)?;
-    let track = super::unified_browse::track_in_area(ctx, bound.area_id.as_str(), &id).await?;
-    super::unified_browse::report(ctx, &track, args).await
-}
-
 async fn report_find(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -155,16 +84,18 @@ async fn report_find(
     };
     let path = text("path")?
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `path` (string)")))?;
-    if normalize_path(&path) != REPORTS_DIR {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: only `{REPORTS_DIR}/` can be searched; got `{path}`"
-        )));
+    let (bound, _) = crate::managed_track::report_browse_context(&ctx, &identity).await?;
+    let scope = crate::report_paths::resolve(&ctx, &identity, &bound, &path).await?;
+    if scope != crate::report_paths::Scope::Area(bound.area_id.to_string()) {
+        return Err(RpcError::invalid_params(
+            "find requires the current user Area directory",
+        ));
     }
     let filter = Filter {
         name: text("name")?,
         tag: text("tag")?,
     };
-    let entries = area_reports::list(pool(&ctx)?, &identity.area_id, &filter)
+    let entries = area_reports::find(&ctx, pool(&ctx)?, &identity.area_id, &filter)
         .await
         .map_err(track_fs_error_to_rpc)?;
     serde_json::to_value(entries)

@@ -52,7 +52,13 @@ async fn unified_browse_report_only_system_and_identity_fences() {
         .await
         .unwrap();
     let id = identity(&route, &own).await;
-    let root = format!("/areas/{}/tracks/{}/", foreign.area_id, foreign.id);
+    let root = crate::report_paths::track_path(
+        &route.mcp_context,
+        foreign.area_id.as_str(),
+        foreign.id.as_str(),
+    )
+    .await
+    .unwrap();
     let index = decoded(
         call(
             &route,
@@ -87,11 +93,17 @@ async fn unified_browse_report_only_system_and_identity_fences() {
         &route,
         &id,
         "neige_cat",
-        json!({"path":format!("/areas/{}/tracks/{}/report.md",own.area_id,own.id)}),
+        json!({"path":format!(
+            "/{}/{}/report.md",
+            crate::report_paths::name::escape(
+                &route.repo.area_get(own.area_id.as_str()).await.unwrap().unwrap().name
+            ),
+            crate::report_paths::name::escape(&own.title)
+        )}),
     )
     .await
     .unwrap_err();
-    assert_eq!(error.code, -32403);
+    assert_eq!(error.code, -32602);
     call(
         &route,
         &id,
@@ -103,17 +115,33 @@ async fn unified_browse_report_only_system_and_identity_fences() {
     call(&route, &id, "neige_ls", json!({})).await.unwrap();
     for (path, code) in [
         (
-            format!("/areas/{}/tracks/{}/report.md", foreign.area_id, own.id),
-            -32403,
+            format!(
+                "/{}/{}/report.md",
+                route
+                    .repo
+                    .area_get(foreign.area_id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .name,
+                own.title
+            ),
+            -32602,
         ),
         (
-            format!("/areas/{}/tracks/missing/report.md", foreign.area_id),
-            -32404,
+            format!(
+                "/{}/missing/report.md",
+                route
+                    .repo
+                    .area_get(foreign.area_id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .name
+            ),
+            -32602,
         ),
-        (
-            format!("/areas/missing/tracks/{}/report.md", foreign.id),
-            -32404,
-        ),
+        (format!("/missing/{}/report.md", foreign.title), -32602),
         ("/home/private/report.md".into(), -32602),
     ] {
         assert_eq!(
@@ -177,7 +205,7 @@ async fn unified_browse_dates_page_and_keep_watermark() {
             &route,
             &id,
             "neige_cat",
-            json!({"path":"/report-changes/2026-10-03.json"}),
+            json!({"path":"/.neige/report-changes/2026-10-03.json"}),
         )
         .await
         .unwrap(),
@@ -186,12 +214,18 @@ async fn unified_browse_dates_page_and_keep_watermark() {
     assert_eq!(first["timezone"], "Asia/Shanghai");
     let through = first["through_event_id"].clone();
     crate::workspace_reports::tests::event(repo.db(), &edited, start + 100, "b", "late").await;
-    let rest = decoded(call(&route,&id,"neige_cat",json!({"path":"/report-changes/2026-10-03.json","cursor":first["next_cursor"],"through_event_id":through})).await.unwrap());
+    let rest = decoded(call(&route,&id,"neige_cat",json!({"path":"/.neige/report-changes/2026-10-03.json","cursor":first["next_cursor"],"through_event_id":through})).await.unwrap());
     assert_eq!(rest["changes"].as_array().unwrap().len(), 2);
     assert_eq!(rest["next_cursor"], Value::Null);
     let path = format!(
-        "/areas/{}/tracks/{}/report-edits/2026-10-03.json",
-        edited.area_id, edited.id
+        "{}report-edits/2026-10-03.json",
+        crate::report_paths::track_path(
+            &route.mcp_context,
+            edited.area_id.as_str(),
+            edited.id.as_str()
+        )
+        .await
+        .unwrap()
     );
     assert!(
         call(&route, &id, "neige_cat", json!({"path":path}))
@@ -236,7 +270,7 @@ async fn unified_browse_dates_page_and_keep_watermark() {
                 &route,
                 &id,
                 "neige_cat",
-                json!({"path":format!("/report-changes/{file}")})
+                json!({"path":format!("/.neige/report-changes/{file}")})
             )
             .await
             .is_err()
@@ -421,14 +455,19 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
     let root = call(&route, &id, "neige_ls", json!({"path":"/"}))
         .await
         .unwrap();
-    assert_eq!(
+    assert!(
         root["entries"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|row| row["path"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec!["/areas/", "/report-changes/"]
+            .any(|row| row["path"] == "/.neige/")
+    );
+    assert!(
+        root["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["area_id"] != own.area_id.as_str())
     );
     repo.db()
         .writer()
@@ -442,7 +481,7 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
     let mut areas = Vec::new();
     let mut cursor = None::<String>;
     loop {
-        let mut args = json!({"path":"/areas/"});
+        let mut args = json!({"path":"/"});
         if let Some(cursor) = &cursor {
             args["cursor"] = json!(cursor);
         }
@@ -455,7 +494,7 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
             assert_eq!(rows.len(), 1, "an oversized first row occupies its page");
             assert!(serde_json::to_vec(row).unwrap().len() > paging::PAGE_BYTES);
         }
-        areas.extend(rows.iter().cloned());
+        areas.extend(rows.iter().filter(|r| r["area_id"].is_string()).cloned());
         cursor = page["next_cursor"].as_str().map(str::to_owned);
         if cursor.is_none() {
             break;
@@ -477,7 +516,9 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
     assert!(ids.contains(&foreign.area_id.as_str()));
     assert!(!ids.contains(&own.area_id.as_str()));
     assert!(areas.iter().all(|a| a.get("default_cwd").is_none()));
-    let path = format!("/areas/{}/tracks/", foreign.area_id);
+    let path = crate::report_paths::area_path(&route.mcp_context, foreign.area_id.as_str())
+        .await
+        .unwrap();
     let tracks = call(&route, &id, "neige_ls", json!({"path":path}))
         .await
         .unwrap();
@@ -492,13 +533,51 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
         .await
         .is_err()
     );
-    let report_dir = format!("{path}{}/", foreign.id);
+    let report_dir = crate::report_paths::track_path(
+        &route.mcp_context,
+        foreign.area_id.as_str(),
+        foreign.id.as_str(),
+    )
+    .await
+    .unwrap();
     let dir = call(&route, &id, "neige_ls", json!({"path":report_dir}))
         .await
         .unwrap();
-    assert_eq!(dir["entries"].as_array().unwrap().len(), 2);
+    let mut entries = dir["entries"].as_array().unwrap().clone();
+    let mut cursor = dir["next_cursor"].as_str().map(str::to_owned);
+    while let Some(next) = cursor {
+        let page = call(
+            &route,
+            &id,
+            "neige_ls",
+            json!({"path":report_dir,"cursor":next}),
+        )
+        .await
+        .unwrap();
+        entries.extend(page["entries"].as_array().unwrap().iter().cloned());
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+    }
+    assert_eq!(
+        entries.len(),
+        2,
+        "oversized canonical rows retain both entries across pages"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|r| r["area_id"] == foreign.area_id.as_str()
+                && r["track_id"] == foreign.id.as_str())
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
     for path in [
-        "/report-changes/".to_string(),
+        "/.neige/report-changes/".to_string(),
         format!("{report_dir}report-edits/"),
     ] {
         let dir = call(&route, &id, "neige_ls", json!({"path":path}))
@@ -539,5 +618,51 @@ async fn unified_browse_directories_and_hidden_report_remain_distinct() {
         json!({"path":format!("{report_dir}report.md")}),
     )
     .await
-    .unwrap();
+    .unwrap_err();
+}
+
+#[test]
+fn directory_cursors_bind_kind_directory_and_last_identity() {
+    let rows: Vec<_> = (0..51)
+        .map(|i| row(&format!("id-{i:02}"), "Title", &format!("/old/{i}/"), "dir"))
+        .collect();
+    let a = json!(["track", "area", "one"]);
+    let b = json!(["track", "area", "two"]);
+    let first = listing(rows.clone(), &json!({}), &a).unwrap();
+    assert_eq!(first["entries"].as_array().unwrap().len(), 50);
+    let args = json!({"cursor":first["next_cursor"]});
+    let rest = listing(rows.clone(), &args, &a).unwrap();
+    assert_eq!(rest["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(listing(rows.clone(), &args, &b).unwrap_err().code, -32602);
+    assert_eq!(
+        listing(rows.clone(), &args, &json!(["area", "one"]))
+            .unwrap_err()
+            .code,
+        -32602
+    );
+    let last = first["entries"].as_array().unwrap().last().unwrap()["id"].clone();
+    assert_eq!(
+        listing(
+            rows.iter().filter(|r| r["id"] != last).cloned().collect(),
+            &args,
+            &a
+        )
+        .unwrap_err()
+        .code,
+        -32602
+    );
+    let renamed: Vec<_> = rows
+        .into_iter()
+        .map(|mut r| {
+            r["path"] = json!("/renamed/");
+            r
+        })
+        .collect();
+    assert_eq!(
+        listing(renamed, &args, &a).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

@@ -1,4 +1,4 @@
-//! The SQL behind `area/reports/`. Every statement is keyed by the caller's area and is one
+//! Report search and outline SQL. Every statement is keyed by the caller's area and is one
 //! autocommit statement, so each is a point-in-time read without a transaction (a parked deferred
 //! read tx could close a shared-cache lock cycle; see `deferred_write_tx_invariant`).
 
@@ -87,35 +87,4 @@ pub(super) async fn rows_with_projection(
             },
         )
         .collect()
-}
-
-/// One report card row as a read needs it: the payload JSON text, the report CRDT and the card's
-/// update time, from one statement.
-pub(super) struct Stored {
-    pub payload: String,
-    pub body_crdt: Option<Vec<u8>>,
-    pub updated_at: i64,
-}
-
-/// The report card's row, re-checked against its track and the area; `None` when the report left
-/// the area (deleted or moved) after `rows` resolved it.
-pub(super) async fn report(
-    pool: &SqlitePool,
-    area_id: &str,
-    row: &Row,
-) -> Result<Option<Stored>, sqlx::Error> {
-    let stored: Option<(String, Option<Vec<u8>>, i64)> = sqlx::query_as(concat!(
-        "SELECT c.payload, c.body_crdt, c.updated_at FROM cards c JOIN tracks t ON t.id = c.track_id ",
-        "WHERE c.id = ?1 AND c.track_id = ?2 AND c.kind = 'track-report' AND t.area_id = ?3"
-    ))
-    .bind(&row.card_id)
-    .bind(&row.track_id)
-    .bind(area_id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(stored.map(|(payload, body_crdt, updated_at)| Stored {
-        payload,
-        body_crdt,
-        updated_at,
-    }))
 }

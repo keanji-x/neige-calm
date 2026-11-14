@@ -118,9 +118,10 @@ function followPane() {
 }
 
 describe('ChatThread', () => {
-  it('renders persisted mentions as pills while keeping ordinary text literal', () => {
-    const text = 'see @`tag:部署` and @`area/reports/Deploy notes.md` '
-      + 'then @`area/reports/Deploy notes.md#b_1a2b` **literal** @bob';
+  it.each(['area/reports/Deploy notes.md', '/研发/Deploy notes/report.md'])(
+    'renders persisted %s mentions while keeping ordinary text literal', (path) => {
+    const text = 'see @`tag:部署` and @`' + path + '` '
+      + 'then @`' + path + '#b_1a2b` **literal** @bob';
     render(<ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false} conversation={conversation()}
       turns={[turn({ text })]} />);
     const message = document.querySelector('[data-nc-turn="you"]')!;

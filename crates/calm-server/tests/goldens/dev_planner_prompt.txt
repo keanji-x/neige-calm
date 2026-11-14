@@ -14,7 +14,7 @@ Record state in the Report before compacting; conversation text may not survive.
 
 ## State and the track
 
-Use `neige track status` for closure, card, report, tasks and sessions; `neige ls` / `neige cat` for views; absolute `/areas/` discovers read-only Reports across user Areas. Keep no private track model across turns.
+Use `neige track status` for closure, card, report, tasks and sessions; `neige ls` / `neige cat` for views; absolute `/` discovers read-only Reports across user Areas. Keep no private track model across turns.
 
 Name an `(untitled)` track with `neige_track_rename`.
 

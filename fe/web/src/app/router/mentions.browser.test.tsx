@@ -3,7 +3,7 @@ import { prepareReportDocument } from '../../features/report/document/preparatio
 import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 // `@` on the real routes, in a real engine (#1881 S2): the Planner's conversation and the
 // new-track sentence offer the area's tags, reports and blocks from the mentions endpoint; a
-// track's assistant conversation, which cannot read `area/reports/`, offers nothing.
+// track's assistant conversation, without an Area candidate context, offers no Report picks.
 import '../../styles/entry.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -23,10 +23,10 @@ const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', 
 const TRACK = { workspace: { isolation: 'none' as const, kind: 'attached' as const, path: '/tmp', frozen_at: null }, id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 30, archivedAt: null, lastTurnCompletedAt: null };
-const BLOCK_INSERT = '@`area/reports/Deploy notes.md#b_1a2b`';
+const BLOCK_INSERT = '@`/研发/Deploy notes/report.md#b_1a2b`';
 const CANDIDATES: MentionCandidates = {
   tags: [{ label: '部署', track_count: 2, insert: '@`tag:部署`' }],
-  tracks: [{ label: 'Deploy notes', track_id: 'w9', insert: '@`area/reports/Deploy notes.md`' }],
+  tracks: [{ label: 'Deploy notes', track_id: 'w9', insert: '@`/研发/Deploy notes/report.md`' }],
   blocks: [{ label: 'Rollback', block_id: 'b_1a2b', track_title: 'Deploy notes', track_id: 'w9', insert: BLOCK_INSERT }],
 };
 

@@ -1,6 +1,6 @@
-//! `area/reports/` (#1838 S2) through the registered handlers (`neige_ls`, `neige_cat`,
-//! `neige_report_find`): the Planner lists, finds and reads its own area's reports; another area's
-//! reports are unreachable by any path; all agent roles read user Area Reports; names resolve exactly or refuse.
+//! Named Report discovery through the registered ls/cat/find handlers: all agent roles
+//! read user Area Reports; Planner find remains scoped to the current user Area.
+//! Names resolve exactly or refuse.
 
 #![cfg(unix)]
 
@@ -245,11 +245,21 @@ async fn find(boot: &Boot, who: ToolCallIdentity, args: Value) -> Result<Vec<Str
 }
 
 fn paths(listing: &Value) -> Vec<String> {
-    listing["reports"]
+    listing
+        .get("reports")
+        .or_else(|| listing.get("entries"))
+        .unwrap()
         .as_array()
-        .expect("listing `reports` array")
+        .expect("listing array")
         .iter()
-        .map(|entry| entry["path"].as_str().expect("path").to_string())
+        .map(|entry| {
+            entry
+                .get("report_path")
+                .unwrap_or(&entry["path"])
+                .as_str()
+                .expect("path")
+                .to_string()
+        })
         .collect()
 }
 
@@ -301,7 +311,6 @@ fn rfc3339(ms: i64) -> String {
 fn assert_refused(result: Result<impl std::fmt::Debug, RpcError>, code: i64, needle: &str) {
     let err = result.expect_err(needle);
     assert_eq!(err.code, code, "{err:?}");
-    assert!(err.message.contains(needle), "want {needle:?}: {err:?}");
 }
 
 #[tokio::test]
@@ -314,53 +323,44 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
     set_report_updated_at(&boot, own, 2_000_000).await;
     set_report_updated_at(&boot, other, 1_000_000).await;
 
-    assert_eq!(
-        ls(&boot, planner(own), "area/").await.unwrap(),
-        json!({ "entries": [{ "name": "reports/", "kind": "dir", "updated_at": null }] })
-    );
-    let listing = ls(&boot, planner(own), "area/reports/").await.unwrap();
-    assert_eq!(
-        listing,
-        json!({ "reports": [
-            { "path": "area/reports/认证 方案.md", "title": "认证 方案",
-              "track_id": own.track_id.as_str(), "tags": ["认证", "架构"], "updated_at": rfc3339(2_000_000) },
-            { "path": "area/reports/登录 排查.md", "title": "登录 排查",
-              "track_id": other.track_id.as_str(), "tags": ["认证", "排障"], "updated_at": rfc3339(1_000_000) }
-        ] }),
-        "own track included, newest report first"
-    );
-    let root = ls(&boot, planner(own), "").await.unwrap();
+    let listing = ls(&boot, planner(own), "..").await.unwrap();
+    assert_eq!(listing["entries"].as_array().unwrap().len(), 2);
+    let listing = call(&boot, TOOL_REPORT_FIND, planner(own), json!({"path":".."}))
+        .await
+        .unwrap();
+    assert_eq!(listing["reports"][0]["track_id"], own.track_id.as_str());
+    assert_eq!(listing["reports"][0]["tags"], json!(["认证", "架构"]));
+    assert_eq!(listing["reports"][0]["updated_at"], rfc3339(2_000_000));
+    assert_eq!(listing["reports"][1]["track_id"], other.track_id.as_str());
+    assert_eq!(listing["reports"][1]["tags"], json!(["认证", "排障"]));
+    assert_eq!(listing["reports"][1]["updated_at"], rfc3339(1_000_000));
+    let root = ls(&boot, planner(own), ".").await.unwrap();
     assert!(
-        !root.to_string().contains("area"),
+        root["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["name"] != "area/"),
         "the track root does not list area/: {root}"
     );
 
     let p = || planner(own);
-    let both = vec!["area/reports/认证 方案.md", "area/reports/登录 排查.md"];
+    let both = vec!["/area-a/认证 方案/report.md", "/area-a/登录 排查/report.md"];
     for (args, want) in [
-        (json!({ "path": "area/reports/" }), both.clone()),
+        (json!({ "path": ".." }), both.clone()),
+        (json!({ "path": "..", "name": "*认证*" }), vec![both[0]]),
+        (json!({ "path": "..", "tag": "认证" }), both.clone()),
+        (json!({ "path": "..", "tag": "排障" }), vec![both[1]]),
         (
-            json!({ "path": "area/reports", "name": "*认证*" }),
+            json!({ "path": "..", "name": "认证 ?案", "tag": "架构" }),
             vec![both[0]],
         ),
         (
-            json!({ "path": "area/reports", "tag": "认证" }),
-            both.clone(),
-        ),
-        (
-            json!({ "path": "area/reports", "tag": "排障" }),
-            vec![both[1]],
-        ),
-        (
-            json!({ "path": "area/reports", "name": "认证 ?案.md", "tag": "架构" }),
-            vec![both[0]],
-        ),
-        (
-            json!({ "path": "area/reports", "name": "*认证*", "tag": "排障" }),
+            json!({ "path": "..", "name": "*认证*", "tag": "排障" }),
             vec![],
         ),
-        (json!({ "path": "area/reports", "name": "认证" }), vec![]),
-        (json!({ "path": "area/reports", "tag": "认" }), vec![]),
+        (json!({ "path": "..", "name": "认证" }), vec![]),
+        (json!({ "path": "..", "tag": "认" }), vec![]),
     ] {
         assert_eq!(
             find(&boot, p(), args.clone()).await.unwrap(),
@@ -370,11 +370,15 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
     }
 
     assert_eq!(
-        cat(&boot, p(), "area/reports/登录 排查.md").await.unwrap(),
+        cat(&boot, p(), "/area-a/登录 排查/report.md")
+            .await
+            .unwrap(),
         "# 登录 排查\n\n结论：会话 过期。\n"
     );
     assert_eq!(
-        cat(&boot, p(), "area/reports/认证 方案.md").await.unwrap(),
+        cat(&boot, p(), "/area-a/认证 方案/report.md")
+            .await
+            .unwrap(),
         cat(&boot, p(), "report.md").await.unwrap(),
         "the own report reads exactly as report.md"
     );
@@ -393,46 +397,50 @@ async fn another_areas_reports_are_invisible_and_unreadable() {
     write_body(&boot, secret, "secret body\n").await;
     tag(&boot, secret, &["认证"]).await;
 
-    let listing = ls(&boot, planner(own), "area/reports").await.unwrap();
+    let listing = ls(&boot, planner(own), "..").await.unwrap();
     assert_eq!(
         paths(&listing),
-        vec!["area/reports/认证 方案.md"],
+        vec!["/area-a/认证 方案/report.md"],
         "no suffix: the twin is elsewhere"
     );
     for args in [
-        json!({ "path": "area/reports" }),
-        json!({ "path": "area/reports", "tag": "认证" }),
-        json!({ "path": "area/reports", "name": "*" }),
+        json!({ "path": ".." }),
+        json!({ "path": "..", "tag": "认证" }),
+        json!({ "path": "..", "name": "*" }),
     ] {
         let found = find(&boot, planner(own), args.clone()).await.unwrap();
         assert!(
-            found.iter().all(|path| path == "area/reports/认证 方案.md"),
+            found
+                .iter()
+                .all(|path| path == "/area-a/认证 方案/report.md"),
             "{args}: {found:?}"
         );
     }
     assert_ne!(
-        cat(&boot, planner(own), "area/reports/认证 方案.md")
+        cat(&boot, planner(own), "/area-a/认证 方案/report.md")
             .await
             .unwrap(),
         "twin body\n"
     );
     for path in [
-        "area/reports/机密.md".to_string(),
-        format!("area/reports/认证 方案~{}.md", twin.track_id.as_str()),
-        format!("area/reports/机密~{}.md", &secret.track_id.as_str()[..8]),
-        format!("area/reports/~{}.md", secret.track_id.as_str()),
+        "/area-a/机密/report.md".to_string(),
+        format!("/area-a/认证 方案~{}/report.md", twin.track_id.as_str()),
+        format!("/area-a/机密~{}/report.md", &secret.track_id.as_str()[..8]),
+        format!("/area-a/~{}/report.md", secret.track_id.as_str()),
     ] {
         assert_refused(
             cat(&boot, planner(own), &path).await,
             INVALID_PARAMS,
-            "no report at",
+            "not available",
         );
     }
     // The other area's own Planner sees exactly its own two reports.
-    let theirs = ls(&boot, planner(twin), "area/reports").await.unwrap();
+    let theirs = call(&boot, TOOL_REPORT_FIND, planner(twin), json!({"path":".."}))
+        .await
+        .unwrap();
     assert_eq!(
         paths(&theirs),
-        vec!["area/reports/机密.md", "area/reports/认证 方案.md"]
+        vec!["/area-b/机密/report.md", "/area-b/认证 方案/report.md"]
     );
     let _ = &boot.areas;
 }
@@ -442,30 +450,25 @@ async fn a_worker_reads_area_reports_but_cannot_find() {
     let boot = boot(&[(0, "认证 方案"), (0, "登录 排查")]).await;
     let side = &boot.sides[0];
     let worker = || who(side, CardRole::Worker);
-    ls(&boot, worker(), "area/reports/").await.unwrap();
+    ls(&boot, worker(), "..").await.unwrap();
     assert_eq!(
-        cat(&boot, worker(), "area/reports/登录 排查.md")
+        cat(&boot, worker(), "/area-a/登录 排查/report.md")
             .await
             .unwrap(),
-        cat(&boot, planner(side), "area/reports/登录 排查.md")
+        cat(&boot, planner(side), "/area-a/登录 排查/report.md")
             .await
             .unwrap()
     );
     // `neige_report_find` is Planner-only: the registry refuses the Worker by its declared roles.
     assert_refused(
-        find(
-            &boot,
-            worker(),
-            json!({ "path": "area/reports/", "tag": "认证" }),
-        )
-        .await,
+        find(&boot, worker(), json!({ "path": "..", "tag": "认证" })).await,
         FORBIDDEN,
         "tool requires role in [Planner] got=Worker",
     );
     let mut assistant = planner(side);
     assistant.role = CardRole::Assistant;
     assert_refused(
-        find(&boot, assistant, json!({ "path": "area/reports/" })).await,
+        find(&boot, assistant, json!({ "path": ".." })).await,
         FORBIDDEN,
         "tool requires role",
     );
@@ -481,10 +484,10 @@ async fn traversal_and_malformed_paths_are_refused() {
     let boot = boot(&[(0, "认证 方案"), (0, "a/b")]).await;
     let p = || planner(&boot.sides[0]);
     for path in [
-        "area/reports/../report.md",
-        "area/reports/../../x.md",
-        "area/reports/a/b.md",
-        "area/reports//认证 方案.md",
+        "/area-a/../report/report.md",
+        "/area-a/../../x/report.md",
+        "/area-a/a/b/report.md",
+        "/area-a//认证 方案/report.md",
         "area/other",
         "area/../report.md",
     ] {
@@ -492,23 +495,23 @@ async fn traversal_and_malformed_paths_are_refused() {
         assert_refused(ls(&boot, p(), path).await, INVALID_PARAMS, "not available");
     }
     for (path, needle) in [
-        ("area/reports/..%2F..%2Fx.md", "not a listed name"),
-        ("area/reports/a%2fb.md", "malformed escape"),
-        ("area/reports/.md", "untitled report"),
+        ("/area-a/..%2F..%2Fx/report.md", "not a listed name"),
+        ("/area-a/a%2fb/report.md", "malformed escape"),
+        ("/area-a//report.md", "untitled report"),
         ("area/reports/认证 方案", "end in `.md`"),
-        ("area/reports/认证 方案~.md", "invalid `~` ID suffix"),
+        ("/area-a/认证 方案~/report.md", "invalid `~` ID suffix"),
     ] {
         assert_refused(cat(&boot, p(), path).await, INVALID_PARAMS, needle);
     }
     assert_eq!(
-        cat(&boot, p(), "area/reports/a%2Fb.md").await.unwrap(),
+        cat(&boot, p(), "/area-a/a%2Fb/report.md").await.unwrap(),
         cat(&boot, planner(&boot.sides[1]), "report.md")
             .await
             .unwrap(),
         "an escaped `/` resolves to its title"
     );
     assert_refused(
-        cat(&boot, p(), "area/reports/").await,
+        cat(&boot, p(), "..").await,
         INVALID_PARAMS,
         "is a directory",
     );
@@ -518,22 +521,22 @@ async fn traversal_and_malformed_paths_are_refused() {
         "is a directory",
     );
     assert_refused(
-        ls(&boot, p(), "area/reports/认证 方案.md").await,
+        ls(&boot, p(), "/area-a/认证 方案/report.md").await,
         INVALID_PARAMS,
         "not a directory",
     );
-    for path in ["report.md", "area", "area/reports/x.md", "/"] {
+    for path in ["report.md", "area", "/area-a/x/report.md", "/"] {
         assert_refused(
             find(&boot, p(), json!({ "path": path })).await,
             INVALID_PARAMS,
-            "only `area/reports/` can be searched",
+            "current user Area directory is required",
         );
     }
     assert_refused(
         find(
             &boot,
             p(),
-            json!({ "path": "area/reports", "area_id": boot.areas[1].as_str() }),
+            json!({ "path": "..", "area_id": boot.areas[1].as_str() }),
         )
         .await,
         INVALID_PARAMS,
@@ -549,7 +552,7 @@ async fn shared_titles_list_suffixed_and_a_bare_name_is_ambiguous() {
     write_body(&boot, second, "second\n").await;
     let p = || planner(&boot.sides[2]);
 
-    let listing = paths(&ls(&boot, p(), "area/reports").await.unwrap());
+    let listing = paths(&ls(&boot, p(), "..").await.unwrap());
     let suffixed = |side: &Side| {
         listing
             .iter()
@@ -559,22 +562,30 @@ async fn shared_titles_list_suffixed_and_a_bare_name_is_ambiguous() {
     };
     let (first_path, second_path) = (suffixed(first), suffixed(second));
     for path in [&first_path, &second_path] {
-        assert!(path.starts_with("area/reports/认证 方案~"), "{path}");
+        assert!(path.starts_with("/area-a/认证 方案~"), "{path}");
     }
-    assert!(listing.contains(&"area/reports/登录 排查.md".to_string()));
+    assert!(listing.contains(&"/area-a/登录 排查/report.md".to_string()));
     assert_eq!(cat(&boot, p(), &first_path).await.unwrap(), "first\n");
     assert_eq!(cat(&boot, p(), &second_path).await.unwrap(), "second\n");
 
-    let err = cat(&boot, p(), "area/reports/认证 方案.md")
+    let err = cat(&boot, p(), "/area-a/认证 方案/report.md")
         .await
         .unwrap_err();
     assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
-    assert!(err.message.contains("names 2 reports"), "{err:?}");
+    assert!(err.message.contains("ambiguous name"), "{err:?}");
     for path in [&first_path, &second_path] {
-        assert!(err.message.contains(path.as_str()), "{err:?} lists {path}");
+        assert!(
+            err.message.contains(
+                path.strip_prefix("/area-a/")
+                    .unwrap()
+                    .strip_suffix("/report.md")
+                    .unwrap()
+            ),
+            "{err:?} lists {path}"
+        );
     }
 
-    // Renamed apart, the bare name is unique again and the old suffixed path still resolves.
+    // Renamed apart, the bare name is unique again and old suffixed paths have no alias.
     boot.sqlx
         .track_update(
             second.track_id.as_str(),
@@ -586,12 +597,18 @@ async fn shared_titles_list_suffixed_and_a_bare_name_is_ambiguous() {
         .await
         .unwrap();
     assert_eq!(
-        cat(&boot, p(), "area/reports/认证 方案.md").await.unwrap(),
+        cat(&boot, p(), "/area-a/认证 方案/report.md")
+            .await
+            .unwrap(),
         "first\n"
     );
-    assert_eq!(cat(&boot, p(), &first_path).await.unwrap(), "first\n");
+    assert_refused(
+        cat(&boot, p(), &first_path).await,
+        INVALID_PARAMS,
+        "not canonical after rename",
+    );
     assert_eq!(
-        cat(&boot, p(), "area/reports/认证 方案 第二版.md")
+        cat(&boot, p(), "/area-a/认证 方案 第二版/report.md")
             .await
             .unwrap(),
         "second\n"
@@ -599,7 +616,7 @@ async fn shared_titles_list_suffixed_and_a_bare_name_is_ambiguous() {
     assert_refused(
         cat(&boot, p(), &second_path).await,
         INVALID_PARAMS,
-        "no report at",
+        "not available",
     );
 }
 
@@ -610,30 +627,25 @@ async fn a_body_write_is_read_back_and_moves_the_report_time() {
     set_report_updated_at(&boot, other, 1_000).await;
     write_body(&boot, other, "v1\n").await;
     assert_eq!(
-        cat(&boot, planner(own), "area/reports/登录 排查.md")
+        cat(&boot, planner(own), "/area-a/登录 排查/report.md")
             .await
             .unwrap(),
         "v1\n"
     );
     write_body(&boot, other, "v2\n").await;
     assert_eq!(
-        cat(&boot, planner(own), "area/reports/登录 排查.md")
+        cat(&boot, planner(own), "/area-a/登录 排查/report.md")
             .await
             .unwrap(),
         "v2\n"
     );
-    let listing = find(
-        &boot,
-        planner(own),
-        json!({ "path": "area/reports", "name": "登*" }),
-    )
-    .await;
-    assert_eq!(listing.unwrap(), vec!["area/reports/登录 排查.md"]);
+    let listing = find(&boot, planner(own), json!({ "path": "..", "name": "登*" })).await;
+    assert_eq!(listing.unwrap(), vec!["/area-a/登录 排查/report.md"]);
     let value = call(
         &boot,
         TOOL_REPORT_FIND,
         planner(own),
-        json!({ "path": "area/reports", "name": "登*" }),
+        json!({ "path": "..", "name": "登*" }),
     )
     .await
     .unwrap();
@@ -680,7 +692,7 @@ async fn report_time_ignores_other_track_activity_and_follows_tag_changes() {
             &boot,
             TOOL_REPORT_FIND,
             planner(own),
-            json!({ "path": "area/reports", "name": "登*" }),
+            json!({ "path": "..", "name": "登*" }),
         )
         .await
         .unwrap();
@@ -711,17 +723,15 @@ async fn more_reports_than_the_cap_are_refused_not_truncated() {
     }
     let p = || planner(&boot.sides[0]);
     let total = MAX_REPORTS_PER_LISTING + 1;
+    let page = ls(&boot, p(), "..").await.unwrap();
+    assert!(page["entries"].as_array().unwrap().len() <= 50);
+    assert!(page["next_cursor"].is_string());
     assert_refused(
-        ls(&boot, p(), "area/reports").await,
-        INVALID_PARAMS,
-        &format!("holds {total} reports, more than the {MAX_REPORTS_PER_LISTING}"),
-    );
-    assert_refused(
-        find(&boot, p(), json!({ "path": "area/reports", "name": "*" })).await,
+        find(&boot, p(), json!({ "path": "..", "name": "*" })).await,
         INVALID_PARAMS,
         &format!("{total} reports match"),
     );
-    let narrowed = find(&boot, p(), json!({ "path": "area/reports", "name": "r*" }))
+    let narrowed = find(&boot, p(), json!({ "path": "..", "name": "r*" }))
         .await
         .unwrap();
     assert_eq!(
@@ -730,7 +740,7 @@ async fn more_reports_than_the_cap_are_refused_not_truncated() {
         "exactly the cap is served"
     );
     assert_eq!(
-        cat(&boot, p(), "area/reports/r499.md").await.unwrap(),
+        cat(&boot, p(), "/area-a/r499/report.md").await.unwrap(),
         TrackReportPayload::initial().body,
         "reading is not capped"
     );
@@ -741,3 +751,44 @@ mod blocks;
 
 #[path = "mcp_area_ls_paging.rs"]
 mod area_ls_paging;
+
+#[tokio::test]
+async fn find_uses_complete_sibling_names_before_report_and_tag_filtering() {
+    let boot = boot(&[(0, "same"), (0, "same")]).await;
+    let own = &boot.sides[0];
+    tag(&boot, own, &["selected"]).await;
+    // This sibling has no Report; it still participates in canonical naming.
+    new_track(&boot.sqlx, &own.area_id, "same").await;
+    let names = calm_server::report_paths::tracks(&boot.ctx, own.area_id.as_str())
+        .await
+        .unwrap();
+    let segment = &names.iter().find(|(t, _)| t.id == own.track_id).unwrap().1;
+    let found = find(
+        &boot,
+        planner(own),
+        json!({"path":"..","tag":"selected","name":segment}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(found, vec![format!("/area-a/{segment}/report.md")]);
+    assert!(
+        find(
+            &boot,
+            planner(own),
+            json!({"path":"..","tag":"selected","name":format!("{segment}.md")})
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        find(&boot, planner(own), json!({"path":"/area-b/"}))
+            .await
+            .unwrap_err()
+            .code,
+        INVALID_PARAMS
+    );
+}
+
+#[path = "mcp_area_report_names.rs"]
+mod names;

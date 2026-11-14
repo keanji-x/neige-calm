@@ -37,20 +37,20 @@ fn ls_without_a_path_sends_no_path() {
     );
 }
 
-/// #1838: `-l` shapes only the text and never reaches the tool; `area/reports/` selects the report table.
+/// `-l` shapes only rendering. Path semantics stay in the server resolver.
 #[test]
-fn ls_long_is_a_view_flag_and_area_reports_selects_the_report_listing() {
-    for (argv, long, reports) in [
-        (&["ls"][..], false, false),
-        (&["ls", "-l"][..], true, false),
-        (&["ls", "-l", "area/reports/"][..], true, true),
-        (&["ls", "area/reports", "-l"][..], true, true),
-        (&["ls", "area/reports"][..], false, true),
-        (&["ls", "-l", "area/"][..], true, false),
-        (&["ls", "area/reports/x.md"][..], false, false),
+fn ls_long_is_a_view_flag_independent_of_path() {
+    for (argv, long) in [
+        (&["ls"][..], false),
+        (&["ls", "-l"][..], true),
+        (&["ls", "-l", ".."][..], true),
+        (&["ls", "..", "-l"][..], true),
+        (&["ls", ".."][..], false),
+        (&["ls", "-l", "area/"][..], true),
+        (&["ls", "../x/report.md"][..], false),
     ] {
         let parsed = parse_args(argv).expect("parse");
-        assert_eq!(parsed.render, Render::Ls { long, reports }, "{argv:?}");
+        assert_eq!(parsed.render, Render::Ls { long }, "{argv:?}");
         assert!(parsed.args.get("long").is_none(), "{argv:?}");
     }
     assert_eq!(
@@ -65,59 +65,35 @@ fn ls_long_is_a_view_flag_and_area_reports_selects_the_report_listing() {
 
 #[test]
 fn find_maps_path_name_and_tag_each_at_most_once() {
-    let parsed = parse_args(&[
-        "report",
-        "find",
-        "area/reports/",
-        "--name",
-        "*认证*",
-        "--tag",
-        "认证",
-    ])
-    .expect("parse");
+    let parsed =
+        parse_args(&["report", "find", "..", "--name", "*认证*", "--tag", "认证"]).expect("parse");
     assert_eq!(parsed.tool, "neige_report_find");
     assert_eq!(parsed.render, Render::Find);
     assert_eq!(
         parsed.args,
-        json!({ "path": "area/reports/", "name": "*认证*", "tag": "认证" })
+        json!({ "path": "..", "name": "*认证*", "tag": "认证" })
     );
     assert_eq!(
-        tool_args(&["report", "find", "--tag", "-x", "area/reports"]),
-        json!({ "path": "area/reports", "tag": "-x" }),
+        tool_args(&["report", "find", "--tag", "-x", ".."]),
+        json!({ "path": "..", "tag": "-x" }),
         "an option value is taken verbatim, even one starting with `-`"
     );
     assert_eq!(refusal(&["report", "find"]), "report find requires <path>");
     assert_eq!(
-        refusal(&[
-            "report",
-            "find",
-            "area/reports/",
-            "--tag",
-            "a",
-            "--tag",
-            "b"
-        ]),
+        refusal(&["report", "find", "..", "--tag", "a", "--tag", "b"]),
         "report find accepts --tag once"
     );
     assert_eq!(
-        refusal(&[
-            "report",
-            "find",
-            "area/reports/",
-            "--name",
-            "a",
-            "--name",
-            "b"
-        ]),
+        refusal(&["report", "find", "..", "--name", "a", "--name", "b"]),
         "report find accepts --name once"
     );
     assert_eq!(
-        refusal(&["report", "find", "area/reports/", "-name", "f"]),
+        refusal(&["report", "find", "..", "-name", "f"]),
         "unknown option `-name` for `neige report find`; expected one of: --name, --tag, --path, --json"
     );
     assert_eq!(
         refusal(&["report", "find", "a", "b"]),
-        "unexpected argument `b`; usage: neige report find area/reports/ [--name <glob>] [--tag <tag>] [--json]"
+        "unexpected argument `b`; usage: neige report find .. [--name <glob>] [--tag <tag>] [--json]"
     );
 }
 
@@ -126,12 +102,12 @@ fn find_maps_path_name_and_tag_each_at_most_once() {
 #[test]
 fn cat_blocks_sends_the_comma_separated_ids_as_an_array() {
     let parsed =
-        parse_args(&["cat", "area/reports/认证 方案.md", "--blocks", "b_1,b_2"]).expect("parse");
+        parse_args(&["cat", "../认证 方案/report.md", "--blocks", "b_1,b_2"]).expect("parse");
     assert_eq!(parsed.tool, "neige_cat");
     assert_eq!(parsed.render, Render::Content);
     assert_eq!(
         parsed.args,
-        json!({ "path": "area/reports/认证 方案.md", "blocks": ["b_1", "b_2"] })
+        json!({ "path": "../认证 方案/report.md", "blocks": ["b_1", "b_2"] })
     );
     assert_eq!(
         tool_args(&["cat", "--blocks", "b_1", "report.md"]),
@@ -235,9 +211,9 @@ fn cat_at_maps_commit_and_path() {
         refusal(&["track", "show", "a", "b", "c"]),
         "unexpected argument `c`; usage: neige track show <commit> <path> [--json]"
     );
-    assert_eq!(refusal(&["cat"]), "cat requires <path>");
+    assert_eq!(tool_args(&["cat"]), json!({}));
     assert!(
-        refusal(&["cat", "a", "b"]).starts_with("unexpected argument `b`; usage: neige cat <path>")
+        refusal(&["cat", "a", "b"]).starts_with("unexpected argument `b`; usage: neige cat [path]")
     );
 }
 
@@ -633,7 +609,7 @@ fn every_positional_is_also_its_option() {
     assert_eq!(
         refusal(&["cat", "a", "--path", "b"]),
         concat!(
-            "unexpected argument `a`; usage: neige cat <path> ",
+            "unexpected argument `a`; usage: neige cat [path] ",
             "[--blocks <id,...> | --sections <heading,...>] [--step NAME] [--json]"
         )
     );

@@ -1,5 +1,5 @@
 //! `GET /api/areas/{area_id}/mentions` through the real router: every `insert` resolves through the
-//! `area/reports/` resolver `neige cat` / `neige report find` use, only the caller's area is searched,
+//! canonical resolver and original Report snapshot owner; only the caller's area is searched,
 //! matching and ranking follow `rank`'s documented order, and every request reads afresh.
 
 use calm_truth::db::RepoRead;
@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::rank::MAX_PER_GROUP;
-use crate::area_reports::{self, AreaPath, Filter};
+use crate::area_reports;
+
 use crate::card_role_cache::CardRoleCache;
 use crate::db::prelude::*;
 use crate::db::sqlite::SqlxRepo;
@@ -25,10 +26,16 @@ use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_report::{TrackReportPayload, persist_report};
 
+mod paths;
+use paths::assert_inserts_resolve;
+
+const TWO_BLOCKS: &str = "# Goal\n\nalpha\n\n# Result\n\nbeta\n";
+
 struct Fixture {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     areas: [AreaId; 2],
+    ctx: Arc<crate::mcp_server::registry::AppContext>,
 }
 
 async fn boot() -> Fixture {
@@ -67,6 +74,7 @@ async fn boot() -> Fixture {
         None,
         None,
     );
+    let ctx = state.mcp_context();
     let app = crate::routes::router()
         .layer(axum::middleware::from_fn_with_state(
             crate::auth::AuthState::new(crate::auth::AuthConfig {
@@ -83,6 +91,7 @@ async fn boot() -> Fixture {
         app,
         repo,
         areas: areas.try_into().unwrap(),
+        ctx,
     }
 }
 
@@ -248,156 +257,6 @@ fn code_text(insert: &str) -> String {
         "insert is exactly `@` + one code span: {insert:?} -> {events:?}"
     );
     code.into_iter().next().unwrap()
-}
-
-/// The `area/reports/` file a path names, through the classifier `neige cat` routes by.
-fn report_file(path: &str) -> &str {
-    match area_reports::classify(path) {
-        Some(Ok(AreaPath::Report(file))) => file,
-        other => panic!("{path:?} is not an area report path: {other:?}"),
-    }
-}
-
-/// Resolves every `insert` of `body` in `area` through `area_reports` and checks it names the item's
-/// own track (and block). Returns how many inserts were checked.
-async fn assert_inserts_resolve(fx: &Fixture, area: &AreaId, body: &Value) -> usize {
-    let pool = fx.repo.pool();
-    let listing = area_reports::list(pool, area.as_str(), &Filter::default())
-        .await
-        .unwrap();
-    let track_of = |path: &str| {
-        listing
-            .iter()
-            .find(|entry| entry.path == path)
-            .map(|entry| entry.track_id.clone())
-    };
-    let mut checked = 0;
-    for tag in body["tags"].as_array().unwrap() {
-        let text = code_text(tag["insert"].as_str().unwrap());
-        let name = text
-            .strip_prefix("tag:")
-            .expect("tag insert is `tag:<tag>`");
-        assert_eq!(name, tag["label"].as_str().unwrap());
-        let found = area_reports::list(
-            pool,
-            area.as_str(),
-            &Filter {
-                name: None,
-                tag: Some(name.to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            found.len() as u64,
-            tag["track_count"].as_u64().unwrap(),
-            "{tag}"
-        );
-        checked += 1;
-    }
-    for track in body["tracks"].as_array().unwrap() {
-        let path = code_text(track["insert"].as_str().unwrap());
-        area_reports::read(pool, area.as_str(), report_file(&path))
-            .await
-            .unwrap_or_else(|e| panic!("{path:?} must resolve: {e:?}"));
-        assert_eq!(
-            track_of(&path).as_deref(),
-            track["track_id"].as_str(),
-            "{path:?}"
-        );
-        checked += 1;
-    }
-    for block in body["blocks"].as_array().unwrap() {
-        let text = code_text(block["insert"].as_str().unwrap());
-        let (path, id) = text
-            .rsplit_once('#')
-            .expect("block insert is `<path>#<id>`");
-        assert_eq!(id, block["block_id"].as_str().unwrap());
-        let blocks = area_reports::read_blocks(pool, area.as_str(), report_file(path))
-            .await
-            .unwrap_or_else(|e| panic!("{path:?} must resolve: {e:?}"));
-        assert!(
-            blocks.iter().any(|b| b.id == id),
-            "{text:?}: block {id} is in the report the path resolves to"
-        );
-        assert_eq!(
-            track_of(path).as_deref(),
-            block["track_id"].as_str(),
-            "{text:?}"
-        );
-        checked += 1;
-    }
-    checked
-}
-
-const TWO_BLOCKS: &str = "# Goal\n\nalpha\n\n# Result\n\nbeta\n";
-
-#[tokio::test]
-async fn every_insert_resolves_through_the_area_reports_resolver() {
-    let fx = boot().await;
-    let [a, b] = fx.areas.clone();
-    let titles = [
-        "认证 方案",
-        "认证 方案",
-        "a/b 100% ~x",
-        ".hidden",
-        "C# notes",
-        "tick `x`",
-        "`edge`",
-    ];
-    let mut tracks = Vec::new();
-    for (i, title) in titles.iter().enumerate() {
-        let tag = format!("t`{i}");
-        tracks.push(
-            report(
-                &fx,
-                &a,
-                title,
-                TWO_BLOCKS,
-                true,
-                &[&tag, "共享"],
-                100 + i as i64,
-            )
-            .await,
-        );
-    }
-    tracks.push(report(&fx, &a, "legacy 报告", TWO_BLOCKS, false, &["共享"], 50).await);
-    // The same title in another area neither resolves here nor changes this area's names.
-    report(&fx, &b, "认证 方案", TWO_BLOCKS, true, &["共享"], 999).await;
-
-    let listing: Vec<String> = area_reports::list(fx.repo.pool(), a.as_str(), &Filter::default())
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|entry| entry.path)
-        .collect();
-    let body = mentions(&fx, &a, "", None).await;
-    let paths: Vec<String> = body["tracks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|track| code_text(track["insert"].as_str().unwrap()))
-        .collect();
-    assert_eq!(
-        paths, listing,
-        "the tracks are exactly the `ls area/reports/` listing, in its order"
-    );
-    assert!(
-        paths.iter().any(|p| p.contains('~')),
-        "duplicate titles carry `~<id>`: {paths:?}"
-    );
-    let mut checked = assert_inserts_resolve(&fx, &a, &body).await;
-    for track in &tracks {
-        let body = mentions(&fx, &a, "", Some(track)).await;
-        assert_eq!(body["blocks"].as_array().unwrap().len(), 2, "{body}");
-        checked += assert_inserts_resolve(&fx, &a, &body).await;
-    }
-    let body = mentions(&fx, &a, "goal", None).await;
-    assert_eq!(body["blocks"].as_array().unwrap().len(), MAX_PER_GROUP);
-    checked += assert_inserts_resolve(&fx, &a, &body).await;
-    // q="": 8 tags + 8 tracks + the newest reports' 8 blocks; each of the 8 tracks'
-    // recommendations: the tags and tracks again + its 2 blocks; q="goal": 8 blocks and nothing else.
-    assert_eq!(checked, 24 + 8 * (16 + 2) + 8);
 }
 
 #[tokio::test]
@@ -647,7 +506,7 @@ async fn a_block_with_no_heading_is_never_offered() {
         10,
     )
     .await;
-    let ids = read_block_ids(&fx, &a, "templated.md").await;
+    let ids = read_block_ids(&fx, &a, "templated").await;
     assert_eq!(ids.len(), 2, "the contract is a block of its own: {ids:?}");
 
     let body = mentions(&fx, &a, "", Some(&track)).await;
@@ -720,7 +579,7 @@ async fn a_new_tag_and_a_rename_show_on_the_next_request() {
 #[test]
 fn an_insert_is_one_code_span_whatever_backticks_the_text_holds() {
     for text in [
-        "area/reports/a b.md",
+        "/Area/a b/report.md",
         "tag:x`y",
         "a``b",
         "`lead",
@@ -741,12 +600,24 @@ fn block_ids(body: &Value) -> Vec<String> {
         .collect()
 }
 
-async fn read_block_ids(fx: &Fixture, area: &AreaId, file: &str) -> Vec<String> {
-    area_reports::read_blocks(fx.repo.pool(), area.as_str(), file)
+async fn read_block_ids(fx: &Fixture, area: &AreaId, title: &str) -> Vec<String> {
+    let outline = area_reports::outlines(&fx.ctx, fx.repo.pool(), area.as_str())
         .await
         .unwrap()
         .into_iter()
-        .map(|block| block.id)
+        .find(|r| r.title == title)
+        .unwrap();
+    let cards = fx.repo.cards_by_track(&outline.track_id).await.unwrap();
+    let report = cards
+        .into_iter()
+        .find(|c| c.kind == "track-report")
+        .unwrap();
+    crate::track_report_read::load_report_doc_snapshot(fx.repo.as_ref(), report.id.as_str())
+        .await
+        .unwrap()
+        .blocks
+        .into_iter()
+        .map(|b| b.id)
         .collect()
 }
 
@@ -788,7 +659,7 @@ async fn a_row_without_a_crdt_mentions_the_block_ids_neige_cat_reads() {
 
     let got = mentions(&fx, &a, "", Some(&track)).await;
     let ids = block_ids(&got);
-    assert_eq!(ids, read_block_ids(&fx, &a, "legacy.md").await, "{got}");
+    assert_eq!(ids, read_block_ids(&fx, &a, "legacy").await, "{got}");
     assert!(ids.iter().all(|id| !id.starts_with("b_hint")), "{ids:?}");
     assert!(
         labels(&got, "blocks").contains(&"task: command=printf ok".to_string()),
@@ -805,7 +676,7 @@ async fn a_crdt_row_mentions_its_stored_projection_without_loading_the_crdt() {
     let before = mentions(&fx, &a, "", Some(&track)).await;
     assert_eq!(
         block_ids(&before),
-        read_block_ids(&fx, &a, "projected.md").await
+        read_block_ids(&fx, &a, "projected").await
     );
     assert_eq!(assert_inserts_resolve(&fx, &a, &before).await, 1 + 2);
 
@@ -841,7 +712,7 @@ async fn a_crdt_row_without_a_projection_lists_its_report_without_blocks() {
         .await
         .unwrap();
     assert_eq!(
-        read_block_ids(&fx, &a, "bare.md").await.len(),
+        read_block_ids(&fx, &a, "bare").await.len(),
         2,
         "cat still reads it"
     );
@@ -853,7 +724,7 @@ async fn a_crdt_row_without_a_projection_lists_its_report_without_blocks() {
     let searched = mentions(&fx, &a, "goal", Some(&other)).await;
     assert_eq!(
         block_ids(&searched),
-        read_block_ids(&fx, &a, "other.md").await[..1]
+        read_block_ids(&fx, &a, "other").await[..1]
     );
     assert_eq!(assert_inserts_resolve(&fx, &a, &got).await, 1 + 2);
     assert_eq!(assert_inserts_resolve(&fx, &a, &searched).await, 1);

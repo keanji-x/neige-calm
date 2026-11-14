@@ -132,7 +132,7 @@ pub(crate) fn legacy_row_blocks(body: &str) -> Vec<ReportBlock> {
 }
 
 /// The document snapshot of one report card row (`payload` and `body_crdt` read together), shared by
-/// [`load_report_doc_snapshot`] and the `area/reports/` block read so their block ids cannot drift.
+/// [`load_report_doc_snapshot`] and unified Report browsing so their block ids cannot drift.
 pub(crate) fn report_doc_snapshot(
     report_card_id: &str,
     updated_at: i64,

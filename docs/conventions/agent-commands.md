@@ -155,7 +155,7 @@ Decisions, one line each:
 | `text` | verbatim text delivered to a person, typed into a terminal, or mailed to a Track |
 | `body` | a document's whole content (report body, PR body, comment body) |
 | `summary` / `title` | one-line summary / display name |
-| `path` | a track-relative view path (`report.md`, `area/reports/x.md`) |
+| `path` | a bound view or named Report path (`report.md`, `/Area/Track/report.md`) |
 | `cursor` / `next_cursor` | paging: pass the previous result's `next_cursor` (an opaque **string**) as `cursor` |
 | `<event>_at` | a time in a result: an RFC 3339 string with an explicit offset at millisecond precision (`created_at`, `closed_at`) |
 | `limit` | the most rows to return, where a tool offers it |
@@ -358,7 +358,7 @@ Added by the slices (registry-driven, Appendix B):
   payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
   `time_zone`, `request_id`, `select`, `until`).
 - `report_tool_results_are_snake_case` (B3): real `report_read`/`write`/`commit`/`find` and
-  `track_ls area/reports/` calls through the kernel socket return objects whose keys, recursively,
+  `neige_ls ..` calls through the kernel socket return objects whose keys, recursively,
   are snake_case (a block's `payload` skipped), and `neige --json` prints the same JSON;
   `no_kernel_tool_returns_a_top_level_array` calls every read-only kernel tool.
 - `every_kernel_tool_refuses_unknown_arguments` (B4): an authenticated Planner session calls each
@@ -388,7 +388,6 @@ Added by the slices (registry-driven, Appendix B):
 
 ## 9. Known gaps
 
-- `track ls area/reports/`, `report_find` and `area_ls` list the same reports with different fields.
 - Terminal snapshots are "observations", which is also the Planner's wake-item word.
 - Inside a terminal `input` step, `{type: "key", key: "Enter"}` is a keyboard key, not a task key.
 - `message` is required by `report_commit`, `task_accept`, `task_reject`, `task_cancel`,
@@ -494,7 +493,7 @@ templates, G goldens, F `fe`, T tests, R recipes.
 | param: `report_read` `select` | `blocks` / `sections` / `detail: full\|index` | — | P (report guides), T | B2 #2156 |
 | output: `time_zone` (workspace, creation identity) | `timezone` | unreleased (0136) | P, F wire types | B2 #2156 |
 | output: `docRev`, `schemaVersion`, `taskDiagnostics` (report read/write/commit) | `doc_rev`, `schema_version`, `task_diagnostics` | — | P, refusal texts, T | B3 #2202 |
-| output: `trackId`, `updatedAt` (`report_find`, `track ls area/reports/`) | `track_id`, `updated_at`; wrapped as `{reports: […]}` | — | P, CLI render, T | B3 #2202 |
+| output: `trackId`, `updatedAt` (`report_find`, retired report-list view) | `track_id`, `updated_at`; wrapped as `{reports: […]}` | — | P, CLI render, T | B3 #2202 |
 | error: role refusal -32602 (`require_role`) | -32403 | — | T | B4 #2233 |
 | error: report revision conflict -32001 | -32409 (data unchanged) | — | P, T | B4 #2233 |
 | error: plugin disabled / not running -32002 | -32503 | — | T, `routes/plugins.rs` mapping | B4 #2233 |

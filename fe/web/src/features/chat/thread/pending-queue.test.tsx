@@ -45,6 +45,17 @@ async function pressable(find: () => HTMLButtonElement): Promise<void> {
 }
 
 describe('PendingQueue', () => {
+  it('displays a named Report pill and returns its original bytes for editing', async () => {
+    const text = '@``/a%2Fb/Report%2F%25%7E `x`#/report.md#b_1``';
+    const onEdit = vi.fn<PendingQueueProps['onEdit']>();
+    renderQueue({ entries: [entry({ text })], onEdit });
+    const pill = document.querySelector('[data-nc-sent-mention]');
+    expect(pill?.textContent).toBe('Report/%~ `x`# › b_1');
+    expect(pill?.getAttribute('title')).toBe(text);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+    expect(onEdit.mock.calls[0][0].text).toBe(text);
+  });
+
   it('shows the text of every queued message', () => {
     renderQueue({ entries: [entry(), entry({ entry_id: 'e2', text: 'and the diff' })] });
     expect(screen.getByText('look at the report')).toBeTruthy();

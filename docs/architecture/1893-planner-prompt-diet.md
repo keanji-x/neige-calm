@@ -80,7 +80,7 @@ Verified at 69351f1cd by reading the code, or by `Q` on 2026-09-30.
 | `terminal.md` | 3,000 | L26-30 as a procedure: resolve a Worker terminal by `attempt_id`; open with claim; start Claude; submit + wait; edit a draft; handle a stale observation; release. The switches' semantics stay only in `calm.terminal.*.md` |
 | `gates.md` | 1,800 | L59-60: env allowlist, no neige/MCP, `gate.cwd`, `gate-target-mismatch`, `require_task_gates`/`no_gate_reason`, verification inputs |
 | `report.md` | 3,000 | L109-123 condensed (the channel table), L69-70 links/outline/backlinks, L91 sources, L102 tags, L98 whole-document rewrite |
-| `outputs.md` | 2,500 | L127-147: `runs/`, `plan/<key>/gate.log`, `cards/`, `area/reports/`, `@` mentions |
+| `outputs.md` | 2,500 | L127-147: `runs/`, `plan/<key>/gate.log`, `cards/`, named Report paths, `@` mentions |
 
 **Serving.** Add one branch in `track_file.rs` before `TrackFsView`, beside the `area/` branch (F22).
 - A static table `GUIDES: &[(&str, &str)]` of `include_str!` entries is served for `guide/<name>.md` (cat) and `guide/` (ls).

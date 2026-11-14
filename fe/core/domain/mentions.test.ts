@@ -11,12 +11,12 @@ const CANDIDATES: MentionCandidates = {
     { label: 'infra', track_count: 1, insert: '@`tag:infra`' },
   ],
   tracks: [
-    { label: 'Deploy notes', track_id: 't1', insert: '@`area/reports/Deploy notes.md`' },
+    { label: 'Deploy notes', track_id: 't1', insert: '@`/研发/Deploy notes/report.md`' },
   ],
   blocks: [
     {
       label: 'Rollback', block_id: 'b_1a2b', track_title: 'Deploy notes', track_id: 't1',
-      insert: '@`area/reports/Deploy notes.md#b_1a2b`',
+      insert: '@`/研发/Deploy notes/report.md#b_1a2b`',
     },
   ],
 };
@@ -81,12 +81,12 @@ describe('mentionSuggestionsOf', () => {
       { id: 'tag:@`tag:部署`', kind: 'tag', label: '#部署', detail: '3 tracks', chip: '#部署', insert: '@`tag:部署`' },
       { id: 'tag:@`tag:infra`', kind: 'tag', label: '#infra', detail: '1 track', chip: '#infra', insert: '@`tag:infra`' },
       {
-        id: 'track:@`area/reports/Deploy notes.md`', kind: 'track', label: 'Deploy notes', detail: null,
-        chip: 'Deploy notes', insert: '@`area/reports/Deploy notes.md`',
+        id: 'track:@`/研发/Deploy notes/report.md`', kind: 'track', label: 'Deploy notes', detail: null,
+        chip: 'Deploy notes', insert: '@`/研发/Deploy notes/report.md`',
       },
       {
-        id: 'block:@`area/reports/Deploy notes.md#b_1a2b`', kind: 'block', label: 'Rollback',
-        detail: 'Deploy notes', chip: 'Deploy notes › Rollback', insert: '@`area/reports/Deploy notes.md#b_1a2b`',
+        id: 'block:@`/研发/Deploy notes/report.md#b_1a2b`', kind: 'block', label: 'Rollback',
+        detail: 'Deploy notes', chip: 'Deploy notes › Rollback', insert: '@`/研发/Deploy notes/report.md#b_1a2b`',
       },
     ]);
   });
@@ -175,4 +175,11 @@ describe('sentMentionParts', () => {
       expect(sentMentionParts(text)).toEqual(text === '' ? [] : [{ text, label: null }]);
     }
   });
+});
+
+it('displays canonical server inserts without resolving identity or changing bytes', () => {
+  const report = '@``/研发%2F100%25%7E/%2E notes `x`#~12345678/report.md#b_1``';
+  expect(sentMentionParts(report)).toEqual([{ text: report, label: '. notes `x`#~12345678 › b_1' }]);
+  const empty = '@`/~area1234/~track123/report.md`';
+  expect(sentMentionParts(empty)).toEqual([{ text: empty, label: '~track123' }]);
 });

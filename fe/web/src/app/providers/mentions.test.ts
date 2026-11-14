@@ -28,7 +28,7 @@ it('keeps successful report candidates when the plugin catalog fails', async () 
     return Promise.resolve(request.path === '/api/plugins'
       ? { status: 500, statusText: 'Internal error', body: { error: 'catalog failure' } }
       : { status: 200, statusText: 'OK', body: { tags: [], blocks: [], tracks: [
-        { label: 'Report', track_id: 'report', insert: '@`area/reports/Report.md`' },
+        { label: 'Report', track_id: 'report', insert: '@`/研发/Report/report.md`' },
       ] } });
   } };
   const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');
@@ -65,4 +65,20 @@ it.each(['+development', '＋development'])('filters %s through the plugin catal
   expect(suggestions.map(item => item.kind)).toEqual(['plugin']);
   expect(suggestions[0].insert).toContain('documentation only');
   expect(requests.map(request => [request.method, request.path])).toEqual([['GET', '/api/plugins']]);
+});
+
+it('forwards canonical inserts without fetching their target', async () => {
+  const requests: ApiRequest[] = [];
+  const insert = '@``/a%2Fb%25%7E/%2E notes `x`#~12345678/report.md``';
+  const transport: ApiTransportPort = { send(request) {
+    requests.push(request);
+    return Promise.resolve({ status: 200, statusText: 'OK', body: {
+      tags: [], blocks: [], tracks: [{ label: 'Report', track_id: 't', insert }],
+    } });
+  } };
+  const search = mentionSearchOf(transport, createUnauthorizedChannel({ enqueue: task => task() }), 'area', 'track');
+  const [suggestion] = await search('/Report', new AbortController().signal);
+  expect(suggestion.insert).toBe(insert);
+  expect(requests.map(request => [request.method, request.path]))
+    .toEqual([['GET', '/api/areas/area/mentions?q=Report&track=track']]);
 });

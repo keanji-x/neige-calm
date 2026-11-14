@@ -1963,8 +1963,8 @@ describe('Mobile conversation contours', () => {
 
 it('paints persisted mention pills in a narrow transcript', async () => {
   await page.viewport(414, 896);
-  const text = 'see @`tag:部署` @`area/reports/Deploy notes.md` '
-    + '@`area/reports/Deploy notes.md#b_1a2b`';
+  const text = 'see @`tag:部署` @`/研发/Deploy notes/report.md` '
+    + '@`/研发/Deploy notes/report.md#b_1a2b`';
   render(<div style={{ width: 320 }}><ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
     conversation={railConversation()}
     turns={[{ id: 'mention-turn', author: 'you', text, atMs: 1 }]} /></div>);
@@ -1972,7 +1972,7 @@ it('paints persisted mention pills in a narrow transcript', async () => {
   await expect.element(page.getByText('Deploy notes', { exact: true })).toBeVisible();
   await expect.element(page.getByText('Deploy notes › b_1a2b', { exact: true })).toBeVisible();
   const message = document.querySelector<HTMLElement>('[data-nc-turn="you"]')!;
-  expect(message.textContent).not.toContain('area/reports/');
+  expect(message.textContent).not.toContain('/report.md');
   expect(message.scrollWidth).toBeLessThanOrEqual(message.clientWidth);
   await page.screenshot({ path: '../../../../../test-results/planner-sent-mentions.png' });
   await page.viewport(1280, 720);
@@ -1986,7 +1986,7 @@ it('keeps long mention pills inside a narrow transcript', async () => {
   render(<div style={{ width: 320 }}><ChatThread hasPendingMessages={false} canContinue={false} cards={{}} stalled={false}
     conversation={railConversation()}
     turns={[{ id: 'long-mention', author: 'you',
-      text: '@`area/reports/' + name + '.md` @`tag:' + tag + '`', atMs: 1 }]} /></div>);
+      text: '@`/研发/' + name + '/report.md` @`tag:' + tag + '`', atMs: 1 }]} /></div>);
   await expect.element(page.getByText(name, { exact: true })).toBeVisible();
   const message = document.querySelector<HTMLElement>('[data-nc-turn="you"]')!;
   expect(message.scrollWidth).toBeLessThanOrEqual(message.clientWidth);

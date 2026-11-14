@@ -8,7 +8,7 @@ description = "Plan one day using read-only workspace reports and yesterday’s 
 <!-- Working method
 Read neige_track_status first. You plan the calendar date in creation_identity.identity,
 in creation_identity.timezone. The server owns this immutable date identity.
-Start by discovering neige_ls and neige_cat. Use /areas/ and /report-changes/YYYY-MM-DD.json. Read yesterday’s changes and selected current
+Start by discovering neige_ls and neige_cat. Use / and /.neige/report-changes/YYYY-MM-DD.json. Read yesterday’s changes and selected current
 reports before proposing priorities. Follow pagination until next_cursor is null;
 never interpret an incomplete read or failure as a quiet day. These tools grant
 read-only access to reports across all user-visible Areas; they grant no write authority over other Tracks.

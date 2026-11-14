@@ -1,24 +1,6 @@
-//! Track title <-> `area/reports/` file name (#1838 S2). A file name is
-//! `escape(title)` + optional `~<suffix>` + `.md`:
-//!
-//! * `escape` percent-encodes (`%XX`, uppercase hex, one per UTF-8 byte) exactly `%`, `/`, `~`, `\`,
-//!   every control character, and a `.` that begins the title, so no name is `.`/`..`/hidden or
-//!   holds a path separator. Everything else (CJK, spaces, other punctuation) stays literal.
-//! * `~` in a title is always escaped, so a literal `~` only ever starts the ID suffix: an escaped
-//!   title can never be mistaken for a generated suffix, and the last `~` splits the two.
-//! * Titles shared by 2+ tracks in the area list as `<name>~<suffix>.md` for EVERY such track; the
-//!   suffix is the shortest prefix of the track ID, at least [`SUFFIX_MIN_CHARS`] long, that no other
-//!   track of that group shares. An empty title always carries its suffix (`~<suffix>.md`): the bare
-//!   name `.md` would be hidden, so it is never listed and never resolves.
-//! * Parsing accepts only what `escape` produces: a malformed or non-canonical escape (`%2f`, `%41`,
-//!   an unescaped `~` in the name, ...) is refused rather than guessed.
-//!
-//! The name is a view of the title, not an identity: a rename changes it and leaves no alias.
-
+//! Canonical Area and Track name segments; names are views, never identities.
 use std::collections::HashMap;
 
-/// The file extension every report name carries.
-pub const EXTENSION: &str = ".md";
 /// Shortest generated ID suffix.
 pub const SUFFIX_MIN_CHARS: usize = 8;
 
@@ -26,7 +8,7 @@ fn must_escape(index: usize, c: char) -> bool {
     matches!(c, '%' | '/' | '~' | '\\') || c.is_control() || (index == 0 && c == '.')
 }
 
-/// The title as it appears in a file name; see the module doc.
+/// The title as it appears in a name segment; see the module doc.
 pub fn escape(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     for (index, c) in title.chars().enumerate() {
@@ -74,7 +56,7 @@ pub fn unescape(name: &str) -> Result<String, String> {
     Ok(title)
 }
 
-/// A report file name taken apart.
+/// A canonical name segment taken apart.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ParsedName {
     pub title: String,
@@ -82,11 +64,9 @@ pub struct ParsedName {
     pub suffix: Option<String>,
 }
 
-/// Parse one file name (no directory part) of `area/reports/`.
+/// Parse one Area or Track segment; resolution also checks its canonical sibling suffix.
 pub fn parse(file: &str) -> Result<ParsedName, String> {
-    let stem = file
-        .strip_suffix(EXTENSION)
-        .ok_or_else(|| format!("`{file}` is not a report name: report names end in `.md`"))?;
+    let stem = file;
     let (name, suffix) = match stem.rsplit_once('~') {
         Some((name, suffix)) => (name, Some(suffix)),
         None => (stem, None),
@@ -104,7 +84,7 @@ pub fn parse(file: &str) -> Result<ParsedName, String> {
     let title = unescape(name)?;
     if title.is_empty() && suffix.is_none() {
         return Err(format!(
-            "`{file}` is not a report name: an untitled report is listed as `~<id>.md`"
+            "`{file}` is not a name: an untitled name is listed as `~<id>`"
         ));
     }
     Ok(ParsedName {
@@ -113,9 +93,9 @@ pub fn parse(file: &str) -> Result<ParsedName, String> {
     })
 }
 
-/// The listed file name of each `(title, track_id)`, in the same order. Suffixes are computed over
-/// exactly this set, so pass every report of the area, never a filtered subset.
-pub fn file_names(reports: &[(&str, &str)]) -> Vec<String> {
+/// The listed segment of each `(title, track_id)`, in the same order. Suffixes are computed over
+/// exactly this set, so pass every sibling identity, never a filtered subset.
+pub fn segments(reports: &[(&str, &str)]) -> Vec<String> {
     let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
     for (title, track_id) in reports {
         groups.entry(title).or_default().push(track_id);
@@ -129,7 +109,6 @@ pub fn file_names(reports: &[(&str, &str)]) -> Vec<String> {
                 name.push('~');
                 name.push_str(unique_prefix(track_id, group));
             }
-            name.push_str(EXTENSION);
             name
         })
         .collect()

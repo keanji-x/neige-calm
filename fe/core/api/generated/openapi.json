@@ -16013,7 +16013,7 @@
       },
       "BlockMention": {
         "type": "object",
-        "description": "One block of a report of the area; `insert` is ``@`area/reports/<name>.md#<block_id>` ``.",
+        "description": "One block of a report of the area; `insert` is ``@`/AreaName/TrackName/report.md#<block_id>` ``.",
         "required": [
           "label",
           "block_id",
@@ -16030,7 +16030,7 @@
           },
           "label": {
             "type": "string",
-            "description": "The block's heading as `neige_area_ls` lists it; a block with no heading is not offered."
+            "description": "The block's heading in the Report outline; a block with no heading is not offered."
           },
           "track_id": {
             "$ref": "#/components/schemas/TrackId"
@@ -23695,7 +23695,7 @@
       },
       "TrackMention": {
         "type": "object",
-        "description": "A report of the area; `insert` is ``@`area/reports/<name>.md` ``, the path `neige track cat` reads.",
+        "description": "A report of the area; `insert` is ``@`/AreaName/TrackName/report.md` ``, the path `neige cat` reads.",
         "required": [
           "label",
           "track_id",

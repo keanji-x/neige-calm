@@ -485,7 +485,7 @@ async fn reclaim_recovery_other_track_runs_while_first_track_is_blocked() {
         &h.task.track_id,
     )
     .await;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             scheduler.sweep_all().await;
             if h.db.task_get(&follower.id).await.unwrap().unwrap().status
@@ -496,8 +496,97 @@ async fn reclaim_recovery_other_track_runs_while_first_track_is_blocked() {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     })
-    .await
-    .expect("the second track completes while the first fence stays held");
+    .await;
+    if completed.is_err() {
+        // Failure-only samples, not an atomic snapshot. Never drive or release recovery here.
+        let diagnostics = tokio::time::timeout(Duration::from_secs(1), async {
+            for (label, id) in [("A", &h.task.id), ("B", &follower.id)] {
+                let status =
+                    h.db.task_get(id)
+                        .await
+                        .map(|task| task.map(|task| task.status));
+                eprintln!(
+                    "reclaim timeout: {label} task_status={:?}",
+                    status.map_err(|_| "read_error")
+                );
+            }
+            let operation = state
+                .operation_runtime
+                .find_by_kind_and_idempotency("terminal-worker", &follower.id)
+                .await;
+            let op = match operation {
+                Ok(Some(op)) => op,
+                Ok(None) => {
+                    eprintln!("reclaim timeout: B operation=absent");
+                    return;
+                }
+                Err(_) => {
+                    eprintln!("reclaim timeout: B operation=read_error");
+                    return;
+                }
+            };
+            let blocker = crate::operation::pending_blocker(&op).map(|blocker| {
+                blocker.map(
+                    |PendingBlocker::V1 {
+                         class, retry_owner, ..
+                     }| (class, retry_owner),
+                )
+            });
+            eprintln!(
+                "reclaim timeout: B operation=present phase={:?} blocker={:?} \
+                 lease_owner_present={} lease_until_ms={:?}",
+                op.phase.tag(),
+                blocker.map_err(|_| "decode_error"),
+                op.lease_owner.is_some(),
+                op.lease_until_ms
+            );
+            // Only existence is needed: this fixture writes `ran` after the go token.
+            eprintln!(
+                "reclaim timeout: B ran_present={:?}",
+                tokio::fs::try_exists(other_root.join("ran"))
+                    .await
+                    .map_err(|_| "read_error")
+            );
+            if !op
+                .tx_output
+                .as_ref()
+                .is_some_and(|output| output.data.get(KEY).is_some())
+            {
+                eprintln!("reclaim timeout: B pipe_record=absent");
+                return;
+            }
+            let record = match pipe::record(CONFIG, &op) {
+                Ok(record) => record,
+                Err(_) => {
+                    eprintln!("reclaim timeout: B pipe_record=decode_error");
+                    return;
+                }
+            };
+            eprintln!(
+                "reclaim timeout: B release={:?} decision={:?}",
+                record.release, record.decision
+            );
+            match calm_truth::db::sqlite::workspace_execution::load(
+                h.db.pool(),
+                record.execution_id.as_str(),
+            )
+            .await
+            {
+                Ok(Some(row)) => eprintln!(
+                    "reclaim timeout: B execution=present desired={:?} settlement_present={}",
+                    row.desired,
+                    row.settlement_json.is_some()
+                ),
+                Ok(None) => eprintln!("reclaim timeout: B execution=absent"),
+                Err(_) => eprintln!("reclaim timeout: B execution=read_error"),
+            }
+        })
+        .await;
+        if diagnostics.is_err() {
+            eprintln!("reclaim timeout: diagnostics=timed_out (remaining reads unavailable)");
+        }
+    }
+    completed.expect("the second track completes while the first fence stays held");
     assert_eq!(h.status().await, crate::model::TaskStatus::Dispatched);
     assert!(!h.root.path().join("ran").exists());
     assert_eq!(
