@@ -441,12 +441,33 @@ describe('Track mobile presentation', () => {
     await page.getByRole('button', { name: 'Back to Areas' }).click();
     await page.getByRole('button', { name: 'New area', exact: true }).click();
     await page.getByRole('dialog', { name: 'New area', exact: true }).findElement();
+    expect(page.getByRole('dialog').elements()).toHaveLength(1);
+    expect(getComputedStyle(document.getElementById('mobile-workspace-navigation')!).visibility).toBe('hidden');
     await userEvent.keyboard('{Escape}');
     expect(page.getByRole('dialog', { name: 'New area', exact: true }).query()).toBeNull();
-    await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
+    const navigation = await page.getByRole('dialog', { name: 'Tracks and settings' }).findElement();
+    await expect.poll(() => navigation.contains(document.activeElement)).toBe(true);
     await userEvent.keyboard('{Escape}');
     await expect.poll(() => page.getByRole('dialog', { name: 'Tracks and settings' }).query()).toBeNull();
   });
+
+  it('creates a new Area from compact navigation without stacked dialogs and lands on its track creation page', async () => {
+    await page.viewport(390, 844);
+    const router = setup('/track/w1');
+    await openTrackNavigation();
+    await page.getByRole('button', { name: 'Back to Areas' }).click();
+    await page.getByRole('button', { name: 'New area', exact: true }).click();
+    await page.getByRole('dialog', { name: 'New area', exact: true }).findElement();
+    expect(page.getByRole('dialog').elements()).toHaveLength(1);
+    expect(getComputedStyle(document.getElementById('mobile-workspace-navigation')!).visibility).toBe('hidden');
+    await page.getByRole('textbox', { name: /^Name/ }).fill('Research');
+    await page.getByRole('button', { name: 'Create area', exact: true }).click();
+    await expect.poll(() => router.state.location.pathname).toBe('/area/c3/new');
+    expect(page.getByRole('dialog', { name: 'New area', exact: true }).query()).toBeNull();
+    expect(page.getByRole('dialog', { name: 'Tracks and settings' }).query()).toBeNull();
+    await page.getByRole('button', { name: 'Switch area, Research', exact: true }).findElement();
+  });
+
 
   it('keeps workspace creation and history settings independently usable across their full touch targets', async () => {
     await page.viewport(390, 844);

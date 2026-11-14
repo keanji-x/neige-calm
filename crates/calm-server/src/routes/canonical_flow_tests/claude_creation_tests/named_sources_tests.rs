@@ -102,12 +102,13 @@ async fn canonical_claude_named_unconfirmed_launch_preserves_pending_context_wit
     u7_nondelivery::release_twice(&fixture, &app, &cookie, &track, &body, None).await;
     let before = fixture.carrier(&track).await.2.canonical_inputs;
     let receipt = fixture.receipt(body["area_id"].as_str().unwrap()).await;
-    let spawns = read(&fixture, "spawns");
-    assert_eq!(
-        spawns.lines().count(),
-        1,
-        "the first session launch is unconfirmed"
-    );
+    // Admission retains unconfirmed launch evidence before the native CLI can run.
+    let retained_launch = launch(&fixture, &worker).await.unwrap();
+    assert_eq!(retained_launch.worker_session_id, worker);
+    assert_eq!(retained_launch.card_id, card);
+    assert_eq!(retained_launch.track_id, track);
+    let execution_ids = executions(&fixture, &track).await;
+    assert_eq!(execution_ids, vec![retained_launch.execution_id.clone()]);
     assert!(read(&fixture, "stdin").is_empty());
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
@@ -135,7 +136,8 @@ async fn canonical_claude_named_unconfirmed_launch_preserves_pending_context_wit
         fixture.receipt(body["area_id"].as_str().unwrap()).await,
         receipt
     );
-    assert_eq!(read(&fixture, "spawns"), spawns);
+    assert_eq!(launch(&fixture, &worker).await, Some(retained_launch));
+    assert_eq!(executions(&fixture, &track).await, execution_ids);
     assert!(read(&fixture, "stdin").is_empty());
     state.harness.shutdown_and_remove(&worker).await.unwrap();
     fixture.shutdown_process(&state).await;
@@ -148,6 +150,27 @@ async fn plan(fixture: &Fixture, card: &str) -> (String, String) {
     )
     .bind(card)
     .fetch_one(fixture.repo.pool())
+    .await
+    .unwrap()
+}
+
+async fn launch(
+    fixture: &Fixture,
+    worker: &str,
+) -> Option<crate::db::sqlite::claude_session_launch::ClaudeSessionLaunch> {
+    let mut conn = fixture.repo.pool().acquire().await.unwrap();
+    crate::db::sqlite::claude_session_launch::get(&mut conn, worker)
+        .await
+        .unwrap()
+}
+
+async fn executions(fixture: &Fixture, track: &str) -> Vec<String> {
+    // Include retired executions: a replacement cannot disappear from this history.
+    sqlx::query_scalar(
+        "SELECT execution_id FROM workspace_executions WHERE track_id=?1 ORDER BY execution_id",
+    )
+    .bind(track)
+    .fetch_all(fixture.repo.pool())
     .await
     .unwrap()
 }

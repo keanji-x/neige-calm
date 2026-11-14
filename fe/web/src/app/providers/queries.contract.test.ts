@@ -407,6 +407,79 @@ describe('delete mutation wiring', () => {
     expect(settled).toBe(true);
   });
 
+  it('resolves Area creation before its background list refresh settles', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.areas(), [toArea(areaSchema.parse(userArea))]);
+    let releaseRefetch!: () => void;
+    const refetchHeld = new Promise<void>((resolve) => { releaseRefetch = resolve; });
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockReturnValue(refetchHeld);
+    const createdWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      default_template_id: null,
+      default_cwd: null,
+    };
+    const transport: ApiTransportPort = {
+      send: (request) => Promise.resolve(ok(
+        request.path === '/api/version' ? { areaCreateIdempotency: true } : createdWire,
+      )),
+    };
+    const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+      wrapper: mutationWrapper(client),
+    });
+
+    const created = await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'));
+    expect(created).toMatchObject({ id: 'c-new', name: 'Reading' });
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.areas() }));
+    releaseRefetch();
+  });
+
+  it('aborts an in-flight initial Area list read when Area creation succeeds so the replacement read includes the created Area', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const createdWire = {
+      ...userArea,
+      id: 'c-new',
+      name: 'Reading',
+      sort: userArea.sort + 1,
+      default_template_id: null,
+      default_cwd: null,
+    };
+    let releaseInitial!: () => void;
+    const initialHeld = new Promise<void>((resolve) => { releaseInitial = resolve; });
+    let initialRead = true;
+    const transport: ApiTransportPort = {
+      send: async (request) => {
+        if (request.path === '/api/version') return ok({ areaCreateIdempotency: true });
+        if (request.path === '/api/areas' && request.method === 'POST') return ok(createdWire);
+        if (request.path === '/api/areas' && request.method === 'GET' && initialRead) {
+          initialRead = false;
+          await initialHeld;
+          return ok([userArea]);
+        }
+        return ok([userArea, createdWire]);
+      },
+    };
+    const observer = new QueryObserver(client, areaListQueryOptions(transport, unauthorized));
+    const unsubscribe = observer.subscribe(() => undefined);
+    try {
+      const { result } = renderHook(() => useAreaMutations(transport, unauthorized), {
+        wrapper: mutationWrapper(client),
+      });
+
+      const created = await act(() => result.current.create({ name: 'Reading', color: '#5B8DEF' }, 'reading-key'));
+      expect(created).toMatchObject({ id: 'c-new', name: 'Reading' });
+      releaseInitial();
+      await waitFor(() => expect(client.getQueryData<ReturnType<typeof toArea>[]>(queryKeys.areas())?.map((area) => area.id))
+        .toEqual(['c1', 'c-new']));
+    } finally {
+      releaseInitial();
+      unsubscribe();
+    }
+  });
+
   it('does not let a delayed Area PATCH response overwrite a newer event row', async () => {
     const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
     const original = toArea(areaSchema.parse(userArea));
@@ -515,6 +588,7 @@ describe('delete mutation wiring', () => {
     releaseResponse();
     await act(async () => { await pending; });
 
+    await expect(pending).resolves.toEqual(newerEvent);
     expect(client.getQueryData(queryKeys.areas())).toEqual([newerEvent]);
   });
 

@@ -12,7 +12,7 @@ import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 // route's outlet. The shell owns the workspace read and the area/track mutations;
 // `Sidebar` stays presentational.
 
-import { Outlet } from '@tanstack/react-router';
+import { Outlet, useRouter, type RouterHistory } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef, useCallback, useLayoutEffect, useMemo, type ReactNode } from 'react';
 
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
@@ -39,6 +39,7 @@ import {
 } from '../providers/queries.ts';
 import { useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useNewTrackBack, useRouteCardId, useRouteFilePath, useTrackPanelNavigation } from '../router/navigation.ts';
+import { useNewTrackDraftArea, usePrepareNewTrack } from '../router/new-track-drafts.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileWorkspaceHeader } from './mobile-header.tsx';
 import { MobileTracks } from './mobile-tracks.tsx';
@@ -149,8 +150,10 @@ export function useOpenMobileSection(): OpenMobileSection {
 export function AppShell({
   transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
 }: AppShellProps) {
+  const router = useRouter();
   const workspace = useWorkspace(transport, unauthorized);
   const areaMutations = useAreaMutations(transport, unauthorized);
+  const prepareNewTrack = usePrepareNewTrack();
   const trackMutations = useTrackMutations(transport, unauthorized);
   const pinFeedback = useOperationFeedback();
   const templates = useTrackTemplates(transport, unauthorized);
@@ -188,6 +191,7 @@ export function AppShell({
   const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
+  const areaEditorOpen = areaEditorTarget !== null;
   const [historyOpen, setHistoryOpen] = useState(false);
   const conversationScope = useMobileConversationScope();
   const scopeOwner = conversationScope?.owner ?? null;
@@ -214,18 +218,20 @@ export function AppShell({
   >(null);
   const routeTrackId = routeParamFromPath(currentPath, '/track/');
   const routeAreaId = routeParamFromPath(currentPath, '/area/');
+  const newTrackArea = useNewTrackDraftArea(newTrackBack === null ? undefined : routeAreaId);
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
-  const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
+  const activeArea = areas.find((area) => area.id === activeAreaId) ?? newTrackArea ?? areas[0];
   const mobileNavigationFrameRef = useRef<HTMLDivElement | null>(null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const finishMobileClose = useCallback(() => setMobileSection(null), []);
   const { close: closeMobileSection, cancel: cancelMobileExit, interactive: workspaceInteractive } = useMobileNavigationPresence(mobileNavigationRef, mobileNavigationFrameRef, finishMobileClose, narrowRail && mobileNavOpen);
+  const mobileDialogActive = workspaceInteractive && !areaEditorOpen;
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   const mobileFocusScope = useRef<Readonly<{ path: string; host: HTMLElement | null; intent: typeof mobileReturnIntent }> | null>(null);
   const dismissalLayer = <LayerDismissal {...{
-    isActive: workspaceInteractive,
+    isActive: mobileDialogActive,
     onDismiss: closeMobileSection,
     getContainer: () => mobileNavigationRef.current,
   }} />;
@@ -297,7 +303,8 @@ export function AppShell({
   /* A navigation, and nothing else; it closes any open mobile sheet, which is an
        overlay on the surface being left. */
   const requestNewTrack = (areaId: string) => {
-    closeMobileSection();
+    if (areaEditorOpen) setMobileSection(null);
+    else closeMobileSection();
     go({ name: 'new-track', areaId });
   };
 
@@ -338,6 +345,7 @@ export function AppShell({
   const submitAreaEditor = (values: AreaEditorValues) => {
     const target = areaEditorTarget;
     if (target === null || areaEditorPending) return;
+    const originEntryKey = (router.history as RouterHistory).location.state.__TSR_key;
     const patch: AreaEditorPatch | null = target.kind === 'create' ? null : {
       ...(values.name === target.area.name ? {} : { name: values.name }),
       ...(values.defaultTemplateId === target.area.defaultTemplateId
@@ -368,9 +376,15 @@ export function AppShell({
         ...(patch?.defaultCwd === undefined ? {} : { default_cwd: patch.defaultCwd }),
       });
     }
-    void write.then(() => {
+    void write.then((saved) => {
       if (creation !== null) areaIntent.release(creation);
       setAreaEditorTarget(null);
+      // A successful write must not take navigation back from a newer history entry.
+      if (target.kind === 'create' && originEntryKey !== undefined
+        && (router.history as RouterHistory).location.state.__TSR_key === originEntryKey) {
+        prepareNewTrack(saved);
+        requestNewTrack(saved.id);
+      }
     }).catch((failure: unknown) => {
       if (target.kind === 'edit') { setAreaEditorError(writeFailureText(AREA_PATCH_FAILURES, AREA_PATCH_TEXT)(failure)); return; }
       const kind = classifyFailure(failure instanceof ApiError ? failure.failure : null, AREA_CREATE_FAILURES);
@@ -440,13 +454,13 @@ export function AppShell({
       <div
         ref={mobileNavigationRef}
         id="mobile-workspace-navigation"
-        className={`${styles.navigation} ${mobileNavOpen ? styles.navigationOpen : ''}`}
-        role={workspaceInteractive ? 'dialog' : undefined}
-        aria-modal={workspaceInteractive ? true : undefined}
+        className={`${styles.navigation} ${mobileNavOpen && !areaEditorOpen ? styles.navigationOpen : ''}`}
+        role={mobileDialogActive ? 'dialog' : undefined}
+        aria-modal={mobileDialogActive ? true : undefined}
         aria-label={narrowRail ? mobileNavigationLabel : undefined}
-        inert={narrowRail && !workspaceInteractive}
-        aria-hidden={narrowRail && !workspaceInteractive ? true : undefined}
-        data-nc-escape-layer={workspaceInteractive ? '' : undefined}
+        inert={narrowRail && !mobileDialogActive}
+        aria-hidden={narrowRail && !mobileDialogActive ? true : undefined}
+        data-nc-escape-layer={mobileDialogActive ? '' : undefined}
         tabIndex={narrowRail ? -1 : undefined}
       >
         <div className={styles.navigationPanel}>
@@ -541,7 +555,7 @@ export function AppShell({
         </div>
       </div>
       </div>
-      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={workspaceInteractive} aria-hidden={workspaceInteractive ? true : undefined}>
+      <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={mobileDialogActive} aria-hidden={mobileDialogActive ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>

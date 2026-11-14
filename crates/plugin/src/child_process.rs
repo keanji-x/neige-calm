@@ -320,11 +320,12 @@ mod tests {
         let (master, slave) = allocated
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap();
-        let mut sibling = tokio::process::Command::new("/usr/bin/python3");
+        let mut sibling = tokio::process::Command::new("/bin/sh");
         sibling
             .args([
                 "-c",
-                "import os,sys; print(sum(os.isatty(int(fd)) for fd in sys.argv[1:]))",
+                "! test -t \"$1\" && ! test -t \"$2\"",
+                "terminal-fd-probe",
             ])
             .arg(master.to_string())
             .arg(slave.to_string())
@@ -335,11 +336,9 @@ mod tests {
         release.send(()).unwrap();
         owner.join().unwrap();
         let output = output.unwrap().unwrap();
-        assert!(output.status.success());
-        assert_eq!(
-            std::str::from_utf8(&output.stdout).unwrap().trim(),
-            "0",
-            "an unrelated exec must never inherit a query's terminal"
+        assert!(
+            output.status.success(),
+            "an unrelated exec must never inherit a query's terminal: {output:?}"
         );
     }
 

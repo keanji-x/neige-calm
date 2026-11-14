@@ -65,6 +65,8 @@ export type NewTrackFormProps = Readonly<{
   mentionTrigger?: ChatComposerTrigger;
   submitting: boolean;
   error: string | null;
+  /** Caller-owned read feedback; the draft remains editable while a read is pending. */
+  readNotice?: ReactNode;
   /** In-memory route draft, including unfinished template input. */
   initialDraft?: NewTrackFormState;
   onDraftChange?: (draft: NewTrackFormState) => void;
@@ -122,7 +124,7 @@ function hasInputSchema(template: TrackTemplate | undefined): boolean {
 }
 
 export function NewTrackForm({
-  modelControls, templatePluginGuides, submitting, error, templates, templatesLoaded, templatesError = null,
+  modelControls, templatePluginGuides, submitting, error, readNotice, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, loadTemplate, recipes = [], onManageRecipes, listDirectory, onSubmit,
   onOpenPluginSettings, errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false, mentionTrigger,
 }: NewTrackFormProps) {
@@ -334,6 +336,7 @@ export function NewTrackForm({
           />
         </div>
 
+        {readNotice}
         {error !== null && (
           <Banner
             status="error"

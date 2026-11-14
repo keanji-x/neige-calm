@@ -14,6 +14,7 @@ import { AreaCreatePreflightError } from '../providers/queries.ts';
 import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { ReadReceiptsProvider } from '../providers/read-receipts.tsx';
+import { NewTrackDraftProvider } from '../router/new-track-drafts.tsx';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
 
@@ -33,14 +34,19 @@ const harness = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  go: vi.fn(),
 }));
 
-vi.mock('@tanstack/react-router', () => ({
-  Outlet: () => <div>route</div>,
-  useNavigate: () => vi.fn(),
-  useRouter: () => ({}),
-  useRouterState: () => undefined,
-}));
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const { createMemoryHistory } = await importOriginal<typeof import('@tanstack/react-router')>();
+  const history = createMemoryHistory({ initialEntries: ['/'] });
+  return {
+    Outlet: () => <div>route</div>,
+    useNavigate: () => vi.fn(),
+    useRouter: () => ({ history }),
+    useRouterState: () => undefined,
+  };
+});
 
 vi.mock('../providers/queries.ts', async (importOriginal) => {
   const original = await importOriginal<typeof import('../providers/queries.ts')>();
@@ -84,7 +90,7 @@ vi.mock('../providers/queries.ts', async (importOriginal) => {
 vi.mock('../router/navigation.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../router/navigation.ts')>()),
   useCurrentPath: () => '/',
-  useGo: () => vi.fn(),
+  useGo: () => harness.go,
   useNewTrackBack: () => null,
   useTrackPanelNavigation: () => ({ closePanel: vi.fn() }),
   routeParamFromPath: () => undefined,
@@ -115,13 +121,13 @@ function renderShell(compact = false, transport: ApiTransportPort = { send: vi.f
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
       <ThemeProvider storage={memoryStorage()}><ReadReceiptsProvider transport={createReadReceiptsKernel().transport} unauthorized={unauthorized}>
-        <AppShell
+        <NewTrackDraftProvider><AppShell
           transport={transport}
           unauthorized={unauthorized}
           onOpenSettings={vi.fn()}
           onOpenPlugins={vi.fn()}
           onSignOut={vi.fn()}
-        />
+        /></NewTrackDraftProvider>
       </ReadReceiptsProvider></ThemeProvider>
     </QueryClientProvider>,
   );
@@ -152,6 +158,7 @@ beforeEach(() => {
   harness.create.mockReset().mockResolvedValue(harness.area);
   harness.update.mockReset().mockResolvedValue(harness.area);
   harness.remove.mockReset().mockResolvedValue(undefined);
+  harness.go.mockReset();
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
     addEventListener: vi.fn(),
@@ -260,6 +267,7 @@ describe('AppShell Area editor flow', () => {
     });
     expect(AREA_PALETTE).toContain(body.color);
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+    expect(harness.go).toHaveBeenCalledWith({ name: 'new-track', areaId: 'c1' });
   });
 
   it('retries a lost create confirmation with the same identity and payload after reopening', async () => {
@@ -375,6 +383,8 @@ describe('AppShell Area editor flow', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
     await waitFor(() => expect(harness.update).toHaveBeenCalledWith('c1', { name: 'Studio' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Edit Work' })).toBeNull());
+    expect(harness.go).not.toHaveBeenCalled();
   });
 
   it('sends explicit nulls when one Track default is cleared at the Area', async () => {
@@ -437,5 +447,24 @@ describe('AppShell Area editor flow', () => {
     await userEvent.click(within(navigation).getByRole('button', { name: 'Area actions' }));
     await userEvent.click(within(navigation).getByRole('menuitem', { name: 'Edit area Work' }));
     expect(screen.getByRole('dialog', { name: 'Edit Work' })).toBeTruthy();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  });
+
+  it('suspends compact mobile navigation while the Area editor is open and navigates to the created Area', async () => {
+    harness.create.mockResolvedValueOnce({ ...harness.area, id: 'c-created', name: 'Launch' });
+    renderShell(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
+    const navigation = screen.getByRole('dialog', { name: 'Tracks and settings' });
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+
+    await userEvent.click(within(navigation).getByRole('button', { name: 'New area' }));
+    expect(screen.getByRole('dialog', { name: 'New area' })).toBeTruthy();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(navigation.getAttribute('aria-hidden')).toBe('true');
+
+    await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Launch');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(harness.go).toHaveBeenCalledWith({ name: 'new-track', areaId: 'c-created' });
   });
 });
