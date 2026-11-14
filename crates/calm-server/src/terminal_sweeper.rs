@@ -394,19 +394,22 @@ async fn in_settled_worker_set(
 /// unknown launch request that may still reach the supervisor.
 async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
     let _operation_guard = state.operation_runtime.lock_for_track_delete().await;
-    crate::operation::terminal_disposal::require_safe(
-        state.repo.as_ref(),
-        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
-        state.daemon.proc_supervisor_sock.as_deref(),
-    )
-    .await?;
-    crate::execution_quiesce::quiesce(
+    let card = state.repo.card_get(term.card_id.as_str()).await?;
+    let _track_guard = match card.as_ref() {
+        Some(card) => Some(
+            crate::per_card_lock::lock_key(state.track_delete_locks(), card.track_id.as_str())
+                .await,
+        ),
+        None => None,
+    };
+    crate::operation::terminal_disposal::quiesce_terminal(
         state.repo.as_ref(),
         state.execution.as_deref(),
-        crate::operation::terminal_disposal::Scope::Terminal(term.id.clone()),
+        state.terminal_renderer.as_ref(),
+        state.daemon.proc_supervisor_sock.as_deref(),
+        term,
     )
     .await?;
-    try_reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term).await?;
 
     // Audit-log + row delete in one transaction. If the card has already been deleted (the common
     // case), fall back to `EventScope::System`; a missing ancestor never refuses the reap.
@@ -464,6 +467,9 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
         },
     )
     .await?;
+    state
+        .terminal_renderer
+        .finish_legacy_deletion(&term.id, term.card_id.as_str());
     crate::execution_quiesce::drive(
         state.execution.as_deref(),
         retire.into_iter().filter_map(|deleted| deleted.retire),
@@ -546,109 +552,6 @@ pub async fn try_reap_terminal_artifacts_with_renderer(
         );
     }
     Ok(())
-}
-
-/// Preserve unresolved task launch ownership before the existing terminal
-/// deletion checks. A missing PID or negative probe cannot discharge a pending
-/// EnsureProc. Observed leader exit does not prove all descendants stopped.
-pub async fn quiesce_terminal_artifacts_for_deletion(
-    renderer: Option<&TerminalRendererRegistry>,
-    supervisor_sock: Option<&std::path::Path>,
-    term: &Terminal,
-) -> crate::error::Result<()> {
-    if let Some(renderer) = renderer
-        && renderer.is_typed(term).await?
-    {
-        // Quiescence is pre-commit: rollback must retain the renderer and its output reader.
-        return Ok(());
-    }
-    // A renderer entry can stop the child by its supervisor-owned proc ID. The legacy row's
-    // numeric PID only permits passive observation.
-    let renderer_outcome = match renderer {
-        Some(registry) => {
-            registry.require_disposal_safe(&term.id).await?;
-            registry.drop_entry_for_deletion(&term.id).await
-        }
-        None => RendererDropOutcome::Missing,
-    };
-    if renderer_outcome == RendererDropOutcome::ExitPersisted {
-        return Ok(());
-    }
-    if let Some(pid) = term.pid {
-        match wait_for_pid_exit_passively(pid, Duration::from_secs(2)).await {
-            PassivePidExit::Exited | PassivePidExit::InvalidPid => return Ok(()),
-            verdict @ (PassivePidExit::StillAlive | PassivePidExit::Unsupported) => tracing::warn!(
-                terminal_id = %term.id, pid, ?verdict, ?renderer_outcome,
-                "could not verify legacy terminal exit before deletion"
-            ),
-        }
-    } else if let Some(supervisor_sock) = supervisor_sock {
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            crate::probe_supervisor_for_terminal_at(Some(supervisor_sock), &term.id),
-        )
-        .await
-        {
-            Ok(Ok(false)) => return Ok(()),
-            Ok(Ok(true)) => {
-                return Err(crate::error::CalmError::Conflict(
-                    "Deletion blocked because a terminal is still running.".into(),
-                ));
-            }
-            Ok(Err(error)) => tracing::warn!(
-                terminal_id = %term.id, %error, "legacy terminal supervisor probe failed"
-            ),
-            Err(_) => tracing::warn!(
-                terminal_id = %term.id, "legacy terminal supervisor probe timed out"
-            ),
-        }
-    } else if renderer_outcome != RendererDropOutcome::Unverified {
-        return Ok(());
-    }
-    Err(crate::error::CalmError::Conflict(
-        "Deletion blocked because the server could not confirm that an old terminal has exited."
-            .into(),
-    ))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PassivePidExit {
-    Exited,
-    InvalidPid,
-    StillAlive,
-    Unsupported,
-}
-
-#[cfg(unix)]
-async fn wait_for_pid_exit_passively(pid: i64, timeout: Duration) -> PassivePidExit {
-    use nix::errno::Errno;
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-    use tokio::time::Instant;
-
-    let Ok(raw) = valid_raw_pid(pid) else {
-        return PassivePidExit::InvalidPid;
-    };
-    let pid = Pid::from_raw(raw);
-    let deadline = Instant::now() + timeout;
-    loop {
-        match kill(pid, None) {
-            Ok(()) if pid_has_finished_shutdown(raw) => return PassivePidExit::Exited,
-            Ok(()) => {}
-            Err(Errno::ESRCH) => return PassivePidExit::Exited,
-            Err(_) => return PassivePidExit::Unsupported,
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return PassivePidExit::StillAlive;
-        }
-        tokio::time::sleep(std::cmp::min(Duration::from_millis(50), deadline - now)).await;
-    }
-}
-
-#[cfg(not(unix))]
-async fn wait_for_pid_exit_passively(_pid: i64, _timeout: Duration) -> PassivePidExit {
-    PassivePidExit::Unsupported
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

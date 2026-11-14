@@ -109,13 +109,17 @@ pub async fn wire(
     mcp: Arc<McpServer>,
     workspace: &Path,
     gate_logs: &Path,
+    supervisor_socket: &Path,
 ) -> Wiring {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo_dyn.clone(), None);
     let op_repo = Arc::new(SqlxOperationRepo::new(repo.db().clone()));
     let completion = OperationCompletionBus::new();
     let renderer = TerminalRendererRegistry::new_with_repo(repo_dyn.clone());
-    let daemon = Arc::new(DaemonClient::new_stub());
+    let daemon = Arc::new(DaemonClient {
+        proc_supervisor_sock: Some(supervisor_socket.to_owned()),
+        ..DaemonClient::new_stub()
+    });
     let spawn = SpawnCtx::new(
         repo_dyn.clone(),
         op_repo.clone(),
@@ -437,6 +441,7 @@ pub async fn local_candidate(fx: &super::codex_fixture::Fixture) -> String {
     let socket = fx.socket_path.clone();
     let workspace = fx.evidence_root().join("local-workspaces");
     let logs = fx.evidence_root().join("local-gates");
+    let supervisor_socket = fx._execution.socket.clone();
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -454,6 +459,7 @@ pub async fn local_candidate(fx: &super::codex_fixture::Fixture) -> String {
                 server,
                 &workspace,
                 &logs,
+                &supervisor_socket,
             )
             .await;
             let started = start(&repo, &ctx, &registry, planner, "scripted-implement").await;

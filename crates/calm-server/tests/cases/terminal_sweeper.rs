@@ -22,13 +22,42 @@ use calm_truth::db::sqlite::{
 use serde_json::json;
 
 /// A fresh in-memory `AppState` (stub daemon / codex) plus the concrete `SqlxRepo` for direct `SELECT`s.
-async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
+struct OwnerGuard {
+    _dir: tempfile::TempDir,
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+    _shutdown: tokio::sync::oneshot::Sender<()>,
+}
+impl Drop for OwnerGuard {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn fresh_state() -> (AppState, Arc<SqlxRepo>, OwnerGuard) {
+    let dir = calm_test_sockets::socket_dir("sweep");
+    let sock = dir.path().join("owner.sock");
+    let listener = calm_proc_supervisor::bind_control_listener(&sock).unwrap();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(calm_proc_supervisor::serve_with_listener(
+        listener,
+        sock.clone(),
+        calm_proc_supervisor::ProcRegistry::new(),
+        stopped,
+    ));
+    let owner = OwnerGuard {
+        _dir: dir,
+        task,
+        _shutdown: shutdown,
+    };
     let concrete = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = concrete.clone();
     let state = AppState::from_parts(
         repo.clone(),
         EventBus::new(),
-        Arc::new(DaemonClient::new_stub()),
+        Arc::new(DaemonClient {
+            data_dir: owner._dir.path().into(),
+            proc_supervisor_sock: Some(sock),
+        }),
         Arc::new(PluginHost::new_full(
             Arc::new(PluginRegistry::empty()),
             repo.clone(),
@@ -45,7 +74,7 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
         None,
         None,
     );
-    (state, concrete)
+    (state, concrete, owner)
 }
 
 /// Seed an area + track + terminal-kind card with a terminal row and active
@@ -347,7 +376,7 @@ async fn age_all_terminals_past_grace(concrete: &SqlxRepo) {
 
 #[tokio::test]
 async fn orphan_detection_skips_runtime_owned_terminal_and_finds_orphan() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
 
     // With an active runtime owner, even with grace=0 there's no orphan.
@@ -370,7 +399,7 @@ async fn orphan_detection_skips_runtime_owned_terminal_and_finds_orphan() {
 
 #[tokio::test]
 async fn orphan_detection_skips_runtime_owned_terminal_without_payload_link() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, _terminal_id) = seed_linked_pair(&state, &concrete).await;
 
     unlink_card(&state, &card_id).await;
@@ -384,7 +413,7 @@ async fn orphan_detection_skips_runtime_owned_terminal_without_payload_link() {
 
 #[tokio::test]
 async fn orphan_sweep_protects_shared_planner_terminal_with_null_terminal_run_id() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (_card_id, terminal_id) = seed_shared_planner_pair(&state, &concrete, "t1").await;
     age_all_terminals_past_grace(&concrete).await;
 
@@ -403,7 +432,7 @@ async fn orphan_sweep_protects_shared_planner_terminal_with_null_terminal_run_id
 
 #[tokio::test]
 async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, terminal_id) = seed_shared_planner_pair(&state, &concrete, "t1").await;
 
     state
@@ -430,7 +459,7 @@ async fn orphan_sweep_reaps_terminal_after_runtime_completion() {
 /// the owning card still exists, so the row follows its card.
 #[tokio::test]
 async fn orphan_sweep_keeps_exited_terminal_card_terminal() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let mut sub = state.events.subscribe();
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
 
@@ -464,7 +493,7 @@ async fn orphan_sweep_keeps_exited_terminal_card_terminal() {
 
 #[tokio::test]
 async fn migrated_shared_planner_terminal_survives_sweep() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (_card_id, terminal_id) = seed_migrated_shared_planner_pair(&state, &concrete).await;
     age_all_terminals_past_grace(&concrete).await;
 
@@ -483,7 +512,7 @@ async fn migrated_shared_planner_terminal_survives_sweep() {
 
 #[tokio::test]
 async fn grace_window_holds_back_fresh_orphans() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
 
     // Complete the runtime -> fresh orphan, just-now `created_at`.
@@ -505,7 +534,7 @@ async fn grace_window_holds_back_fresh_orphans() {
 
 #[tokio::test]
 async fn sweep_emits_terminal_deleted_with_kernel_actor() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let mut sub = state.events.subscribe();
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
 
@@ -559,7 +588,7 @@ async fn sweep_emits_terminal_deleted_with_kernel_actor() {
 
 #[tokio::test]
 async fn cleanup_safe_when_daemon_already_dead() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
     // No renderer entry and no pid: cleanup should still delete the row.
     unlink_card(&state, &card_id).await;
@@ -585,7 +614,7 @@ async fn cleanup_safe_when_daemon_already_dead() {
 async fn cleanup_safe_with_stale_pid() {
     // A pid persisted from a previous boot may be recycled to an unrelated process; the SIGTERM call may
     // return ESRCH or EPERM, both tolerated.
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
     // Pick a pid that's almost certainly free.
     state
@@ -610,7 +639,7 @@ async fn cleanup_safe_with_stale_pid() {
 
 #[tokio::test]
 async fn runtime_owned_terminal_survives_multiple_sweeps() {
-    let (state, concrete) = fresh_state().await;
+    let (state, concrete, _owner) = fresh_state().await;
     let (_card_id, terminal_id) = seed_linked_pair(&state, &concrete).await;
     // Even after aging, the runtime-owned terminal should never surface as an orphan.
     age_all_terminals_past_grace(&concrete).await;

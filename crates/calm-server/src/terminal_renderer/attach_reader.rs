@@ -2,15 +2,13 @@ use calm_session::control::ControlReply;
 use calm_session::terminal_session::Effect;
 use calm_session::{DaemonMsg, read_frame};
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::{
     OutputWake, SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo,
-    record_output, wake_projector,
+    record_output,
 };
-use crate::db::RouteRepo;
-use crate::session_projection_repo::WorkerSessionState;
 use crate::terminal_renderer::client_pump::apply_broadcaster_effects;
 use crate::terminal_renderer::output_capture::SharedTerminalOutputCapture;
 use std::sync::Arc;
@@ -39,12 +37,8 @@ pub fn spawn_supervisor_attach_reader(
     event_tx: broadcast::Sender<DaemonMsg>,
     supervisor_tx: mpsc::UnboundedSender<SupervisorControl>,
     exited_tx: oneshot::Sender<Option<i32>>,
-    repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
-    task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
-    // Flipped only after every required exit write and callback succeeds. Teardown waits on
-    // this, never on task completion: a failed write or read error proves no persisted exit.
-    exit_persisted_tx: watch::Sender<bool>,
+    completion: Arc<super::legacy_completion::LegacyCompletion>,
     output_capture: SharedTerminalOutputCapture,
     // Stamped `now_ms()` on every `Output` frame; a leading edge (a frame after a window of
     // quiet — the first frame included unless a fresh launch's replay stamped just before it) and
@@ -77,16 +71,24 @@ pub fn spawn_supervisor_attach_reader(
                 Ok(ControlReply::Exited {
                     status, signalled, ..
                 }) => {
-                    // Only the typed Store projection may write a typed terminal's exit.
-                    if let Some(repo) = repo.as_ref() {
-                        match repo.terminal_get(&terminal_id).await {
-                            Ok(Some(term)) => match term.is_typed(repo.as_ref()).await {
-                                Ok(false) => {}
-                                Ok(true) | Err(_) => break,
-                            },
-                            Err(_) => break,
-                            Ok(None) => {}
-                        }
+                    // Preserve the transport fact before classification or any other I/O.
+                    // Only completion's current ownership check grants projection authority.
+                    let output = output_capture
+                        .lock()
+                        .map(|capture| capture.snapshot())
+                        .unwrap_or_else(|_| {
+                            crate::terminal_renderer::output_capture::TerminalOutputSnapshot {
+                                text: String::new(),
+                                truncated: true,
+                            }
+                        });
+                    if let Err(error) = completion.record(super::legacy_completion::LegacyExit {
+                        code: if signalled { None } else { status },
+                        signalled,
+                        output,
+                    }) {
+                        tracing::warn!(%terminal_id, %error, "cannot record legacy exit");
+                        break;
                     }
                     source.exited = true;
                     let effects = match render_plane.lock() {
@@ -115,83 +117,9 @@ pub fn spawn_supervisor_attach_reader(
                     if let Some(tx) = exited_tx.take() {
                         let _ = tx.send(status);
                     }
-                    let exit_code = if signalled { None } else { status };
-                    let output = output_capture
-                        .lock()
-                        .map(|capture| capture.snapshot())
-                        .unwrap_or_else(|_| {
-                            crate::terminal_renderer::output_capture::TerminalOutputSnapshot {
-                                text: String::new(),
-                                truncated: true,
-                            }
-                        });
-                    let mut exit_persisted = true;
-                    if let Some(repo) = repo.as_ref()
-                        && let Err(e) = repo
-                            .terminal_set_exit_with_output(
-                                &terminal_id,
-                                exit_code,
-                                signalled,
-                                &output.text,
-                                output.truncated,
-                            )
-                            .await
-                    {
-                        exit_persisted = false;
-                        tracing::warn!(
-                            terminal_id = %terminal_id,
-                            exit_code = ?exit_code,
-                            signal_killed = signalled,
-                            error = %e,
-                            "failed to persist terminal exit from supervisor"
-                        );
-                    }
-                    if let Some(repo) = repo.as_ref() {
-                        let terminal_status = if signalled {
-                            WorkerSessionState::Failed
-                        } else {
-                            WorkerSessionState::Exited
-                        };
-                        if let Err(e) =
-                            crate::terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
-                                repo.as_ref(),
-                                &terminal_id,
-                                terminal_status,
-                            )
-                            .await
-                        {
-                            exit_persisted = false;
-                            tracing::warn!(
-                                terminal_id = %terminal_id,
-                                exit_code = ?exit_code,
-                                signal_killed = signalled,
-                                error = %e,
-                                "failed to complete runtime from supervisor terminal exit"
-                            );
-                        }
-                    }
-                    // Keep attempting callbacks after a failure; their owners retain completion
-                    // policy and retry responsibility. A later success cannot erase an earlier error.
-                    if let Some(hook) = task_hook.as_ref()
-                        && let Err(e) = hook
-                            .on_terminal_exit(
-                                &terminal_id,
-                                exit_code,
-                                signalled,
-                                &output.text,
-                                output.truncated,
-                            )
-                            .await
-                    {
-                        exit_persisted = false;
-                        tracing::warn!(terminal_id = %terminal_id, error = %e,
-                            "terminal task hook failed; exit persistence remains unverified");
-                    }
-                    // Wake after all persistence attempts, including failures. Keep no `.await`
-                    // between this wake and the success signal so teardown cannot skip the wake.
-                    wake_projector(&output_wake, &terminal_id);
-                    if exit_persisted {
-                        let _ = exit_persisted_tx.send(true);
+                    if let Err(error) = completion.retry().await {
+                        tracing::warn!(terminal_id = %terminal_id, %error,
+                            "legacy completion failed; retained observation can be retried");
                     }
                     break;
                 }

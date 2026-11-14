@@ -6,6 +6,7 @@ use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, Path};
 use crate::model::Terminal;
 use crate::state::{AppState, DaemonClient, RouteState};
+use crate::terminal_renderer::{INITIAL_COLS, INITIAL_ROWS, REPLAY_BYTES, parse_rgb};
 use crate::terminal_renderer::{RendererConfig, RendererEntry, TerminalRendererRegistry};
 use axum::{Router, extract::State, routing::get};
 use std::sync::Arc;
@@ -144,8 +145,11 @@ pub(crate) fn launch_specification(
         program: "/bin/sh".into(),
         args: vec!["-c".into(), format!("{path_prepend}\n{program}")],
         environment: terminal_child_envs(env),
-        io_mode: calm_session::control::IoMode::Pty { cols: 80, rows: 24 },
-        replay_bytes: 1 << 20,
+        io_mode: calm_session::control::IoMode::Pty {
+            cols: INITIAL_COLS,
+            rows: INITIAL_ROWS,
+        },
+        replay_bytes: REPLAY_BYTES,
     }
 }
 
@@ -166,22 +170,6 @@ pub(crate) fn terminal_child_envs(env: &serde_json::Value) -> Vec<(String, Strin
         }
     }
     envs
-}
-
-fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
-    let parts: Vec<&str> = s.split(',').collect();
-    if parts.len() != 3 {
-        return Err(format!(
-            "expected `r,g,b` (three comma-separated u8 channels), got {s:?}"
-        ));
-    }
-    let parse = |i: usize| -> std::result::Result<u8, String> {
-        parts[i]
-            .trim()
-            .parse::<u8>()
-            .map_err(|e| format!("channel {i} ({:?}): {e}", parts[i]))
-    };
-    Ok((parse(0)?, parse(1)?, parse(2)?))
 }
 
 /// Attach the typed renderer without a Legacy connection, probe, or spawn.

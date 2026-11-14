@@ -57,6 +57,10 @@ type TestSpawnHook = Arc<
 >;
 
 async fn boot() -> Boot {
+    boot_with_supervisor(None).await
+}
+
+async fn boot_with_supervisor(proc_supervisor_sock: Option<PathBuf>) -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -91,7 +95,7 @@ async fn boot() -> Boot {
 
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock,
     });
     let events = EventBus::new();
     let mut state = AppState::from_parts(
@@ -516,7 +520,10 @@ async fn post_terminal_card_rejects_malformed_idempotency_key() {
 
 #[tokio::test]
 async fn post_terminal_card_idempotency_retry_refuses_deleted_terminal_after_track_delete() {
-    let boot = boot_happy().await;
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+        .await
+        .unwrap();
+    let boot = boot_with_supervisor(Some(supervisor.sock().to_owned())).await;
     let body = json!({ "program": "/bin/sh", "cwd": "", "env": {}, "sort": 1.0, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let uri = format!("/api/tracks/{}/terminal-cards", boot.track_id);
 

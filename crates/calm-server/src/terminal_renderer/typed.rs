@@ -102,6 +102,7 @@ impl TerminalRendererRegistry {
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(None),
             exit_persisted,
+            legacy_completion: None,
             tasks: StdMutex::new(Vec::new()),
         });
         // Install once before starting either task: a losing concurrent attach cannot feed bytes twice.

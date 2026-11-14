@@ -11,6 +11,7 @@ use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{Card, CardPatch, new_id};
 use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
+use crate::operation::terminal_disposal::quiesce_terminal;
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationId, OperationKey};
 use crate::per_card_lock::lock_key;
@@ -26,7 +27,6 @@ use crate::session_projection_lookup::{
     project_runtime_into_card_payload, project_runtime_into_cards_payload,
 };
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
-use crate::terminal_sweeper::try_reap_terminal_artifacts_with_renderer;
 use crate::validation::reject_client_supplied_server_owned_keys;
 
 use axum::{
@@ -605,8 +605,16 @@ pub(crate) async fn delete_card(
     // Eager teardown: `terminals.card_id` is `ON DELETE RESTRICT`, so the terminal row must be removed, and its daemon + socket reaped, before the card row delete. Cleanup runs outside the write txn; if it fails the row stays and the sweeper retries next tick. The txn then deletes both rows in one commit under `Event::CardDeleted`.
     let term = s.repo.terminal_get_by_card(card_id.as_str()).await?;
     if let Some(t) = term.as_ref() {
-        try_reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), t).await?;
+        quiesce_terminal(
+            s.repo.as_ref(),
+            s.operation_runtime.execution().engine(),
+            w.terminal_renderer.as_ref(),
+            w.daemon.proc_supervisor_sock.as_deref(),
+            t,
+        )
+        .await?;
     }
+    let finished_terminal = term.clone();
     let terminal_id = term.map(|t| t.id);
 
     let write_for_tx = s.write.clone();
@@ -653,6 +661,10 @@ pub(crate) async fn delete_card(
             })
         })
         .await?;
+    if let Some(term) = finished_terminal {
+        w.terminal_renderer
+            .finish_legacy_deletion(&term.id, term.card_id.as_str());
+    }
     s.operation_runtime
         .execution()
         .drive(retire.into_iter().filter_map(|deleted| deleted.retire));

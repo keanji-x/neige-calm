@@ -45,9 +45,22 @@ async fn unresolved_launch_repoint_retains_workspace() {
     exercise(History::Unknown, Disposal::Repoint).await;
 }
 
+#[tokio::test]
+async fn legacy_disposal_pending_exit_and_absence_still_retain() {
+    for scope in [
+        Disposal::Card,
+        Disposal::Track,
+        Disposal::Area,
+        Disposal::Sweep,
+    ] {
+        exercise(History::ExitedUnknown, scope).await;
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum History {
     Unknown,
+    ExitedUnknown,
     OldUnknown,
     OldCompensating,
     Healthy,
@@ -449,7 +462,14 @@ async fn exercise(history: History, disposal: Disposal) {
                 .unwrap();
             (repo.db()).writer().execute(sqlx::query("UPDATE operations SET tx_output_json=json_remove(tx_output_json,'$.data.terminal_launch') WHERE id=?1").bind(&op.id)).await.unwrap();
         }
+        if matches!(history, History::ExitedUnknown) {
+            repo.terminal_set_exit(&term_id, Some(2), false).await.unwrap();
+        }
         if matches!(disposal, Disposal::Sweep) {
+            if matches!(history, History::ExitedUnknown) {
+                // Exited standalone Terminal cards are intentionally retained, not orphans.
+                (repo.db()).writer().execute(sqlx::query("UPDATE cards SET kind='plugin:legacy:orphan' WHERE id=?1").bind(&card_id)).await.unwrap();
+            }
             (repo.db()).writer().execute(sqlx::query("UPDATE terminals SET created_at=0 WHERE id=?1")
                 .bind(&term_id))
                 .await
