@@ -363,7 +363,17 @@ async fn paired_device_keeps_ordinary_terminal_input_contract() {
     let (address, server) = super::scoped_events::serve(&fx).await;
     let mut ws = connect(address, &terminal, None, &cookie).await;
     let marker = h.root.path().join("paired-input");
-    input(&mut ws, &format!("printf paired > {}", marker.display()), 1).await;
+    // InputAck confirms the PTY write, not shell completion. Publish the marker
+    // only after printf finishes so file existence also guarantees its contents.
+    input(
+        &mut ws,
+        &format!(
+            "printf paired > '{0}.tmp' && mv '{0}.tmp' '{0}'",
+            marker.display()
+        ),
+        1,
+    )
+    .await;
     ack(&mut ws, 1).await;
     wait_file(&marker).await;
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "paired");
