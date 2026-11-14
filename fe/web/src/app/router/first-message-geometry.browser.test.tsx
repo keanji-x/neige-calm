@@ -4,7 +4,7 @@ import { afterEach, expect, it } from 'vitest';
 import { commands, page, userEvent } from 'vitest/browser';
 import { queryKeys } from '../providers/queries.ts';
 import { historicalConversationPage, historicalConversationRun, conversationCardId } from './conversation-read-data.ts';
-import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
+import { FIRST_MESSAGE, renderFirstMessageFixture } from './tests/first-message-continuity-fixture.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 afterEach(async () => {
@@ -41,7 +41,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
     await expect.element(page.getByRole('button', { name: 'Edit queued message', exact: true })).toBeVisible();
     await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
@@ -164,7 +164,7 @@ it.each([
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable'); fixture.answerCreate();
     await expect.poll(() => fixture.historyCount()).toBe(1); await expect.poll(() => fixture.runCount()).toBe(1);
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });

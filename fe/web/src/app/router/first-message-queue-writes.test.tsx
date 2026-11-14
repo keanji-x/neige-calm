@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it } from 'vitest';
-import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
+import { FIRST_MESSAGE, renderFirstMessageFixture } from './tests/first-message-continuity-fixture.tsx';
 import { queryKeys } from '../providers/queries.ts';
+import { trackConversationCardId } from '../../../../core/domain/conversation.ts';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
 const copies = (text: string) => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === text);
@@ -12,7 +13,12 @@ async function queuedFirst() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
   const field = await screen.findByRole('combobox', { name: 'Message' });
   await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
-  await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+  await fixture.submitFirstMessage(async () => {
+    const field = screen.getByRole('combobox', { name: 'Message' });
+    await userEvent.click(field);
+    act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+    await userEvent.keyboard('{Enter}');
+  });
   fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued');
   act(() => { fixture.answerCreate(); });
   await waitFor(() => expect(fixture.historyCount()).toBe(2));
@@ -134,7 +140,12 @@ it('keeps an actual PATCH restoring submitted words after a different external u
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
     const field = await screen.findByRole('combobox', { name: 'Message' });
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
-    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    await fixture.submitFirstMessage(async () => {
+      const field = screen.getByRole('combobox', { name: 'Message' });
+      await userEvent.click(field);
+      act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+      await userEvent.keyboard('{Enter}');
+    });
     fixture.project(1, external, true); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
@@ -194,7 +205,12 @@ it('keeps one first input through provisional withdrawal, same-revision rebuffer
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
     const field = await screen.findByRole('combobox', { name: 'Message' });
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
-    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    await fixture.submitFirstMessage(async () => {
+      const field = screen.getByRole('combobox', { name: 'Message' });
+      await userEvent.click(field);
+      act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+      await userEvent.keyboard('{Enter}');
+    });
     fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
@@ -232,7 +248,12 @@ it('retains an ordinary folded POST through older same-entry history before its 
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
     const field = await screen.findByRole('combobox', { name: 'Message' });
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
-    await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+    await fixture.submitFirstMessage(async () => {
+      const field = screen.getByRole('combobox', { name: 'Message' });
+      await userEvent.click(field);
+      act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+      await userEvent.keyboard('{Enter}');
+    });
     fixture.project(0); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     act(() => { fixture.releaseHistory(0); fixture.releaseRun(0); });
@@ -262,4 +283,55 @@ it('retains an ordinary folded POST through older same-entry history before its 
     expect(copies(combined)).toHaveLength(1);
     expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(1);
   } finally { cleanup(); fixture.client.clear(); }
+});
+
+it('waits for a finitely released version before one real first-message submission and projection', async () => {
+  let releaseVersion: () => void = () => undefined;
+  const versionReply = new Promise<void>(resolve => { releaseVersion = resolve; });
+  const fixture = renderFirstMessageFixture({ versionReply });
+  const creates = () => fixture.requests.filter(request => request.method === 'POST'
+    && request.path === '/api/tracks/daily/conversations');
+  let submission: Promise<{ error: unknown }> | null = null;
+  let sends = 0;
+  try {
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    const field = await screen.findByRole('combobox', { name: 'Message' });
+    await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
+    await waitFor(() => expect(fixture.requests.some(request => request.path === '/api/version')).toBe(true));
+    act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+    // Start setup without awaiting it: the driver owns release independently of project/POST.
+    submission = fixture.submitFirstMessage(() => {
+      sends += 1;
+      fireEvent.keyDown(screen.getByRole('combobox', { name: 'Message' }), { key: 'Enter' });
+    }).then(() => ({ error: null }), (error: unknown) => ({ error }));
+    // Drain already queued input and React updates while the real version response is still held.
+    await act(async () => { await Promise.resolve(); });
+    expect(fixture.client.getQueryState(['server-version'])?.status).toBe('pending');
+    expect(screen.queryByText('This server does not support first-message receipts. Update or reconnect before sending.')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Message' }).textContent).toBe(FIRST_MESSAGE);
+    expect(sends).toBe(0);
+    expect(creates()).toHaveLength(0);
+    expect(fixture.createdId()).toBeNull();
+    expect(copies(FIRST_MESSAGE)).toHaveLength(0);
+    expect(fixture.historyCount()).toBe(0);
+    expect(fixture.runCount()).toBe(0);
+    act(() => { releaseVersion(); });
+    expect((await submission).error).toBeNull();
+    expect(sends).toBe(1);
+    expect(creates()).toHaveLength(1);
+    const request = creates()[0];
+    const key = request.headers?.['Idempotency-Key'];
+    expect(key).toEqual(expect.any(String));
+    expect(request.body).toMatchObject({ text: FIRST_MESSAGE, provider: 'codex' });
+    expect(fixture.createdId()).toBe(trackConversationCardId('daily', key!));
+    // Only the real POST can supply the id used by this projection and held response.
+    fixture.project(0); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
+    await waitFor(() => expect(fixture.outbox()).toMatchObject([{ phase: 'initial-accepted' }]));
+    expect(copies(FIRST_MESSAGE)).toHaveLength(1);
+    expect(creates()).toHaveLength(1);
+  } finally {
+    releaseVersion();
+    await submission;
+    cleanup(); fixture.client.clear();
+  }
 });

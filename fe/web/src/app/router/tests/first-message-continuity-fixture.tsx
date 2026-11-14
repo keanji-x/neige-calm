@@ -1,21 +1,25 @@
-import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { ConversationInitialInputObservation, HarnessItem, TrackConversationSummary } from '../../../../core/api/generated/wire.ts';
-import type { PendingQueueEntry } from '../../../../core/domain/conversation.ts';
-import { sha256Hex } from '../../../../core/domain/sha256.ts';
-import { HARNESS_ITEMS_PAGE_LIMIT, trackConversationCardId } from '../../../../core/domain/conversation.ts';
-import { initialReceiptFor } from './initial-input-fixture.ts';
-import { renderDailyFixture } from './daily-planner-fixture.tsx';
-import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
+import { screen, waitFor } from '@testing-library/react';
+import { expect } from 'vitest';
+import { managedProviderProblem, type ManagedProviderAvailability } from '../../../../../core/domain/agent-providers.ts';
+import { managedProvidersQueryKey } from '../../providers/managed-providers.ts';
+import type { ApiRequest, ApiTransportResponse } from '../../../../../core/api/types.ts';
+import type { ConversationInitialInputObservation, HarnessItem, TrackConversationSummary } from '../../../../../core/api/generated/wire.ts';
+import type { PendingQueueEntry } from '../../../../../core/domain/conversation.ts';
+import { sha256Hex } from '../../../../../core/domain/sha256.ts';
+import { HARNESS_ITEMS_PAGE_LIMIT, trackConversationCardId } from '../../../../../core/domain/conversation.ts';
+import { initialReceiptFor } from '../initial-input-fixture.ts';
+import { renderDailyFixture } from '../daily-planner-fixture.tsx';
+import { type ServerVersionInfo, WEB_COMPAT_VERSION } from '../../providers/public.tsx';
 import { useLayoutEffect } from 'react';
-import { useConversationCommands, type ConversationRegistry } from '../conversations/public.tsx';
-import { conversationCursorSchema } from '../../../../core/api/schemas.ts';
-import { historicalConversationPage, historicalConversationRun, conversationCardId } from './conversation-read-data.ts';
+import { useConversationCommands, type ConversationRegistry } from '../../conversations/public.tsx';
+import { conversationCursorSchema } from '../../../../../core/api/schemas.ts';
+import { historicalConversationPage, historicalConversationRun, conversationCardId } from '../conversation-read-data.ts';
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 export const FIRST_MESSAGE = 'Keep the first sentence readable through adoption.';
 
 /** The real router, decoder, outbox, queries and presentation over a controllable serialized server result. */
-export function renderFirstMessageFixture(options: { onCommit?: () => void; capability?: boolean; loseReply?: boolean;
+export function renderFirstMessageFixture(options: { onCommit?: () => void; versionReply?: Promise<void>; capability?: boolean; loseReply?: boolean;
   incomplete?: boolean; legacy?: boolean; mobile?: boolean; holdHistory?: boolean; holdRun?: boolean; harvestedInput?: boolean; running?: boolean; refuseQueueDelete?: boolean } = {}) {
   let original: ApiRequest | null = null;
   let created: TrackConversationSummary | null = null;
@@ -51,9 +55,12 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
   }
   const view = renderDailyFixture({ initial: `/track/daily${options.mobile ? '' : '?panel=conversations'}`, onCommit: options.onCommit, routeProbe: <RegistryProbe />,
     reply: async request => {
-      if (request.path === '/api/version') return ok({ assistantProviders: true, conversationInitialInput: options.capability ?? true,
+      if (request.path === '/api/version') {
+        if (options.versionReply !== undefined) await options.versionReply;
+        return ok({ assistantProviders: true, conversationInitialInput: options.capability ?? true,
         conversationSide: true, conversationCreateModel: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
         syncEventVersion: 29, dbInstanceId: 'first-message-continuity' });
+      }
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         accepts_unavailable_blank_track: true, capabilities: { managed_conversation: true, steer: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -155,11 +162,41 @@ export function renderFirstMessageFixture(options: { onCommit?: () => void; capa
       return undefined;
     },
   });
+  // Observe the router's decoded answers; do not fetch, seed data or reproduce admission policy.
+  const waitForDraftReady = async () => {
+    await waitFor(() => {
+      const version = view.client.getQueryState<ServerVersionInfo>(['server-version']);
+      expect(version?.status).toBe('success');
+      expect(version?.data?.conversationInitialInput).toBe(options.capability ?? true);
+      const providers = view.client.getQueryState<readonly ManagedProviderAvailability[]>(managedProvidersQueryKey);
+      expect(providers?.status).toBe('success');
+      expect(managedProviderProblem(providers?.data, 'codex')).toBeNull();
+      // This visible control reflects the committed router's model/assistant compatibility props.
+      const model = screen.getByRole<HTMLButtonElement>('button', { name: /^Model:/ });
+      expect(model.disabled || model.getAttribute('aria-disabled') === 'true').toBe(false);
+      expect(screen.getByRole('combobox', { name: 'Message' }).getAttribute('contenteditable')).toBe('true');
+    });
+  };
   const receipt = () => {
     if (original === null) throw new Error('No request dispatched');
     return initialReceiptFor(original, 'first-entry', 0);
   };
   return { ...view,
+    // The caller still drives its actual DOM/browser input. Returning is not a create ACK.
+    submitFirstMessage: async (submit: () => void | Promise<void>) => {
+      await waitForDraftReady();
+      await submit();
+      // The negative-capability scenario must retain the real refusal and zero POST.
+      if (options.capability === false) return;
+      await waitFor(() => {
+        expect(original).not.toBeNull();
+        const key = original?.headers?.['Idempotency-Key'];
+        expect(key).toEqual(expect.any(String));
+        expect(key).not.toBe('');
+        expect(original?.body).toMatchObject({ text: FIRST_MESSAGE, provider: 'codex' });
+        expect(created?.id).toBe(trackConversationCardId('daily', key!));
+      });
+    },
     createdId: () => created?.id ?? null,
     inspectionCount: () => inspecting,
     holdNextInspection: () => { holdNextInspection = true; },

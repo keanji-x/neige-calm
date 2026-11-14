@@ -52,7 +52,7 @@ it.each(['/track/daily?panel=conversations', '/'])('switches the selected Assist
 it('refuses arguments before any write and keeps the command draft', async () => {
   const fixture = renderPlannerSwitchFixture(); const input = await open(); await submit(input, '/planner now');
   await screen.findByText('Use /planner without arguments.');
-  expect(input.textContent).toBe('/planner now'); expect(writes(fixture)).toHaveLength(0);
+  await waitFor(() => expect(input.textContent).toBe('/planner now')); expect(writes(fixture)).toHaveLength(0);
 });
 
 it('shows the specific refusal and blocking role, preserves draft, and never retries', async () => {
@@ -60,7 +60,7 @@ it('shows the specific refusal and blocking role, preserves draft, and never ret
     body: { error: 'busy', code: 'planner_pending_messages', card_id: 'daily-planner' } }) });
   const input = await open(); await submit(input);
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Wait for pending messages to finish. (Original Planner: Daily Planner conversation)'));
-  expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(1);
+  await waitFor(() => expect(input.textContent).toBe('/planner')); expect(writes(fixture)).toHaveLength(1);
 });
 
 it('releases an offline refusal before reconciliation, restores the draft, and never resends', async () => {
@@ -86,7 +86,7 @@ it('releases an offline refusal before reconciliation, restores the draft, and n
     // A new explicit intent reaches recovery admission: the old pending guard has been released.
     await submit(input);
     await screen.findByText('Planner switching was not sent.');
-    expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(1);
+    await waitFor(() => expect(input.textContent).toBe('/planner')); expect(writes(fixture)).toHaveLength(1);
   } finally {
     act(() => { releaseReads.forEach(release => release()); });
     onlineManager.setOnline(true);
@@ -167,7 +167,7 @@ it.each(['/planner', '/planner now'])('never sends unavailable typed %s from the
   const fixture = renderPlannerSwitchFixture(); const input = await open('Daily Planner conversation');
   await submit(input, command);
   await screen.findByText('Planner switching is not available in this conversation.');
-  expect(input.textContent).toBe(command); expect(writes(fixture)).toHaveLength(0);
+  await waitFor(() => expect(input.textContent).toBe(command)); expect(writes(fixture)).toHaveLength(0);
 });
 
 it.each(['/planner', '/planner now'])('recognizes unavailable %s without a scope binding', async command => {
@@ -175,7 +175,7 @@ it.each(['/planner', '/planner now'])('recognizes unavailable %s without a scope
   render(<ChatComposer onSend={send} commands={conversationCommands({})} />);
   const input = screen.getByRole('textbox', { name: 'Message' }); await submit(input, command);
   await screen.findByText('Planner switching is not available in this conversation.');
-  expect(input.textContent).toBe(command); expect(send).not.toHaveBeenCalled();
+  await waitFor(() => expect(input.textContent).toBe(command)); expect(send).not.toHaveBeenCalled();
 });
 
 it('reports a definitely unsent switch without a POST', async () => {
@@ -184,7 +184,7 @@ it('reports a definitely unsent switch without a POST', async () => {
   try {
     await submit(input);
     await screen.findByText('Planner switching was not sent.');
-    expect(input.textContent).toBe('/planner'); expect(writes(fixture)).toHaveLength(0);
+    await waitFor(() => expect(input.textContent).toBe('/planner')); expect(writes(fixture)).toHaveLength(0);
   } finally { onlineManager.setOnline(true); }
 });
 
