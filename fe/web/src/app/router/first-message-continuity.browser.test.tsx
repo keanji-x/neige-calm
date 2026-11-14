@@ -3,7 +3,7 @@ import { act, cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page, userEvent } from 'vitest/browser';
 import { queryKeys } from '../providers/queries.ts';
-import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
+import { FIRST_MESSAGE, renderFirstMessageFixture } from './tests/first-message-continuity-fixture.tsx';
 
 afterEach(async () => {
   cleanup(); vi.unstubAllGlobals(); document.getElementById('root')?.remove();
@@ -28,7 +28,7 @@ it.each([{ width: 1280, reduce: false }, { width: 390, reduce: false }, { width:
         await page.getByRole('button', { name: '发起新对话', exact: true }).click();
       } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
       const field = page.getByRole('combobox', { name: 'Message' });
-      await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+      await fixture.submitFirstMessage(async () => { await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
       await expect.poll(() => occurrences().length).toBe(1);
       const frames = new Map<number, FrameRequestCallback>();
       let frameId = 0;
@@ -78,8 +78,7 @@ it.each([1280, 390])('keeps the first bubble in place through native admission w
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE);
-    await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     await expect.poll(() => bubbles().length).toBe(1);
     await page.screenshot({ path: `../../../../test-results/first-message-native-held-create-${width}.png` });
     const before = offset();
@@ -117,8 +116,7 @@ it.each([1280, 390])('keeps real first-input queue controls readable while histo
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE);
-    await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.queueOriginal();
     fixture.answerCreate();
     await expect.poll(() => document.querySelector('[data-nc-thread]')).not.toBeNull();
@@ -148,8 +146,7 @@ it.each([{ width: 1280, edited: false }, { width: 390, edited: false }, { width:
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE);
-    await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
     await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
     const cardId = fixture.createdId();
@@ -180,7 +177,7 @@ it.each([{ width: 1280, steer: false }, { width: 390, steer: false }, { width: 1
         await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
         await page.getByRole('button', { name: '发起新对话', exact: true }).click();
       } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-      await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+      await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
       if (!steer) fixture.project(0, FIRST_MESSAGE, true);
       fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
       await expect.poll(() => document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE);
@@ -208,7 +205,7 @@ it.each([1280, 390])('keeps one accepted fallback when a real queue update arriv
       await page.getByRole('button', { name: 'Open conversation history', exact: true }).click();
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
-    await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await page.getByRole('combobox', { name: 'Message' }).fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.queueOriginal(); fixture.answerCreate(); fixture.observe('queued');
     await expect.element(page.getByRole('button', { name: 'Delete this message', exact: true })).toBeEnabled();
     const cardId = fixture.createdId();
@@ -239,7 +236,7 @@ it.each([1280, 390])('keeps an acknowledged first edit readable with real post-w
       await page.getByRole('button', { name: '发起新对话', exact: true }).click();
     } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     const field = page.getByRole('combobox', { name: 'Message' });
-    await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+    await fixture.submitFirstMessage(async () => { await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
     fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued'); fixture.answerCreate();
     await expect.poll(() => fixture.historyCount()).toBe(2); await expect.poll(() => fixture.runCount()).toBe(2);
     act(() => { fixture.releaseHistory(1); fixture.releaseRun(1); });
@@ -296,7 +293,7 @@ it.each([{ width: 1280, restore: true }, { width: 390, restore: true }, { width:
         await page.getByRole('button', { name: '发起新对话', exact: true }).click();
       } else await page.getByRole('button', { name: 'New conversation', exact: true }).click();
       const field = page.getByRole('combobox', { name: 'Message' });
-      await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}');
+      await fixture.submitFirstMessage(async () => { await field.fill(FIRST_MESSAGE); await userEvent.keyboard('{Enter}'); });
       if (restore) { fixture.project(1, external, true); fixture.observe('unavailable'); }
       else { fixture.queueOriginal(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('queued'); }
       fixture.answerCreate();

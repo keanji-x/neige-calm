@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { FIRST_MESSAGE, renderFirstMessageFixture } from './first-message-continuity-fixture.tsx';
+import { FIRST_MESSAGE, renderFirstMessageFixture } from './tests/first-message-continuity-fixture.tsx';
 import type { ObservedInitialInput } from '../../../../core/domain/conversation-outbox.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
@@ -44,11 +44,16 @@ function captureAdmissionFrames() {
   };
 }
 
-async function sendFirst() {
+async function sendFirst(fixture: ReturnType<typeof renderFirstMessageFixture>) {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
   const field = await screen.findByRole('combobox', { name: 'Message' });
   await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
-  await userEvent.type(field, `${FIRST_MESSAGE}{Enter}`);
+  await fixture.submitFirstMessage(async () => {
+    const field = screen.getByRole('combobox', { name: 'Message' });
+    await userEvent.click(field);
+    act(() => { field.textContent = FIRST_MESSAGE; fireEvent.input(field); });
+    await userEvent.keyboard('{Enter}');
+  });
   await waitFor(() => expect(words()).toHaveLength(1));
 }
 
@@ -61,7 +66,7 @@ it('keeps exactly one first sentence through accepted adoption, newer empty read
     if (sawWords) commits.push(words().length);
   } });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.inspectionCount()).toBeGreaterThan(0));
     await waitFor(() => expect(fixture.requests.some(request => request.path.includes(`/${fixture.createdId()}/harness/items`))).toBe(true));
@@ -91,7 +96,7 @@ it.each(['projected'] as const)('retires provisional words on coherent %s eviden
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.inspectionCount()).toBeGreaterThan(0));
     fixture.project(0); fixture.advanceHistoryWindow(); fixture.observe(kind);
@@ -110,7 +115,7 @@ it.each(['projected'] as const)('retires provisional words on coherent %s eviden
 it('recovers a lost create reply through its original successful receipt even when the runtime is unavailable', async () => {
   const fixture = renderFirstMessageFixture({ loseReply: true });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await screen.findByText('The first message’s current status could not be checked.');
@@ -125,7 +130,7 @@ it('recovers a lost create reply through its original successful receipt even wh
 it('retains words through a pre-observation history reply and a failed post-observation read until Reload succeeds', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
     fixture.project(0); fixture.advanceHistoryWindow(); fixture.failHistory();
@@ -149,7 +154,7 @@ it('retains words through a pre-observation history reply and a failed post-obse
 it('keeps a listed incomplete create in its own recovery draft without claiming accepted first input', async () => {
   const fixture = renderFirstMessageFixture({ loseReply: true, incomplete: true });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await screen.findByRole('button', { name: 'Try again' });
     expect(screen.getByRole('complementary', { name: 'Untitled' })).toBeTruthy();
@@ -161,7 +166,7 @@ it('keeps a listed incomplete create in its own recovery draft without claiming 
 it('requires the declared initial-input capability before the first POST', async () => {
   const fixture = renderFirstMessageFixture({ capability: false });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     await screen.findByText('This server does not support first-message receipts. Update or reconnect before sending.');
     expect(creates(fixture)).toEqual([]);
   } finally { cleanup(); fixture.client.clear(); }
@@ -170,7 +175,7 @@ it('requires the declared initial-input capability before the first POST', async
 it('adopts an explicitly unavailable historical receipt using canonical history without fabricating accepted words', async () => {
   const fixture = renderFirstMessageFixture({ legacy: true });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.requests.some(request => request.path.includes(`/${fixture.createdId()}/harness/items`))).toBe(true));
     await waitFor(() => expect(words()).toHaveLength(0));
@@ -184,7 +189,7 @@ it('keeps a positively changed queue body across the declared source pair and ro
   const fixture = renderFirstMessageFixture({ holdHistory: true });
   const changed = 'Changed by another client.';
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); act(() => { fixture.answerCreate(); });
+    await sendFirst(fixture); fixture.project(0, FIRST_MESSAGE, true); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
     fixture.queueEdited(changed); fixture.clearHistory(); fixture.observe('changed');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
@@ -211,7 +216,7 @@ it.each(['changed', 'projected'] as const)('ignores a canceled creation %s reply
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   const pending = () => document.querySelector('[data-nc-pending-entry="first-entry"]');
   try {
-    await sendFirst(); fixture.queueOriginal(); fixture.holdNextInspection(); act(() => { fixture.answerCreate(); });
+    await sendFirst(fixture); fixture.queueOriginal(); fixture.holdNextInspection(); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1)); await waitFor(() => expect(fixture.runCount()).toBe(1));
     if (kind === 'changed') fixture.queueEdited('Changed by another client.');
     else { fixture.clearQueue(); fixture.project(0); }
@@ -236,7 +241,7 @@ it('shows newer edited canonical words over an older queued observation when cur
   const fixture = renderFirstMessageFixture();
   const edited = 'Edited first input from another client.';
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     fixture.queueOriginal();
     act(() => { fixture.answerCreate(); });
     fixture.observe('queued');
@@ -270,7 +275,7 @@ it('keeps recovered receipt adoption and its row when an older list read answers
     fixture.holdNextList();
     act(() => { oldListRead = fixture.client.invalidateQueries({ queryKey: listKey }); });
     await waitFor(() => expect(fixture.listCount()).toBe(1));
-    await sendFirst();
+    await sendFirst(fixture);
     fixture.observe('queued');
     unsubscribe = fixture.client.getQueryCache().subscribe(event => {
       if (event.type !== 'updated' || event.action.type !== 'success') return;
@@ -298,7 +303,7 @@ it.each([FIRST_MESSAGE, 'Edited canonical input that the delayed queue reply mus
   const fixture = renderFirstMessageFixture({ onCommit: () => { const count = [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].filter(node => node.textContent === edited).length; if (count > 0) capture = true; if (capture) commits.push(count); } });
   const shownWords = () => [...document.querySelectorAll(':is([data-nc-turn="you"], [data-nc-turn="unknown"])')].map(element => element.textContent);
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     fixture.project(1, edited); fixture.holdNextInspection(); fixture.observe('queued');
     act(() => { fixture.answerCreate(); });
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
@@ -347,7 +352,7 @@ it('preserves a newer actual queued revision after a canceled original queued ob
   const edited = 'A newer real queued revision from another client.';
   const pending = () => document.querySelector('[data-nc-pending-entry="first-entry"]');
   try {
-    await sendFirst(); fixture.queueOriginal(); fixture.holdNextInspection(); fixture.observe('queued');
+    await sendFirst(fixture); fixture.queueOriginal(); fixture.holdNextInspection(); fixture.observe('queued');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.heldInspectionCount()).toBe(1));
     await waitFor(() => expect(fixture.runCount()).toBe(1));
@@ -370,7 +375,7 @@ it('lets slow dependent reads finish across polling intervals and hand off witho
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   focusManager.setFocused(true);
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.historyCount()).toBe(1));
     await waitFor(() => expect(fixture.runCount()).toBe(1));
@@ -406,7 +411,7 @@ it('keeps the real first-input queue readable through parked thread admission', 
     if (sawWords) commits.push(words().length);
   } });
   try {
-    await sendFirst();
+    await sendFirst(fixture);
     fixture.queueOriginal();
     act(() => { fixture.answerCreate(); });
     const cardId = fixture.createdId();
@@ -440,7 +445,7 @@ it.each(['unavailable', 'held'] as const)('does not revive the original first-in
   const exits = captureQueueExits();
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.queueOriginal();
     if (inspection === 'held') fixture.holdNextInspection();
     fixture.observe(inspection === 'held' ? 'queued' : 'unavailable'); act(() => { fixture.answerCreate(); });
     const cardId = fixture.createdId();
@@ -468,7 +473,7 @@ it.each(['unavailable', 'held'] as const)('does not revive the original first-in
 it('keeps acknowledged deletion nondrawing over cached sources and retains its terminal fact after fresh page misses', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true, holdRun: true });
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
     await waitFor(() => expect(fixture.runCount()).toBe(2));
@@ -507,7 +512,7 @@ it('keeps one accepted first-input copy after successful real steer while curren
   const frames = captureAdmissionFrames();
   const fixture = renderFirstMessageFixture({ running: true });
   try {
-    await sendFirst(); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).not.toBeNull());
     // A visible queued row stays disabled until the real thread is admitted.
@@ -532,7 +537,7 @@ it.each([false, true])('preserves actual queued edit acceptance without reviving
   const fixture = renderFirstMessageFixture();
   const revised = sameBody ? FIRST_MESSAGE : 'First input revised through the real composer.';
   try {
-    await sendFirst(); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => {
       const edit = screen.getByRole<HTMLButtonElement>('button', { name: 'Edit queued message' });
@@ -560,7 +565,7 @@ it.each([false, true])('preserves actual queued edit acceptance without reviving
 it('starts an actual post-ACK history read when Delete is accepted before the first held history response', async () => {
   const fixture = renderFirstMessageFixture({ holdHistory: true });
   try {
-    await sendFirst(); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(fixture.historyCount()).toBe(2));
     await waitFor(() => {
@@ -590,7 +595,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
   const fixture = renderFirstMessageFixture();
   focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.project(0, FIRST_MESSAGE, true); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')).not.toBeNull());
     // A visible queued row stays disabled until the real thread is admitted.
@@ -631,7 +636,7 @@ it('keeps a real Delete acknowledgement stronger than freshly reread old unbound
 it('keeps exactly one accepted fallback when the real queue disappears before canonical history arrives', async () => {
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.queueOriginal();
+    await sendFirst(fixture); fixture.queueOriginal();
     act(() => { fixture.answerCreate(); }); fixture.observe('queued');
     await waitFor(() => expect(document.querySelector('[data-nc-pending-entry="first-entry"]')?.textContent).toContain(FIRST_MESSAGE));
     await waitFor(() => {
@@ -654,7 +659,7 @@ it('keeps exactly one accepted fallback when the real queue disappears before ca
 it.each([false, true])('admits one ordinary keyed input with healthy real reads while initial inspection is unavailable (provisional: %s)', async provisional => {
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, provisional); fixture.observe('unavailable');
+    await sendFirst(fixture); fixture.project(0, FIRST_MESSAGE, provisional); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { kind: 'source', rev: 0 },
       sourceWitness: provisional ? null : { itemId: 7, turnId: 'accepted-first-turn' } }]));
@@ -675,7 +680,7 @@ it.each([false, true])('admits one ordinary keyed input with healthy real reads 
 it('ends the creation observer on a positive unbound input fact while history and run retain refresh', async () => {
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
+    await sendFirst(fixture); fixture.project(0, FIRST_MESSAGE, true); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ inputFact: { kind: 'source', rev: 0 }, sourceWitness: null }]));
     const cardId = fixture.createdId();
@@ -701,7 +706,7 @@ it('retains one provider-bound first input after it leaves the latest window and
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
   const fixture = renderFirstMessageFixture();
   try {
-    await sendFirst(); fixture.project(0); fixture.observe('unavailable');
+    await sendFirst(fixture); fixture.project(0); fixture.observe('unavailable');
     act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.outbox()).toMatchObject([{ sourceWitness: { itemId: 7, turnId: 'accepted-first-turn', entryRev: 0 } }]));
     await waitFor(() => expect(words()).toHaveLength(1));
@@ -738,7 +743,7 @@ it('keeps periodic projected lookup reconciliation while actual source history r
   vi.stubGlobal('cancelAnimationFrame', () => undefined);
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.project(0); fixture.failHistory(); fixture.observe('projected'); act(() => { fixture.answerCreate(); });
+    await sendFirst(fixture); fixture.project(0); fixture.failHistory(); fixture.observe('projected'); act(() => { fixture.answerCreate(); });
     await waitFor(() => expect(fixture.inspectionCount()).toBe(1));
     const cardId = fixture.createdId(); if (cardId === null) throw new Error('No actual created conversation');
     await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.harnessItems(cardId) })).toBe(0));
@@ -757,7 +762,7 @@ it('admits exactly one keyed ordinary send with healthy no-source reads and paus
   vi.stubGlobal('cancelAnimationFrame', () => undefined);
   const fixture = renderFirstMessageFixture(); focusManager.setFocused(true);
   try {
-    await sendFirst(); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
+    await sendFirst(fixture); fixture.observe('unavailable'); act(() => { fixture.answerCreate(); });
     await screen.findByText('The first message’s current status could not be checked.');
     const field = screen.getByRole('combobox', { name: 'Message' });
     await waitFor(() => expect(field.getAttribute('contenteditable')).toBe('true'));
