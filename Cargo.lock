@@ -487,6 +487,7 @@ dependencies = [
  "libc",
  "portable-pty",
  "proc-macro2",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

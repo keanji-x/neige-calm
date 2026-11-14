@@ -10,6 +10,7 @@ use std::{
 };
 
 use calm_session::control::{IoMode, ProcSignal, execution::ExecutionSpecification};
+use rustix::process::{Pid, PidfdFlags, Signal};
 use workspace::execution::NativeProcessIdentity;
 
 use super::{
@@ -54,27 +55,13 @@ impl Process {
             "helper signal handler is not ready; retry exact control"
         );
         let signal = match signal {
-            ProcSignal::Term => libc::SIGTERM,
-            ProcSignal::Hup => libc::SIGHUP,
-            ProcSignal::Kill => libc::SIGUSR1,
+            ProcSignal::Term => Signal::TERM,
+            ProcSignal::Hup => Signal::HUP,
+            ProcSignal::Kill => Signal::USR1,
         };
-        // Signal the owned helper through its pinned native handle; it drains every adopted child.
-        // SAFETY: pidfd is owned by this exact execution, never a numeric alias lookup.
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                self.pidfd.as_raw_fd(),
-                signal,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        anyhow::ensure!(
-            result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
-            "signal execution helper: {}",
-            std::io::Error::last_os_error()
-        );
-        Ok(())
+        // Signal the pinned helper so it can drain every adopted child.
+        signal_pidfd(&self.pidfd, signal)
+            .map_err(|error| anyhow::anyhow!("signal execution helper: {error}"))
     }
     pub fn write(&self, bytes: &[u8]) -> anyhow::Result<usize> {
         anyhow::ensure!(bytes.len() <= 1024 * 1024, "execution input too large");
@@ -395,15 +382,22 @@ fn start_time(pid: u32) -> anyhow::Result<u64> {
 }
 
 fn pin_helper(pid: u32) -> anyhow::Result<File> {
-    // SAFETY: a positive child PID still pinned by the unreaped Child handle.
-    let native_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    anyhow::ensure!(
-        native_fd >= 0,
-        "pin execution helper: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: pidfd_open returned a uniquely owned descriptor.
-    Ok(unsafe { File::from_raw_fd(native_fd as RawFd) })
+    open_pidfd(pid).map_err(|error| anyhow::anyhow!("pin execution helper: {error}"))
+}
+
+pub(super) fn open_pidfd(pid: u32) -> std::io::Result<File> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    Ok(rustix::process::pidfd_open(pid, PidfdFlags::empty())?.into())
+}
+
+pub(super) fn signal_pidfd(handle: &File, signal: Signal) -> std::io::Result<()> {
+    match rustix::process::pidfd_send_signal(handle, signal) {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
